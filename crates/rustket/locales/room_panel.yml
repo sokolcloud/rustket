@@ -32,9 +32,9 @@ room_panel.files:
 room_panel.close:
   en: "Close"
   ru: "Закрыть"
-room_panel.placeholder:
-  en: "Coming soon"
-  ru: "Скоро"
+room_panel.back:
+  en: "Back"
+  ru: "Назад"
 room_panel.notification_prefs:
   en: "Notification preferences"
   ru: "Настройки уведомлений"
@@ -50,3 +50,537 @@ room_panel.invite:
 room_panel.team_channels:
   en: "Team channels"
   ru: "Каналы команды"
+room_panel.retry:
+  en: "Retry"
+  ru: "Повторить"
+room_panel.load_more:
+  en: "Load more"
+  ru: "Загрузить ещё"
+room_panel.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+room_panel.save:
+  en: "Save"
+  ru: "Сохранить"
+room_panel.reset:
+  en: "Reset"
+  ru: "Сбросить"
+room_panel.copy:
+  en: "Copy"
+  ru: "Копировать"
+room_panel.all:
+  en: "All"
+  ru: "Все"
+room_panel.online:
+  en: "Online"
+  ru: "В сети"
+room_panel.following:
+  en: "Following"
+  ru: "Отслеживаемые"
+room_panel.unread:
+  en: "Unread"
+  ru: "Непрочитанные"
+room_panel.favorite:
+  en: "Add to favorites"
+  ru: "Добавить в избранное"
+room_panel.unfavorite:
+  en: "Remove from favorites"
+  ru: "Убрать из избранного"
+room_panel.mark_read:
+  en: "Mark as read"
+  ru: "Отметить прочитанным"
+room_panel.hide:
+  en: "Hide room"
+  ru: "Скрыть комнату"
+room_panel.leave:
+  en: "Leave room"
+  ru: "Покинуть комнату"
+room_panel.delete:
+  en: "Delete room"
+  ru: "Удалить комнату"
+room_panel.edit:
+  en: "Edit"
+  ru: "Изменить"
+room_panel.confirm_hide:
+  en: "Hide %{room}? You can find it again in the directory or through search."
+  ru: "Скрыть %{room}? Комнату можно снова найти в каталоге или поиском."
+room_panel.confirm_leave:
+  en: "Leave %{room}? You will need an invitation or to join again to come back."
+  ru: "Покинуть %{room}? Чтобы вернуться, понадобится приглашение или повторное вступление."
+room_panel.confirm_delete:
+  en: "Delete %{room}? All messages and files will be deleted. This cannot be undone."
+  ru: "Удалить %{room}? Все сообщения и файлы будут удалены. Это нельзя отменить."
+room_panel.hidden_ok:
+  en: "Room hidden"
+  ru: "Комната скрыта"
+room_panel.left_ok:
+  en: "You left the room"
+  ru: "Вы покинули комнату"
+room_panel.deleted_ok:
+  en: "Room deleted"
+  ru: "Комната удалена"
+room_panel.err_last_owner:
+  en: "You are the last owner. Set a new owner before leaving the room."
+  ru: "Вы последний владелец. Назначьте нового владельца, прежде чем покинуть комнату."
+room_panel.err_remove_last_owner:
+  en: "This is the last owner. Set a new owner first."
+  ru: "Это последний владелец. Сначала назначьте нового владельца."
+room_panel.err_not_allowed:
+  en: "You are not allowed to do this"
+  ru: "У вас нет прав на это действие"
+room_panel.err_invalid_name:
+  en: "This room name is not allowed"
+  ru: "Такое название комнаты недопустимо"
+room_panel.err_duplicate_name:
+  en: "A room, team or user with this name already exists"
+  ru: "Комната, команда или пользователь с таким именем уже существует"
+room_panel.err_name_required:
+  en: "Name is required"
+  ru: "Укажите название"
+room_panel.err_name_spaces:
+  en: "The name cannot contain spaces"
+  ru: "Название не может содержать пробелы"
+room_panel.status_online:
+  en: "Online"
+  ru: "В сети"
+room_panel.status_away:
+  en: "Away"
+  ru: "Отошёл"
+room_panel.status_busy:
+  en: "Busy"
+  ru: "Занят"
+room_panel.status_offline:
+  en: "Offline"
+  ru: "Не в сети"
+room_panel.role_owner:
+  en: "Owner"
+  ru: "Владелец"
+room_panel.role_moderator:
+  en: "Moderator"
+  ru: "Модератор"
+room_panel.role_leader:
+  en: "Leader"
+  ru: "Лидер"
+room_panel.role_admin:
+  en: "Admin"
+  ru: "Администратор"
+room_panel.role_bot:
+  en: "Bot"
+  ru: "Бот"
+room_panel.role_user:
+  en: "User"
+  ru: "Пользователь"
+room_panel.room_unknown:
+  en: "This room is not available"
+  ru: "Комната недоступна"
+room_panel.topic:
+  en: "Topic"
+  ru: "Тема"
+room_panel.announcement:
+  en: "Announcement"
+  ru: "Объявление"
+room_panel.description:
+  en: "Description"
+  ru: "Описание"
+room_panel.type_team:
+  en: "Team"
+  ru: "Команда"
+room_panel.type_discussion:
+  en: "Discussion"
+  ru: "Обсуждение"
+room_panel.type_private:
+  en: "Private"
+  ru: "Приватная"
+room_panel.type_direct:
+  en: "Direct message"
+  ru: "Личные сообщения"
+room_panel.type_channel:
+  en: "Channel"
+  ru: "Канал"
+room_panel.read_only:
+  en: "Read-only"
+  ru: "Только чтение"
+room_panel.read_only_hint:
+  en: "Only authorized users can write new messages"
+  ru: "Писать новые сообщения могут только пользователи с правами"
+room_panel.archived:
+  en: "Archived"
+  ru: "В архиве"
+room_panel.encrypted:
+  en: "Encrypted"
+  ru: "Зашифрована"
+room_panel.direct_message:
+  en: "Direct message"
+  ru: "Написать"
+room_panel.mention:
+  en: "Mention"
+  ru: "Упомянуть"
+room_panel.bio:
+  en: "Bio"
+  ru: "О себе"
+room_panel.local_time:
+  en: "Local time"
+  ru: "Местное время"
+room_panel.email:
+  en: "Email"
+  ru: "Электронная почта"
+room_panel.nickname:
+  en: "Nickname"
+  ru: "Псевдоним"
+room_panel.set_owner:
+  en: "Set as owner"
+  ru: "Назначить владельцем"
+room_panel.unset_owner:
+  en: "Remove as owner"
+  ru: "Снять с владельцев"
+room_panel.set_moderator:
+  en: "Set as moderator"
+  ru: "Назначить модератором"
+room_panel.unset_moderator:
+  en: "Remove as moderator"
+  ru: "Снять с модераторов"
+room_panel.set_leader:
+  en: "Set as leader"
+  ru: "Назначить лидером"
+room_panel.unset_leader:
+  en: "Remove as leader"
+  ru: "Снять с лидеров"
+room_panel.mute_user:
+  en: "Mute user"
+  ru: "Заглушить"
+room_panel.unmute_user:
+  en: "Unmute user"
+  ru: "Снять заглушение"
+room_panel.remove_from_room:
+  en: "Remove from room"
+  ru: "Удалить из комнаты"
+room_panel.remove_from_team:
+  en: "Remove from team"
+  ru: "Удалить из команды"
+room_panel.ignore:
+  en: "Ignore"
+  ru: "Игнорировать"
+room_panel.unignore:
+  en: "Stop ignoring"
+  ru: "Перестать игнорировать"
+room_panel.done_set_owner:
+  en: "%{user} is now an owner"
+  ru: "%{user} теперь владелец"
+room_panel.done_unset_owner:
+  en: "%{user} is no longer an owner"
+  ru: "%{user} больше не владелец"
+room_panel.done_set_moderator:
+  en: "%{user} is now a moderator"
+  ru: "%{user} теперь модератор"
+room_panel.done_unset_moderator:
+  en: "%{user} is no longer a moderator"
+  ru: "%{user} больше не модератор"
+room_panel.done_set_leader:
+  en: "%{user} is now a leader"
+  ru: "%{user} теперь лидер"
+room_panel.done_unset_leader:
+  en: "%{user} is no longer a leader"
+  ru: "%{user} больше не лидер"
+room_panel.done_muted:
+  en: "%{user} was muted"
+  ru: "%{user} заглушён"
+room_panel.done_unmuted:
+  en: "%{user} was unmuted"
+  ru: "С %{user} снято заглушение"
+room_panel.done_removed:
+  en: "%{user} was removed"
+  ru: "%{user} удалён"
+room_panel.done_ignored:
+  en: "%{user} is ignored"
+  ru: "%{user} игнорируется"
+room_panel.done_unignored:
+  en: "%{user} is no longer ignored"
+  ru: "%{user} больше не игнорируется"
+room_panel.confirm_remove:
+  en: "Remove %{user} from %{room}?"
+  ru: "Удалить %{user} из %{room}?"
+room_panel.confirm_mute:
+  en: "Mute %{user}? They will not be able to write in %{room}."
+  ru: "Заглушить %{user}? Пользователь не сможет писать в %{room}."
+room_panel.search_members:
+  en: "Search members"
+  ru: "Поиск участников"
+room_panel.add_users:
+  en: "Add users"
+  ru: "Добавить пользователей"
+room_panel.no_members:
+  en: "No members found"
+  ru: "Участники не найдены"
+room_panel.showing_count:
+  en: "Showing %{shown} of %{total}"
+  ru: "Показано %{shown} из %{total}"
+room_panel.no_threads:
+  en: "No threads"
+  ru: "Тредов нет"
+room_panel.no_pinned:
+  en: "No pinned messages"
+  ru: "Закреплённых сообщений нет"
+room_panel.no_starred:
+  en: "No starred messages"
+  ru: "Отмеченных сообщений нет"
+room_panel.no_mentions:
+  en: "No mentions"
+  ru: "Упоминаний нет"
+room_panel.no_results:
+  en: "No messages found"
+  ru: "Сообщения не найдены"
+room_panel.search_threads:
+  en: "Search threads"
+  ru: "Поиск тредов"
+room_panel.search_placeholder:
+  en: "Search in this room"
+  ru: "Поиск в этой комнате"
+room_panel.search_hint:
+  en: "Type to search messages in this room"
+  ru: "Введите текст для поиска сообщений в комнате"
+room_panel.replies:
+  en: "Replies: %{count}"
+  ru: "Ответов: %{count}"
+room_panel.last_reply:
+  en: "last %{time}"
+  ru: "последний %{time}"
+room_panel.search_discussions:
+  en: "Search discussions"
+  ru: "Поиск обсуждений"
+room_panel.search_channels:
+  en: "Search channels"
+  ru: "Поиск каналов"
+room_panel.no_discussions:
+  en: "No discussions"
+  ru: "Обсуждений нет"
+room_panel.no_channels:
+  en: "No channels in this team"
+  ru: "В команде нет каналов"
+room_panel.messages_count:
+  en: "Messages: %{count}"
+  ru: "Сообщений: %{count}"
+room_panel.members_count:
+  en: "Members: %{count}"
+  ru: "Участников: %{count}"
+room_panel.not_joined:
+  en: "not joined"
+  ru: "вы не участник"
+room_panel.join_failed:
+  en: "Could not join the room"
+  ru: "Не удалось вступить в комнату"
+room_panel.search_files:
+  en: "Search files"
+  ru: "Поиск файлов"
+room_panel.files_images:
+  en: "Images"
+  ru: "Изображения"
+room_panel.files_videos:
+  en: "Videos"
+  ru: "Видео"
+room_panel.files_audio:
+  en: "Audio"
+  ru: "Аудио"
+room_panel.files_texts:
+  en: "Texts"
+  ru: "Тексты"
+room_panel.files_other:
+  en: "Other"
+  ru: "Прочее"
+room_panel.no_files:
+  en: "No files"
+  ru: "Файлов нет"
+room_panel.download:
+  en: "Download"
+  ru: "Скачать"
+room_panel.downloaded:
+  en: "File saved"
+  ru: "Файл сохранён"
+room_panel.download_failed:
+  en: "Download failed"
+  ru: "Не удалось скачать"
+room_panel.not_member:
+  en: "You are not a member of this room"
+  ru: "Вы не участник этой комнаты"
+room_panel.receive_notifications:
+  en: "Receive notifications"
+  ru: "Получать уведомления"
+room_panel.receive_notifications_hint:
+  en: "Turn off to mute this room"
+  ru: "Выключите, чтобы заглушить комнату"
+room_panel.mute_group_mentions:
+  en: "Mute @all and @here mentions"
+  ru: "Заглушить упоминания @all и @here"
+room_panel.show_counter:
+  en: "Show unread counter"
+  ru: "Показывать счётчик непрочитанных"
+room_panel.show_mentions:
+  en: "Show mention badges"
+  ru: "Показывать значки упоминаний"
+room_panel.section_desktop:
+  en: "Desktop"
+  ru: "Компьютер"
+room_panel.section_mobile:
+  en: "Mobile"
+  ru: "Телефон"
+room_panel.section_email:
+  en: "Email"
+  ru: "Электронная почта"
+room_panel.alert:
+  en: "Alert"
+  ru: "Оповещение"
+room_panel.alert_default:
+  en: "Default"
+  ru: "По умолчанию"
+room_panel.alert_all:
+  en: "All messages"
+  ru: "Все сообщения"
+room_panel.alert_mentions:
+  en: "Mentions"
+  ru: "Упоминания"
+room_panel.alert_nothing:
+  en: "Nothing"
+  ru: "Ничего"
+room_panel.sound:
+  en: "Sound"
+  ru: "Звук"
+room_panel.sound_none:
+  en: "None"
+  ru: "Без звука"
+room_panel.sound_default:
+  en: "Default"
+  ru: "По умолчанию"
+room_panel.prefs_saved:
+  en: "Notification preferences saved"
+  ru: "Настройки уведомлений сохранены"
+room_panel.save_failed:
+  en: "Could not save"
+  ru: "Не удалось сохранить"
+room_panel.name:
+  en: "Name"
+  ru: "Название"
+room_panel.private:
+  en: "Private"
+  ru: "Приватная"
+room_panel.private_hint:
+  en: "Only invited people can join"
+  ru: "Вступить могут только приглашённые"
+room_panel.react_when_read_only:
+  en: "Allow reactions when read-only"
+  ru: "Разрешить реакции в режиме только чтения"
+room_panel.hide_system_messages:
+  en: "Hide system messages"
+  ru: "Скрыть системные сообщения"
+room_panel.room_saved:
+  en: "Room settings saved"
+  ru: "Настройки комнаты сохранены"
+room_panel.choose_users:
+  en: "Choose users"
+  ru: "Выберите пользователей"
+room_panel.search_users:
+  en: "Search users"
+  ru: "Поиск пользователей"
+room_panel.users_added:
+  en: "Users added"
+  ru: "Пользователи добавлены"
+room_panel.invite_link:
+  en: "Invite link"
+  ru: "Ссылка-приглашение"
+room_panel.create_link:
+  en: "Get invite link"
+  ru: "Получить ссылку-приглашение"
+room_panel.link_copied:
+  en: "Link copied"
+  ru: "Ссылка скопирована"
+room_panel.link_expires:
+  en: "Expires %{time}"
+  ru: "Истекает %{time}"
+room_panel.thread_soon:
+  en: "The thread view is coming soon"
+  ru: "Просмотр тредов скоро появится"
+room_panel.err_archived_duplicate_name:
+  en: "An archived room with this name already exists"
+  ru: "Архивная комната с таким названием уже существует"
+room_panel.roles_failed:
+  en: "Could not load room roles: %{error}"
+  ru: "Не удалось загрузить роли в комнате: %{error}"
+room_panel.join:
+  en: "Join"
+  ru: "Присоединиться"
+room_panel.confirm_join:
+  en: "Join %{room}? You will be subscribed and members will see that you joined."
+  ru: "Присоединиться к %{room}? Вы будете подписаны, а участники увидят, что вы присоединились."
+room_panel.size_b:
+  en: "B"
+  ru: "Б"
+room_panel.size_kb:
+  en: "KB"
+  ru: "КБ"
+room_panel.size_mb:
+  en: "MB"
+  ru: "МБ"
+room_panel.size_gb:
+  en: "GB"
+  ru: "ГБ"
+room_panel.link_expiration:
+  en: "Expires in"
+  ru: "Срок действия"
+room_panel.link_max_uses:
+  en: "Max number of uses"
+  ru: "Макс. число использований"
+room_panel.link_never:
+  en: "Never"
+  ru: "Бессрочно"
+room_panel.link_days:
+  en: "%{count} d"
+  ru: "%{count} дн."
+room_panel.link_no_limit:
+  en: "No limit"
+  ru: "Без ограничений"
+room_panel.link_expires_or_uses:
+  en: "Expires %{time} or after %{count} more uses"
+  ru: "Истекает %{time} или после ещё %{count} использований"
+room_panel.link_uses_left:
+  en: "Expires after %{count} more uses"
+  ru: "Истекает после ещё %{count} использований"
+room_panel.link_never_expires:
+  en: "This link never expires"
+  ru: "Срок действия ссылки не ограничен"
+room_panel.sound_chime:
+  en: "Chime"
+  ru: "Перезвон"
+room_panel.sound_door:
+  en: "Door"
+  ru: "Дверь"
+room_panel.sound_beep:
+  en: "Beep"
+  ru: "Бип"
+room_panel.sound_chelle:
+  en: "Chelle"
+  ru: "Chelle"
+room_panel.sound_ding:
+  en: "Ding"
+  ru: "Динь"
+room_panel.sound_droplet:
+  en: "Droplet"
+  ru: "Капля"
+room_panel.sound_highbell:
+  en: "Highbell"
+  ru: "Высокий колокольчик"
+room_panel.sound_seasons:
+  en: "Seasons"
+  ru: "Времена года"
+room_panel.sound_telephone:
+  en: "Telephone"
+  ru: "Телефон"
+room_panel.sound_outbound_call_ringing:
+  en: "Outbound call ringing"
+  ru: "Гудки исходящего звонка"
+room_panel.sound_call_ended:
+  en: "Call ended"
+  ru: "Звонок завершён"
+room_panel.sound_dialtone:
+  en: "Dialtone"
+  ru: "Сигнал линии"
+room_panel.sound_ringtone:
+  en: "Ringtone"
+  ru: "Рингтон"

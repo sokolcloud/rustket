@@ -1422,15 +1422,36 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// Drops the view of `rid` (the room stays in the workspace).
+    fn close_room_view(&mut self, sid: &ServerId, rid: &str) -> Task<Message> {
+        let Some(s) = self.servers.get_mut(sid) else {
+            return Task::none();
+        };
+        if let Some(rv) = s.rooms.remove(rid) {
+            rv.close(&mut s.workspace);
+        }
+        if s.active_room.as_deref() == Some(rid) {
+            s.active_room = None;
+        }
+        if let Some(e) = self.config.server_mut(sid)
+            && e.last_room.as_deref() == Some(rid)
+        {
+            e.last_room = None;
+            return self.save_config();
+        }
+        Task::none()
+    }
+
     fn handle_effects(
         &mut self,
         sid: &ServerId,
-        _rid: &str,
+        rid: &str,
         effects: Vec<room::Effect>,
     ) -> Task<Message> {
         let mut tasks = Vec::new();
         for e in effects {
             tasks.push(match e {
+                room::Effect::CloseRoom => self.close_room_view(sid, rid),
                 room::Effect::Toast(kind, title, body) => self.toast(kind, title, body),
                 room::Effect::OpenRoom(rid) => self.open_room(sid, &rid),
                 room::Effect::OpenUrl(url) => self.open_url(url),

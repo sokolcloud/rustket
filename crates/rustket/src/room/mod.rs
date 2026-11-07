@@ -136,6 +136,8 @@ pub enum Effect {
     /// Open a URL in the external browser (absolute http, https or mailto only;
     /// anything else is refused with a toast).
     OpenUrl(String),
+    /// Close this room's view (e.g. after hiding the room).
+    CloseRoom,
     /// Ask the composer to do something (edit, quote, react, …); routed to
     /// `Composer::intent`.
     Compose(ComposeIntent),
