@@ -2,3 +2,348 @@ _version: 2
 room_render.edited:
   en: "(edited)"
   ru: "(изменено)"
+room_render.copy:
+  en: "Copy"
+  ru: "Копировать"
+room_render.copy_code:
+  en: "Copy code"
+  ru: "Копировать код"
+room_render.spoiler:
+  en: "Spoiler — click to reveal"
+  ru: "Спойлер — нажмите, чтобы показать"
+room_render.long_date:
+  en: "%{day} %{month} %{year}"
+  ru: "%{day} %{month} %{year}"
+room_render.rel_now:
+  en: "just now"
+  ru: "только что"
+room_render.rel_in_minutes_one:
+  en: "in %{n} minute"
+  ru: "через %{n} минуту"
+room_render.rel_in_minutes_few:
+  en: "in %{n} minutes"
+  ru: "через %{n} минуты"
+room_render.rel_in_minutes_many:
+  en: "in %{n} minutes"
+  ru: "через %{n} минут"
+room_render.rel_in_hours_one:
+  en: "in %{n} hour"
+  ru: "через %{n} час"
+room_render.rel_in_hours_few:
+  en: "in %{n} hours"
+  ru: "через %{n} часа"
+room_render.rel_in_hours_many:
+  en: "in %{n} hours"
+  ru: "через %{n} часов"
+room_render.rel_in_days_one:
+  en: "in %{n} day"
+  ru: "через %{n} день"
+room_render.rel_in_days_few:
+  en: "in %{n} days"
+  ru: "через %{n} дня"
+room_render.rel_in_days_many:
+  en: "in %{n} days"
+  ru: "через %{n} дней"
+room_render.rel_ago_minutes_one:
+  en: "%{n} minute ago"
+  ru: "%{n} минуту назад"
+room_render.rel_ago_minutes_few:
+  en: "%{n} minutes ago"
+  ru: "%{n} минуты назад"
+room_render.rel_ago_minutes_many:
+  en: "%{n} minutes ago"
+  ru: "%{n} минут назад"
+room_render.rel_ago_hours_one:
+  en: "%{n} hour ago"
+  ru: "%{n} час назад"
+room_render.rel_ago_hours_few:
+  en: "%{n} hours ago"
+  ru: "%{n} часа назад"
+room_render.rel_ago_hours_many:
+  en: "%{n} hours ago"
+  ru: "%{n} часов назад"
+room_render.rel_ago_days_one:
+  en: "%{n} day ago"
+  ru: "%{n} день назад"
+room_render.rel_ago_days_few:
+  en: "%{n} days ago"
+  ru: "%{n} дня назад"
+room_render.rel_ago_days_many:
+  en: "%{n} days ago"
+  ru: "%{n} дней назад"
+room_render.file_removed:
+  en: "File removed"
+  ru: "Файл удалён"
+room_render.expand:
+  en: "Expand"
+  ru: "Развернуть"
+room_render.collapse:
+  en: "Collapse"
+  ru: "Свернуть"
+room_render.file:
+  en: "File"
+  ru: "Файл"
+room_render.downloading:
+  en: "Downloading %{received} of %{total}"
+  ru: "Загрузка: %{received} из %{total}"
+room_render.download_failed:
+  en: "Download failed: %{error}"
+  ru: "Не удалось скачать: %{error}"
+room_render.play:
+  en: "Play"
+  ru: "Воспроизвести"
+room_render.open_file:
+  en: "Open file"
+  ru: "Открыть файл"
+room_render.download:
+  en: "Download"
+  ru: "Скачать"
+room_render.jump_to_message:
+  en: "Jump to message"
+  ru: "Перейти к сообщению"
+room_render.encrypted:
+  en: "This message is end-to-end encrypted"
+  ru: "Это сообщение защищено сквозным шифрованием"
+room_render.role_owner:
+  en: "owner"
+  ru: "владелец"
+room_render.role_moderator:
+  en: "moderator"
+  ru: "модератор"
+room_render.role_leader:
+  en: "leader"
+  ru: "лидер"
+room_render.month_0:
+  en: "January"
+  ru: "января"
+room_render.month_1:
+  en: "February"
+  ru: "февраля"
+room_render.month_2:
+  en: "March"
+  ru: "марта"
+room_render.month_3:
+  en: "April"
+  ru: "апреля"
+room_render.month_4:
+  en: "May"
+  ru: "мая"
+room_render.month_5:
+  en: "June"
+  ru: "июня"
+room_render.month_6:
+  en: "July"
+  ru: "июля"
+room_render.month_7:
+  en: "August"
+  ru: "августа"
+room_render.month_8:
+  en: "September"
+  ru: "сентября"
+room_render.month_9:
+  en: "October"
+  ru: "октября"
+room_render.month_10:
+  en: "November"
+  ru: "ноября"
+room_render.month_11:
+  en: "December"
+  ru: "декабря"
+room_render.weekday_0:
+  en: "Monday"
+  ru: "понедельник"
+room_render.weekday_1:
+  en: "Tuesday"
+  ru: "вторник"
+room_render.weekday_2:
+  en: "Wednesday"
+  ru: "среда"
+room_render.weekday_3:
+  en: "Thursday"
+  ru: "четверг"
+room_render.weekday_4:
+  en: "Friday"
+  ru: "пятница"
+room_render.weekday_5:
+  en: "Saturday"
+  ru: "суббота"
+room_render.weekday_6:
+  en: "Sunday"
+  ru: "воскресенье"
+room_render.sys.none:
+  en: "(none)"
+  ru: "(нет)"
+room_render.sys.uj:
+  en: "%{user} joined the channel"
+  ru: "%{user} присоединился к каналу"
+room_render.sys.ujt:
+  en: "%{user} joined the team"
+  ru: "%{user} присоединился к команде"
+room_render.sys.ut:
+  en: "%{user} joined the conversation"
+  ru: "%{user} присоединился к беседе"
+room_render.sys.ul:
+  en: "%{user} left the channel"
+  ru: "%{user} покинул канал"
+room_render.sys.ult:
+  en: "%{user} left the team"
+  ru: "%{user} покинул команду"
+room_render.sys.wm:
+  en: "Welcome, %{user}"
+  ru: "Добро пожаловать, %{user}"
+room_render.sys.r:
+  en: "%{user} changed the room name to %{name}"
+  ru: "%{user} изменил название комнаты на %{name}"
+room_render.sys.au:
+  en: "%{user} added %{target}"
+  ru: "%{user} добавил %{target}"
+room_render.sys.ui:
+  en: "%{user} invited %{target}"
+  ru: "%{user} пригласил %{target}"
+room_render.sys.uir:
+  en: "%{user} declined the invitation"
+  ru: "%{user} отклонил приглашение"
+room_render.sys.ru:
+  en: "%{user} removed %{target}"
+  ru: "%{user} удалил %{target}"
+room_render.sys.added_user_to_team:
+  en: "%{user} added %{target} to the team"
+  ru: "%{user} добавил %{target} в команду"
+room_render.sys.removed_user_from_team:
+  en: "%{user} removed %{target} from the team"
+  ru: "%{user} удалил %{target} из команды"
+room_render.sys.converted_to_team:
+  en: "%{user} converted %{name} to a team"
+  ru: "%{user} преобразовал %{name} в команду"
+room_render.sys.converted_to_channel:
+  en: "%{user} converted %{name} to a channel"
+  ru: "%{user} преобразовал %{name} в канал"
+room_render.sys.removed_room_from_team:
+  en: "%{user} removed %{name} from the team"
+  ru: "%{user} убрал %{name} из команды"
+room_render.sys.deleted_room_from_team:
+  en: "%{user} deleted room %{name}"
+  ru: "%{user} удалил комнату %{name}"
+room_render.sys.added_room_to_team:
+  en: "%{user} added %{name} to the team"
+  ru: "%{user} добавил %{name} в команду"
+room_render.sys.rm:
+  en: "Message removed"
+  ru: "Сообщение удалено"
+room_render.sys.user_muted:
+  en: "%{user} muted %{target}"
+  ru: "%{user} заглушил %{target}"
+room_render.sys.user_unmuted:
+  en: "%{user} unmuted %{target}"
+  ru: "%{user} снял заглушение с %{target}"
+room_render.sys.mute_unmute:
+  en: "%{user} changed mute state of %{target}"
+  ru: "%{user} изменил заглушение для %{target}"
+room_render.sys.user_banned:
+  en: "%{user} banned %{target}"
+  ru: "%{user} заблокировал %{target}"
+room_render.sys.user_unbanned:
+  en: "%{user} unbanned %{target}"
+  ru: "%{user} разблокировал %{target}"
+room_render.sys.role_added:
+  en: "%{user} set %{target} as %{role}"
+  ru: "%{user} назначил %{target}: %{role}"
+room_render.sys.role_removed:
+  en: "%{user} removed %{target} as %{role}"
+  ru: "%{user} снял с %{target} роль: %{role}"
+room_render.sys.room_archived:
+  en: "%{user} archived the room"
+  ru: "%{user} архивировал комнату"
+room_render.sys.room_unarchived:
+  en: "%{user} unarchived the room"
+  ru: "%{user} вернул комнату из архива"
+room_render.sys.room_removed_read_only:
+  en: "%{user} turned off read-only mode"
+  ru: "%{user} отключил режим «только чтение»"
+room_render.sys.room_set_read_only:
+  en: "%{user} set the room to read-only"
+  ru: "%{user} включил режим «только чтение»"
+room_render.sys.room_allowed_reacting:
+  en: "%{user} allowed reactions"
+  ru: "%{user} разрешил реакции"
+room_render.sys.room_disallowed_reacting:
+  en: "%{user} disallowed reactions"
+  ru: "%{user} запретил реакции"
+room_render.sys.privacy_public:
+  en: "public"
+  ru: "публичный"
+room_render.sys.privacy_private:
+  en: "private"
+  ru: "приватный"
+room_render.sys.room_changed_privacy:
+  en: "%{user} changed the room type to %{kind}"
+  ru: "%{user} изменил тип комнаты на %{kind}"
+room_render.sys.room_changed_topic:
+  en: "%{user} changed the room topic to %{value}"
+  ru: "%{user} изменил тему комнаты на %{value}"
+room_render.sys.room_changed_avatar:
+  en: "%{user} changed the room avatar"
+  ru: "%{user} изменил аватар комнаты"
+room_render.sys.room_changed_announcement:
+  en: "%{user} changed the room announcement to %{value}"
+  ru: "%{user} изменил объявление комнаты на %{value}"
+room_render.sys.room_changed_description:
+  en: "%{user} changed the room description to %{value}"
+  ru: "%{user} изменил описание комнаты на %{value}"
+room_render.sys.e2e_enabled:
+  en: "%{user} enabled end-to-end encryption"
+  ru: "%{user} включил сквозное шифрование"
+room_render.sys.e2e_disabled:
+  en: "%{user} disabled end-to-end encryption"
+  ru: "%{user} отключил сквозное шифрование"
+room_render.sys.message_pinned:
+  en: "%{user} pinned a message"
+  ru: "%{user} закрепил сообщение"
+room_render.sys.discussion_created:
+  en: "%{user} started a discussion: %{name}"
+  ru: "%{user} начал обсуждение: %{name}"
+room_render.sys.videoconf:
+  en: "%{user} started a video conference"
+  ru: "%{user} начал видеоконференцию"
+room_render.sys.command:
+  en: "%{user} ran %{command}"
+  ru: "%{user} выполнил %{command}"
+room_render.sys.abac_removed:
+  en: "%{user} was removed by access rules"
+  ru: "%{user} удалён правилами доступа"
+room_render.sys.livechat_started:
+  en: "Chat started"
+  ru: "Чат начат"
+room_render.sys.livechat_close:
+  en: "Conversation closed"
+  ru: "Беседа закрыта"
+room_render.sys.livechat_close_comment:
+  en: "Conversation closed: %{comment}"
+  ru: "Беседа закрыта: %{comment}"
+room_render.sys.livechat_video_call:
+  en: "New video call request"
+  ru: "Новый запрос видеозвонка"
+room_render.sys.livechat_navigation:
+  en: "Visitor navigation"
+  ru: "Переходы посетителя"
+room_render.sys.livechat_transfer:
+  en: "Chat transferred"
+  ru: "Чат передан"
+room_render.sys.livechat_transcript:
+  en: "Chat transcript sent"
+  ru: "Стенограмма чата отправлена"
+room_render.sys.on_hold:
+  en: "Chat placed on hold"
+  ru: "Чат поставлен на удержание"
+room_render.sys.on_hold_resumed:
+  en: "Chat resumed"
+  ru: "Чат возобновлён"
+room_render.sys.priority_changed:
+  en: "Priority changed"
+  ru: "Приоритет изменён"
+room_render.sys.sla_changed:
+  en: "SLA policy changed"
+  ru: "Политика SLA изменена"
+room_render.sys.unknown:
+  en: "%{user}: system message (%{kind})"
+  ru: "%{user}: системное сообщение (%{kind})"

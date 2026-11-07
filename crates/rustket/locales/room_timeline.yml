@@ -2,9 +2,231 @@ _version: 2
 room_timeline.loading:
   en: "Loading messages…"
   ru: "Загрузка сообщений…"
-room_timeline.placeholder_title:
-  en: "Timeline coming soon"
-  ru: "Лента сообщений скоро появится"
-room_timeline.placeholder_count:
-  en: "%{count} messages loaded"
-  ru: "Загружено сообщений: %{count}"
+room_timeline.loading_older:
+  en: "Loading older messages…"
+  ru: "Загрузка более ранних сообщений…"
+room_timeline.history_failed:
+  en: "Couldn't load older messages."
+  ru: "Не удалось загрузить ранние сообщения."
+room_timeline.start_of_conversation:
+  en: "This is the start of the conversation"
+  ru: "Это начало беседы"
+room_timeline.empty_title:
+  en: "No messages yet"
+  ru: "Сообщений пока нет"
+room_timeline.empty_subtitle:
+  en: "Be the first to write something"
+  ru: "Напишите первым"
+room_timeline.today:
+  en: "Today"
+  ru: "Сегодня"
+room_timeline.yesterday:
+  en: "Yesterday"
+  ru: "Вчера"
+room_timeline.unread:
+  en: "Unread messages"
+  ru: "Непрочитанные сообщения"
+room_timeline.jump_to_latest:
+  en: "Jump to latest"
+  ru: "К последним"
+room_timeline.new_messages:
+  en: "New messages: %{count}"
+  ru: "Новых сообщений: %{count}"
+room_timeline.bot:
+  en: "Bot"
+  ru: "Бот"
+room_timeline.edited:
+  en: "Edited"
+  ru: "Изменено"
+room_timeline.edited_by:
+  en: "Edited by %{user} at %{time}"
+  ru: "Изменено: %{user}, %{time}"
+room_timeline.pinned:
+  en: "Pinned"
+  ru: "Закреплено"
+room_timeline.starred:
+  en: "Starred"
+  ru: "В избранном"
+room_timeline.not_sent:
+  en: "Message not sent"
+  ru: "Сообщение не отправлено"
+room_timeline.retry:
+  en: "Retry"
+  ru: "Повторить"
+room_timeline.discard:
+  en: "Discard"
+  ru: "Удалить"
+room_timeline.more:
+  en: "More"
+  ru: "Ещё"
+room_timeline.reacted_with:
+  en: "%{users} reacted with %{emoji}"
+  ru: "%{users}: реакция %{emoji}"
+room_timeline.replies_one:
+  en: "%{count} reply"
+  ru: "%{count} ответ"
+room_timeline.replies_few:
+  en: "%{count} replies"
+  ru: "%{count} ответа"
+room_timeline.replies_many:
+  en: "%{count} replies"
+  ru: "%{count} ответов"
+room_timeline.last_reply:
+  en: "Last reply %{time}"
+  ru: "Последний ответ: %{time}"
+room_timeline.messages_one:
+  en: "%{count} message"
+  ru: "%{count} сообщение"
+room_timeline.messages_few:
+  en: "%{count} messages"
+  ru: "%{count} сообщения"
+room_timeline.messages_many:
+  en: "%{count} messages"
+  ru: "%{count} сообщений"
+room_timeline.discussion_empty:
+  en: "No messages yet"
+  ru: "Сообщений пока нет"
+room_timeline.act_react:
+  en: "Add reaction"
+  ru: "Добавить реакцию"
+room_timeline.act_reply_thread:
+  en: "Reply in thread"
+  ru: "Ответить в треде"
+room_timeline.act_quote:
+  en: "Quote"
+  ru: "Цитировать"
+room_timeline.act_copy_text:
+  en: "Copy text"
+  ru: "Копировать текст"
+room_timeline.act_copy_link:
+  en: "Copy link"
+  ru: "Копировать ссылку"
+room_timeline.act_edit:
+  en: "Edit"
+  ru: "Редактировать"
+room_timeline.act_pin:
+  en: "Pin"
+  ru: "Закрепить"
+room_timeline.act_unpin:
+  en: "Unpin"
+  ru: "Открепить"
+room_timeline.act_star:
+  en: "Star"
+  ru: "В избранное"
+room_timeline.act_unstar:
+  en: "Remove star"
+  ru: "Убрать из избранного"
+room_timeline.act_mark_unread:
+  en: "Mark as unread"
+  ru: "Отметить непрочитанным"
+room_timeline.act_follow:
+  en: "Follow thread"
+  ru: "Следить за тредом"
+room_timeline.act_unfollow:
+  en: "Unfollow thread"
+  ru: "Не следить за тредом"
+room_timeline.act_report:
+  en: "Report"
+  ru: "Пожаловаться"
+room_timeline.act_delete:
+  en: "Delete"
+  ru: "Удалить"
+room_timeline.action_failed:
+  en: "%{action} failed"
+  ru: "Не удалось: %{action}"
+room_timeline.marked_unread:
+  en: "Marked as unread"
+  ru: "Отмечено непрочитанным"
+room_timeline.copied:
+  en: "Copied to clipboard"
+  ru: "Скопировано в буфер обмена"
+room_timeline.link_copied:
+  en: "Link copied"
+  ru: "Ссылка скопирована"
+room_timeline.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+room_timeline.close:
+  en: "Close"
+  ru: "Закрыть"
+room_timeline.delete_title:
+  en: "Delete message?"
+  ru: "Удалить сообщение?"
+room_timeline.delete_body:
+  en: "The message will be deleted for everyone. This cannot be undone."
+  ru: "Сообщение будет удалено для всех. Это действие нельзя отменить."
+room_timeline.delete_confirm:
+  en: "Delete"
+  ru: "Удалить"
+room_timeline.delete_failed:
+  en: "Couldn't delete the message"
+  ru: "Не удалось удалить сообщение"
+room_timeline.report_title:
+  en: "Report message"
+  ru: "Пожаловаться на сообщение"
+room_timeline.report_body:
+  en: "Tell the moderators what is wrong with this message."
+  ru: "Расскажите модераторам, что не так с этим сообщением."
+room_timeline.report_placeholder:
+  en: "Why are you reporting it?"
+  ru: "Причина жалобы"
+room_timeline.report_send:
+  en: "Report"
+  ru: "Отправить жалобу"
+room_timeline.reported:
+  en: "Report sent"
+  ru: "Жалоба отправлена"
+room_timeline.report_failed:
+  en: "Couldn't send the report"
+  ru: "Не удалось отправить жалобу"
+room_timeline.image_fit:
+  en: "Fit to window"
+  ru: "Вписать в окно"
+room_timeline.image_zoom:
+  en: "Actual size and zoom"
+  ru: "Реальный размер и масштаб"
+room_timeline.open_in_viewer:
+  en: "Open in image viewer"
+  ru: "Открыть в просмотрщике"
+room_timeline.save_image:
+  en: "Save image"
+  ru: "Сохранить изображение"
+room_timeline.downloaded:
+  en: "Download finished"
+  ru: "Загрузка завершена"
+room_timeline.download_failed:
+  en: "Couldn't download %{name}"
+  ru: "Не удалось скачать %{name}"
+room_timeline.offline:
+  en: "Not connected to the server"
+  ru: "Нет соединения с сервером"
+room_timeline.open_failed:
+  en: "Couldn't open the file"
+  ru: "Не удалось открыть файл"
+room_timeline.room_not_found:
+  en: "Room %{name} is not available"
+  ru: "Комната %{name} недоступна"
+room_timeline.dl_error_network:
+  en: "Network error"
+  ru: "Ошибка сети"
+room_timeline.dl_error_permission:
+  en: "No permission to write the file"
+  ru: "Нет прав на запись файла"
+room_timeline.dl_error_disk_full:
+  en: "Not enough disk space"
+  ru: "Недостаточно места на диске"
+room_timeline.dl_error_disk:
+  en: "Couldn't write the file"
+  ru: "Не удалось записать файл"
+room_timeline.unsupported_media:
+  en: "This file type can't be played here; save it instead"
+  ru: "Этот тип файла нельзя воспроизвести; сохраните его"
+room_timeline.action_unavailable:
+  en: "This action is no longer available"
+  ru: "Это действие больше недоступно"
+room_timeline.not_a_member:
+  en: "You are not a member of this room"
+  ru: "Вы не участник этой комнаты"
+room_timeline.history_first_failed:
+  en: "Couldn't load messages"
+  ru: "Не удалось загрузить сообщения"

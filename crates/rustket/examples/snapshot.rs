@@ -341,6 +341,15 @@ async fn setup(server: &ServerUrl, ledger: Ledger) -> Fixture {
         )
         .await
         .expect("dm");
+    timeline_fixture::setup(
+        &admin,
+        &user,
+        &other,
+        &ledger,
+        &suffix,
+        [&user_name, &other_name, &tfa_name],
+    )
+    .await;
     let _ = user.logout().await;
     let _ = other.logout().await;
 
@@ -362,6 +371,7 @@ async fn setup(server: &ServerUrl, ledger: Ledger) -> Fixture {
 
 /// Deletes everything recorded in the ledger (rooms first, then users).
 async fn teardown(server: &ServerUrl, ledger: &Ledger) {
+    timeline_fixture::teardown(server).await;
     let (rooms, users) = {
         let mut g = ledger.lock().expect("ledger");
         (std::mem::take(&mut g.rooms), std::mem::take(&mut g.users))
@@ -652,6 +662,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
     composer_snapshots(&mut d, &out, &sid, &rid).await;
+    timeline_fixture::shoot(&mut d, &out, &sid).await;
 
     // Log out through the app: the login token is revoked on the server.
     let creds: Credentials = d.app.servers[&sid].credentials.clone().expect("creds");
@@ -839,3 +850,5 @@ fn image_bytes(w: u32, h: u32) -> Vec<u8> {
     drop(wr);
     out
 }
+#[path = "snapshot/timeline_fixture.rs"]
+mod timeline_fixture;
