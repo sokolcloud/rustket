@@ -26,7 +26,11 @@ RUSTKET_TEST_SERVER=http://localhost:3000 cargo test -p rocketchat --test live -
 ```
 
 Dev accounts: `admin` / `adminpass` (admin), `alice` / `alicepass`, `bob` / `bobpass`,
-`carol` / `carolpass`. Mailpit (emails, e.g. 2FA codes): http://localhost:8025.
+`carol` / `carolpass` (email 2FA). Mailpit (emails, e.g. 2FA codes): http://localhost:8025.
+OpenID: Keycloak on http://localhost:8081 (realm `rustket`, user `kcuser` / `kcpass`),
+wired as Custom OAuth `keycloak` by `dev/setup-oauth.sh` (idempotent). The dev
+server is shared: never leave `Accounts_OAuth_Custom-Keycloak` disabled, revert any
+other global setting you change in a test.
 MongoDB is 7.0 because 8.0 refuses to start on Linux kernel ≥ 6.19.
 Live tests must create their own uniquely named rooms/messages and never depend on
 state left by other tests.

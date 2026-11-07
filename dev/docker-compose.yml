@@ -55,5 +55,18 @@ services:
       OVERWRITE_SETTING_SMTP_Port: "1025"
       OVERWRITE_SETTING_From_Email: rocketchat@rustket.local
 
+  # OpenID Connect provider for testing Custom OAuth through the external browser.
+  # Realm "rustket", client "rocketchat" / "rocketchat-secret", user kcuser / kcpass.
+  # Admin console: http://localhost:8081/admin (admin / admin).
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    network_mode: host
+    command: ["start-dev", "--http-host=127.0.0.1", "--http-port=8081", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak/rustket-realm.json:/opt/keycloak/data/import/rustket-realm.json:ro
+
 volumes:
   mongo-data:

@@ -36,7 +36,8 @@ crates/
   rustket-core/   UI-agnostic application state: accounts, secrets, sync engine,
                   per-workspace stores, reducers, permissions, emoji tables
   rustket/        iced binary: screens, widgets, theme, i18n, desktop integration
-dev/              docker compose stack (Rocket.Chat + MongoDB + Mailpit [+ Keycloak])
+dev/              docker compose stack (Rocket.Chat + MongoDB + Mailpit + Keycloak),
+                  seed.sh, setup-oauth.sh, oauth_probe.py
 docs/             this plan, protocol notes
 .ref/             (gitignored) reference sources: iced 0.14 with examples,
                   Rocket.Chat 8.9.1 typings/server code, Rocket.Chat.ReactNative
@@ -69,6 +70,9 @@ Verified against the Rocket.Chat 8.9.1 server bundle:
    `redirectUrl` starting with `rocketchat://auth` and redirects the browser to
    `rocketchat://auth?host=..&type=oauth&credentialToken=..&credentialSecret=..`.
    The app then logs in with `{oauth: {credentialToken, credentialSecret}}`.
+   Verified end-to-end against the dev Keycloak (`dev/oauth_probe.py`): the server
+   answers `/_oauth/{service}` with an HTML page whose script navigates to the deep
+   link (no HTTP 302), and `host` carries a trailing slash.
 3. **OAuth (modern passport flow, `Accounts_OAuth_Use_Modern_Flow=true`)** — open
    `{server}/oauth/{service}?loginClient=desktop`. The server and its web page end
    with a redirect to `rocketchat://auth?host=..&token=<loginToken>&userId=..`;
