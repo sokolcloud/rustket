@@ -80,6 +80,17 @@ pub struct PinnedCertificate {
     pub sha256: String,
 }
 
+/// How the stored token of a server was obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TokenKind {
+    /// A login token: logging out may revoke it on the server.
+    Login,
+    /// A personal access token: logging out only forgets it locally (revoking
+    /// it would break every other place the user configured it).
+    Pat,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerEntry {
@@ -92,6 +103,13 @@ pub struct ServerEntry {
     pub user_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// Kind of the stored token; `None` (unknown, older configs) means: never
+    /// revoke it on the server without asking.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_token_kind"
+    )]
+    pub token_kind: Option<TokenKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_room: Option<String>,
     pub pinned_certificates: Vec<PinnedCertificate>,
@@ -104,6 +122,15 @@ impl Default for ServerId {
     fn default() -> Self {
         Self::new_random()
     }
+}
+
+/// An unknown or invalid `token_kind` reads as `None` instead of failing the
+/// whole config.
+fn lenient_token_kind<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<TokenKind>, D::Error> {
+    let v = Option::<toml::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| v.try_into().ok()))
 }
 
 impl ServerEntry {
@@ -627,6 +654,26 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<(), ConfigError> 
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn token_kind_is_lenient() {
+        let mut cfg = AppConfig::default();
+        let mut e = ServerEntry::new("https://a.example", "A");
+        e.token_kind = Some(TokenKind::Pat);
+        cfg.add_server(e);
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("token_kind = \"pat\""));
+        assert_eq!(
+            AppConfig::parse(&text).unwrap().servers[0].token_kind,
+            Some(TokenKind::Pat)
+        );
+        let bad = text.replace("token_kind = \"pat\"", "token_kind = \"weird\"");
+        let parsed = AppConfig::parse(&bad).unwrap();
+        assert_eq!(parsed.servers.len(), 1);
+        assert_eq!(parsed.servers[0].token_kind, None);
+        let none = text.replace("token_kind = \"pat\"\n", "");
+        assert_eq!(AppConfig::parse(&none).unwrap().servers[0].token_kind, None);
+    }
 
     #[test]
     fn missing_file_gives_defaults() {

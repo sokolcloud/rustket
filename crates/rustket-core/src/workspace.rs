@@ -258,6 +258,11 @@ struct RealtimeMarks {
     rooms: HashMap<String, Mark>,
     removed: HashMap<String, Mark>,
     presence: HashMap<String, Mark>,
+    /// Settings / permissions / roles changed in realtime, with the value
+    /// (`None` = removed), re-applied over snapshots that started earlier.
+    settings: HashMap<String, (Mark, Option<Setting>)>,
+    permissions: HashMap<String, (Mark, Option<Vec<String>>)>,
+    roles: HashMap<String, (Mark, Option<Role>)>,
 }
 
 /// Marks older than this are forgotten (no sync runs that long).
@@ -286,6 +291,10 @@ impl RealtimeMarks {
         for map in [&mut self.rooms, &mut self.removed, &mut self.presence] {
             map.retain(|_, m| m.at.elapsed() < MARK_TTL);
         }
+        self.settings.retain(|_, (m, _)| m.at.elapsed() < MARK_TTL);
+        self.permissions
+            .retain(|_, (m, _)| m.at.elapsed() < MARK_TTL);
+        self.roles.retain(|_, (m, _)| m.at.elapsed() < MARK_TTL);
     }
 }
 
@@ -529,6 +538,7 @@ impl Workspace {
         self.settings = Settings::from_list(settings);
         self.permissions = permissions.into_iter().map(|p| (p.id, p.roles)).collect();
         self.roles = roles.into_iter().map(|r| (r.id.clone(), r)).collect();
+        self.reapply_realtime_config(started_at);
 
         let newest_sub = subscriptions.iter().filter_map(|s| s.updated_at).max();
         let newest_room = rooms.iter().filter_map(|r| r.updated_at).max();
@@ -640,7 +650,10 @@ impl Workspace {
         }
         if let Some(p) = d.permissions {
             for perm in p.update {
-                self.apply_permission(Change::Updated, perm);
+                if self.permissions.get(&perm.id) != Some(&perm.roles) {
+                    self.permissions.insert(perm.id, perm.roles);
+                    self.mark(Dirty::PERMISSIONS);
+                }
             }
             for removed in p.remove {
                 if self.permissions.remove(&removed.id).is_some() {
@@ -670,6 +683,7 @@ impl Workspace {
             self.custom_statuses = statuses.into_iter().map(|s| (s.id.clone(), s)).collect();
             self.mark(Dirty::CUSTOM_STATUSES);
         }
+        self.reapply_realtime_config(started);
         self.snapshot_presence(&d.presence, d.presence_full, started);
         if d.next_since.is_some() {
             self.last_sync = d.next_since;
@@ -837,22 +851,36 @@ impl Workspace {
         }
     }
 
+    /// Realtime setting change (kept over REST snapshots that started earlier).
     pub fn apply_setting(&mut self, change: Change, setting: Setting) {
+        let m = self.realtime.next();
         match change {
             Change::Removed => {
+                self.realtime.settings.insert(setting.id.clone(), (m, None));
                 self.settings.remove(&setting.id);
             }
-            _ => self.settings.set(setting),
+            _ => {
+                self.realtime
+                    .settings
+                    .insert(setting.id.clone(), (m, Some(setting.clone())));
+                self.settings.set(setting);
+            }
         }
         self.mark(Dirty::SETTINGS);
     }
 
+    /// Realtime permission change (kept over REST snapshots that started earlier).
     pub fn apply_permission(&mut self, change: Change, p: Permission) {
+        let m = self.realtime.next();
         match change {
             Change::Removed => {
+                self.realtime.permissions.insert(p.id.clone(), (m, None));
                 self.permissions.remove(&p.id);
             }
             _ => {
+                self.realtime
+                    .permissions
+                    .insert(p.id.clone(), (m, Some(p.roles.clone())));
                 if self.permissions.get(&p.id) == Some(&p.roles) {
                     return;
                 }
@@ -862,16 +890,77 @@ impl Workspace {
         self.mark(Dirty::PERMISSIONS);
     }
 
+    /// Realtime role change (kept over REST snapshots that started earlier).
     pub fn apply_role(&mut self, change: Change, role: Role) {
+        let m = self.realtime.next();
         match change {
             Change::Removed => {
+                self.realtime.roles.insert(role.id.clone(), (m, None));
                 self.roles.remove(&role.id);
             }
             _ => {
+                self.realtime
+                    .roles
+                    .insert(role.id.clone(), (m, Some(role.clone())));
                 self.roles.insert(role.id.clone(), role);
             }
         }
         self.mark(Dirty::ROLES);
+    }
+
+    /// Re-applies settings, permissions and roles changed in realtime after a
+    /// snapshot (started at `started`) was requested.
+    fn reapply_realtime_config(&mut self, started: Option<Instant>) {
+        let marks = &self.realtime;
+        let settings: Vec<(String, Option<Setting>)> = marks
+            .settings
+            .iter()
+            .filter(|(_, (m, _))| marks.after(Some(m), started))
+            .map(|(k, (_, v))| (k.clone(), v.clone()))
+            .collect();
+        let permissions: Vec<(String, Option<Vec<String>>)> = marks
+            .permissions
+            .iter()
+            .filter(|(_, (m, _))| marks.after(Some(m), started))
+            .map(|(k, (_, v))| (k.clone(), v.clone()))
+            .collect();
+        let roles: Vec<(String, Option<Role>)> = marks
+            .roles
+            .iter()
+            .filter(|(_, (m, _))| marks.after(Some(m), started))
+            .map(|(k, (_, v))| (k.clone(), v.clone()))
+            .collect();
+        for (id, v) in settings {
+            match v {
+                Some(s) => self.settings.set(s),
+                None => {
+                    self.settings.remove(&id);
+                }
+            }
+            self.mark(Dirty::SETTINGS);
+        }
+        for (id, v) in permissions {
+            match v {
+                Some(r) => {
+                    self.permissions.insert(id, r);
+                }
+                None => {
+                    self.permissions.remove(&id);
+                }
+            }
+            self.mark(Dirty::PERMISSIONS);
+        }
+        for (id, v) in roles {
+            match v {
+                Some(r) => {
+                    self.roles.insert(id, r);
+                }
+                None => {
+                    self.roles.remove(&id);
+                }
+            }
+            self.mark(Dirty::ROLES);
+        }
     }
 
     /// The current user's global roles changed (`roles-change` with scope `Users`)
@@ -1716,6 +1805,97 @@ mod tests {
                 .areas
                 .contains(Dirty::PRESENCE | Dirty::ME | Dirty::TYPING)
         );
+    }
+
+    /// Settings, permissions and roles changed in realtime while a snapshot
+    /// loaded are not overwritten by it; older changes are.
+    #[test]
+    fn realtime_config_survives_snapshots() {
+        let mut ws = Workspace::new();
+        let before = Instant::now();
+        // Changed before the snapshot started: the snapshot wins.
+        ws.apply_setting(
+            Change::Updated,
+            Setting {
+                id: "Old".into(),
+                value: serde_json::json!("realtime"),
+                ..Default::default()
+            },
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let started = Instant::now();
+        assert!(started > before);
+        ws.apply_setting(
+            Change::Updated,
+            Setting {
+                id: "Site_Name".into(),
+                value: serde_json::json!("New name"),
+                ..Default::default()
+            },
+        );
+        ws.apply_permission(
+            Change::Updated,
+            Permission {
+                id: "create-c".into(),
+                roles: vec!["admin".into(), "user".into()],
+                ..Default::default()
+            },
+        );
+        ws.apply_role(
+            Change::Removed,
+            Role {
+                id: "moderator".into(),
+                ..Default::default()
+            },
+        );
+        let data = InitialData {
+            me: me("me", "me"),
+            settings: vec![
+                Setting {
+                    id: "Site_Name".into(),
+                    value: serde_json::json!("Stale"),
+                    ..Default::default()
+                },
+                Setting {
+                    id: "Old".into(),
+                    value: serde_json::json!("snapshot"),
+                    ..Default::default()
+                },
+            ],
+            permissions: vec![Permission {
+                id: "create-c".into(),
+                roles: vec!["admin".into()],
+                ..Default::default()
+            }],
+            roles: vec![Role {
+                id: "moderator".into(),
+                name: "Moderator".into(),
+                ..Default::default()
+            }],
+            started_at: Some(started),
+            ..Default::default()
+        };
+        ws.apply_initial(data);
+        assert_eq!(ws.settings().str("Site_Name"), Some("New name"));
+        assert_eq!(ws.settings().str("Old"), Some("snapshot"));
+        assert_eq!(
+            ws.permission_roles("create-c"),
+            Some(&["admin".to_owned(), "user".to_owned()][..])
+        );
+        assert!(!ws.roles().contains_key("moderator"));
+        // A later snapshot (started after those changes) wins again.
+        let data = InitialData {
+            me: me("me", "me"),
+            settings: vec![Setting {
+                id: "Site_Name".into(),
+                value: serde_json::json!("Fresh"),
+                ..Default::default()
+            }],
+            started_at: Some(Instant::now()),
+            ..Default::default()
+        };
+        ws.apply_initial(data);
+        assert_eq!(ws.settings().str("Site_Name"), Some("Fresh"));
     }
 
     #[test]
