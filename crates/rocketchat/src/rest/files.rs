@@ -288,12 +288,22 @@ impl RestClient {
     /// against the server. Auth headers are sent only to this server; a redirect to
     /// another origin (e.g. S3/GCS file storage) is followed without credentials,
     /// cookies or `Referer`, and never from https to http.
+    ///
+    /// The credentials also go as the `rc_uid` / `rc_token` cookies the web client
+    /// sets: `/avatar/…` ignores the auth headers and, with
+    /// `Accounts_AvatarBlockUnauthenticatedAccess` (the default), answers
+    /// anonymous requests with the default SVG.
     pub async fn download(&self, url_or_path: &str) -> Result<Download> {
         let url = self.server().absolute(url_or_path);
         let mut response = if self.server().owns(&url) {
-            self.authed(self.download_http(), Method::GET, &url, None)
-                .send()
-                .await?
+            let mut rb = self.authed(self.download_http(), Method::GET, &url, None);
+            if let Some(c) = self.credentials() {
+                rb = rb.header(
+                    reqwest::header::COOKIE,
+                    format!("rc_uid={}; rc_token={}", c.user_id, c.auth_token),
+                );
+            }
+            rb.send().await?
         } else {
             self.foreign_http().get(&url).send().await?
         };

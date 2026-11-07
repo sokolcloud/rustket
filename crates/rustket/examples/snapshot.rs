@@ -680,6 +680,8 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     timeline_fixture::shoot(&mut d, &out, &sid).await;
     panel_shots(&mut d, &server, &out, &sid, &rid, &user, &fixture.ledger).await;
 
+    account_shots(&mut d, &out, &sid).await;
+
     // Log out through the app: the login token is revoked on the server.
     let creds: Credentials = d.app.servers[&sid].credentials.clone().expect("creds");
     d.send(Message::Sidebar(
@@ -868,3 +870,215 @@ fn image_bytes(w: u32, h: u32) -> Vec<u8> {
 }
 #[path = "snapshot/timeline_fixture.rs"]
 mod timeline_fixture;
+/// Quick switcher, directory, create dialogs and account tabs (light + dark).
+/// Nothing is created on the server except a personal access token and a
+/// pending TOTP secret of the throwaway user.
+async fn account_shots(d: &mut Driver, out: &Path, sid: &rustket_core::ServerId) {
+    use rustket::dialogs::{create_room, quick_switcher};
+    use rustket::screens::{account, directory};
+    use rustket_core::config::Theme;
+
+    fn both(d: &mut Driver, out: &Path, name: &str) {
+        d.app.config.ui.theme = Theme::Light;
+        d.shoot(out, &format!("{name}-light"));
+        d.app.config.ui.theme = Theme::Dark;
+        d.shoot(out, &format!("{name}-dark"));
+    }
+    fn qs(app: &App) -> Option<&quick_switcher::QuickSwitcher> {
+        app.modals.iter().find_map(|m| match m {
+            Modal::QuickSwitcher(_, q) => Some(&**q),
+            _ => None,
+        })
+    }
+    fn create(app: &App) -> Option<&create_room::CreateRoom> {
+        app.modals.iter().find_map(|m| match m {
+            Modal::CreateRoom(_, c) => Some(&**c),
+            _ => None,
+        })
+    }
+    fn acct(app: &App) -> Option<&account::Account> {
+        match &app.screen {
+            Screen::Account(_, a) => Some(a),
+            _ => None,
+        }
+    }
+
+    // Quick switcher: local rooms plus spotlight people.
+    d.send(Message::OpenQuickSwitcher);
+    d.send(Message::QuickSwitcher(
+        sid.clone(),
+        quick_switcher::Message::Query("rk".into()),
+    ));
+    d.pump_until("spotlight", Duration::from_secs(10), |a| {
+        qs(a).is_some_and(|q| !q.searching && q.remote.is_some())
+    })
+    .await;
+    d.send(Message::QuickSwitcher(
+        sid.clone(),
+        quick_switcher::Message::Down,
+    ));
+    d.settle(Duration::from_millis(500)).await;
+    both(d, out, "20-quick-switcher");
+    d.send(Message::CloseModal);
+
+    // Directory.
+    d.send(Message::Sidebar(sid.clone(), sidebar::Message::Directory));
+    d.pump_until(
+        "directory",
+        Duration::from_secs(10),
+        |a| matches!(&a.screen, Screen::Directory(_, x) if x.page.is_some() && !x.loading),
+    )
+    .await;
+    d.settle(Duration::from_millis(800)).await;
+    both(d, out, "21-directory-channels");
+    d.send(Message::Directory(
+        sid.clone(),
+        directory::Message::Tab(directory::Tab::Users),
+    ));
+    d.pump_until(
+        "directory users",
+        Duration::from_secs(10),
+        |a| matches!(&a.screen, Screen::Directory(_, x) if x.page.is_some() && !x.loading),
+    )
+    .await;
+    d.settle(Duration::from_millis(800)).await;
+    both(d, out, "22-directory-users");
+    d.send(Message::Directory(sid.clone(), directory::Message::Close));
+
+    // Create dialogs.
+    let peer = d.app.servers[sid]
+        .workspace
+        .rooms()
+        .values()
+        .find(|e| e.name().starts_with("rk-peer-"))
+        .map(|e| e.name().to_owned())
+        .unwrap_or_default();
+    let parent = d.app.servers[sid]
+        .workspace
+        .rooms()
+        .values()
+        .find(|e| e.name().starts_with("rk-snap-dev-"))
+        .map(|e| (e.rid().to_owned(), e.name().to_owned()))
+        .expect("dev channel");
+    let cr = |m| Message::CreateRoom(sid.clone(), m);
+    d.send(Message::Sidebar(sid.clone(), sidebar::Message::Create));
+    for (kind, name) in [
+        (create_room::Kind::Channel, "23-create-channel"),
+        (create_room::Kind::Team, "24-create-team"),
+        (create_room::Kind::DirectMessage, "25-create-dm"),
+        (create_room::Kind::Discussion, "26-create-discussion"),
+    ] {
+        d.send(cr(create_room::Message::Kind(kind)));
+        match kind {
+            create_room::Kind::DirectMessage => {}
+            create_room::Kind::Discussion => {
+                d.send(cr(create_room::Message::Parent(
+                    parent.0.clone(),
+                    parent.1.clone(),
+                )));
+                d.send(cr(create_room::Message::Name("Release checklist".into())));
+                d.send(cr(create_room::Message::FirstMessage(
+                    "What is left before Friday?".into(),
+                )));
+            }
+            _ => {
+                d.send(cr(create_room::Message::Name("project-alpha".into())));
+                d.send(cr(create_room::Message::Topic(
+                    "Planning and releases".into(),
+                )));
+            }
+        }
+        if !peer.is_empty() {
+            d.send(cr(create_room::Message::MemberQuery("rk-peer".into())));
+            d.pump_until("member suggestions", Duration::from_secs(10), |a| {
+                create(a).is_some_and(|c| !c.suggestions.is_empty())
+            })
+            .await;
+            if kind != create_room::Kind::Discussion {
+                d.send(cr(create_room::Message::AddMember(peer.clone())));
+                d.send(cr(create_room::Message::MemberQuery("rk-peer".into())));
+                d.settle(Duration::from_millis(600)).await;
+            }
+        }
+        d.settle(Duration::from_millis(600)).await;
+        both(d, out, name);
+        for m in create(&d.app)
+            .map(|c| c.members.clone())
+            .unwrap_or_default()
+        {
+            d.send(cr(create_room::Message::RemoveMember(m)));
+        }
+        d.send(cr(create_room::Message::MemberQuery(String::new())));
+        d.send(cr(create_room::Message::Name(String::new())));
+        d.send(cr(create_room::Message::Topic(String::new())));
+    }
+    d.send(cr(create_room::Message::Close));
+
+    // Account tabs.
+    let am = |m| Message::Account(sid.clone(), m);
+    d.send(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Status(rustket::workspace::status_menu::Message::Account),
+    ));
+    d.pump_until("account", Duration::from_secs(10), |a| {
+        acct(a).is_some_and(|x| x.profile.loaded_for.is_some() && x.policy.enabled)
+    })
+    .await;
+    d.send(am(account::Message::Profile(
+        account::profile::Msg::NewPassword("Weak-pass".into()),
+    )));
+    d.settle(Duration::from_millis(800)).await;
+    both(d, out, "27-account-profile");
+    d.send(am(account::Message::Profile(account::profile::Msg::Revert)));
+    d.send(am(account::Message::Tab(account::Tab::Preferences)));
+    both(d, out, "28-account-preferences");
+    d.send(am(account::Message::Tab(account::Tab::Security)));
+    both(d, out, "29-account-security");
+    d.send(am(account::Message::Security(
+        account::security::Msg::EnableTotp,
+    )));
+    d.pump_until("totp secret", Duration::from_secs(10), |a| {
+        acct(a).is_some_and(|x| x.security.pending.is_some())
+    })
+    .await;
+    both(d, out, "30-account-totp-qr");
+    d.send(am(account::Message::Security(
+        account::security::Msg::CancelSetup,
+    )));
+    d.send(am(account::Message::Tab(account::Tab::Tokens)));
+    d.send(am(account::Message::Tokens(account::tokens::Msg::Name(
+        "ci-bot".into(),
+    ))));
+    d.send(am(account::Message::Tokens(account::tokens::Msg::Generate)));
+    d.pump_until("token", Duration::from_secs(10), |a| {
+        acct(a).is_some_and(|x| x.tokens.shown.is_some() && !x.tokens.loading)
+    })
+    .await;
+    both(d, out, "31-account-token-shown");
+    d.send(am(account::Message::Tokens(
+        account::tokens::Msg::CloseShown,
+    )));
+    d.send(am(account::Message::Tokens(
+        account::tokens::Msg::AskRegenerate("ci-bot".into()),
+    )));
+    both(d, out, "32-account-tokens");
+    d.send(am(account::Message::Tokens(
+        account::tokens::Msg::CancelRemove,
+    )));
+
+    // A password change: without 2FA the current password is asked inline and
+    // Save waits for it (one `updateOwnBasicInfo` call; nothing is sent here).
+    d.send(am(account::Message::Tab(account::Tab::Profile)));
+    for m in [
+        account::profile::Msg::NewPassword("Snapshot-pass-2468!".into()),
+        account::profile::Msg::ConfirmPassword("Snapshot-pass-2468!".into()),
+        account::profile::Msg::Save,
+    ] {
+        d.send(am(account::Message::Profile(m)));
+    }
+    d.settle(Duration::from_millis(500)).await;
+    both(d, out, "33-account-password-change");
+    d.send(am(account::Message::Profile(account::profile::Msg::Revert)));
+    d.send(am(account::Message::Close));
+    d.app.config.ui.theme = Theme::Light;
+}

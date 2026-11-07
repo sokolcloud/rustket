@@ -119,6 +119,12 @@ async fn download_redirect_to_foreign_storage_drops_credentials() {
     assert_eq!(d.content_type.as_deref(), Some("image/png"));
     assert_eq!(&d.bytes().await.unwrap()[..], b"ok");
     assert!(joined(&log_a).contains("x-auth-token: secret-auth-token"));
+    // `/avatar/` only reads the credentials from cookies.
+    assert!(
+        joined(&log_a).contains("cookie: rc_uid=uid123; rc_token=secret-auth-token"),
+        "{}",
+        joined(&log_a)
+    );
     let b = joined(&log_b);
     assert!(b.contains("x-amz-signature=abc"));
     for h in [
@@ -426,4 +432,26 @@ async fn history_cursor_steps_past_huge_same_millisecond_runs() {
     let ids = collect_all(&c, 20).await;
     assert!(ids.iter().any(|i| i == "old0"), "reached older messages");
     assert!(ids.len() >= 403, "{}", ids.len());
+}
+
+#[tokio::test]
+async fn set_avatar_sends_multipart_image() {
+    let (pa, log) = serve(|_| Some(json_ok(r#"{"success":true}"#))).await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    c.users_set_avatar("me.png", "image/png", b"\x89PNG-bytes".to_vec())
+        .await
+        .unwrap();
+    // `joined` lowercases the log.
+    let req = joined(&log);
+    assert!(req.starts_with("post /api/v1/users.setavatar "), "{req}");
+    assert!(req.contains("multipart/form-data; boundary="));
+    assert!(req.contains(r#"name="image"; filename="me.png""#), "{req}");
+    assert!(req.contains("content-type: image/png"));
+    assert!(req.contains("png-bytes"));
+    assert!(req.contains("secret-auth-token"));
+
+    c.users_reset_avatar("UID123").await.unwrap();
+    let req = log.lock().unwrap().last().cloned().unwrap();
+    assert!(req.starts_with("POST /api/v1/users.resetAvatar "));
+    assert_eq!(body_json(&req), json!({"userId": "UID123"}));
 }

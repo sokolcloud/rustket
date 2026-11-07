@@ -2,3 +2,60 @@ _version: 2
 directory.title:
   en: "Directory"
   ru: "Каталог"
+directory.channels:
+  en: "Channels"
+  ru: "Каналы"
+directory.users:
+  en: "Users"
+  ru: "Пользователи"
+directory.teams:
+  en: "Teams"
+  ru: "Команды"
+directory.search:
+  en: "Search"
+  ru: "Поиск"
+directory.sort_by:
+  en: "Sort:"
+  ru: "Сортировка:"
+directory.sort_name:
+  en: "Name"
+  ru: "Название"
+directory.sort_username:
+  en: "Username"
+  ru: "Логин"
+directory.sort_members:
+  en: "Members"
+  ru: "Участники"
+directory.sort_created:
+  en: "Created"
+  ru: "Создан"
+directory.empty:
+  en: "Nothing found"
+  ru: "Ничего не найдено"
+directory.empty_hint:
+  en: "Try a different search."
+  ru: "Попробуйте изменить запрос."
+directory.join:
+  en: "Join"
+  ru: "Вступить"
+directory.joined:
+  en: "joined"
+  ru: "вы участник"
+directory.members:
+  en: "Members: %{n}"
+  ru: "участников: %{n}"
+directory.rooms:
+  en: "Rooms: %{n}"
+  ru: "комнат: %{n}"
+directory.range:
+  en: "%{first}–%{last} of %{total}"
+  ru: "%{first}–%{last} из %{total}"
+directory.prev:
+  en: "Previous"
+  ru: "Назад"
+directory.next:
+  en: "Next"
+  ru: "Далее"
+directory.open_failed:
+  en: "Could not open the room"
+  ru: "Не удалось открыть комнату"

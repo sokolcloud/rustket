@@ -14,3 +14,501 @@ account.tokens:
 account.preferences:
   en: "Preferences"
   ru: "Предпочтения"
+account.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+account.save:
+  en: "Save changes"
+  ru: "Сохранить"
+account.revert:
+  en: "Discard changes"
+  ru: "Отменить изменения"
+account.saved:
+  en: "Saved"
+  ru: "Сохранено"
+account.copy:
+  en: "Copy"
+  ru: "Копировать"
+account.copy_all:
+  en: "Copy all"
+  ru: "Копировать все"
+account.copied:
+  en: "Copied to the clipboard"
+  ru: "Скопировано в буфер обмена"
+account.locked:
+  en: "Changing this is disabled on the server"
+  ru: "Изменение отключено на сервере"
+account.profile_locked:
+  en: "Profile changes are disabled on this server."
+  ru: "Изменение профиля отключено на этом сервере."
+account.avatar:
+  en: "Avatar"
+  ru: "Аватар"
+account.avatar_upload:
+  en: "Upload image…"
+  ru: "Загрузить изображение…"
+account.avatar_reset:
+  en: "Use default"
+  ru: "По умолчанию"
+account.avatar_locked:
+  en: "Changing the avatar is disabled on the server."
+  ru: "Смена аватара отключена на сервере."
+account.avatar_pick_title:
+  en: "Choose an avatar"
+  ru: "Выберите аватар"
+account.avatar_images:
+  en: "Images"
+  ru: "Изображения"
+account.avatar_updated:
+  en: "Avatar updated"
+  ru: "Аватар обновлён"
+account.avatar_reset_done:
+  en: "Avatar reset to the default"
+  ru: "Аватар сброшен"
+account.avatar_failed:
+  en: "Could not change the avatar"
+  ru: "Не удалось изменить аватар"
+account.avatar_too_large:
+  en: "The image is larger than the server allows."
+  ru: "Изображение больше, чем разрешает сервер."
+account.details:
+  en: "Details"
+  ru: "Данные"
+account.name:
+  en: "Name"
+  ru: "Имя"
+account.username:
+  en: "Username"
+  ru: "Логин"
+account.username_checking:
+  en: "Checking…"
+  ru: "Проверка…"
+account.username_available:
+  en: "The username is available"
+  ru: "Логин свободен"
+account.nickname:
+  en: "Nickname"
+  ru: "Псевдоним"
+account.bio:
+  en: "Bio"
+  ru: "О себе"
+account.status_text:
+  en: "Status message"
+  ru: "Текст статуса"
+account.email:
+  en: "Email"
+  ru: "Эл. почта"
+account.email_verified:
+  en: "Verified"
+  ru: "Подтверждена"
+account.email_unverified:
+  en: "Your email address is not verified."
+  ru: "Адрес эл. почты не подтверждён."
+account.email_resend:
+  en: "Resend email"
+  ru: "Отправить снова"
+account.email_change_hint:
+  en: "You will need to verify the new address."
+  ru: "Новый адрес нужно будет подтвердить."
+account.verification_sent:
+  en: "Verification email sent"
+  ru: "Письмо для подтверждения отправлено"
+account.verification_failed:
+  en: "Could not send the verification email"
+  ru: "Не удалось отправить письмо"
+account.change_password:
+  en: "Password"
+  ru: "Пароль"
+account.new_password:
+  en: "New password"
+  ru: "Новый пароль"
+account.confirm_password:
+  en: "Confirm new password"
+  ru: "Повторите новый пароль"
+account.current_password:
+  en: "Current password"
+  ru: "Текущий пароль"
+account.current_password_help:
+  en: "Required to change the email or the password."
+  ru: "Нужен для смены эл. почты или пароля."
+account.password_locked:
+  en: "Changing the password is disabled on the server."
+  ru: "Смена пароля отключена на сервере."
+account.pw_policy_title:
+  en: "The password must:"
+  ru: "Пароль должен:"
+account.pw_min_length:
+  en: "be at least %{n} characters long"
+  ru: "содержать не меньше %{n} символов"
+account.pw_max_length:
+  en: "be at most %{n} characters long"
+  ru: "содержать не больше %{n} символов"
+account.pw_max_repeating:
+  en: "not repeat a character more than %{n} times in a row"
+  ru: "не повторять символ больше %{n} раз подряд"
+account.pw_lowercase:
+  en: "contain a lowercase letter"
+  ru: "содержать строчную букву"
+account.pw_uppercase:
+  en: "contain an uppercase letter"
+  ru: "содержать заглавную букву"
+account.pw_number:
+  en: "contain a digit"
+  ru: "содержать цифру"
+account.pw_special:
+  en: "contain a symbol"
+  ru: "содержать спецсимвол"
+account.err_required:
+  en: "Required"
+  ru: "Обязательное поле"
+account.err_name_chars:
+  en: "The name must not contain < > \\ /"
+  ru: "Имя не должно содержать < > \\ /"
+account.err_username:
+  en: "Use letters, digits, '-', '_' and '.' only"
+  ru: "Только латинские буквы, цифры, «-», «_» и «.»"
+account.err_username_taken:
+  en: "This username is taken"
+  ru: "Этот логин занят"
+account.err_email:
+  en: "Enter a valid email address"
+  ru: "Введите корректный адрес"
+account.err_too_long:
+  en: "At most %{max} characters"
+  ru: "Не больше %{max} символов"
+account.err_password_policy:
+  en: "The password does not meet the requirements"
+  ru: "Пароль не соответствует требованиям"
+account.err_password_mismatch:
+  en: "The passwords do not match"
+  ru: "Пароли не совпадают"
+account.err_idle_min:
+  en: "Enter a number of seconds, at least %{min}"
+  ru: "Введите число секунд, не меньше %{min}"
+account.tfa_title:
+  en: "Confirm it's you"
+  ru: "Подтвердите, что это вы"
+account.tfa_code:
+  en: "Code"
+  ru: "Код"
+account.tfa_totp_help:
+  en: "Enter the code from your authenticator app or a backup code."
+  ru: "Введите код из приложения-аутентификатора или резервный код."
+account.tfa_email_help:
+  en: "We sent a code to the email address of %{who}."
+  ru: "Мы отправили код на адрес эл. почты %{who}."
+account.tfa_password_help:
+  en: "Enter your current password to continue."
+  ru: "Введите текущий пароль, чтобы продолжить."
+account.tfa_verify:
+  en: "Verify"
+  ru: "Подтвердить"
+account.tfa_resend:
+  en: "Send a new code"
+  ru: "Отправить новый код"
+account.tfa_resent:
+  en: "Sent"
+  ru: "Отправлено"
+account.tfa_invalid:
+  en: "Invalid code"
+  ru: "Неверный код"
+account.tfa_server_disabled:
+  en: "Two-factor authentication is disabled on this server."
+  ru: "Двухфакторная аутентификация отключена на этом сервере."
+account.state_on:
+  en: "On"
+  ru: "Вкл."
+account.state_off:
+  en: "Off"
+  ru: "Выкл."
+account.sec_totp:
+  en: "Authenticator app"
+  ru: "Приложение-аутентификатор"
+account.totp_title:
+  en: "Two-factor authentication via TOTP"
+  ru: "Двухфакторная аутентификация через TOTP"
+account.totp_help:
+  en: "Use an app such as Google Authenticator, Authy or FreeOTP to get a code at sign-in."
+  ru: "Используйте приложение вроде Google Authenticator, Authy или FreeOTP для получения кода при входе."
+account.totp_enable:
+  en: "Enable"
+  ru: "Включить"
+account.totp_scan:
+  en: "Scan the QR code with your authenticator app."
+  ru: "Отсканируйте QR-код приложением-аутентификатором."
+account.totp_manual:
+  en: "Or enter the key manually:"
+  ru: "Или введите ключ вручную:"
+account.totp_qr_failed:
+  en: "Could not draw the QR code; enter the key manually."
+  ru: "Не удалось построить QR-код, введите ключ вручную."
+account.totp_codes_remaining:
+  en: "Backup codes left: %{n}"
+  ru: "Осталось резервных кодов: %{n}"
+account.totp_disable_label:
+  en: "Code to disable"
+  ru: "Код для отключения"
+account.totp_disable:
+  en: "Disable"
+  ru: "Отключить"
+account.totp_regen_label:
+  en: "Code for new backup codes"
+  ru: "Код для новых резервных кодов"
+account.totp_regenerate:
+  en: "Regenerate backup codes"
+  ru: "Новые резервные коды"
+account.totp_enabled_notice:
+  en: "Two-factor authentication is on."
+  ru: "Двухфакторная аутентификация включена."
+account.totp_disabled_notice:
+  en: "Two-factor authentication via TOTP is off."
+  ru: "Двухфакторная аутентификация через TOTP отключена."
+account.backup_codes_title:
+  en: "Backup codes"
+  ru: "Резервные коды"
+account.backup_codes_help:
+  en: "Store these codes somewhere safe. Each one signs you in once if you lose your device. They are shown only now."
+  ru: "Сохраните коды в надёжном месте. Каждый позволяет войти один раз, если вы потеряете устройство. Они показываются только сейчас."
+account.backup_codes_done:
+  en: "Done"
+  ru: "Готово"
+account.sec_email2fa:
+  en: "Email codes"
+  ru: "Коды по эл. почте"
+account.email2fa_title:
+  en: "Two-factor authentication via email"
+  ru: "Двухфакторная аутентификация по эл. почте"
+account.email2fa_help:
+  en: "A code is sent to your email address when you sign in."
+  ru: "При входе на вашу эл. почту приходит код."
+account.email2fa_enable:
+  en: "Enable"
+  ru: "Включить"
+account.email2fa_disable:
+  en: "Disable"
+  ru: "Отключить"
+account.email2fa_needs_verified:
+  en: "Verify your email address first."
+  ru: "Сначала подтвердите адрес эл. почты."
+account.email2fa_logout_hint:
+  en: "Enabling it signs you out of your other sessions."
+  ru: "При включении другие ваши сеансы будут завершены."
+account.email2fa_enabled_notice:
+  en: "Email two-factor authentication is on."
+  ru: "Двухфакторная аутентификация по эл. почте включена."
+account.email2fa_disabled_notice:
+  en: "Email two-factor authentication is off."
+  ru: "Двухфакторная аутентификация по эл. почте отключена."
+account.tokens_help:
+  en: "Tokens let scripts and integrations use the API as you. Treat them like passwords."
+  ru: "Токены позволяют скриптам и интеграциям работать с API от вашего имени. Храните их как пароли."
+account.tokens_not_allowed:
+  en: "You don't have permission to create personal access tokens."
+  ru: "У вас нет прав на создание персональных токенов."
+account.token_new:
+  en: "New token"
+  ru: "Новый токен"
+account.token_name:
+  en: "Token name"
+  ru: "Название токена"
+account.token_name_placeholder:
+  en: "e.g. ci-bot"
+  ru: "например, ci-bot"
+account.token_name_taken:
+  en: "A token with this name exists"
+  ru: "Токен с таким названием уже есть"
+account.token_generate:
+  en: "Generate"
+  ru: "Создать"
+account.token_bypass:
+  en: "Ignore two-factor authentication"
+  ru: "Без двухфакторной аутентификации"
+account.token_bypass_help:
+  en: "Requests made with this token never ask for a second factor."
+  ru: "Запросы с этим токеном не будут запрашивать второй фактор."
+account.token_bypass_chip:
+  en: "No 2FA"
+  ru: "Без 2FA"
+account.tokens_list:
+  en: "Your tokens"
+  ru: "Ваши токены"
+account.tokens_empty:
+  en: "No tokens yet."
+  ru: "Токенов пока нет."
+account.token_created:
+  en: "Created %{date}"
+  ru: "Создан %{date}"
+account.token_regenerate:
+  en: "Regenerate"
+  ru: "Пересоздать"
+account.token_remove:
+  en: "Remove"
+  ru: "Удалить"
+account.token_remove_confirm:
+  en: "Remove this token?"
+  ru: "Удалить токен?"
+account.token_shown_title:
+  en: "Token “%{name}”"
+  ru: "Токен «%{name}»"
+account.token_shown_once:
+  en: "Copy the token now: it won't be shown again."
+  ru: "Скопируйте токен сейчас: больше он показан не будет."
+account.token_value:
+  en: "Token"
+  ru: "Токен"
+account.token_user_id:
+  en: "Your user ID"
+  ru: "Ваш ID пользователя"
+account.sec_localization:
+  en: "Localization"
+  ru: "Язык"
+account.sec_messages:
+  en: "Messages"
+  ru: "Сообщения"
+account.sec_notifications:
+  en: "Notifications"
+  ru: "Уведомления"
+account.sec_presence:
+  en: "Presence"
+  ru: "Присутствие"
+account.sec_highlights:
+  en: "Highlights"
+  ru: "Выделение слов"
+account.pref_language:
+  en: "Language"
+  ru: "Язык"
+account.pref_also_send_thread:
+  en: "Also send thread replies to the channel"
+  ru: "Отправлять ответы в тредах также в канал"
+account.pref_use_emojis:
+  en: "Use emojis"
+  ru: "Использовать эмодзи"
+account.pref_convert_ascii:
+  en: "Convert ASCII to emoji"
+  ru: "Преобразовывать ASCII в эмодзи"
+account.pref_hide_usernames:
+  en: "Hide usernames"
+  ru: "Скрывать логины"
+account.pref_hide_roles:
+  en: "Hide roles"
+  ru: "Скрывать роли"
+account.pref_display_avatars:
+  en: "Show avatars"
+  ru: "Показывать аватары"
+account.pref_clock:
+  en: "Time format"
+  ru: "Формат времени"
+account.pref_desktop:
+  en: "Desktop notifications"
+  ru: "Уведомления на компьютере"
+account.pref_push:
+  en: "Mobile notifications"
+  ru: "Уведомления на телефоне"
+account.pref_email:
+  en: "Offline email notifications"
+  ru: "Уведомления по эл. почте, когда вы не в сети"
+account.pref_sound_message:
+  en: "New message sound"
+  ru: "Звук нового сообщения"
+account.pref_sound_room:
+  en: "New room sound"
+  ru: "Звук новой комнаты"
+account.pref_mute_focused:
+  en: "Mute the conversation you are looking at"
+  ru: "Не уведомлять об открытой беседе"
+account.pref_auto_away:
+  en: "Set me away when idle"
+  ru: "Ставить статус «Отошёл» при бездействии"
+account.pref_idle_limit:
+  en: "Idle time limit (seconds)"
+  ru: "Время бездействия (секунды)"
+account.pref_idle_help:
+  en: "After this time without activity you appear away (at least 60 seconds)."
+  ru: "После этого времени без активности ваш статус станет «Отошёл» (не меньше 60 секунд)."
+account.pref_highlights:
+  en: "Highlighted words"
+  ru: "Выделяемые слова"
+account.pref_highlights_placeholder:
+  en: "release, deploy"
+  ru: "релиз, деплой"
+account.pref_highlights_help:
+  en: "Comma-separated; messages with these words are highlighted."
+  ru: "Через запятую; сообщения с этими словами выделяются."
+account.opt_default:
+  en: "Default"
+  ru: "По умолчанию"
+account.opt_all:
+  en: "All messages"
+  ru: "Все сообщения"
+account.opt_mentions:
+  en: "Mentions"
+  ru: "Упоминания"
+account.opt_nothing:
+  en: "Nothing"
+  ru: "Ничего"
+account.opt_always:
+  en: "Always"
+  ru: "Всегда"
+account.opt_never:
+  en: "Never"
+  ru: "Никогда"
+account.opt_email_nothing:
+  en: "Disabled"
+  ru: "Отключены"
+account.opt_email_mentions:
+  en: "Mentions and direct messages"
+  ru: "Упоминания и личные сообщения"
+account.opt_clock_12:
+  en: "12-hour"
+  ru: "12-часовой"
+account.opt_clock_24:
+  en: "24-hour"
+  ru: "24-часовой"
+account.opt_sound_none:
+  en: "None"
+  ru: "Без звука"
+account.opt_sound_chime:
+  en: "Chime"
+  ru: "Колокольчик"
+account.opt_sound_door:
+  en: "Door"
+  ru: "Дверь"
+account.opt_sound_beep:
+  en: "Beep"
+  ru: "Бип"
+account.opt_sound_chelle:
+  en: "Chelle"
+  ru: "Шелль"
+account.opt_sound_ding:
+  en: "Ding"
+  ru: "Динь"
+account.opt_sound_droplet:
+  en: "Droplet"
+  ru: "Капля"
+account.opt_sound_highbell:
+  en: "High bell"
+  ru: "Высокий звонок"
+account.opt_sound_seasons:
+  en: "Seasons"
+  ru: "Времена года"
+account.token_regenerate_confirm:
+  en: "Regenerate? The current token stops working right away."
+  ru: "Пересоздать? Текущий токен сразу перестанет работать."
+account.totp_logout_hint:
+  en: "Enabling it signs you out of your other sessions."
+  ru: "После включения другие ваши сеансы будут завершены."
+account.err_name_required:
+  en: "The name cannot be empty"
+  ru: "Имя не может быть пустым"
+account.tfa_rate_limited:
+  en: "Too many attempts. Try again in %{s} s."
+  ru: "Слишком много попыток. Повторите через %{s} с."
+account.tfa_rate_limited_soon:
+  en: "Too many attempts. Try again in a minute."
+  ru: "Слишком много попыток. Повторите через минуту."
+account.err_rate_limited:
+  en: "The server allows one profile change per minute. Try again in %{s} s."
+  ru: "Сервер разрешает менять профиль раз в минуту. Повторите через %{s} с."
+account.err_rate_limited_soon:
+  en: "The server allows one profile change per minute. Try again shortly."
+  ru: "Сервер разрешает менять профиль раз в минуту. Повторите чуть позже."

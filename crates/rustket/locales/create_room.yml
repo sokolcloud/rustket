@@ -2,3 +2,114 @@ _version: 2
 create_room.title:
   en: "Create new"
   ru: "Создать"
+create_room.kind_channel:
+  en: "Channel"
+  ru: "Канал"
+create_room.kind_team:
+  en: "Team"
+  ru: "Команда"
+create_room.kind_dm:
+  en: "Direct message"
+  ru: "Личное сообщение"
+create_room.kind_discussion:
+  en: "Discussion"
+  ru: "Обсуждение"
+create_room.help_channel:
+  en: "A public channel: anyone can find and join it."
+  ru: "Публичный канал: любой может найти его и вступить."
+create_room.help_group:
+  en: "A private channel: only invited people can see and join it."
+  ru: "Приватный канал: видят и вступают только приглашённые."
+create_room.help_team:
+  en: "A team groups channels and people around a common goal."
+  ru: "Команда объединяет каналы и людей вокруг общей цели."
+create_room.help_dm:
+  en: "A private conversation with one or more people."
+  ru: "Личная переписка с одним или несколькими людьми."
+create_room.help_discussion:
+  en: "A focused conversation inside an existing channel."
+  ru: "Отдельная беседа внутри существующего канала."
+create_room.name:
+  en: "Name"
+  ru: "Название"
+create_room.discussion_name:
+  en: "Discussion name"
+  ru: "Название обсуждения"
+create_room.name_placeholder:
+  en: "e.g. project-alpha"
+  ru: "например, project-alpha"
+create_room.name_free:
+  en: "The name is available"
+  ru: "Название свободно"
+create_room.err_name_empty:
+  en: "Enter a name"
+  ru: "Введите название"
+create_room.err_name_invalid:
+  en: "Use letters, digits, '-', '_' and '.' without spaces"
+  ru: "Используйте латинские буквы, цифры, «-», «_» и «.» без пробелов"
+create_room.err_name_taken:
+  en: "A room with this name already exists"
+  ru: "Комната с таким названием уже есть"
+create_room.topic:
+  en: "Topic"
+  ru: "Тема"
+create_room.topic_placeholder:
+  en: "What is it about? (optional)"
+  ru: "О чём здесь? (необязательно)"
+create_room.members:
+  en: "Members"
+  ru: "Участники"
+create_room.dm_users:
+  en: "People"
+  ru: "Люди"
+create_room.members_placeholder:
+  en: "Search by name or username"
+  ru: "Поиск по имени или логину"
+create_room.parent:
+  en: "Parent channel or group"
+  ru: "Родительский канал или группа"
+create_room.parent_placeholder:
+  en: "Search rooms"
+  ru: "Поиск комнат"
+create_room.parent_not_allowed:
+  en: "You can't start discussions in this room"
+  ru: "В этой комнате нельзя создавать обсуждения"
+create_room.first_message:
+  en: "First message"
+  ru: "Первое сообщение"
+create_room.first_message_placeholder:
+  en: "Optional"
+  ru: "Необязательно"
+create_room.private:
+  en: "Private"
+  ru: "Приватный"
+create_room.private_help:
+  en: "Only invited people can join"
+  ru: "Вступить могут только приглашённые"
+create_room.read_only:
+  en: "Read-only"
+  ru: "Только чтение"
+create_room.read_only_help:
+  en: "Only owners and moderators can post"
+  ru: "Писать могут только владельцы и модераторы"
+create_room.broadcast:
+  en: "Broadcast"
+  ru: "Трансляция"
+create_room.broadcast_help:
+  en: "Read-only for members; replies go to direct messages"
+  ru: "Участники только читают, ответы — в личные сообщения"
+create_room.not_allowed:
+  en: "You don't have permission to create rooms on this server."
+  ru: "У вас нет прав на создание комнат на этом сервере."
+create_room.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+create_room.close:
+  en: "Close"
+  ru: "Закрыть"
+create_room.create:
+  en: "Create"
+  ru: "Создать"
+create_room.first_message_encrypted:
+  en: "The parent room is end-to-end encrypted: an encrypted discussion cannot start with a message."
+  ru: "Родительская комната зашифрована сквозным шифрованием: зашифрованное обсуждение нельзя начать с сообщения."

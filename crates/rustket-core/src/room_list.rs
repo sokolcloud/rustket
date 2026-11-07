@@ -534,6 +534,12 @@ pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Sect
         .collect()
 }
 
+/// The list item of one room, whatever its sidebar visibility (hidden and
+/// archived rooms too; e.g. for search results).
+pub fn item(ws: &Workspace, e: &RoomEntry, opts: &RoomListOptions) -> RoomListItem {
+    build_item(ws, e, opts)
+}
+
 /// Whether the room counts as unread (for window badges / "next unread room").
 pub fn room_is_unread(e: &RoomEntry) -> bool {
     is_unread(e)
@@ -994,6 +1000,19 @@ mod tests {
         ]);
         assert!(compute(&ws, &RoomListOptions::default(), "").is_empty());
         assert_eq!(unread_totals(&ws), (0, 0));
+    }
+
+    #[test]
+    fn item_of_a_hidden_archived_room() {
+        let mut s = sub("a", "old", RoomType::Private);
+        s.archived = Some(true);
+        s.open = false;
+        let ws = ws_with(vec![(s, None)]);
+        assert!(compute(&ws, &RoomListOptions::default(), "").is_empty());
+        let e = ws.rooms().values().next().unwrap();
+        let i = item(&ws, e, &RoomListOptions::default());
+        assert_eq!((i.rid.as_str(), i.kind), ("a", RoomKind::Private));
+        assert!(i.archived);
     }
 
     #[test]
