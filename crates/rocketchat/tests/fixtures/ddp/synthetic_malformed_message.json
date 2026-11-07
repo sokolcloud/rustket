@@ -1,0 +1,11 @@
+{
+  "msg": "changed",
+  "collection": "stream-room-messages",
+  "id": "id",
+  "fields": {
+    "eventName": "__my_messages__",
+    "args": [
+      "not-an-object"
+    ]
+  }
+}

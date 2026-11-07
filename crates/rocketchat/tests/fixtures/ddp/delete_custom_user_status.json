@@ -1,0 +1,20 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "args": [
+      {
+        "userStatusData": {
+          "_id": "6aef60eeff2338a3f2a2c259",
+          "_updatedAt": {
+            "$date": 1794072814456
+          },
+          "name": "capstatus1794072787233",
+          "statusType": "busy"
+        }
+      }
+    ],
+    "eventName": "deleteCustomUserStatus"
+  }
+}

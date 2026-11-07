@@ -1,0 +1,11 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "user-status",
+    "args": [
+      "not-an-array"
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "eventName": "dNmNNcy3eQMw2BTCi/userData",
+    "args": [
+      {
+        "id": "dNmNNcy3eQMw2BTCi",
+        "type": "updated",
+        "diff": {
+          "username": "alice2",
+          "name": "Alice Two",
+          "services.resume.loginTokens": [
+            {
+              "hashedToken": "h"
+            }
+          ],
+          "services": {
+            "resume": {}
+          }
+        },
+        "unset": {
+          "services.email2fa": 1
+        }
+      }
+    ]
+  }
+}

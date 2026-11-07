@@ -1,0 +1,22 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "user-status",
+    "args": [
+      [
+        "F3QsssYnr8Ardq4Js",
+        "bob",
+        3,
+        "on a call",
+        "Bob Builder",
+        [
+          "user"
+        ],
+        "manual",
+        null
+      ]
+    ]
+  }
+}

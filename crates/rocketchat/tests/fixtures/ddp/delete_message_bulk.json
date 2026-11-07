@@ -1,0 +1,24 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-room",
+  "id": "id",
+  "fields": {
+    "args": [
+      {
+        "excludePinned": false,
+        "ignoreDiscussion": false,
+        "rid": "6aef60d5ff2338a3f2a2c250",
+        "ts": {
+          "$gt": {
+            "$date": 946684800000
+          },
+          "$lt": {
+            "$date": 4102444800000
+          }
+        },
+        "users": []
+      }
+    ],
+    "eventName": "6aef60d5ff2338a3f2a2c250/deleteMessageBulk"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "updateAvatar",
+    "args": [
+      {
+        "rid": "6aef60d5ff2338a3f2a2c250",
+        "etag": "abc123"
+      }
+    ]
+  }
+}

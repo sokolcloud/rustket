@@ -1,0 +1,80 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "args": [
+      "updated",
+      {
+        "_id": "6aef60d5ff2338a3f2a2c250",
+        "_updatedAt": {
+          "$date": 1794072791357
+        },
+        "default": false,
+        "fname": "cap-room-1794072787233",
+        "lastMessage": {
+          "_id": "iPET8t9XYwBx5qXfp",
+          "_updatedAt": {
+            "$date": 1794072791330
+          },
+          "channels": [],
+          "md": [
+            {
+              "type": "PARAGRAPH",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "hello "
+                },
+                {
+                  "type": "MENTION_USER",
+                  "value": {
+                    "type": "PLAIN_TEXT",
+                    "value": "cap-a-1794072787233"
+                  }
+                }
+              ]
+            }
+          ],
+          "mentions": [
+            {
+              "_id": "dNmNNcy3eQMw2BTCi",
+              "name": "cap-a-1794072787233",
+              "type": "user",
+              "username": "cap-a-1794072787233"
+            }
+          ],
+          "msg": "hello @cap-a-1794072787233",
+          "rid": "6aef60d5ff2338a3f2a2c250",
+          "ts": {
+            "$date": 1794072791321
+          },
+          "u": {
+            "_id": "F3QsssYnr8Ardq4Js",
+            "name": "cap-b-1794072787233",
+            "username": "cap-b-1794072787233"
+          },
+          "urls": []
+        },
+        "lm": {
+          "$date": 1794072791321
+        },
+        "msgs": 1,
+        "name": "cap-room-1794072787233",
+        "ro": false,
+        "sysMes": true,
+        "t": "c",
+        "ts": {
+          "$date": 1794072789777
+        },
+        "u": {
+          "_id": "F3QsssYnr8Ardq4Js",
+          "name": "cap-b-1794072787233",
+          "username": "cap-b-1794072787233"
+        },
+        "usersCount": 2
+      }
+    ],
+    "eventName": "dNmNNcy3eQMw2BTCi/rooms-changed"
+  }
+}

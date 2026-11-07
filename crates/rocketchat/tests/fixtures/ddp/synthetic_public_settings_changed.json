@@ -1,0 +1,20 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-all",
+  "id": "id",
+  "fields": {
+    "eventName": "public-settings-changed",
+    "args": [
+      "updated",
+      {
+        "_id": "Site_Name",
+        "value": "Rocket.Chat",
+        "type": "string",
+        "public": true,
+        "_updatedAt": {
+          "$date": 1794072800000
+        }
+      }
+    ]
+  }
+}

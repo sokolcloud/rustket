@@ -1,0 +1,37 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "args": [
+      "removed",
+      {
+        "_id": "6aef60d5ff2338a3f2a2c251",
+        "_updatedAt": {
+          "$date": 1794072800566
+        },
+        "alert": true,
+        "fname": "cap-room-1794072787233",
+        "groupMentions": 0,
+        "ls": {
+          "$date": 1794072797462
+        },
+        "name": "cap-room-1794072787233",
+        "open": true,
+        "rid": "6aef60d5ff2338a3f2a2c250",
+        "t": "c",
+        "ts": {
+          "$date": 1794072789777
+        },
+        "u": {
+          "_id": "dNmNNcy3eQMw2BTCi",
+          "name": "cap-a-1794072787233",
+          "username": "cap-a-1794072787233"
+        },
+        "unread": 0,
+        "userMentions": 0
+      }
+    ],
+    "eventName": "dNmNNcy3eQMw2BTCi/subscriptions-changed"
+  }
+}

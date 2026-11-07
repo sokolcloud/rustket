@@ -1,0 +1,19 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "Users:Deleted",
+    "args": [
+      {
+        "userId": "F3QsssYnr8Ardq4Js",
+        "messageErasureType": "Unlink",
+        "replaceByUser": {
+          "_id": "rocket.cat",
+          "username": "rocket.cat",
+          "alias": "Deleted user"
+        }
+      }
+    ]
+  }
+}

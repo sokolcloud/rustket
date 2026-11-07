@@ -1,0 +1,20 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "eventName": "dNmNNcy3eQMw2BTCi/subscriptions-changed",
+    "args": [
+      "removed",
+      {
+        "_id": "subid1",
+        "u": {
+          "_id": "dNmNNcy3eQMw2BTCi",
+          "username": "cap-a"
+        },
+        "rid": "6aef60d5ff2338a3f2a2c250",
+        "t": "c"
+      }
+    ]
+  }
+}

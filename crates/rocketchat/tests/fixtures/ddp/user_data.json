@@ -1,0 +1,22 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "args": [
+      {
+        "diff": {
+          "status": "away",
+          "statusSource": "manual"
+        },
+        "id": "dNmNNcy3eQMw2BTCi",
+        "type": "updated",
+        "unset": {
+          "statusExpiresAt": 1,
+          "statusText": 1
+        }
+      }
+    ],
+    "eventName": "dNmNNcy3eQMw2BTCi/userData"
+  }
+}

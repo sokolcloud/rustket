@@ -1,0 +1,22 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "args": [
+      [
+        "dNmNNcy3eQMw2BTCi",
+        "cap-a-1794072787233",
+        2,
+        null,
+        "cap-a-1794072787233",
+        [
+          "user"
+        ],
+        "manual",
+        null
+      ]
+    ],
+    "eventName": "user-status"
+  }
+}

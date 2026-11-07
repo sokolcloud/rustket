@@ -1,0 +1,20 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "deleteEmojiCustom",
+    "args": [
+      {
+        "emojiData": {
+          "_id": "e1",
+          "name": "party_parrot",
+          "aliases": [
+            "parrot"
+          ],
+          "extension": "gif"
+        }
+      }
+    ]
+  }
+}

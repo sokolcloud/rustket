@@ -1,0 +1,20 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "roles-change",
+    "args": [
+      {
+        "_id": "moderator",
+        "type": "removed",
+        "scope": "6aef60d5ff2338a3f2a2c250",
+        "u": {
+          "_id": "F3QsssYnr8Ardq4Js",
+          "username": "bob",
+          "name": "Admin (acting user)"
+        }
+      }
+    ]
+  }
+}

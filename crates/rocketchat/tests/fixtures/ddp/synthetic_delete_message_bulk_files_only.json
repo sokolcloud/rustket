@@ -1,0 +1,33 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-room",
+  "id": "id",
+  "fields": {
+    "eventName": "6aef60d5ff2338a3f2a2c250/deleteMessageBulk",
+    "args": [
+      {
+        "rid": "6aef60d5ff2338a3f2a2c250",
+        "excludePinned": false,
+        "ignoreDiscussion": true,
+        "ts": {
+          "$gte": {
+            "$date": 1794072000000
+          },
+          "$lte": {
+            "$date": 1794072800000
+          }
+        },
+        "users": [],
+        "ids": [
+          "m3"
+        ],
+        "filesOnly": true,
+        "replaceFileAttachmentsWith": {
+          "type": "removed-file",
+          "color": "#FD745E",
+          "text": "_File removed by automatic prune_"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "args": [
+      "inserted",
+      {
+        "_USERNAMES": [
+          "cap-a-1794072787233",
+          "cap-b-1794072787233"
+        ],
+        "_id": "6aef60e2ff2338a3f2a2c256",
+        "_updatedAt": {
+          "$date": 1794072802212
+        },
+        "default": false,
+        "msgs": 0,
+        "ro": false,
+        "sysMes": true,
+        "t": "d",
+        "ts": {
+          "$date": 1794072802211
+        },
+        "uids": [
+          "F3QsssYnr8Ardq4Js",
+          "dNmNNcy3eQMw2BTCi"
+        ],
+        "usernames": [
+          "cap-a-1794072787233",
+          "cap-b-1794072787233"
+        ],
+        "usersCount": 2
+      }
+    ],
+    "eventName": "dNmNNcy3eQMw2BTCi/rooms-changed"
+  }
+}

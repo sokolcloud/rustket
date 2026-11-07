@@ -1,0 +1,22 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "permissions-changed",
+    "args": [
+      "updated",
+      {
+        "_id": "create-c",
+        "roles": [
+          "admin",
+          "user",
+          "bot"
+        ],
+        "_updatedAt": {
+          "$date": 1794072800000
+        }
+      }
+    ]
+  }
+}

@@ -9,6 +9,56 @@ use serde_json::Value;
 /// `md` root: a list of blocks (or a single `BIG_EMOJI`).
 pub type Root = Vec<Block>;
 
+/// Deepest JSON nesting accepted for an `md` tree. Real messages stay far below.
+pub const MAX_MD_DEPTH: usize = 32;
+/// Most JSON values accepted in one `md` tree.
+pub const MAX_MD_NODES: usize = 20_000;
+/// Most string bytes accepted in one `md` tree.
+pub const MAX_MD_TEXT_BYTES: usize = 1 << 20;
+
+/// Whether an `md` value is small enough to decode. Any user can send a message
+/// with an empty `msg` and an arbitrary `md`, which the server stores and relays
+/// verbatim, and decoding the node enums costs memory proportional to depth
+/// times size, so oversized trees are dropped (the text in `msg` stays).
+pub fn within_limits(v: &Value) -> bool {
+    let mut stack = vec![(v, 1usize)];
+    let (mut nodes, mut bytes) = (0usize, 0usize);
+    while let Some((v, depth)) = stack.pop() {
+        nodes += 1;
+        if depth > MAX_MD_DEPTH || nodes > MAX_MD_NODES {
+            return false;
+        }
+        match v {
+            Value::String(s) => bytes += s.len(),
+            Value::Array(a) => stack.extend(a.iter().map(|c| (c, depth + 1))),
+            Value::Object(o) => {
+                for (k, c) in o {
+                    bytes += k.len();
+                    stack.push((c, depth + 1));
+                }
+            }
+            _ => {}
+        }
+        if bytes > MAX_MD_TEXT_BYTES {
+            return false;
+        }
+    }
+    true
+}
+
+/// Lenient `Option<Root>` field deserialiser that drops trees outside
+/// [`within_limits`] before decoding them.
+pub fn opt_root<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Root>, D::Error> {
+    let Some(v) = Option::<Value>::deserialize(d)? else {
+        return Ok(None);
+    };
+    if !within_limits(&v) {
+        tracing::debug!("dropping oversized md tree");
+        return Ok(None);
+    }
+    Ok(super::lenient::try_convert(v))
+}
+
 /// `{"type": "PLAIN_TEXT", "value": ".."}` used as a leaf inside other nodes.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename = "PLAIN_TEXT")]
@@ -452,6 +502,51 @@ pub fn to_plain_text(root: &[Block]) -> String {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn message_with_md(md: Value) -> crate::models::Message {
+        serde_json::from_value(serde_json::json!({"_id": "m", "rid": "r", "msg": "", "md": md}))
+            .unwrap()
+    }
+
+    #[test]
+    fn hostile_md_is_dropped_on_every_path() {
+        // Too deep.
+        let mut node = serde_json::json!({"type": "PLAIN_TEXT", "value": "x"});
+        for _ in 0..20 {
+            node = serde_json::json!({"type": "BOLD", "value": [node]});
+        }
+        let deep = serde_json::json!([{"type": "PARAGRAPH", "value": [node]}]);
+        assert!(!within_limits(&deep));
+        assert!(message_with_md(deep).md.is_none());
+        // Too much text.
+        let big = serde_json::json!([{"type": "PARAGRAPH", "value": [
+            {"type": "PLAIN_TEXT", "value": "x".repeat(MAX_MD_TEXT_BYTES + 1)}
+        ]}]);
+        assert!(message_with_md(big).md.is_none());
+        // Too many nodes.
+        let wide: Vec<Value> = (0..MAX_MD_NODES)
+            .map(|_| serde_json::json!({"type": "PLAIN_TEXT", "value": "x"}))
+            .collect();
+        let many = serde_json::json!([{"type": "PARAGRAPH", "value": wide}]);
+        assert!(message_with_md(many).md.is_none());
+        // Realistic nesting is kept (quote > list > item > paragraph > bold > italic > link).
+        let ok = serde_json::json!([{"type": "QUOTE", "value": [{"type": "UNORDERED_LIST", "value": [
+            {"type": "LIST_ITEM", "value": [{"type": "BOLD", "value": [{"type": "ITALIC", "value": [
+                {"type": "LINK", "value": {"src": {"type": "PLAIN_TEXT", "value": "https://x"},
+                 "label": [{"type": "PLAIN_TEXT", "value": "x"}]}}
+            ]}]}]}
+        ]}]}]);
+        assert!(within_limits(&ok));
+        assert!(message_with_md(ok).md.is_some());
+        // Attachments use the same guard.
+        let m: crate::models::Message = serde_json::from_value(serde_json::json!({
+            "_id": "m", "rid": "r", "msg": "",
+            "attachments": [{"descriptionMd": [{"type": "PARAGRAPH", "value": [
+                {"type": "PLAIN_TEXT", "value": "x".repeat(MAX_MD_TEXT_BYTES + 1)}]}]}]
+        }))
+        .unwrap();
+        assert!(m.attachments.unwrap()[0].description_md.is_none());
+    }
 
     #[test]
     fn unknown_nodes_are_tolerated() {

@@ -1,0 +1,186 @@
+{
+ "msg": "changed",
+ "collection": "stream-room-messages",
+ "id": "id",
+ "fields": {
+  "eventName": "__my_messages__",
+  "args": [
+   {
+    "_id": "deep1",
+    "rid": "6aef60d5ff2338a3f2a2c250",
+    "msg": "",
+    "md": [
+     {
+      "type": "PARAGRAPH",
+      "value": [
+       {
+        "type": "BOLD",
+        "value": [
+         {
+          "type": "BOLD",
+          "value": [
+           {
+            "type": "BOLD",
+            "value": [
+             {
+              "type": "BOLD",
+              "value": [
+               {
+                "type": "BOLD",
+                "value": [
+                 {
+                  "type": "BOLD",
+                  "value": [
+                   {
+                    "type": "BOLD",
+                    "value": [
+                     {
+                      "type": "BOLD",
+                      "value": [
+                       {
+                        "type": "BOLD",
+                        "value": [
+                         {
+                          "type": "BOLD",
+                          "value": [
+                           {
+                            "type": "BOLD",
+                            "value": [
+                             {
+                              "type": "BOLD",
+                              "value": [
+                               {
+                                "type": "BOLD",
+                                "value": [
+                                 {
+                                  "type": "BOLD",
+                                  "value": [
+                                   {
+                                    "type": "BOLD",
+                                    "value": [
+                                     {
+                                      "type": "BOLD",
+                                      "value": [
+                                       {
+                                        "type": "BOLD",
+                                        "value": [
+                                         {
+                                          "type": "BOLD",
+                                          "value": [
+                                           {
+                                            "type": "BOLD",
+                                            "value": [
+                                             {
+                                              "type": "BOLD",
+                                              "value": [
+                                               {
+                                                "type": "BOLD",
+                                                "value": [
+                                                 {
+                                                  "type": "BOLD",
+                                                  "value": [
+                                                   {
+                                                    "type": "BOLD",
+                                                    "value": [
+                                                     {
+                                                      "type": "BOLD",
+                                                      "value": [
+                                                       {
+                                                        "type": "BOLD",
+                                                        "value": [
+                                                         {
+                                                          "type": "BOLD",
+                                                          "value": [
+                                                           {
+                                                            "type": "BOLD",
+                                                            "value": [
+                                                             {
+                                                              "type": "BOLD",
+                                                              "value": [
+                                                               {
+                                                                "type": "BOLD",
+                                                                "value": [
+                                                                 {
+                                                                  "type": "BOLD",
+                                                                  "value": [
+                                                                   {
+                                                                    "type": "PLAIN_TEXT",
+                                                                    "value": "x"
+                                                                   }
+                                                                  ]
+                                                                 }
+                                                                ]
+                                                               }
+                                                              ]
+                                                             }
+                                                            ]
+                                                           }
+                                                          ]
+                                                         }
+                                                        ]
+                                                       }
+                                                      ]
+                                                     }
+                                                    ]
+                                                   }
+                                                  ]
+                                                 }
+                                                ]
+                                               }
+                                              ]
+                                             }
+                                            ]
+                                           }
+                                          ]
+                                         }
+                                        ]
+                                       }
+                                      ]
+                                     }
+                                    ]
+                                   }
+                                  ]
+                                 }
+                                ]
+                               }
+                              ]
+                             }
+                            ]
+                           }
+                          ]
+                         }
+                        ]
+                       }
+                      ]
+                     }
+                    ]
+                   }
+                  ]
+                 }
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "ts": {
+     "$date": 1794072800000
+    },
+    "u": {
+     "_id": "F3QsssYnr8Ardq4Js",
+     "username": "bob"
+    }
+   },
+   {
+    "roomParticipant": true
+   }
+  ]
+ }
+}

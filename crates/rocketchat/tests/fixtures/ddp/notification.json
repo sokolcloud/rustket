@@ -1,0 +1,28 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "args": [
+      {
+        "payload": {
+          "_id": "iPET8t9XYwBx5qXfp",
+          "message": {
+            "msg": "hello @cap-a-1794072787233"
+          },
+          "name": "cap-room-1794072787233",
+          "rid": "6aef60d5ff2338a3f2a2c250",
+          "sender": {
+            "_id": "F3QsssYnr8Ardq4Js",
+            "name": "cap-b-1794072787233",
+            "username": "cap-b-1794072787233"
+          },
+          "type": "c"
+        },
+        "text": "cap-b-1794072787233: hello @cap-a-1794072787233",
+        "title": "#cap-room-1794072787233"
+      }
+    ],
+    "eventName": "dNmNNcy3eQMw2BTCi/notification"
+  }
+}

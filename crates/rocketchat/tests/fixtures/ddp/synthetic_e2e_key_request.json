@@ -1,0 +1,12 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "eventName": "dNmNNcy3eQMw2BTCi/e2ekeyRequest",
+    "args": [
+      "6aef60d5ff2338a3f2a2c250",
+      "keyid1"
+    ]
+  }
+}

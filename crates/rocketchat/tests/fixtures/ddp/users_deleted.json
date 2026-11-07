@@ -1,0 +1,14 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "args": [
+      {
+        "messageErasureType": "Delete",
+        "userId": "F3QsssYnr8Ardq4Js"
+      }
+    ],
+    "eventName": "Users:Deleted"
+  }
+}

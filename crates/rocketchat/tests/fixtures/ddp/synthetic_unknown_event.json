@@ -1,0 +1,14 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "omnichannel.priority-changed",
+    "args": [
+      {
+        "id": "p1",
+        "clientAction": "updated"
+      }
+    ]
+  }
+}

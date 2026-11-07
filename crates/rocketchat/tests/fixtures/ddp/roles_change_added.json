@@ -1,0 +1,18 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "args": [
+      {
+        "_id": "bot",
+        "type": "added",
+        "u": {
+          "_id": "F3QsssYnr8Ardq4Js",
+          "username": "cap-b-1794072787233"
+        }
+      }
+    ],
+    "eventName": "roles-change"
+  }
+}

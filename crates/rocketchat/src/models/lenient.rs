@@ -68,6 +68,11 @@ pub fn counted<T: DeserializeOwned>(v: Value) -> Counted<T> {
 }
 
 /// `Option<T>`: invalid → `None`.
+/// `Some(T)` if `v` converts, else `None` (logged at debug).
+pub fn try_convert<T: DeserializeOwned>(v: Value) -> Option<T> {
+    convert(v)
+}
+
 pub fn opt<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
     Ok(Option::<Value>::deserialize(d)?.and_then(convert))
 }

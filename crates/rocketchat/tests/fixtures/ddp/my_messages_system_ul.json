@@ -1,0 +1,33 @@
+{
+  "msg": "changed",
+  "collection": "stream-room-messages",
+  "id": "id",
+  "fields": {
+    "args": [
+      {
+        "_id": "6aef60f4ff2338a3f2a2c25a",
+        "_updatedAt": {
+          "$date": 1794072820543
+        },
+        "groupable": false,
+        "msg": "cap-a-1794072787233",
+        "rid": "6aef60d5ff2338a3f2a2c250",
+        "t": "ul",
+        "ts": {
+          "$date": 1794072820543
+        },
+        "u": {
+          "_id": "dNmNNcy3eQMw2BTCi",
+          "name": "cap-a-1794072787233",
+          "username": "cap-a-1794072787233"
+        }
+      },
+      {
+        "roomName": "cap-room-1794072787233",
+        "roomParticipant": true,
+        "roomType": "c"
+      }
+    ],
+    "eventName": "__my_messages__"
+  }
+}

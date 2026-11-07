@@ -1,0 +1,19 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "private-settings-changed",
+    "args": [
+      "updated",
+      {
+        "_id": "SMTP_Host",
+        "value": "smtp.example.com",
+        "type": "string",
+        "_updatedAt": {
+          "$date": 1794072800000
+        }
+      }
+    ]
+  }
+}

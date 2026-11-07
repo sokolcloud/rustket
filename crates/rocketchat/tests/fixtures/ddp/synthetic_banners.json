@@ -1,0 +1,19 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "eventName": "dNmNNcy3eQMw2BTCi/banners",
+    "args": [
+      {
+        "_id": "b1",
+        "platform": [
+          "web"
+        ],
+        "view": {
+          "blocks": []
+        }
+      }
+    ]
+  }
+}

@@ -88,7 +88,9 @@ Verified against the dev server (Rocket.Chat 8.9.1) with curl and the live tests
 ## History
 
 - The client uses `loadHistory` through `POST /api/v1/method.call/loadHistory` with params
-  `[rid, end|null, limit, ls|null, showThreadMessages]`. Reasons:
+  `[rid, end|null, limit, ls|null, showThreadMessages]` (`showThreadMessages` defaults to `false`
+  like the web client's main timeline, user preference `showThreadsInMainChannel`; thread replies
+  sent with `tshow` are still included). Reasons:
   - it works for every room type; `channels.history`, `groups.history` and `im.history` are
     type-specific;
   - it returns `firstUnread` / `unreadNotLoaded` when `ls` is given;
@@ -189,3 +191,107 @@ Verified against the dev server (Rocket.Chat 8.9.1) with curl and the live tests
   only, and counted (`dropped`, `raw_len`). Decide pagination on `raw_len`, not on the number of
   parsed items. `RcDate` also accepts numeric strings
   and bare numbers: values below 10^11 are seconds, larger values are milliseconds.
+
+## Realtime (DDP session)
+
+Implemented in `crates/rocketchat/src/session` on top of `meteor-ddp`; verified by
+`crates/rocketchat/tests/session_live.rs`. Captured stream messages:
+`crates/rocketchat/tests/fixtures/ddp/` (`synthetic_*` files follow `streams.ts` for events a
+test cannot trigger without changing global server state).
+
+- Endpoint `ws(s)://host[/prefix]/websocket`, same rustls config as REST (no ALPN), header
+  `User-Agent: Rustket/<version>`.
+- Login after every (re)connect: method `login` with `[{"resume": token}]` →
+  `{id, token, tokenExpires, type: "resume"}`. The session checks `id` against its user id.
+  A rejected token answers `error: 401` (`User not found`) or `403`.
+- Stream subscriptions: `sub` name `stream-<name>`, params `[eventName, {"useCollection": false, "args": []}]`
+  (what the web client sends). Events arrive as `changed` with
+  `fields: {eventName, args: [...]}`.
+- Subscriptions accepted for a normal user on 8.9: `stream-room-messages` `__my_messages__`;
+  every `stream-notify-user` `{uid}/…` event in `streams.ts`; every `stream-notify-logged`
+  event except **`private-settings-changed` → `nosub` `not-allowed`**; every `stream-notify-all`
+  event; `stream-roles` `roles`; every `stream-notify-room` `{rid}/…` event (including the
+  legacy `typing`).
+- `__my_messages__`: args `[IMessage, {roomParticipant, roomType, roomName}]` for new and edited
+  messages (and system messages such as `ul`) of every room the user **can access**: joined rooms
+  and also public channels the user never joined (`roomParticipant: false`; private groups the
+  user is not in are not delivered). `streams.ts` types it as `[IMessage]` only. The session
+  exposes the flag as `SessionEvent::Message { room_participant }`; the state layer must ignore
+  non-participant messages unless that room is open (previewed) or watched. Edits carry
+  `editedAt`/`editedBy`.
+- `{uid}/subscriptions-changed`: `[action, ISubscription]`, action `inserted|updated|removed`.
+  On 8.9 `removed` carried the full subscription (leaving a channel, deleting a DM partner);
+  `streams.ts` allows `{_id, u?, rid?, t?}` only, which also decodes. Leaving a channel sent no
+  `rooms-changed`.
+- `{uid}/rooms-changed`: `[action, IRoom]`. A new DM carries `uids`, `usernames` and
+  `_USERNAMES`. Every new message also sends `updated` with `lastMessage`.
+- `{uid}/notification`: `[{title, text, payload: {_id, rid, sender, type, name, message: {msg}}}]`
+  (sent with the default preferences for every message in a channel, not only mentions).
+- `{uid}/userData`: `[{id, type: "updated", diff: {...}, unset: {...}}]` on changes of the
+  user's own document (e.g. status).
+- `user-status` (notify-logged): args `[[uid, username, statusCode, statusText, name, roles,
+  statusSource, statusExpiresAt]]`, codes 0 offline, 1 online, 2 away, 3 busy. `statusText`
+  is `null` when unset and `""` after clearing. A user without any DDP connection is reported as
+  0 even right after `users.setStatus busy`. Initial statuses: `users.presence`.
+- `updateAvatar`: `[{username}]` after `users.resetAvatar` (no `etag`), or `{rid, etag}` for rooms.
+- `roles-change`: `[{_id: roleId, type: "added"|"removed", u: {_id, username}, scope?}]`.
+- `updateCustomUserStatus`: `[{userStatusData: {_id, name, statusType}}]`;
+  `deleteCustomUserStatus` additionally has `_updatedAt`.
+- `Users:Deleted`: `[{userId, messageErasureType: "Delete"}]`. `Users:NameChanged` was not sent
+  when a user changed only their real name with `users.updateOwnBasicInfo`.
+- `{rid}/deleteMessage`: `[{_id}]`. `{rid}/deleteMessageBulk` (e.g. `rooms.cleanHistory`):
+  `[{rid, excludePinned, ignoreDiscussion, ts: {"$gt": date, "$lt": date}, users: []}]`
+  (`ids` takes priority when present; `$gt`/`$lt` are exclusive). REST `rooms.cleanHistory`
+  defaults to `inclusive: false`; the retention cron uses `inclusive` (`$gte`/`$lte`) and may
+  send `filesOnly: true` with `replaceFileAttachmentsWith` (the messages stay, only their files
+  are replaced). Shapes from `cleanRoomHistory.ts`, not captured.
+- `{rid}/messagesImported`: args `[null]` after an import into the room; the web client clears
+  and reloads the room history (imported messages never go through `__my_messages__`).
+- `userData` diffs can contain `services.*` (hashed login tokens, 2FA data); the session strips
+  them. `roles-change` `u.name` is the acting user's name, not the target's.
+- `{rid}/messagesRead` was not sent by `subscriptions.read` on the dev server (read receipts off).
+- **Typing**: the web client calls the DDP method `stream-notify-room` with params
+  `["{rid}/user-activity", username, ["user-typing"], {}]` (extras `{tmid}` in a thread). The
+  server (`notifications.module.ts` `canType`) relays it only if the identity equals the user's
+  current `name` when the public setting `UI_Use_Real_Name` is on, else the current `username`;
+  otherwise it drops the publish silently. The result is `null` either way. The session reads
+  `UI_Use_Real_Name` at start, tracks `public-settings-changed`, and keeps its user current from
+  `userData` / `Users:NameChanged`.
+  Stop: same call with `[]`. Receivers get args `[username, activities, extras]`. The web client
+  debounces by 500 ms, renews every 5 s and expires remote activities after 15 s. Other
+  activities: `user-recording`, `user-uploading`, `user-playing`. The legacy
+  `["{rid}/typing", username, true]` publish returns `null` but nothing is relayed, so the
+  session does not subscribe `{rid}/typing` by default.
+- Token revocation: after `POST /logout` from another client with the same token, the server
+  closes the socket; the resume login on reconnect fails with `401`, and the session emits
+  `LoggedOut` and stops.
+- Rate limiting: Rocket.Chat's DDP rate limiter (on by default in production, off on the dev
+  server) also counts `sub` messages: per stream *name* (e.g. all `stream-notify-user`
+  subscriptions together) 80 per 40 s per user and 40 per 40 s per connection. A refused or
+  later stopped sub gets `nosub` `{error: "too-many-requests", details: {timeToReset: ms}}`, and
+  meteor-ddp never renews a stopped sub. The session therefore supervises every subscription:
+  a stopped one is re-subscribed with per-stream jittered backoff (never before `timeToReset`),
+  reported through `SessionEvent::Degraded { streams }` while down, and followed by
+  `Resync { StreamsRestored }` once back. A required stream (`__my_messages__`, `{uid}/message`,
+  `notification`, `rooms-changed`, `subscriptions-changed`, `force_logout`, `user-status`) that
+  fails at start fails `Session::start`. Misspelled stream names are *not* refused (the server
+  answers `ready` and never delivers), so the subscribed names are pinned by a golden test.
+- Ordering: all stream subscriptions are keep-alive handles and one task decodes the
+  client-wide data feed, so events keep the server's order. Control events (connection state,
+  `Resync`, `Degraded`) are never dropped and keep their order; when the event channel is full,
+  stream events are dropped and a `Resync { Overflow }` is queued. `Resync { Reconnected }` is
+  emitted only while connected, once every subscription (global and watched rooms) is renewed;
+  if that takes longer than `resync_wait` (15 s) it is emitted anyway and again once they are.
+  The terminal event (`Connection(Closed)` or `LoggedOut`) is always the last one.
+- Limits: DDP frames are capped at 16 MiB. Any user can submit a message with an empty `msg` and
+  an arbitrary `md`, which the server relays verbatim (also through REST history). The models
+  drop any `md` / `descriptionMd` tree over 32 JSON levels, 20,000 values or 1 MiB of text
+  before decoding it (decoding cost grows with depth times size); `msg` stays.
+- Offline: streams are only (re)subscribed on a live connection; a subscribe that times out
+  because the connection dropped is retried as soon as it is back (no backoff, not reported as
+  degraded). `watch_room` called offline returns at once and `RoomWatch::missing()` lists the
+  streams until they are subscribed. After every reconnect the session re-reads `me` and
+  `UI_Use_Real_Name` (changes while offline are not streamed).
+- Logging: tungstenite logs every WebSocket frame at TRACE, including the `login` frame with the
+  resume token and its result. **Never enable `tungstenite=trace` in production**; the app appends
+  `rocketchat::LOG_FILTER_PINS` to any user filter (default: `rocketchat::RECOMMENDED_LOG_FILTER`).

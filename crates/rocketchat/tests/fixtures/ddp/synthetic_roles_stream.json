@@ -1,0 +1,18 @@
+{
+  "msg": "changed",
+  "collection": "stream-roles",
+  "id": "id",
+  "fields": {
+    "eventName": "roles",
+    "args": [
+      {
+        "_id": "support",
+        "name": "support",
+        "scope": "Users",
+        "description": "Support",
+        "protected": false,
+        "type": "changed"
+      }
+    ]
+  }
+}

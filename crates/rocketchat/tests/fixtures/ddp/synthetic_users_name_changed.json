@@ -1,0 +1,15 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "Users:NameChanged",
+    "args": [
+      {
+        "_id": "F3QsssYnr8Ardq4Js",
+        "name": "Bob Renamed",
+        "username": "bob"
+      }
+    ]
+  }
+}

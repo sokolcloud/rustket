@@ -1,0 +1,18 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "eventName": "dNmNNcy3eQMw2BTCi/video-conference",
+    "args": [
+      {
+        "action": "call",
+        "params": {
+          "callId": "call1",
+          "uid": "F3QsssYnr8Ardq4Js",
+          "rid": "6aef60d5ff2338a3f2a2c250"
+        }
+      }
+    ]
+  }
+}

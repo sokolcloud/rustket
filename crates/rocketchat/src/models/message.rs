@@ -25,7 +25,7 @@ pub struct Message {
     pub t: Option<String>,
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "lenient::opt"
+        deserialize_with = "super::md::opt_root"
     )]
     pub md: Option<Root>,
     #[serde(
@@ -327,12 +327,12 @@ pub struct MessageAttachment {
     #[serde(
         rename = "descriptionMd",
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "lenient::opt"
+        deserialize_with = "super::md::opt_root"
     )]
     pub description_md: Option<Root>,
     #[serde(
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "lenient::opt"
+        deserialize_with = "super::md::opt_root"
     )]
     pub md: Option<Root>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -22,7 +22,8 @@ Live integration tests (need the dev server running):
 ```sh
 docker compose -f dev/docker-compose.yml up -d     # Rocket.Chat 8.9.1 on http://localhost:3000
 dev/seed.sh                                         # idempotent: test users and rooms
-RUSTKET_TEST_SERVER=http://localhost:3000 cargo test -p rocketchat --test live -- --test-threads=1
+RUSTKET_TEST_SERVER=http://localhost:3000 cargo test -p rocketchat -- --test-threads=1   # incl. session_live
+RUSTKET_TEST_SERVER=http://localhost:3000 cargo test -p rustket-core
 ```
 
 Dev accounts: `admin` / `adminpass` (admin), `alice` / `alicepass`, `bob` / `bobpass`,
@@ -34,6 +35,10 @@ other global setting you change in a test.
 MongoDB is 7.0 because 8.0 refuses to start on Linux kernel ≥ 6.19.
 Live tests must create their own uniquely named rooms/messages and never depend on
 state left by other tests.
+
+Build directories: a full build of this workspace is ~2–10 GB. Agents must reuse the
+`CARGO_TARGET_DIR` they were given (never invent new ones per probe) and set
+`CARGO_BUILD_JOBS=6`; RAM is shared with other heavy workloads on this machine.
 
 ## Running the GUI from an agent
 

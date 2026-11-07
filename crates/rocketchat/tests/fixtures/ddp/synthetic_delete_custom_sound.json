@@ -1,0 +1,17 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-all",
+  "id": "id",
+  "fields": {
+    "eventName": "deleteCustomSound",
+    "args": [
+      {
+        "soundData": {
+          "_id": "s1",
+          "name": "ding",
+          "extension": "mp3"
+        }
+      }
+    ]
+  }
+}

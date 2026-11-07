@@ -18,7 +18,9 @@ pub struct HistoryOptions {
     pub limit: u32,
     /// The subscription's `ls`, so the server reports `firstUnread`/`unreadNotLoaded`.
     pub last_seen: Option<RcDate>,
-    /// Include thread replies (`true` like the web client; hidden ones carry `tmid`).
+    /// Include thread replies that were not also sent to the room (`tshow`).
+    /// Default `false`, like the web client's main timeline (user preference
+    /// `showThreadsInMainChannel`, default off); replies carry `tmid`.
     pub show_thread_messages: bool,
 }
 
@@ -28,7 +30,7 @@ impl Default for HistoryOptions {
             before: None,
             limit: 50,
             last_seen: None,
-            show_thread_messages: true,
+            show_thread_messages: false,
         }
     }
 }
@@ -298,6 +300,7 @@ pub struct HistoryCursor {
     before: Option<RcDate>,
     seen: HashSet<String>,
     done: bool,
+    show_thread_messages: bool,
 }
 
 impl HistoryCursor {
@@ -311,7 +314,14 @@ impl HistoryCursor {
             before: None,
             seen: HashSet::new(),
             done: false,
+            show_thread_messages: false,
         }
+    }
+
+    /// Also page through thread replies (see [`HistoryOptions::show_thread_messages`]).
+    pub fn with_thread_messages(mut self, show: bool) -> Self {
+        self.show_thread_messages = show;
+        self
     }
 
     /// Continues below already loaded messages (`before` = oldest known `ts`).
@@ -344,7 +354,7 @@ impl HistoryCursor {
                         before: self.before,
                         limit,
                         last_seen: None,
-                        show_thread_messages: true,
+                        show_thread_messages: self.show_thread_messages,
                     },
                 )
                 .await?;

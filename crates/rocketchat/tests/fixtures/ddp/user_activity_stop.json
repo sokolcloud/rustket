@@ -1,0 +1,13 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-room",
+  "id": "id",
+  "fields": {
+    "args": [
+      "cap-b-1794072787233",
+      [],
+      {}
+    ],
+    "eventName": "6aef60d5ff2338a3f2a2c250/user-activity"
+  }
+}

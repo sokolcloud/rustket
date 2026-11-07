@@ -1,0 +1,13 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "eventName": "banner-changed",
+    "args": [
+      {
+        "bannerId": "b1"
+      }
+    ]
+  }
+}

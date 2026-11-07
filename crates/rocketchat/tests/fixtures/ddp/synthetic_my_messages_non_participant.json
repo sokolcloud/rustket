@@ -1,0 +1,27 @@
+{
+  "msg": "changed",
+  "collection": "stream-room-messages",
+  "id": "id",
+  "fields": {
+    "eventName": "__my_messages__",
+    "args": [
+      {
+        "_id": "np1",
+        "rid": "6aef60d5ff2338a3f2a2c250",
+        "msg": "hello",
+        "ts": {
+          "$date": 1794072800000
+        },
+        "u": {
+          "_id": "F3QsssYnr8Ardq4Js",
+          "username": "bob"
+        }
+      },
+      {
+        "roomParticipant": false,
+        "roomType": "c",
+        "roomName": "public-room"
+      }
+    ]
+  }
+}

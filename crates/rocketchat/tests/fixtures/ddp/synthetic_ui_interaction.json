@@ -1,0 +1,19 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "eventName": "dNmNNcy3eQMw2BTCi/uiInteraction",
+    "args": [
+      {
+        "type": "modal.open",
+        "triggerId": "tr1",
+        "appId": "app1",
+        "view": {
+          "id": "v1",
+          "blocks": []
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "eventName": "dNmNNcy3eQMw2BTCi/message",
+    "args": [
+      {
+        "_id": "eph1",
+        "rid": "6aef60d5ff2338a3f2a2c250",
+        "ts": {
+          "$date": 1794072800000
+        },
+        "msg": "You are not in this room",
+        "u": {
+          "_id": "rocket.cat",
+          "username": "rocket.cat"
+        },
+        "private": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-room",
+  "id": "id",
+  "fields": {
+    "eventName": "6aef60d5ff2338a3f2a2c250/user-activity",
+    "args": [
+      "bob",
+      [
+        "user-typing",
+        "user-uploading"
+      ],
+      {
+        "tmid": "t1"
+      }
+    ]
+  }
+}

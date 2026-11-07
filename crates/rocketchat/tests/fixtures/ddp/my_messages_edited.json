@@ -1,0 +1,52 @@
+{
+  "msg": "changed",
+  "collection": "stream-room-messages",
+  "id": "id",
+  "fields": {
+    "args": [
+      {
+        "_id": "iPET8t9XYwBx5qXfp",
+        "_updatedAt": {
+          "$date": 1794072792893
+        },
+        "channels": [],
+        "editedAt": {
+          "$date": 1794072792891
+        },
+        "editedBy": {
+          "_id": "F3QsssYnr8Ardq4Js",
+          "username": "cap-b-1794072787233"
+        },
+        "md": [
+          {
+            "type": "PARAGRAPH",
+            "value": [
+              {
+                "type": "PLAIN_TEXT",
+                "value": "edited text"
+              }
+            ]
+          }
+        ],
+        "mentions": [],
+        "msg": "edited text",
+        "rid": "6aef60d5ff2338a3f2a2c250",
+        "ts": {
+          "$date": 1794072791321
+        },
+        "u": {
+          "_id": "F3QsssYnr8Ardq4Js",
+          "name": "cap-b-1794072787233",
+          "username": "cap-b-1794072787233"
+        },
+        "urls": []
+      },
+      {
+        "roomName": "cap-room-1794072787233",
+        "roomParticipant": true,
+        "roomType": "c"
+      }
+    ],
+    "eventName": "__my_messages__"
+  }
+}
