@@ -31,7 +31,10 @@ Dev accounts: `admin` / `adminpass` (admin), `alice` / `alicepass`, `bob` / `bob
 OpenID: Keycloak on http://localhost:8081 (realm `rustket`, user `kcuser` / `kcpass`),
 wired as Custom OAuth `keycloak` by `dev/setup-oauth.sh` (idempotent). The dev
 server is shared: never leave `Accounts_OAuth_Custom-Keycloak` disabled, revert any
-other global setting you change in a test.
+other global setting you change in a test. Setting writes (`POST settings/<id>`) need the
+headers `x-2fa-method: password` and `x-2fa-code: <sha256 hex of the admin password>`.
+Dev-server state: `Livechat_enabled` true (routing `Auto_Selection`, no departments),
+`E2E_Enable` false (only the opt-in `RUSTKET_TEST_E2E=1` live test turns it on briefly).
 MongoDB is 7.0 because 8.0 refuses to start on Linux kernel ≥ 6.19.
 Live tests must create their own uniquely named rooms/messages and never depend on
 state left by other tests.
