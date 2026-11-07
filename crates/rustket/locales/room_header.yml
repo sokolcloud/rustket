@@ -5,3 +5,57 @@ room_header.unknown_room:
 room_header.room_info:
   en: "Room information"
   ru: "Информация о комнате"
+room_header.user_info:
+  en: "User info"
+  ru: "Сведения о пользователе"
+room_header.threads:
+  en: "Threads"
+  ru: "Треды"
+room_header.discussions:
+  en: "Discussions"
+  ru: "Обсуждения"
+room_header.members:
+  en: "Members"
+  ru: "Участники"
+room_header.search:
+  en: "Search messages"
+  ru: "Поиск сообщений"
+room_header.team_channels:
+  en: "Team channels"
+  ru: "Каналы команды"
+room_header.more:
+  en: "More"
+  ru: "Ещё"
+room_header.pinned:
+  en: "Pinned messages"
+  ru: "Закреплённые сообщения"
+room_header.starred:
+  en: "Starred messages"
+  ru: "Отмеченные сообщения"
+room_header.mentions:
+  en: "Mentions"
+  ru: "Упоминания"
+room_header.files:
+  en: "Files"
+  ru: "Файлы"
+room_header.notification_prefs:
+  en: "Notification preferences"
+  ru: "Настройки уведомлений"
+room_header.room_settings:
+  en: "Room settings"
+  ru: "Настройки комнаты"
+room_header.invite:
+  en: "Invite users"
+  ru: "Пригласить пользователей"
+room_header.call_soon:
+  en: "Calls are coming soon"
+  ru: "Звонки скоро появятся"
+room_header.team:
+  en: "Team"
+  ru: "Команда"
+room_header.archived:
+  en: "Archived"
+  ru: "В архиве"
+room_header.parent_room:
+  en: "Parent room"
+  ru: "Родительская комната"

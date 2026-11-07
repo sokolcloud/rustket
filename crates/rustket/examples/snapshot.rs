@@ -31,6 +31,10 @@ use rustket::workspace::sidebar;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+#[path = "snapshot_panel/mod.rs"]
+mod snapshot_panel;
+use snapshot_panel::panel_shots;
+
 const SIZE: Size = Size::new(1280.0, 800.0);
 
 struct Driver {
@@ -198,6 +202,8 @@ fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) {
 struct Created {
     users: Vec<String>,
     rooms: Vec<String>,
+    /// Team ids (deleted before the rooms).
+    teams: Vec<String>,
 }
 
 type Ledger = Arc<Mutex<Created>>;
@@ -205,6 +211,7 @@ type Ledger = Arc<Mutex<Created>>;
 struct Fixture {
     user: (String, String, String), // id, username, password
     tfa_user: (String, String),     // username, password (email 2FA)
+    ledger: Ledger,
 }
 
 async fn rest(server: &ServerUrl) -> RestClient {
@@ -342,6 +349,7 @@ async fn setup(server: &ServerUrl, ledger: Ledger) -> Fixture {
     Fixture {
         user: (uid, user_name, password.clone()),
         tfa_user: (tfa_name, password),
+        ledger,
     }
 }
 
@@ -355,6 +363,13 @@ async fn teardown(server: &ServerUrl, ledger: &Ledger) {
         return;
     }
     let admin = admin(server).await;
+    let teams = std::mem::take(&mut ledger.lock().expect("ledger").teams);
+    for id in teams {
+        let r: Result<Value, _> = admin.post("teams.delete", &json!({"teamId": id})).await;
+        if let Err(e) = r {
+            eprintln!("teams.delete {id}: {e}");
+        }
+    }
     for rid in rooms {
         let r: Result<Value, _> = admin.post("channels.delete", &json!({"roomId": rid})).await;
         match r {
@@ -603,6 +618,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "08-room-dark");
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
+    panel_shots(&mut d, &server, &out, &sid, &rid, &user, &fixture.ledger).await;
 
     // Log out through the app: the login token is revoked on the server.
     let creds: Credentials = d.app.servers[&sid].credentials.clone().expect("creds");
