@@ -289,6 +289,34 @@ pub fn parse_slash(text: &str) -> Option<(String, String)> {
     Some((name.to_owned(), rest[end..].trim().to_owned()))
 }
 
+/// Closes an unclosed ```` ``` ```` block (`closeUnclosedCodeBlock`).
+pub fn close_code_block(text: &str) -> String {
+    if text.matches("```").count() % 2 == 1 {
+        format!("{text}\n```")
+    } else {
+        text.to_owned()
+    }
+}
+
+/// Whether the final message text exceeds `Message_MaxAllowedSize`; the
+/// server counts UTF-16 code units (`msg.length`).
+pub fn too_long(text: &str, max: usize) -> bool {
+    text.encode_utf16().count() > max
+}
+
+/// The byte range of `selected` in `text` that contains (or touches) `cursor`
+/// — word/line selections (double/triple click) keep the cursor inside the
+/// selected text without an anchor.
+pub fn selection_around(text: &str, selected: &str, cursor: usize) -> Option<Range<usize>> {
+    if selected.is_empty() {
+        return None;
+    }
+    text.match_indices(selected)
+        .map(|(i, s)| i..i + s.len())
+        .filter(|r| r.start <= cursor && cursor <= r.end)
+        .min_by_key(|r| r.start.abs_diff(cursor).min(r.end.abs_diff(cursor)))
+}
+
 /// The message text with quote links before it (`prependReplies`): one
 /// `[ ](permalink)` line per quoted message, then the text.
 pub fn with_quotes(text: &str, permalinks: &[String]) -> String {
@@ -321,6 +349,25 @@ fn encode(s: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn code_blocks_are_closed_and_length_counts_utf16() {
+        assert_eq!(close_code_block("```\nfn x()"), "```\nfn x()\n```");
+        assert_eq!(close_code_block("```a```"), "```a```");
+        assert!(!too_long("abc", 3));
+        assert!(
+            too_long("\u{1F600}\u{1F600}", 3),
+            "emoji are two UTF-16 units"
+        );
+    }
+
+    #[test]
+    fn word_selection_is_found_around_the_cursor() {
+        assert_eq!(selection_around("hello world", "world", 9), Some(6..11));
+        assert_eq!(selection_around("ab ab", "ab", 4), Some(3..5));
+        assert_eq!(selection_around("ab ab", "ab", 1), Some(0..2));
+        assert_eq!(selection_around("hello", "x", 2), None);
+    }
 
     #[test]
     fn inline_format_wraps_and_toggles() {

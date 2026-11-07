@@ -7,7 +7,7 @@ room_composer.placeholder_room:
   ru: "Сообщение в %{room}"
 room_composer.placeholder_thread:
   en: "Reply in thread"
-  ru: "Ответить в обсуждении"
+  ru: "Ответить в треде"
 room_composer.send:
   en: "Send"
   ru: "Отправить"
@@ -227,3 +227,123 @@ room_composer.upload.too_large:
 room_composer.upload.type_not_allowed:
   en: "Files of type %{mime} are not allowed."
   ru: "Файлы типа %{mime} не разрешены."
+room_composer.not_delivered:
+  en: "The message was not delivered."
+  ru: "Сообщение не доставлено."
+room_composer.commands_unavailable:
+  en: "The list of slash commands could not be loaded. Try again in a moment."
+  ru: "Не удалось загрузить список команд. Повторите попытку чуть позже."
+room_composer.delete_failed:
+  en: "Could not delete the message"
+  ru: "Не удалось удалить сообщение"
+room_composer.delete.title:
+  en: "Delete message"
+  ru: "Удалить сообщение"
+room_composer.delete.body:
+  en: "The text is empty. Delete this message? This cannot be undone."
+  ru: "Текст пуст. Удалить это сообщение? Это действие нельзя отменить."
+room_composer.delete.confirm:
+  en: "Delete"
+  ru: "Удалить"
+room_composer.join_code:
+  en: "Join code"
+  ru: "Код для входа"
+room_composer.upload.unit.b:
+  en: "B"
+  ru: "Б"
+room_composer.upload.unit.kb:
+  en: "KB"
+  ru: "КБ"
+room_composer.upload.unit.mb:
+  en: "MB"
+  ru: "МБ"
+room_composer.upload.unit.gb:
+  en: "GB"
+  ru: "ГБ"
+room_composer.upload.unit.tb:
+  en: "TB"
+  ru: "ТБ"
+room_composer.cmd.Archive:
+  en: "Archive the channel"
+  ru: "Архивировать канал"
+room_composer.cmd.Unarchive:
+  en: "Unarchive the channel"
+  ru: "Разархивировать"
+room_composer.cmd.Slash_Gimme_Description:
+  en: "Displays ༼ つ ◕_◕ ༽つ before your message"
+  ru: "Показывает ༼ つ ◕_◕ ༽つ перед сообщением"
+room_composer.cmd.Slash_LennyFace_Description:
+  en: "Displays ( ͡° ͜ʖ ͡°) after your message"
+  ru: "Показывает ( ͡° ͜ʖ ͡°) после сообщения"
+room_composer.cmd.Slash_Shrug_Description:
+  en: "Displays ¯\\_(ツ)_/¯ after your message"
+  ru: "Показывает ¯\\_(ツ)_/¯ после сообщения"
+room_composer.cmd.Slash_Tableflip_Description:
+  en: "Displays (╯°□°）╯︵ ┻━┻"
+  ru: "Показывает (╯°□°）╯︵ ┻━┻"
+room_composer.cmd.Slash_TableUnflip_Description:
+  en: "Displays ┬─┬ ノ( ゜-゜ノ)"
+  ru: "Показывает ┬─┬ ノ( ゜-゜ノ)"
+room_composer.cmd.Ban_user_from_room:
+  en: "Ban user from room"
+  ru: "Заблокировать пользователя в комнате"
+room_composer.cmd.Unban_user_from_room:
+  en: "Unban user from room"
+  ru: "Разблокировать пользователя в комнате"
+room_composer.cmd.Create_A_New_Channel:
+  en: "Create a New Channel"
+  ru: "Создать новый канал"
+room_composer.cmd.Show_the_keyboard_shortcut_list:
+  en: "Show the keyboard shortcut list"
+  ru: "Показать список горячих клавиш"
+room_composer.cmd.Hide_room:
+  en: "Hide the room"
+  ru: "Скрыть комнату"
+room_composer.cmd.Invite_user_to_join_channel:
+  en: "Invite one user to join this channel"
+  ru: "Пригласить пользователя в канал"
+room_composer.cmd.Invite_user_to_join_channel_all_to:
+  en: "Invite all users from this channel to join [#channel]"
+  ru: "Пригласить всех пользователей этого канала присоединиться к [#channel]"
+room_composer.cmd.Invite_user_to_join_channel_all_from:
+  en: "Invite all users from [#channel] to join this channel"
+  ru: "Пригласить всех пользователей из [#channel] присоединиться к этому каналу"
+room_composer.cmd.Join_the_given_channel:
+  en: "Join the given channel"
+  ru: "Присоединиться к этому каналу"
+room_composer.cmd.Remove_someone_from_room:
+  en: "Remove someone from the room"
+  ru: "Удалить кого-либо из комнаты"
+room_composer.cmd.Leave_the_current_channel:
+  en: "Leave the current channel"
+  ru: "Покинуть текущий канал"
+room_composer.cmd.Displays_action_text:
+  en: "Displays action text"
+  ru: "Показать текст действия"
+room_composer.cmd.Direct_message_someone:
+  en: "Direct message someone"
+  ru: "Личная переписка с кем-нибудь"
+room_composer.cmd.Mute_someone_in_room:
+  en: "Mute someone in the room"
+  ru: "Заглушить кого-нибудь в комнате"
+room_composer.cmd.Unmute_someone_in_room:
+  en: "Unmute someone in the room"
+  ru: "Снять заглушение с кого-нибудь в комнате"
+room_composer.cmd.Slash_Status_Params:
+  en: "Status message"
+  ru: "Текст статуса"
+room_composer.cmd.Slash_Status_Description:
+  en: "Set your status message"
+  ru: "Установить Ваш статус"
+room_composer.cmd.Slash_Topic_Params:
+  en: "Topic message"
+  ru: "Тема"
+room_composer.cmd.Slash_Topic_Description:
+  en: "Set topic"
+  ru: "Установить тему"
+room_composer.cmd.your_message_optional:
+  en: "your message (optional)"
+  ru: "ваше сообщение (опционально)"
+room_composer.cmd.your_message:
+  en: "your message"
+  ru: "ваше сообщение"

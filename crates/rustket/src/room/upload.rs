@@ -9,13 +9,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use iced::widget::{column, container, image, progress_bar, row, text, text_input};
 use iced::{Alignment, Element, Length, Task};
 use rocketchat::RestClient;
-use rocketchat::rest::{ProgressFn, UploadRequest, UploadSource};
+use rocketchat::rest::{Bytes, ProgressFn, UploadRequest, UploadSource};
 use rust_i18n::t;
 use rustket_core::settings::Settings;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_CAPTION, TEXT_SMALL};
@@ -115,8 +114,11 @@ impl std::fmt::Debug for Transfer {
 pub struct Uploads {
     pub dialog: Option<Dialog>,
     pub transfers: Vec<Transfer>,
-    next_id: u64,
 }
+
+/// Transfer ids are unique per process: a transfer of a closed (and reopened)
+/// composer can never be confused with a new one.
+static NEXT_TRANSFER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -246,6 +248,12 @@ impl Uploads {
                 if file.error.is_some() {
                     return Action::none();
                 }
+                // Keep the file (and the edited fields) when it cannot go out now.
+                let Some(rest) = ctx.rest() else {
+                    return Action::effect(toast_error(
+                        t!("room_composer.upload.not_connected").into_owned(),
+                    ));
+                };
                 let name = match d.name.trim() {
                     "" => file.name.clone(),
                     n => n.to_owned(),
@@ -255,13 +263,7 @@ impl Uploads {
                 if !d.advance() {
                     self.dialog = None;
                 }
-                let Some(rest) = ctx.rest() else {
-                    return Action::effect(toast_error(
-                        t!("room_composer.upload.not_connected").into_owned(),
-                    ));
-                };
-                self.next_id += 1;
-                let id = self.next_id;
+                let id = NEXT_TRANSFER.fetch_add(1, Ordering::Relaxed);
                 let (task, handle) = start(
                     id,
                     rest,
@@ -273,12 +275,13 @@ impl Uploads {
                     message,
                 )
                 .abortable();
+                // Closing the room drops the composer and with it the upload.
                 self.transfers.push(Transfer {
                     id,
                     name,
                     sent: 0,
                     total: file.size,
-                    handle,
+                    handle: handle.abort_on_drop(),
                 });
                 Action::task(task)
             }
@@ -490,12 +493,19 @@ fn pick_files() -> Task<Message> {
     )
 }
 
-/// Reads an image from the clipboard as PNG (blocking work off the UI thread).
-pub fn clipboard_image() -> Task<Message> {
+/// Files copied in a file manager (`Paths`) or an image as PNG
+/// (`ClipboardImage(Some)`); `ClipboardImage(None)` when the clipboard holds
+/// neither. Blocking work runs off the UI thread.
+pub fn clipboard_contents() -> Task<Message> {
     Task::perform(
         async {
             tokio::task::spawn_blocking(|| {
                 let mut cb = arboard::Clipboard::new().ok()?;
+                if let Ok(files) = cb.get().file_list()
+                    && !files.is_empty()
+                {
+                    return Some(Message::Paths(files));
+                }
                 let img = cb.get_image().ok()?;
                 let rgba = ::image::RgbaImage::from_raw(
                     u32::try_from(img.width).ok()?,
@@ -508,13 +518,14 @@ pub fn clipboard_image() -> Task<Message> {
                     ::image::ImageFormat::Png,
                 )
                 .ok()?;
-                Some(Arc::new(png))
+                Some(Message::ClipboardImage(Some(Arc::new(png))))
             })
             .await
             .ok()
             .flatten()
+            .unwrap_or(Message::ClipboardImage(None))
         },
-        Message::ClipboardImage,
+        std::convert::identity,
     )
 }
 
@@ -691,19 +702,27 @@ pub fn mime_for(name: &str) -> &'static str {
     }
 }
 
-/// `1.5 MB` style sizes (binary units, as Rocket.Chat shows them).
+/// `1.5 MB` style sizes (binary units, as Rocket.Chat shows them; unit names
+/// are localised).
 pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    const UNITS: usize = 5;
     let mut v = bytes as f64;
     let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
+    while v >= 1024.0 && u < UNITS - 1 {
         v /= 1024.0;
         u += 1;
     }
+    let unit = match u {
+        0 => t!("room_composer.upload.unit.b"),
+        1 => t!("room_composer.upload.unit.kb"),
+        2 => t!("room_composer.upload.unit.mb"),
+        3 => t!("room_composer.upload.unit.gb"),
+        _ => t!("room_composer.upload.unit.tb"),
+    };
     if u == 0 {
-        format!("{bytes} B")
+        format!("{bytes} {unit}")
     } else {
-        format!("{v:.1} {}", UNITS[u])
+        format!("{v:.1} {unit}")
     }
 }
 
@@ -748,6 +767,7 @@ mod tests {
 
     #[test]
     fn mime_and_sizes() {
+        rust_i18n::set_locale("en");
         assert_eq!(mime_for("a.PNG"), "image/png");
         assert_eq!(mime_for("archive.tar.gz"), "application/gzip");
         assert_eq!(mime_for("noext"), "application/octet-stream");

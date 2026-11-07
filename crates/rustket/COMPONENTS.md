@@ -221,6 +221,8 @@ something; `RoomView` routes it to `Composer::intent(intent, ctx)`:
 `React(mid)` (emoji picker for a reaction), `ReplyInThread(tmid)` (also opens
 `Kind::Thread(tmid)`).
 
+### Composer (`room/composer.rs`, owned by the composer agent)
+
 `Composer::for_thread(rid, tmid)` builds a thread composer (sends with `tmid`,
 own draft and typing context); call `on_open(ctx)` when it is shown and
 `on_close(ws)` when it goes away (draft). `room/emoji_picker.rs` is reusable:
@@ -228,6 +230,8 @@ keep an `EmojiPicker`, forward its messages to `update`, act on
 `Event::Picked(key)` and return `Effect::RecentEmoji(key)`. Dropped files
 (`window::Event::FileDropped`) reach the active room's composer
 (`composer::Message::FilesDropped`).
+Outbox send results are recorded per process, so a result that arrives while
+the room is closed is applied by `on_open` when it reopens.
 
 ### Shared message rendering (`room/render/`)
 

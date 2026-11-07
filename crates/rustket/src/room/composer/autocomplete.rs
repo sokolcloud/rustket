@@ -251,12 +251,19 @@ pub fn match_emoji(ws: &Workspace, query: &str) -> Vec<Item> {
         .collect()
 }
 
-/// `/` candidates by command prefix.
-pub fn match_commands(commands: &[SlashCommand], query: &str) -> Vec<Item> {
+/// `/` candidates by command prefix, limited to commands the user may run in
+/// room `rid` (the web client's `hasAtLeastOnePermission(command.permission)`).
+pub fn match_commands(
+    ws: &Workspace,
+    rid: &str,
+    commands: &[SlashCommand],
+    query: &str,
+) -> Vec<Item> {
     let q = query.to_lowercase();
     let mut list: Vec<&SlashCommand> = commands
         .iter()
         .filter(|c| c.command.to_lowercase().starts_with(&q))
+        .filter(|c| may_run(ws, rid, c))
         .collect();
     list.sort_by(|a, b| a.command.cmp(&b.command));
     list.into_iter()
@@ -274,11 +281,33 @@ pub fn wants_remote(kind: TriggerKind) -> bool {
     matches!(kind, TriggerKind::User | TriggerKind::Room)
 }
 
-/// Command descriptions/params are i18n keys of the server (`Slash_Gimme_Description`);
-/// show them only when they look like prose.
+/// Whether the user holds one of the command's permissions. Permissions not
+/// loaded yet do not hide anything (the server checks again on run).
+fn may_run(ws: &Workspace, rid: &str, c: &SlashCommand) -> bool {
+    let perms: Vec<&str> = match &c.permission {
+        Some(serde_json::Value::String(p)) => vec![p.as_str()],
+        Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| v.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    perms.is_empty()
+        || perms.iter().all(|p| ws.permission_roles(p).is_none())
+        || permissions::has_any_permission(ws, &perms, Some(rid))
+}
+
+/// Command descriptions/params are mostly i18n keys of the server
+/// (`Slash_Gimme_Description`, `your_message_optional`): known keys are
+/// translated (`room_composer.cmd.<key>`), unknown keys are hidden, prose
+/// is shown as is.
 fn command_text(s: &str) -> Option<String> {
-    let looks_like_key = !s.contains(' ') && s.contains('_');
-    (!looks_like_key).then(|| s.to_owned())
+    let key = format!("room_composer.cmd.{s}");
+    let translated = crate::i18n::tr_dyn(&key, "");
+    if !translated.is_empty() {
+        return Some(translated);
+    }
+    let looks_like_key =
+        !s.contains(' ') && (s.contains('_') || s.chars().all(char::is_alphanumeric));
+    let is_hint = s.starts_with('#') || s.starts_with('@');
+    (is_hint || !looks_like_key).then(|| s.to_owned())
 }
 
 pub fn view<'a, M: Clone + 'a>(
@@ -569,10 +598,21 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let items = match_commands(&cmds, "le");
+        let ws = Workspace::new();
+        let items = match_commands(&ws, "r", &cmds, "le");
         let names: Vec<String> = items.iter().map(Item::replacement).collect();
         assert_eq!(names, ["/leave", "/lennyface"]);
-        assert_eq!(command_text("Slash_LennyFace_Description"), None);
+        rust_i18n::set_locale("en");
+        assert_eq!(
+            command_text("Slash_Shrug_Description").as_deref(),
+            Some("Displays ¯\\_(ツ)_/¯ after your message")
+        );
+        assert_eq!(
+            command_text("your_message_optional").as_deref(),
+            Some("your message (optional)")
+        );
+        assert_eq!(command_text("Some_Unknown_Key"), None);
+        assert_eq!(command_text("#channel"), Some("#channel".into()));
         assert_eq!(command_text("Invite a user"), Some("Invite a user".into()));
     }
 

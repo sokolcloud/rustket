@@ -26,6 +26,9 @@ pub const SEARCH_ID: &str = "emoji-picker-search";
 /// Emoji per grid row.
 const COLUMNS: usize = 9;
 const CELL: f32 = 36.0;
+/// Room for the grid's scrollbar next to the last column.
+const SCROLLBAR_WIDTH: f32 = 10.0;
+const SCROLLBAR_GAP: f32 = 4.0;
 const SEARCH_LIMIT: usize = 90;
 
 /// Recently used emoji keys (most recent first), shared by every picker. The
@@ -366,11 +369,14 @@ impl EmojiPicker {
             )
             .push(
                 scrollable(grid)
+                    .spacing(SCROLLBAR_GAP)
                     .height(Length::Fixed(CELL * 7.0))
                     .style(style::scrollable),
             );
         container(body.padding(SPACE_2))
-            .width(Length::Fixed(CELL * COLUMNS as f32 + SPACE_2 * 2.0 + 12.0))
+            .width(Length::Fixed(
+                CELL * COLUMNS as f32 + SPACE_2 * 2.0 + SCROLLBAR_WIDTH + SCROLLBAR_GAP,
+            ))
             .style(style::container_popover)
             .into()
     }

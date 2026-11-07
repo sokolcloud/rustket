@@ -754,6 +754,16 @@ async fn composer_snapshots(d: &mut Driver, out: &Path, sid: &rustket_core::Serv
     both(d, out, "14-composer-edit");
     send(d, sid, rid, composer::Message::Cancel);
 
+    // Slash commands: descriptions and parameter hints are translated.
+    type_text(d, sid, rid, "/");
+    d.pump_until("/ autocomplete", Duration::from_secs(10), |a| {
+        composer_of(a).is_some_and(|c| c.0 >= 5)
+    })
+    .await;
+    both(d, out, "16-composer-commands");
+    send(d, sid, rid, composer::Message::AcClose);
+    clear(d, sid, rid);
+
     let ro = d.app.servers[sid]
         .workspace
         .rooms()

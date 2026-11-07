@@ -266,9 +266,10 @@ impl RoomView {
         } else {
             Task::none()
         };
-        let composer = view.composer.on_open(ctx).map(Message::Composer);
         let mut action = view.load_older(ctx);
-        action.task = Task::batch([action.task, watch, composer.task]);
+        action.task = Task::batch([action.task, watch]);
+        let composer = view.composer.on_open(ctx).map(Message::Composer);
+        action.task = Task::batch([action.task, composer.task]);
         action.effects.extend(composer.effects);
         let read = view.mark_read(ctx);
         action.task = Task::batch([action.task, read]);
@@ -276,7 +277,7 @@ impl RoomView {
     }
 
     /// Forgets the timeline; the room watch ends when `self` is dropped.
-    pub fn close(mut self, ws: &mut Workspace) {
+    pub fn close(self, ws: &mut Workspace) {
         self.composer.on_close(ws);
         ws.close_room(&self.rid);
     }
