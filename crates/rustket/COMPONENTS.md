@@ -68,6 +68,8 @@ secret_backend, … }` in `view`.
 | `Logout { everywhere }` | log out of the server (`everywhere`: revoke a PAT too) |
 | `RemoveServer` | remove the server (with confirmation) |
 | `RegisterUrlHandler` | the `rocketchat://` handler dialog |
+| `ClearImageCache` | drop every server's image cache (memory and disk) |
+| `TestNotification` | show a test desktop notification |
 
 Wiring (already done in `app/components.rs`, `app/view.rs`): rail gear →
 settings; sidebar header avatar → status menu (`workspace/status_menu.rs`,
@@ -76,15 +78,24 @@ sidebar header buttons → directory and create room; Ctrl+K → quick switcher.
 
 ### Desktop (`src/desktop/`)
 
-`Desktop` is owned by the app. Hooks the app calls:
+`Desktop` is owned by the app (`Desktop::new()` is inert for tests and
+snapshots; the binary sets `Flags::desktop` for `Desktop::system`). Hooks the
+app calls:
 - `on_notification(server_id, server_name, &DesktopNotification, &Workspace,
-  &UiPrefs, focused) -> Task<desktop::Message>` for every `{uid}/notification`
-  event (after it was applied);
+  &UiPrefs, &NotifyEnv) -> Task<desktop::Message>` for every
+  `{uid}/notification` event (after it was applied); `NotifyEnv` carries the
+  images, server URL, active server/room/thread and window focus;
 - `on_unread_changed(unread_rooms, mentions)` whenever the totals over all
-  servers change.
+  servers change; `on_state(&[(sid, &Workspace)], active)` after every update
+  (closes notifications of read rooms, tray status);
+- `on_focus_changed`, `on_close_requested` (close/minimize to tray),
+  `show_window` (second launch, tray), `idle_calls`, `test_notification`.
 
 `Desktop::update` returns `(Task, Vec<Request>)`; requests:
-`OpenRoom { server_id, rid }`, `ShowWindow`, `Quit`, `Idle(bool)`.
+`OpenRoom { server_id, rid }`, `OpenThread { server_id, rid, tmid }`,
+`ShowWindow`, `Quit`, `IdleTime(Duration)`, `SetStatus(UserStatus)`,
+`RoomStep(RoomStep)` (Alt(+Shift)+Up/Down, from `Desktop::subscription`, which
+also sees keys captured by widgets such as the composer).
 
 ## Room components
 

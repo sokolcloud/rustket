@@ -33,6 +33,13 @@ impl RestClient {
         self.post_ok("users.setStatus", &body).await
     }
 
+    /// Changes only the custom status text: the server keeps the status the
+    /// user chose (`statusDefault`), so a transient auto-away is not pinned.
+    pub async fn users_set_status_message(&self, message: &str) -> Result<()> {
+        self.post_ok("users.setStatus", &json!({ "message": message }))
+            .await
+    }
+
     /// Presence of users changed since `from` (all users with a non-offline status
     /// when `None`), optionally limited to `ids`.
     pub async fn users_presence(&self, from: Option<RcDate>, ids: &[&str]) -> Result<Presence> {

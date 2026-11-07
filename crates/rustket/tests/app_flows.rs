@@ -952,3 +952,59 @@ async fn component_navigation() {
     // Views render without panicking.
     let _ = app.view();
 }
+
+/// Alt(+Shift)+Up/Down walk the sidebar; the desktop layer sees unread totals.
+#[tokio::test]
+async fn room_shortcuts_and_desktop_totals() {
+    use rustket::desktop::shortcuts::RoomStep;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid, _) = app_with(dir.path(), Some("A"), vec![]);
+    let me = user("A", "alice");
+    let m = ev(
+        &app,
+        &sid,
+        SessionEvent::Ready {
+            me: Box::new(me.clone()),
+        },
+    );
+    let _ = app.update(m);
+    let m = loaded(
+        &app,
+        &sid,
+        initial(me, &[("r1", 0), ("r2", 2), ("r3", 0), ("r4", 1)]),
+    );
+    let _ = app.update(m);
+    assert_eq!(app.desktop.tray.state().unread, 2);
+    let order: Vec<String> = app.servers[&sid]
+        .sidebar
+        .sections
+        .iter()
+        .flat_map(|s| s.items.iter().map(|i| i.rid.clone()))
+        .collect();
+    // Same activity: sorted by name.
+    assert_eq!(order, ["r1", "r2", "r3", "r4"]);
+    let step = |delta, unread_only| {
+        Message::Desktop(rustket::desktop::Message::RoomStep(RoomStep {
+            delta,
+            unread_only,
+        }))
+    };
+    let active = |app: &App| app.servers[&sid].active_room.clone();
+    let _ = app.update(step(1, false));
+    assert_eq!(active(&app).as_deref(), Some("r1"));
+    let _ = app.update(step(1, false));
+    assert_eq!(active(&app).as_deref(), Some("r2"));
+    // Next unread skips the read r3.
+    let _ = app.update(step(1, true));
+    assert_eq!(active(&app).as_deref(), Some("r4"));
+    // Previous unread from r4 skips r3 again.
+    let _ = app.update(step(-1, true));
+    assert_eq!(active(&app).as_deref(), Some("r2"));
+    // Previous wraps from the first room to the last.
+    let _ = app.update(step(-1, false));
+    let _ = app.update(step(-1, false));
+    assert_eq!(active(&app).as_deref(), Some("r4"));
+    // A second launch without links raises the (inert) window: no work.
+    let t = app.update(Message::DeepLinks(Vec::new()));
+    assert_eq!(t.units(), 0);
+}

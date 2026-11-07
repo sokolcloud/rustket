@@ -198,6 +198,8 @@ pub struct UiPrefs {
     pub desktop_notifications: bool,
     pub sound: bool,
     pub minimize_to_tray: bool,
+    /// Closing the window hides it to the tray (when a tray is available).
+    pub close_to_tray: bool,
     pub start_minimized: bool,
     pub zoom: f32,
 }
@@ -218,6 +220,7 @@ impl Default for UiPrefs {
             desktop_notifications: true,
             sound: true,
             minimize_to_tray: false,
+            close_to_tray: true,
             start_minimized: false,
             zoom: 1.0,
         }
@@ -301,6 +304,7 @@ const UI_KEYS: &[&str] = &[
     "desktop_notifications",
     "sound",
     "minimize_to_tray",
+    "close_to_tray",
     "start_minimized",
     "zoom",
 ];
@@ -680,6 +684,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = AppConfig::load(dir.path()).unwrap();
         assert_eq!(c, AppConfig::default());
+    }
+
+    #[test]
+    fn close_to_tray_defaults_on_and_parses() {
+        assert!(AppConfig::default().ui.close_to_tray);
+        let c = AppConfig::parse("[ui]\nclose_to_tray = false\n").unwrap();
+        assert!(!c.ui.close_to_tray);
+        let c = AppConfig::parse("[ui]\nclose_to_tray = \"maybe\"\n").unwrap();
+        assert!(c.ui.close_to_tray, "invalid value keeps the default");
     }
 
     #[test]

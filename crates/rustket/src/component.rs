@@ -137,6 +137,10 @@ pub enum Effect {
     RemoveServer,
     /// Open the "register rocketchat:// handler" dialog.
     RegisterUrlHandler,
+    /// Drop the image cache (memory and disk) of every server.
+    ClearImageCache,
+    /// Show a test desktop notification.
+    TestNotification,
 }
 
 /// Result of an app-level component `update`.

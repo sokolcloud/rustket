@@ -192,7 +192,8 @@ async fn read_client(stream: tokio::net::UnixStream, uid: u32) -> Option<Vec<Str
     })
     .await;
     match read {
-        Ok(Ok(buf)) => Some(parse_payload(&buf)).filter(|a| !a.is_empty()),
+        // An empty list (a launch without links) raises the window.
+        Ok(Ok(buf)) => Some(parse_payload(&buf)),
         _ => None,
     }
 }

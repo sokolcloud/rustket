@@ -137,13 +137,18 @@ impl Driver {
     }
 
     fn shoot(&self, dir: &Path, name: &str) {
+        self.shoot_at(dir, name, SIZE);
+    }
+
+    /// Like `shoot` with another window size (e.g. a whole settings page).
+    fn shoot_at(&self, dir: &Path, name: &str, size: Size) {
         let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
             rustket_ui::theme::DEFAULT_FONT,
             Pixels(rustket_ui::theme::TEXT_BODY),
         ));
         let theme = self.app.theme();
         let t = rustket_ui::tokens(&theme);
-        let mut ui = UserInterface::build(self.app.view(), SIZE, Cache::default(), &mut renderer);
+        let mut ui = UserInterface::build(self.app.view(), size, Cache::default(), &mut renderer);
         let cursor = mouse::Cursor::Available(iced::Point::new(-10.0, -10.0));
         let mut msgs = Vec::new();
         let _ = ui.update(
@@ -164,12 +169,12 @@ impl Driver {
             cursor,
         );
         let rgba = renderer.screenshot(
-            Size::new(SIZE.width as u32, SIZE.height as u32),
+            Size::new(size.width as u32, size.height as u32),
             1.0,
             t.surface_room,
         );
         let path = dir.join(format!("{name}.png"));
-        write_png(&path, SIZE.width as u32, SIZE.height as u32, &rgba);
+        write_png(&path, size.width as u32, size.height as u32, &rgba);
         println!("wrote {}", path.display());
     }
 }
@@ -567,9 +572,42 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.send(Message::CloseModal);
     d.send(Message::Rail(rustket::workspace::rail::Message::Settings));
     d.shoot(&out, "07c-settings-dark");
+    // The whole settings page, dark and light.
+    let tall = Size::new(SIZE.width, 1900.0);
+    d.settle(Duration::from_millis(300)).await;
+    d.shoot_at(&out, "07d-settings-full-dark", tall);
+    d.app.config.ui.theme = rustket_core::config::Theme::Light;
+    d.shoot_at(&out, "07e-settings-full-light", tall);
+    d.app.config.ui.theme = rustket_core::config::Theme::Dark;
     d.send(Message::Settings(
         rustket::screens::settings::Message::Close,
     ));
+
+    // Status menu: set a status text through it, then open it.
+    {
+        use rustket::workspace::status_menu::Message as Sm;
+        d.send(Message::StatusMenu(sid.clone(), Sm::Toggle(true)));
+        d.send(Message::StatusMenu(
+            sid.clone(),
+            Sm::TextChanged("Shipping the release".into()),
+        ));
+        d.send(Message::StatusMenu(sid.clone(), Sm::SubmitText));
+        d.pump_until("status text set", Duration::from_secs(15), |a| {
+            a.servers[&sid]
+                .workspace
+                .me()
+                .and_then(|m| m.status_text.as_deref())
+                == Some("Shipping the release")
+        })
+        .await;
+        d.send(Message::StatusMenu(sid.clone(), Sm::Toggle(true)));
+        d.settle(Duration::from_millis(500)).await;
+        d.shoot(&out, "07f-status-menu-dark");
+        d.app.config.ui.theme = rustket_core::config::Theme::Light;
+        d.shoot(&out, "07g-status-menu-light");
+        d.app.config.ui.theme = rustket_core::config::Theme::Dark;
+        d.send(Message::StatusMenu(sid.clone(), Sm::Toggle(false)));
+    }
 
     // Open the throwaway dev channel through the sidebar.
     let rid = {

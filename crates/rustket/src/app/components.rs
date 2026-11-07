@@ -40,8 +40,16 @@ impl App {
         let sid = self.active.clone();
         match (nav, sid) {
             (Nav::Settings, _) => {
-                self.screen = Screen::Settings(Box::new(settings::Settings::new()));
-                Task::none()
+                // The real autostart directory only with real desktop integration.
+                let home = self
+                    .desktop
+                    .is_enabled()
+                    .then(crate::desktop::autostart::config_home)
+                    .flatten();
+                let screen = settings::Settings::with_autostart_home(home);
+                let load = screen.load().map(Message::Settings);
+                self.screen = Screen::Settings(Box::new(screen));
+                load
             }
             (Nav::Workspace, _) => {
                 self.screen = if self.servers.is_empty() {
@@ -129,6 +137,11 @@ impl App {
                     Task::none()
                 }
                 Effect::RegisterUrlHandler => self.open_register_handler(),
+                Effect::ClearImageCache => self.clear_image_cache(),
+                Effect::TestNotification => self
+                    .desktop
+                    .test_notification(&self.config.ui)
+                    .map(Message::Desktop),
             });
         }
         Task::batch(tasks)
@@ -291,18 +304,102 @@ impl App {
                     let a = self.activate(server_id.clone());
                     Task::batch([a, self.open_room(&server_id, &rid)])
                 }
-                desktop::Request::ShowWindow => Task::none(),
+                desktop::Request::OpenThread {
+                    server_id,
+                    rid,
+                    tmid,
+                } => {
+                    let a = self.activate(server_id.clone());
+                    let open = self.open_room(&server_id, &rid);
+                    if let Some(rv) = self
+                        .servers
+                        .get_mut(&server_id)
+                        .and_then(|s| s.rooms.get_mut(&rid))
+                    {
+                        let kind = crate::room::panel::Kind::Thread(tmid);
+                        if rv.panel.kind() != Some(&kind) {
+                            rv.panel.open(kind);
+                        }
+                    }
+                    Task::batch([a, open])
+                }
+                desktop::Request::ShowWindow => self.desktop.show_window().map(Message::Desktop),
                 desktop::Request::Quit => {
                     self.flush_config();
                     iced::exit()
                 }
-                desktop::Request::Idle(idle) => {
-                    tracing::debug!(idle, "idle state changed");
-                    Task::none()
-                }
+                desktop::Request::IdleTime(idle) => self.idle_presence(idle),
+                desktop::Request::SetStatus(status) => self.set_status_everywhere(status),
+                desktop::Request::RoomStep(step) => self.room_step(step),
             });
         }
         Task::batch(tasks)
+    }
+
+    /// `UserPresence:away` / `:online` on connected servers for an idle sample.
+    fn idle_presence(&mut self, idle: std::time::Duration) -> Task<Message> {
+        let servers: Vec<_> = self
+            .servers
+            .values()
+            .filter(|s| {
+                s.session.is_some() && *s.workspace.connection() == ConnectionState::Connected
+            })
+            .map(|s| (&s.id, &s.workspace))
+            .collect();
+        let calls = self.desktop.idle_calls(idle, servers);
+        let tasks: Vec<_> = calls
+            .into_iter()
+            .filter_map(|(sid, call)| {
+                let handle = self.servers.get(&sid)?.session.clone()?;
+                Some(Task::perform(
+                    async move { handle.session().call(call.method(), Vec::new()).await },
+                    move |r| {
+                        if let Err(e) = r {
+                            tracing::debug!(error = %e, method = call.method(), "presence call failed");
+                        }
+                        Message::Noop
+                    },
+                ))
+            })
+            .collect();
+        Task::batch(tasks)
+    }
+
+    /// Tray status menu: `users.setStatus` on every logged-in server.
+    fn set_status_everywhere(&mut self, status: rocketchat::models::UserStatus) -> Task<Message> {
+        let sids: Vec<ServerId> = self
+            .servers
+            .values()
+            .filter(|s| s.session.is_some())
+            .map(|s| s.id.clone())
+            .collect();
+        let tasks: Vec<_> = sids
+            .into_iter()
+            .map(|sid| self.on_status_menu(sid, status_menu::Message::SetStatus(status)))
+            .collect();
+        Task::batch(tasks)
+    }
+
+    /// Drops every server's image cache (memory and disk).
+    fn clear_image_cache(&mut self) -> Task<Message> {
+        let mut dirs = Vec::new();
+        for s in self.servers.values() {
+            dirs.extend(self.images.purge_server(&s.id, &s.url));
+        }
+        if dirs.is_empty() {
+            return Task::none();
+        }
+        Task::perform(
+            async move {
+                let _ = tokio::task::spawn_blocking(move || {
+                    for d in dirs {
+                        let _ = std::fs::remove_dir_all(d);
+                    }
+                })
+                .await;
+            },
+            |_| Message::Noop,
+        )
     }
 
     /// Unread totals over all servers changed: tell the desktop layer.
@@ -312,13 +409,26 @@ impl App {
             .values()
             .map(|s| rustket_core::room_list::unread_totals(&s.workspace))
             .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
+        let logged_in: Vec<_> = self
+            .servers
+            .values()
+            .filter(|s| s.is_logged_in())
+            .map(|s| (&s.id, &s.workspace))
+            .collect();
+        let state = self
+            .desktop
+            .on_state(&logged_in, self.active.as_ref())
+            .map(Message::Desktop);
         if totals == self.last_unread {
-            return Task::none();
+            return state;
         }
         self.last_unread = totals;
-        self.desktop
-            .on_unread_changed(totals.0, totals.1)
-            .map(Message::Desktop)
+        Task::batch([
+            state,
+            self.desktop
+                .on_unread_changed(totals.0, totals.1)
+                .map(Message::Desktop),
+        ])
     }
 
     pub(super) fn settings_view_data(&self) -> settings::SettingsView<'_> {
@@ -327,6 +437,7 @@ impl App {
             handler_registered: self.handler_registered,
             secret_backend: self.secret_backend,
             secrets_in_memory: self.secrets_mode == SecretsMode::System,
+            tray: self.desktop.tray_support(),
         }
     }
 }

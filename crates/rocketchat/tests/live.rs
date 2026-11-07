@@ -671,6 +671,14 @@ async fn users_and_lists() {
         .unwrap();
     let me = t.me().await.unwrap();
     assert_eq!(me.status_text.as_deref(), Some("testing"));
+    let status = me.status;
+    t.users_set_status_message("text only").await.unwrap();
+    let me = t.me().await.unwrap();
+    assert_eq!(me.status_text.as_deref(), Some("text only"));
+    assert_eq!(me.status, status, "status kept");
+    // The chosen status survives a text-only change.
+    let raw: serde_json::Value = t.get("me", &rocketchat::rest::Query::new()).await.unwrap();
+    assert_eq!(raw["statusDefault"], "busy");
     user.delete().await;
     let _ = a.users_presence(None, &[]).await.unwrap();
     let perms = a.permissions_list_all(None).await.unwrap();

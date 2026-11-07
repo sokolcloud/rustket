@@ -2,3 +2,51 @@ _version: 2
 desktop.app_name:
   en: "Rustket"
   ru: "Rustket"
+desktop.open:
+  en: "Open"
+  ru: "Открыть"
+desktop.hidden_body:
+  en: "New message"
+  ru: "Новое сообщение"
+desktop.encrypted_body:
+  en: "Encrypted message"
+  ru: "Зашифрованное сообщение"
+desktop.test_title:
+  en: "Rustket"
+  ru: "Rustket"
+desktop.test_body:
+  en: "Notifications work. New messages will look like this."
+  ru: "Уведомления работают. Так будут выглядеть новые сообщения."
+desktop.tray_open:
+  en: "Open Rustket"
+  ru: "Открыть Rustket"
+desktop.tray_status:
+  en: "Status"
+  ru: "Статус"
+desktop.tray_quit:
+  en: "Quit"
+  ru: "Выйти"
+desktop.tray_no_unread:
+  en: "No unread messages"
+  ru: "Нет непрочитанных сообщений"
+desktop.tray_unread:
+  en: "Unread rooms: %{count}"
+  ru: "Непрочитанных комнат: %{count}"
+desktop.tray_unread_mentions:
+  en: "Unread rooms: %{count}, mentions: %{mentions}"
+  ru: "Непрочитанных комнат: %{count}, упоминаний: %{mentions}"
+desktop.status_online:
+  en: "Online"
+  ru: "В сети"
+desktop.status_away:
+  en: "Away"
+  ru: "Отошёл"
+desktop.status_busy:
+  en: "Busy"
+  ru: "Занят"
+desktop.status_invisible:
+  en: "Invisible"
+  ru: "Невидимый"
+desktop.join:
+  en: "Join"
+  ru: "Присоединиться"

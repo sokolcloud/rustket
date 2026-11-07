@@ -2,6 +2,9 @@ _version: 2
 settings.title:
   en: "Settings"
   ru: "Настройки"
+settings.appearance:
+  en: "Appearance"
+  ru: "Внешний вид"
 settings.theme:
   en: "Theme"
   ru: "Тема"
@@ -14,12 +17,93 @@ settings.theme_light:
 settings.theme_dark:
   en: "Dark"
   ru: "Тёмная"
+settings.density:
+  en: "Room list density"
+  ru: "Плотность списка комнат"
+settings.density_extended:
+  en: "Extended"
+  ru: "Обычная"
+settings.density_condensed:
+  en: "Condensed"
+  ru: "Компактная"
+settings.zoom:
+  en: "Zoom"
+  ru: "Масштаб"
+settings.zoom_reset:
+  en: "Reset"
+  ru: "Сбросить"
+settings.names:
+  en: "Show users as"
+  ru: "Показывать пользователей"
+settings.names_help:
+  en: "Overrides the workspace setting on this computer."
+  ru: "Заменяет настройку рабочего пространства на этом компьютере."
+settings.names_server:
+  en: "Workspace default"
+  ru: "Как на сервере"
+settings.names_real:
+  en: "Full names"
+  ru: "По именам"
+settings.names_usernames:
+  en: "Usernames"
+  ru: "По логинам"
+settings.show_avatars:
+  en: "Show avatars in the room list"
+  ru: "Показывать аватары в списке комнат"
+settings.clock_24h:
+  en: "24-hour clock"
+  ru: "24-часовой формат времени"
 settings.language:
   en: "Language"
   ru: "Язык"
 settings.language_system:
   en: "System"
   ru: "Системный"
+settings.notifications:
+  en: "Notifications"
+  ru: "Уведомления"
+settings.notifications_enable:
+  en: "Desktop notifications"
+  ru: "Уведомления на рабочем столе"
+settings.notifications_help:
+  en: "Which messages notify you is set per room and in your account preferences on the server."
+  ru: "Какие сообщения вызывают уведомления, задаётся в комнатах и в настройках аккаунта на сервере."
+settings.notifications_preview:
+  en: "Show message text"
+  ru: "Показывать текст сообщения"
+settings.notifications_sound:
+  en: "Play a sound"
+  ru: "Воспроизводить звук"
+settings.notifications_test:
+  en: "Send test notification"
+  ru: "Отправить тестовое уведомление"
+settings.behaviour:
+  en: "Window and startup"
+  ru: "Окно и запуск"
+settings.close_to_tray:
+  en: "Keep running in the tray when the window is closed"
+  ru: "Сворачивать в трей при закрытии окна"
+settings.tray_help:
+  en: "Only when the desktop shows tray icons; otherwise closing quits."
+  ru: "Только если рабочий стол показывает значки в трее; иначе закрытие завершает программу."
+settings.minimize_to_tray:
+  en: "Minimize to the tray"
+  ru: "Сворачивать в трей при сворачивании"
+settings.start_minimized:
+  en: "Start minimized"
+  ru: "Запускать свёрнутым"
+settings.autostart:
+  en: "Launch at login"
+  ru: "Запускать при входе в систему"
+settings.autostart_unknown:
+  en: "Not available"
+  ru: "Недоступно"
+settings.autostart_failed:
+  en: "Launch at login was not changed"
+  ru: "Автозапуск не изменён"
+settings.integration:
+  en: "Integration"
+  ru: "Интеграция"
 settings.links:
   en: "rocketchat:// links"
   ru: "Ссылки rocketchat://"
@@ -32,9 +116,48 @@ settings.handler_off:
 settings.handler_register:
   en: "Register…"
   ru: "Зарегистрировать…"
+settings.storage:
+  en: "Storage"
+  ru: "Хранилище"
+settings.image_cache:
+  en: "Image cache"
+  ru: "Кэш изображений"
+settings.image_cache_help:
+  en: "Avatars and images are downloaded again when needed."
+  ru: "Аватары и изображения будут загружены заново при необходимости."
+settings.clear_cache:
+  en: "Clear"
+  ru: "Очистить"
+settings.cache_cleared:
+  en: "Image cache cleared"
+  ru: "Кэш изображений очищен"
+settings.about:
+  en: "About"
+  ru: "О программе"
+settings.version:
+  en: "Rustket %{version}"
+  ru: "Rustket %{version}"
+settings.about_text:
+  en: "A native Rocket.Chat client written in Rust."
+  ru: "Нативный клиент Rocket.Chat на Rust."
+settings.website:
+  en: "Rocket.Chat website"
+  ru: "Сайт Rocket.Chat"
+settings.docs:
+  en: "Documentation"
+  ru: "Документация"
 settings.secrets_memory:
   en: "No keyring or writable data directory: you will have to sign in on every start."
   ru: "Нет хранилища паролей и доступного каталога данных: входить придётся при каждом запуске."
-settings.more_soon:
-  en: "More preferences are coming"
-  ru: "Другие настройки скоро появятся"
+settings.autostart_loading:
+  en: "Checking…"
+  ru: "Проверка…"
+settings.no_tray:
+  en: "No system tray found: closing the window quits Rustket."
+  ru: "Системный трей не найден: закрытие окна завершает Rustket."
+settings.tray_help_wayland:
+  en: "On Wayland the window cannot be hidden, so it is minimized instead."
+  ru: "В Wayland окно нельзя скрыть, поэтому оно сворачивается."
+settings.minimize_wayland:
+  en: "Not supported on Wayland."
+  ru: "Не поддерживается в Wayland."
