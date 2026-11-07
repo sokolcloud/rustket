@@ -26,6 +26,7 @@ pub enum Msg {
     Loaded(Res<Box<User>>),
     Roles(Res<Vec<RoomRole>>),
     Retry,
+    RetryRoles,
     DirectMessage,
     DmCreated(Res<String>),
     Mention,
@@ -42,10 +43,20 @@ pub struct UserInfo {
     error: Option<String>,
     /// Room roles of the user (owner, moderator, leader).
     room_roles: Vec<String>,
+    roles_state: RolesState,
     confirm: Option<UserAction>,
     busy: bool,
     /// DM room created but not in the workspace yet.
     dm_pending: Option<String>,
+}
+
+/// Loading state of the user's room roles: role actions are offered only
+/// once they are known, so their labels are right.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RolesState {
+    Loading,
+    Loaded,
+    Failed(String),
 }
 
 /// The web client's `getUserIsMuted`.
@@ -73,13 +84,14 @@ pub fn is_ignored(ws: &Workspace, rid: &str, uid: &str) -> bool {
 }
 
 /// Moderation actions offered for `user` in `rid` (the web client's
-/// `useUserInfoActions` rules: channels and groups only).
+/// `useUserInfoActions` rules: channels and groups only). Role actions need
+/// the user's room roles (`None`: not loaded).
 pub fn available_actions(
     ws: &Workspace,
     rid: &str,
     uid: &str,
     username: &str,
-    room_roles: &[String],
+    room_roles: Option<&[String]>,
 ) -> Vec<UserAction> {
     let Some(entry) = ws.room(rid) else {
         return Vec::new();
@@ -88,15 +100,17 @@ pub fn available_actions(
         return Vec::new();
     }
     let me = ws.user_id() == Some(uid);
-    let has_role = |r: &str| room_roles.iter().any(|x| x == r);
     let mut out = Vec::new();
-    for (role, perm) in [
-        (Role::Owner, ids::SET_OWNER),
-        (Role::Moderator, ids::SET_MODERATOR),
-        (Role::Leader, ids::SET_LEADER),
-    ] {
-        if permissions::has_permission(ws, perm, Some(rid)) {
-            out.push(UserAction::SetRole(role, !has_role(role.id())));
+    if let Some(room_roles) = room_roles {
+        let has_role = |r: &str| room_roles.iter().any(|x| x == r);
+        for (role, perm) in [
+            (Role::Owner, ids::SET_OWNER),
+            (Role::Moderator, ids::SET_MODERATOR),
+            (Role::Leader, ids::SET_LEADER),
+        ] {
+            if permissions::has_permission(ws, perm, Some(rid)) {
+                out.push(UserAction::SetRole(role, !has_role(role.id())));
+            }
         }
     }
     if !me && permissions::can_mute_users(ws, rid) {
@@ -195,6 +209,7 @@ impl UserInfo {
             loading: false,
             error: None,
             room_roles: Vec::new(),
+            roles_state: RolesState::Loading,
             confirm: None,
             busy: false,
             dm_pending: None,
@@ -216,12 +231,16 @@ impl UserInfo {
         Action::task(iced::Task::batch([load, self.load_roles(ctx)]))
     }
 
-    fn load_roles(&self, ctx: &UpdateCtx<'_>) -> iced::Task<Msg> {
+    fn load_roles(&mut self, ctx: &UpdateCtx<'_>) -> iced::Task<Msg> {
         let Some(t) = ctx.workspace.room(ctx.rid).map(|e| e.room_type()) else {
             return iced::Task::none();
         };
         if t == RoomType::Direct {
+            self.roles_state = RolesState::Loaded;
             return iced::Task::none();
+        }
+        if self.roles_state != RolesState::Loaded {
+            self.roles_state = RolesState::Loading;
         }
         let rid = ctx.rid.to_owned();
         ctx.rest_task(move |rest| api::room_roles(rest, t, rid), Msg::Roles)
@@ -260,12 +279,17 @@ impl UserInfo {
                             .find(|r| r.u.username.as_deref() == Some(username))
                             .map(|r| r.roles)
                             .unwrap_or_default();
+                        self.roles_state = RolesState::Loaded;
                     }
-                    Err(e) => tracing::debug!(error = %e, "room roles failed"),
+                    Err(e) => {
+                        tracing::debug!(error = %e, "room roles failed");
+                        self.roles_state = RolesState::Failed(common::failure_text(&e));
+                    }
                 }
                 Action::none()
             }
             Msg::Retry => self.activate(ctx),
+            Msg::RetryRoles => Action::task(self.load_roles(ctx)),
             Msg::Mention => Action::effect(Effect::Compose(ComposeIntent::Mention(
                 self.username.clone(),
             ))),
@@ -373,9 +397,21 @@ impl UserInfo {
             .or(user.status_text.clone())
             .filter(|s| !s.trim().is_empty());
 
+        // Same initials as the header and the sidebar.
+        let avatar_name = common::user_display(
+            ws,
+            common::use_real_names(ctx),
+            &self.username,
+            user.name.as_deref(),
+        );
         let mut col = column![
-            container(common::user_avatar(ctx, &self.username, &name, 120.0))
-                .center_x(Length::Fill),
+            container(common::user_avatar(
+                ctx,
+                &self.username,
+                &avatar_name,
+                120.0
+            ))
+            .center_x(Length::Fill),
             container(text(name.clone()).size(TEXT_TITLE).font(FONT_SEMIBOLD))
                 .center_x(Length::Fill),
             container(text(format!("@{}", self.username)).style(style::text_secondary))
@@ -469,9 +505,30 @@ impl UserInfo {
         }
 
         let team_main = ws.room(ctx.rid).is_some_and(|e| e.is_team());
-        let actions = available_actions(ws, ctx.rid, &user.id, &self.username, &self.room_roles);
-        if !actions.is_empty() {
+        let known_roles = (self.roles_state == RolesState::Loaded).then_some(&self.room_roles[..]);
+        let actions = available_actions(ws, ctx.rid, &user.id, &self.username, known_roles);
+        let roles_failed = match &self.roles_state {
+            RolesState::Failed(e) => Some(e.clone()),
+            _ => None,
+        };
+        if !actions.is_empty() || roles_failed.is_some() {
             let mut list = column![].spacing(SPACE_1);
+            if let Some(e) = roles_failed {
+                list = list.push(
+                    row![
+                        text(t!("room_panel.roles_failed", error = e).into_owned())
+                            .size(TEXT_SMALL)
+                            .style(style::text_danger)
+                            .width(Length::Fill),
+                        rustket_ui::widget::secondary_button(
+                            t!("room_panel.retry").into_owned(),
+                            Some(Msg::RetryRoles)
+                        ),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+                );
+            }
             for a in actions {
                 list = list.push(common::action_entry(
                     action_icon(&a),
@@ -558,7 +615,7 @@ mod tests {
     #[test]
     fn owner_gets_all_actions() {
         let ws = ws(&["owner"], "c");
-        let a = available_actions(&ws, "r", "u-bob", "bob", &["moderator".into()]);
+        let a = available_actions(&ws, "r", "u-bob", "bob", Some(&["moderator".into()]));
         assert_eq!(
             a,
             vec![
@@ -570,7 +627,7 @@ mod tests {
                 UserAction::Ignore(true),
             ]
         );
-        let a = available_actions(&ws, "r", "ign", "x", &[]);
+        let a = available_actions(&ws, "r", "ign", "x", Some(&[]));
         assert!(a.contains(&UserAction::Ignore(false)));
         assert!(a.contains(&UserAction::Mute(true)));
     }
@@ -579,16 +636,24 @@ mod tests {
     fn plain_member_only_ignores_and_never_self() {
         let ws = ws(&[], "p");
         assert_eq!(
-            available_actions(&ws, "r", "u-bob", "bob", &[]),
+            available_actions(&ws, "r", "u-bob", "bob", Some(&[])),
             vec![UserAction::Ignore(true)]
         );
-        assert!(available_actions(&ws, "r", "me", "me", &[]).is_empty());
+        assert!(available_actions(&ws, "r", "me", "me", Some(&[])).is_empty());
+    }
+
+    #[test]
+    fn role_actions_wait_for_roles() {
+        let ws = ws(&["owner"], "c");
+        let a = available_actions(&ws, "r", "u-bob", "bob", None);
+        assert!(!a.iter().any(|a| matches!(a, UserAction::SetRole(..))));
+        assert!(a.contains(&UserAction::Remove));
     }
 
     #[test]
     fn no_actions_in_dms() {
         let ws = ws(&["owner"], "d");
-        assert!(available_actions(&ws, "r", "u-bob", "bob", &[]).is_empty());
+        assert!(available_actions(&ws, "r", "u-bob", "bob", Some(&[])).is_empty());
     }
 
     #[test]

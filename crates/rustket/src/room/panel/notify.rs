@@ -47,9 +47,32 @@ pub enum Msg {
 pub struct Notify {
     form: Option<NotificationPrefs>,
     saved: Option<NotificationPrefs>,
+    /// The form as sent by the running save.
+    submitted: Option<NotificationPrefs>,
     sounds: Vec<CustomSound>,
     saving: bool,
 }
+
+/// Built-in sounds of the web client (`defaultSounds` in
+/// `CustomSoundProvider/lib/helpers.ts`) with their label keys.
+pub const BUILTIN_SOUNDS: &[(&str, &str)] = &[
+    ("chime", "room_panel.sound_chime"),
+    ("door", "room_panel.sound_door"),
+    ("beep", "room_panel.sound_beep"),
+    ("chelle", "room_panel.sound_chelle"),
+    ("ding", "room_panel.sound_ding"),
+    ("droplet", "room_panel.sound_droplet"),
+    ("highbell", "room_panel.sound_highbell"),
+    ("seasons", "room_panel.sound_seasons"),
+    ("telephone", "room_panel.sound_telephone"),
+    (
+        "outbound-call-ringing",
+        "room_panel.sound_outbound_call_ringing",
+    ),
+    ("call-ended", "room_panel.sound_call_ended"),
+    ("dialtone", "room_panel.sound_dialtone"),
+    ("ringtone", "room_panel.sound_ringtone"),
+];
 
 /// A pick list entry: value plus its label.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +153,7 @@ impl Notify {
                     return Action::none();
                 }
                 self.saving = true;
+                self.submitted = Some(form.clone());
                 let rid = ctx.rid.to_owned();
                 Action::task(ctx.rest_task(
                     move |rest| api::save_notifications(rest, rid, form),
@@ -138,9 +162,10 @@ impl Notify {
             }
             Msg::Saved(r) => {
                 self.saving = false;
+                let submitted = self.submitted.take();
                 match r {
                     Ok(()) => {
-                        self.saved = self.form.clone();
+                        self.saved = submitted;
                         Action::effect(common::ok_toast(t!("room_panel.prefs_saved").into_owned()))
                     }
                     Err(e) => {
@@ -205,15 +230,30 @@ impl Notify {
                 label: t!("room_panel.sound_default").into_owned(),
             },
         ];
-        sounds.extend(self.sounds.iter().map(|s| Choice {
-            value: s.id.clone(),
-            label: s.name.clone(),
+        sounds.extend(BUILTIN_SOUNDS.iter().map(|(id, key)| Choice {
+            value: (*id).to_owned(),
+            label: t!(*key).into_owned(),
         }));
+        sounds.extend(
+            self.sounds
+                .iter()
+                .filter(|s| !BUILTIN_SOUNDS.iter().any(|(id, _)| *id == s.id))
+                .map(|s| Choice {
+                    value: s.id.clone(),
+                    label: s.name.clone(),
+                }),
+        );
+        // An id this client does not know (e.g. a deleted custom sound) is
+        // shown as it is.
         let selected_sound = sounds
             .iter()
             .find(|c| c.value == f.sound)
             .cloned()
-            .or_else(|| sounds.get(1).cloned());
+            .unwrap_or_else(|| Choice {
+                value: f.sound.clone(),
+                label: f.sound.clone(),
+            });
+        let selected_sound = Some(selected_sound);
         let section = |s: String| {
             text(s)
                 .size(TEXT_CAPTION)
@@ -287,5 +327,53 @@ impl Notify {
             .height(Length::Fill)
             .style(style::scrollable)
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use rocketchat::ServerUrl;
+    use rustket_core::ServerId;
+    use rustket_core::workspace::Workspace;
+
+    #[test]
+    fn edits_during_save_stay_unsaved() {
+        let mut ws = Workspace::new();
+        let (sid, url) = (
+            ServerId("s".into()),
+            ServerUrl::parse("http://localhost:3000").unwrap(),
+        );
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "r",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let base = NotificationPrefs {
+            turn_on: true,
+            show_counter: true,
+            show_mentions: true,
+            sound: "default".into(),
+            ..Default::default()
+        };
+        let mut n = Notify {
+            form: Some(base.clone()),
+            saved: Some(base.clone()),
+            ..Default::default()
+        };
+        let _ = n.update(Msg::Flag(Flag::MuteGroupMentions, true), &mut ctx);
+        let _ = n.update(Msg::Save, &mut ctx);
+        let _ = n.update(Msg::Flag(Flag::ShowCounter, false), &mut ctx);
+        let _ = n.update(Msg::Saved(Ok(())), &mut ctx);
+        let saved = n.saved.clone().unwrap();
+        assert!(saved.mute_group_mentions && saved.show_counter);
+        assert_ne!(n.form, n.saved, "the second change still needs saving");
     }
 }

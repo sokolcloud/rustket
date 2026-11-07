@@ -97,6 +97,21 @@ impl RoomAction {
     }
 }
 
+impl RoomAction {
+    /// Effects after the action succeeded: a toast, and leaving a hidden room
+    /// (it is gone from the sidebar; the web navigates home).
+    pub fn done_action<M>(self) -> crate::room::Action<M> {
+        let mut out = match self.done_text() {
+            Some(s) => crate::room::Action::effect(ok_toast(s)),
+            None => crate::room::Action::none(),
+        };
+        if self == Self::Hide {
+            out = out.with(Effect::CloseRoom);
+        }
+        out
+    }
+}
+
 /// Whether `action` is offered for `rid` (the web client's rules).
 pub fn room_action_allowed(ws: &Workspace, rid: &str, action: RoomAction) -> bool {
     let Some(entry) = ws.room(rid) else {
@@ -104,7 +119,8 @@ pub fn room_action_allowed(ws: &Workspace, rid: &str, action: RoomAction) -> boo
     };
     let joined = entry.sub.is_some();
     match action {
-        RoomAction::Favorite(_) | RoomAction::Hide => joined,
+        RoomAction::Favorite(_) => joined && ws.settings().bool_or("Favorite_Rooms", true),
+        RoomAction::Hide => joined,
         RoomAction::MarkRead => entry.sub.as_ref().is_some_and(|s| s.unread > 0 || s.alert),
         RoomAction::Leave => {
             let perm = match entry.room_type() {
@@ -129,11 +145,30 @@ pub fn failure_text(f: &Failure) -> String {
         Some("error-remove-last-owner") => t!("room_panel.err_remove_last_owner").into_owned(),
         Some("error-not-authorized")
         | Some("not_authorized")
+        | Some("error-not-allowed")
         | Some("error-action-not-allowed") => t!("room_panel.err_not_allowed").into_owned(),
         Some("error-invalid-room-name") => t!("room_panel.err_invalid_name").into_owned(),
-        Some("error-duplicate-channel-name") => t!("room_panel.err_duplicate_name").into_owned(),
+        Some("error-duplicate-channel-name") | Some("error-duplicate-handle") => {
+            t!("room_panel.err_duplicate_name").into_owned()
+        }
+        Some("error-archived-duplicate-name") => {
+            t!("room_panel.err_archived_duplicate_name").into_owned()
+        }
         _ => f.user_text(),
     }
+}
+
+/// Errors that belong to the room name field.
+pub fn is_name_error(f: &Failure) -> bool {
+    matches!(
+        f.error().api_error_code(),
+        Some(
+            "error-invalid-room-name"
+                | "error-duplicate-channel-name"
+                | "error-duplicate-handle"
+                | "error-archived-duplicate-name"
+        )
+    )
 }
 
 pub fn error_toast(title: &str, f: &Failure) -> Effect {
@@ -187,6 +222,19 @@ pub fn role_label(role: &str) -> String {
 pub fn time_label(ts: Option<RcDate>, ctx: &ViewCtx<'_>) -> String {
     ts.map(|ts| crate::format::short_time(ts, Local::now(), ctx.prefs.clock_24h))
         .unwrap_or_default()
+}
+
+/// Full local date and time (`dd.mm.yyyy 14:05`), e.g. for future dates.
+pub fn date_time_label(ts: RcDate, ctx: &ViewCtx<'_>) -> String {
+    use chrono::TimeZone;
+    let Some(local) = Local.timestamp_millis_opt(ts.timestamp_millis()).single() else {
+        return String::new();
+    };
+    if ctx.prefs.clock_24h {
+        local.format("%d.%m.%Y %H:%M").to_string()
+    } else {
+        local.format("%d.%m.%Y %-I:%M %p").to_string()
+    }
 }
 
 /// The display name of a user for lists (real name when the server or the

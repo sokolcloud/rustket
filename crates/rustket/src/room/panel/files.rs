@@ -29,7 +29,8 @@ pub enum Msg {
     Page(PageReq, Res<Paginated<FileItem>>),
     More,
     Retry,
-    Download(usize),
+    /// Download the file with this id.
+    Download(String),
     Downloaded(String, Res<Option<PathBuf>>),
 }
 
@@ -42,19 +43,25 @@ pub struct Files {
     downloading: Vec<String>,
 }
 
-/// `1.5 MB`-style size.
+/// `1.5 MB`-style size with translated units.
 pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    const UNITS: [&str; 4] = [
+        "room_panel.size_b",
+        "room_panel.size_kb",
+        "room_panel.size_mb",
+        "room_panel.size_gb",
+    ];
     let mut v = bytes as f64;
     let mut u = 0;
     while v >= 1024.0 && u < UNITS.len() - 1 {
         v /= 1024.0;
         u += 1;
     }
+    let unit = t!(UNITS[u]);
     if u == 0 {
-        format!("{bytes} B")
+        format!("{bytes} {unit}")
     } else {
-        format!("{v:.1} {}", UNITS[u])
+        format!("{v:.1} {unit}")
     }
 }
 
@@ -94,27 +101,53 @@ async fn save(
         return Ok(None);
     };
     let target = handle.path().to_owned();
-    let part = target.with_extension(match target.extension() {
-        Some(e) => format!("{}.part", e.to_string_lossy()),
-        None => "part".into(),
-    });
     let dl = rest.download(&url).await?;
-    let mut file = tokio::fs::File::create(&part).await?;
-    let mut stream = std::pin::pin!(dl.stream());
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(bytes) => file.write_all(&bytes).await?,
-            Err(e) => {
-                drop(file);
-                let _ = tokio::fs::remove_file(&part).await;
-                return Err(e);
-            }
+    // A fresh temporary file next to the target: never truncates an existing
+    // file, and is removed on every failure.
+    let (part, mut file) = create_part(&target).await?;
+    let result = async {
+        let mut stream = std::pin::pin!(dl.stream());
+        while let Some(chunk) = stream.next().await {
+            file.write_all(&chunk?).await?;
+        }
+        file.flush().await?;
+        drop(file);
+        tokio::fs::rename(&part, &target).await?;
+        Ok::<_, rocketchat::Error>(())
+    }
+    .await;
+    if let Err(e) = result {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(e);
+    }
+    Ok(Some(target))
+}
+
+/// Creates `<target>.<n>.part` with `create_new`, trying a few suffixes.
+async fn create_part(target: &std::path::Path) -> std::io::Result<(PathBuf, tokio::fs::File)> {
+    let base = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let mut last = None;
+    for i in 0..16u32 {
+        let part = target.with_file_name(format!("{base}.{:x}.part", stamp.wrapping_add(i)));
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)
+            .await
+        {
+            Ok(f) => return Ok((part, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(e),
         }
     }
-    file.flush().await?;
-    drop(file);
-    tokio::fs::rename(&part, &target).await?;
-    Ok(Some(target))
+    Err(last.unwrap_or_else(|| std::io::Error::other("no temporary file name")))
 }
 
 impl Files {
@@ -162,8 +195,8 @@ impl Files {
                 None => Action::none(),
             },
             Msg::Retry => self.reload(ctx),
-            Msg::Download(i) => {
-                let Some(f) = self.list.items.get(i) else {
+            Msg::Download(id) => {
+                let Some(f) = self.list.items.iter().find(|f| f.id == id) else {
                     return Action::none();
                 };
                 let Some(url) = f.download_path().map(str::to_owned) else {
@@ -221,7 +254,7 @@ impl Files {
             }
             _ => {
                 let mut col = column![].spacing(0);
-                for (i, f) in self.list.items.iter().enumerate() {
+                for f in &self.list.items {
                     let mut meta = vec![human_size(f.size)];
                     if let Some(u) = f.user.as_ref().and_then(|u| u.username.clone()) {
                         meta.push(format!("@{u}"));
@@ -245,7 +278,8 @@ impl Files {
                         .width(Length::Fill),
                         icon_button(
                             Icon::Download,
-                            (!busy && f.download_path().is_some()).then_some(Msg::Download(i)),
+                            (!busy && f.download_path().is_some())
+                                .then(|| Msg::Download(f.id.clone())),
                             t!("room_panel.download"),
                         ),
                     ]

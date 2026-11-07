@@ -4,7 +4,7 @@
 use rocketchat::models::{
     Message, Paginated, Room, RoomType, Subscription, UserRef, UserSummary, lenient,
 };
-use rocketchat::rest::{Query, RoomMembersOptions};
+use rocketchat::rest::Query;
 use rocketchat::{RcDate, RestClient, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -39,25 +39,45 @@ pub fn prefix(t: RoomType) -> &'static str {
 
 // ---- lists ---------------------------------------------------------------
 
-/// `rooms.membersOrderedByRole` (owners, moderators, then the rest).
+/// Members endpoint and query: `rooms.membersOrderedByRole` (owners,
+/// moderators, then the rest) rejects direct rooms, which use `im.members`
+/// (the web's `useMembersList`). The online filter is `status=online` only,
+/// like the web.
+pub fn members_request(
+    t: RoomType,
+    rid: &str,
+    filter: &str,
+    online_only: bool,
+    offset: u64,
+) -> (&'static str, Query) {
+    let path = if t == RoomType::Direct {
+        "im.members"
+    } else {
+        "rooms.membersOrderedByRole"
+    };
+    let filter = filter.trim();
+    let mut q = Query::new()
+        .push("roomId", rid)
+        .push("offset", offset)
+        .push("count", PAGE)
+        .opt("filter", (!filter.is_empty()).then_some(filter));
+    if online_only {
+        q = q.push("status[]", "online");
+    }
+    (path, q)
+}
+
 pub async fn members(
     rest: RestClient,
+    t: RoomType,
     rid: String,
     filter: String,
     online_only: bool,
     offset: u64,
 ) -> Result<Paginated<UserSummary>> {
-    let opts = RoomMembersOptions {
-        offset: Some(offset),
-        count: Some(PAGE),
-        filter: (!filter.trim().is_empty()).then(|| filter.trim().to_owned()),
-        status: if online_only {
-            vec!["online".into(), "away".into(), "busy".into()]
-        } else {
-            Vec::new()
-        },
-    };
-    rest.room_members(&rid, &opts).await
+    let (path, q) = members_request(t, &rid, &filter, online_only, offset);
+    let v: Value = rest.get(path, &q).await?;
+    Ok(paginated(v, "members"))
 }
 
 /// Filter of `chat.getThreadsList`.
@@ -421,6 +441,8 @@ pub const SYSTEM_MESSAGE_TYPES: &[&str] = &[
     "room_changed_privacy",
     "room_changed_avatar",
     "room_changed_topic",
+    "room_e2e_enabled",
+    "room_e2e_disabled",
     "room-removed-read-only",
     "room-set-read-only",
     "room-disallowed-reacting",
@@ -449,14 +471,22 @@ pub struct RoomSettings {
 }
 
 impl RoomSettings {
-    pub fn from_room(r: &Room) -> Self {
+    /// `special_chars`: the `UI_Allow_room_names_with_special_chars` setting.
+    /// Like the web's `getRoomName`, discussions (and every room when special
+    /// characters are allowed) are edited by their display name (`fname`).
+    pub fn from_room(r: &Room, special_chars: bool) -> Self {
         let hide = match &r.sys_mes {
             Some(Value::Array(a)) => !a.is_empty(),
             Some(Value::Bool(b)) => !*b,
             _ => false,
         };
         Self {
-            name: r.name.clone().unwrap_or_default(),
+            name: if r.prid.is_some() || special_chars {
+                r.fname.clone().filter(|n| !n.is_empty()).or(r.name.clone())
+            } else {
+                r.name.clone()
+            }
+            .unwrap_or_default(),
             topic: r.topic.clone().unwrap_or_default(),
             announcement: r.announcement.clone().unwrap_or_default(),
             description: r.description.clone().unwrap_or_default(),
@@ -512,13 +542,14 @@ impl RoomSettings {
         Some(Value::Object(body))
     }
 
-    /// Client-side validation; returns an i18n key.
-    pub fn validate(&self, is_discussion: bool) -> Option<&'static str> {
+    /// Client-side validation; returns an i18n key. `free_form`: discussions
+    /// and servers allowing special characters accept any non-empty name.
+    pub fn validate(&self, free_form: bool) -> Option<&'static str> {
         let name = self.name.trim();
         if name.is_empty() {
             return Some("room_panel.err_name_required");
         }
-        if !is_discussion && name.chars().any(char::is_whitespace) {
+        if !free_form && name.chars().any(char::is_whitespace) {
             return Some("room_panel.err_name_spaces");
         }
         None
@@ -713,14 +744,34 @@ pub struct Invite {
     pub days: u64,
     #[serde(rename = "maxUses")]
     pub max_uses: u64,
+    pub uses: u64,
     #[serde(deserialize_with = "lenient::opt")]
     pub expires: Option<RcDate>,
 }
 
-pub async fn find_or_create_invite(rest: RestClient, rid: String) -> Result<Invite> {
+impl Invite {
+    /// Uses left before the link stops working (`None`: unlimited).
+    pub fn uses_left(&self) -> Option<u64> {
+        (self.max_uses > 0).then(|| self.max_uses.saturating_sub(self.uses))
+    }
+}
+
+/// The web client's defaults for invite links (1 day, unlimited uses).
+pub const INVITE_DAYS: u64 = 1;
+pub const INVITE_MAX_USES: u64 = 0;
+/// Choices of the web's `EditInviteLink` (`0`: never / no limit).
+pub const INVITE_DAYS_OPTIONS: [u64; 5] = [1, 7, 15, 30, 0];
+pub const INVITE_MAX_USES_OPTIONS: [u64; 6] = [5, 10, 25, 50, 100, 0];
+
+pub async fn find_or_create_invite(
+    rest: RestClient,
+    rid: String,
+    days: u64,
+    max_uses: u64,
+) -> Result<Invite> {
     rest.post(
         "findOrCreateInvite",
-        &json!({ "rid": rid, "days": 7, "maxUses": 0 }),
+        &json!({ "rid": rid, "days": days, "maxUses": max_uses }),
     )
     .await
 }
@@ -772,7 +823,7 @@ mod tests {
             "_id": "r", "t": "c", "name": "dev", "topic": "t", "ro": false, "sysMes": true
         }))
         .unwrap();
-        let before = RoomSettings::from_room(&room);
+        let before = RoomSettings::from_room(&room, false);
         assert!(!before.hide_system_messages);
         assert_eq!(before.payload("r", &before), None);
         let mut after = before.clone();
@@ -797,8 +848,32 @@ mod tests {
     fn room_settings_from_sysmes_list() {
         let room: Room =
             serde_json::from_value(json!({"_id": "r", "t": "p", "sysMes": ["uj"]})).unwrap();
-        let s = RoomSettings::from_room(&room);
+        let s = RoomSettings::from_room(&room, false);
         assert!(s.hide_system_messages && s.private);
+    }
+
+    #[test]
+    fn room_settings_name_source() {
+        let disc: Room = serde_json::from_value(
+            json!({"_id": "r", "t": "p", "name": "T8uMNfR6", "fname": "Hotfix 0.1.1", "prid": "x"}),
+        )
+        .unwrap();
+        let s = RoomSettings::from_room(&disc, false);
+        assert_eq!(s.name, "Hotfix 0.1.1");
+        assert_eq!(s.payload("r", &s), None);
+        let room: Room = serde_json::from_value(
+            json!({"_id": "r", "t": "c", "name": "dev-team", "fname": "Dev team"}),
+        )
+        .unwrap();
+        assert_eq!(RoomSettings::from_room(&room, false).name, "dev-team");
+        assert_eq!(RoomSettings::from_room(&room, true).name, "Dev team");
+    }
+
+    #[test]
+    fn system_message_types_match_web() {
+        assert_eq!(SYSTEM_MESSAGE_TYPES.len(), 37);
+        assert!(SYSTEM_MESSAGE_TYPES.contains(&"room_e2e_enabled"));
+        assert!(SYSTEM_MESSAGE_TYPES.contains(&"room_e2e_disabled"));
     }
 
     #[test]
@@ -884,6 +959,19 @@ mod tests {
         assert!(
             matches!(c, Call::Get(p, q) if p == "chat.ignoreUser" && q.contains(&("ignore".into(), "false".into())))
         );
+    }
+
+    #[test]
+    fn members_endpoint_by_room_type() {
+        let (p, q) = members_request(RoomType::Direct, "r", " bo ", true, 25);
+        assert_eq!(p, "im.members");
+        let s = q.apply(p);
+        assert!(s.contains("roomId=r") && s.contains("filter=bo") && s.contains("offset=25"));
+        assert!(s.contains("online"));
+        assert!(!s.contains("away"));
+        let (p, q) = members_request(RoomType::Private, "r", "", false, 0);
+        assert_eq!(p, "rooms.membersOrderedByRole");
+        assert!(!q.apply(p).contains("status"));
     }
 
     #[test]

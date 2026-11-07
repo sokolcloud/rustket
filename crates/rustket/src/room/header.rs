@@ -78,7 +78,9 @@ pub fn buttons(ws: &Workspace, rid: &str) -> Buttons {
     let entry = ws.room(rid);
     Buttons {
         threads: ws.settings().threads_enabled(),
-        discussions: ws.settings().discussions_enabled(),
+        // Discussions cannot be nested (the web hides it inside one too).
+        discussions: ws.settings().discussions_enabled()
+            && !entry.is_some_and(|e| e.is_discussion()),
         members: dm.is_none(),
         team_channels: entry.is_some_and(|e| e.is_team()),
         info: match dm {
@@ -89,24 +91,42 @@ pub fn buttons(ws: &Workspace, rid: &str) -> Buttons {
 }
 
 /// Menu entries for `rid`.
-pub fn menu_entries(ws: &Workspace, rid: &str) -> Vec<MenuEntry<Message>> {
+/// `overflow`: header buttons that did not fit, listed first.
+pub fn menu_entries(
+    ws: &Workspace,
+    rid: &str,
+    overflow: &[HeaderButton],
+) -> Vec<MenuEntry<Message>> {
     let mut v: Vec<MenuEntry<Message>> = Vec::new();
     let item = |icon: Icon, key: &str, kind: panel::Kind| -> MenuEntry<Message> {
         MenuItem::new(t!(key).into_owned(), Message::MenuPanel(kind))
             .icon(icon)
             .into()
     };
-    v.push(item(Icon::Pin, "room_header.pinned", panel::Kind::Pinned));
+    for b in overflow {
+        v.push(item(b.icon, b.key, b.kind.clone()));
+    }
+    if !overflow.is_empty() {
+        v.push(MenuEntry::Separator);
+    }
+    let room_type = ws.room(rid).map(|e| e.room_type());
+    let direct = room_type == Some(RoomType::Direct);
+    if ws.settings().allow_pinning() {
+        v.push(item(Icon::Pin, "room_header.pinned", panel::Kind::Pinned));
+    }
     v.push(item(
         Icon::Star,
         "room_header.starred",
         panel::Kind::Starred,
     ));
-    v.push(item(
-        Icon::AtSign,
-        "room_header.mentions",
-        panel::Kind::Mentions,
-    ));
+    // The web offers mentions in channels, groups and teams only.
+    if !direct {
+        v.push(item(
+            Icon::AtSign,
+            "room_header.mentions",
+            panel::Kind::Mentions,
+        ));
+    }
     v.push(item(
         Icon::Paperclip,
         "room_header.files",
@@ -120,9 +140,6 @@ pub fn menu_entries(ws: &Workspace, rid: &str) -> Vec<MenuEntry<Message>> {
             panel::Kind::NotificationPrefs,
         ));
     }
-    let direct = ws
-        .room(rid)
-        .is_some_and(|e| e.room_type() == RoomType::Direct);
     if !direct && permissions::can_edit_room(ws, rid) {
         v.push(item(
             Icon::Settings,
@@ -130,7 +147,11 @@ pub fn menu_entries(ws: &Workspace, rid: &str) -> Vec<MenuEntry<Message>> {
             panel::Kind::RoomSettings,
         ));
     }
-    if permissions::can_add_users(ws, rid) || permissions::can_create_invite_links(ws, rid) {
+    // Direct messages do not accept invites (`error-room-type-not-allowed`).
+    let invitable = matches!(room_type, Some(RoomType::Channel | RoomType::Private));
+    if invitable
+        && (permissions::can_add_users(ws, rid) || permissions::can_create_invite_links(ws, rid))
+    {
         v.push(item(
             Icon::UserPlus,
             "room_header.invite",
@@ -160,6 +181,92 @@ pub fn menu_entries(ws: &Workspace, rid: &str) -> Vec<MenuEntry<Message>> {
         );
     }
     v
+}
+
+/// A header button opening a panel.
+#[derive(Debug, Clone)]
+pub struct HeaderButton {
+    pub icon: Icon,
+    pub key: &'static str,
+    pub kind: panel::Kind,
+}
+
+const BUTTON_SLOT: f32 = 32.0 + SPACE_1;
+/// Width kept for the room name before buttons move into the menu.
+const MIN_TITLE_WIDTH: f32 = 160.0;
+
+/// Splits the header buttons into the ones shown inline and the ones moved
+/// into the menu for a header `width` px wide, plus whether the disabled
+/// call placeholder still fits. Team channels, discussions, threads,
+/// members and search go into the menu in that order; Info always stays.
+pub fn layout_buttons(b: &Buttons, width: f32) -> (Vec<HeaderButton>, Vec<HeaderButton>, bool) {
+    let info_key = if matches!(b.info, panel::Kind::UserInfo(_)) {
+        "room_header.user_info"
+    } else {
+        "room_header.room_info"
+    };
+    // Display order with a drop priority (lower drops first).
+    let mut all: Vec<(u8, HeaderButton)> = Vec::new();
+    let mut push = |prio: u8, icon: Icon, key: &'static str, kind: panel::Kind| {
+        all.push((prio, HeaderButton { icon, key, kind }));
+    };
+    if b.threads {
+        push(
+            3,
+            Icon::MessageCircle,
+            "room_header.threads",
+            panel::Kind::Threads,
+        );
+    }
+    push(u8::MAX, Icon::Info, info_key, b.info.clone());
+    if b.team_channels {
+        push(
+            1,
+            Icon::LayoutList,
+            "room_header.team_channels",
+            panel::Kind::TeamChannels,
+        );
+    }
+    if b.discussions {
+        push(
+            2,
+            Icon::MessagesSquare,
+            "room_header.discussions",
+            panel::Kind::Discussions,
+        );
+    }
+    if b.members {
+        push(4, Icon::Users, "room_header.members", panel::Kind::Members);
+    }
+    push(5, Icon::Search, "room_header.search", panel::Kind::Search);
+
+    let budget = width - 2.0 * SPACE_4 - 32.0 - 2.0 * SPACE_3 - MIN_TITLE_WIDTH;
+    // Slots: the buttons, the menu trigger and the call placeholder.
+    let fits = |n: usize| (n as f32) * BUTTON_SLOT <= budget;
+    let call = fits(all.len() + 2);
+    let mut overflow_prios: Vec<u8> = Vec::new();
+    if !call {
+        let mut prios: Vec<u8> = all
+            .iter()
+            .map(|(p, _)| *p)
+            .filter(|p| *p != u8::MAX)
+            .collect();
+        prios.sort_unstable();
+        for p in prios {
+            if fits(all.len() - overflow_prios.len() + 1) {
+                break;
+            }
+            overflow_prios.push(p);
+        }
+    }
+    let (over, inline): (Vec<_>, Vec<_>) = all
+        .into_iter()
+        .partition(|(p, _)| overflow_prios.contains(p));
+    (
+        inline.into_iter().map(|(_, b)| b).collect(),
+        over.into_iter().map(|(_, b)| b).collect(),
+        call,
+    )
 }
 
 impl Header {
@@ -215,10 +322,7 @@ impl Header {
                 self.busy = false;
                 self.confirm = None;
                 match r {
-                    Ok(()) => match a.done_text() {
-                        Some(s) => Action::effect(common::ok_toast(s)),
-                        None => Action::none(),
-                    },
+                    Ok(()) => a.done_action(),
                     Err(e) => Action::effect(common::error_toast(&a.label(), &e)),
                 }
             }
@@ -245,6 +349,47 @@ impl Header {
     }
 
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
+        let (server_id, server, rid, workspace, images, prefs, connected, panel_kind, now) = (
+            ctx.server_id,
+            ctx.server,
+            ctx.rid,
+            ctx.workspace,
+            ctx.images,
+            ctx.prefs,
+            ctx.connected,
+            ctx.panel,
+            ctx.now,
+        );
+        let bar = iced::widget::responsive(move |size| {
+            let ctx = ViewCtx {
+                server_id,
+                server,
+                rid,
+                workspace,
+                images,
+                prefs,
+                connected,
+                panel: panel_kind,
+                now,
+            };
+            self.bar(&ctx, size.width)
+        });
+        column![
+            container(bar)
+                .height(HEADER_HEIGHT)
+                .width(Length::Fill)
+                .padding([0.0, SPACE_4])
+                .center_y(HEADER_HEIGHT)
+                .style(style::container_header),
+            divider(),
+        ]
+        .spacing(0)
+        .into()
+    }
+
+    /// The header row for a header `width` px wide (incl. padding).
+    fn bar<'a>(&'a self, ctx: &ViewCtx<'a>, width: f32) -> Element<'a, Message> {
+        let width = width + 2.0 * SPACE_4;
         let ws = ctx.workspace;
         let entry = ws.room(&self.rid);
         let use_real = ws.use_real_names(ctx.prefs.use_real_names);
@@ -331,14 +476,21 @@ impl Header {
                 .and_then(|r| r.prid.clone())
                 .or_else(|| e.sub.as_ref().and_then(|s| s.prid.clone()))
         }) {
-            let parent = ws
-                .room(&prid)
-                .map(|p| room_list::display_name(ws, p, use_real))
-                .unwrap_or_else(|| t!("room_header.parent_room").into_owned());
+            // Only a parent room in the workspace can be opened.
+            let parent: Element<'a, Message> = match ws.room(&prid) {
+                Some(p) => common::link(
+                    room_list::display_name(ws, p, use_real),
+                    Message::OpenRoom(prid),
+                ),
+                None => ellipsis(t!("room_header.parent_room").into_owned())
+                    .size(TEXT_CAPTION)
+                    .style(|t: &Theme| Some(tokens(t).text_secondary))
+                    .into(),
+            };
             Some(
                 row![
                     icon::sized(Icon::CornerDownRight, 12.0).style(style::text_secondary),
-                    common::link(parent, Message::OpenRoom(prid)),
+                    parent,
                 ]
                 .spacing(SPACE_1)
                 .align_y(Alignment::Center)
@@ -370,61 +522,28 @@ impl Header {
             titles = titles.push(s);
         }
 
-        // Buttons.
-        let b = buttons(ws, &self.rid);
-        let btn = |icon_: Icon, key: &str, kind: panel::Kind| -> Element<'a, Message> {
-            let active = ctx.panel == Some(&kind);
-            icon_button_with(
-                icon_,
-                Some(Message::TogglePanel(kind)),
-                t!(key).into_owned(),
+        // Buttons; the ones that do not fit go into the menu.
+        let (inline, overflow, call) = layout_buttons(&buttons(ws, &self.rid), width);
+        let mut actions = row![].spacing(SPACE_1).align_y(Alignment::Center);
+        if call {
+            actions = actions.push(icon_button_with(
+                Icon::Video,
+                None,
+                t!("room_header.call_soon").into_owned(),
+                false,
+                32.0,
+            ));
+        }
+        for hb in inline {
+            let active = ctx.panel == Some(&hb.kind);
+            actions = actions.push(icon_button_with(
+                hb.icon,
+                Some(Message::TogglePanel(hb.kind)),
+                t!(hb.key).into_owned(),
                 active,
                 32.0,
-            )
-        };
-        let mut actions = row![].spacing(SPACE_1).align_y(Alignment::Center);
-        actions = actions.push(icon_button_with(
-            Icon::Video,
-            None,
-            t!("room_header.call_soon").into_owned(),
-            false,
-            32.0,
-        ));
-        if b.threads {
-            actions = actions.push(btn(
-                Icon::MessageCircle,
-                "room_header.threads",
-                panel::Kind::Threads,
             ));
         }
-        let info_key = if matches!(b.info, panel::Kind::UserInfo(_)) {
-            "room_header.user_info"
-        } else {
-            "room_header.room_info"
-        };
-        actions = actions.push(btn(Icon::Info, info_key, b.info.clone()));
-        if b.team_channels {
-            actions = actions.push(btn(
-                Icon::LayoutList,
-                "room_header.team_channels",
-                panel::Kind::TeamChannels,
-            ));
-        }
-        if b.discussions {
-            actions = actions.push(btn(
-                Icon::MessagesSquare,
-                "room_header.discussions",
-                panel::Kind::Discussions,
-            ));
-        }
-        if b.members {
-            actions = actions.push(btn(
-                Icon::Users,
-                "room_header.members",
-                panel::Kind::Members,
-            ));
-        }
-        actions = actions.push(btn(Icon::Search, "room_header.search", panel::Kind::Search));
 
         let trigger = icon_button_with(
             Icon::EllipsisVertical,
@@ -450,7 +569,7 @@ impl Header {
             ),
             None => popover_menu(
                 trigger,
-                &menu_entries(ws, &self.rid),
+                &menu_entries(ws, &self.rid, &overflow),
                 self.menu_open,
                 Message::CloseMenu,
                 Placement::BelowEnd,
@@ -458,20 +577,11 @@ impl Header {
         };
         actions = actions.push(kebab);
 
-        let bar = row![avatar, titles, actions]
+        row![avatar, titles, actions]
             .spacing(SPACE_3)
-            .align_y(Alignment::Center);
-        column![
-            container(bar)
-                .height(HEADER_HEIGHT)
-                .width(Length::Fill)
-                .padding([0.0, SPACE_4])
-                .center_y(HEADER_HEIGHT)
-                .style(style::container_header),
-            divider(),
-        ]
-        .spacing(0)
-        .into()
+            .align_y(Alignment::Center)
+            .height(Length::Fill)
+            .into()
     }
 }
 
@@ -544,7 +654,7 @@ mod tests {
     #[test]
     fn channel_menu_respects_permissions() {
         let ws = ws("c", json!({}));
-        let labels: Vec<String> = menu_entries(&ws, "r")
+        let labels: Vec<String> = menu_entries(&ws, "r", &[])
             .into_iter()
             .filter_map(|e| match e {
                 MenuEntry::Item(i) => Some(i.label),
@@ -563,7 +673,7 @@ mod tests {
     #[test]
     fn dm_menu_has_no_leave_or_settings() {
         let ws = ws("d", json!({"uids": ["me", "b"]}));
-        let labels: Vec<String> = menu_entries(&ws, "r")
+        let labels: Vec<String> = menu_entries(&ws, "r", &[])
             .into_iter()
             .filter_map(|e| match e {
                 MenuEntry::Item(i) => Some(i.label),
@@ -573,5 +683,96 @@ mod tests {
         assert!(!labels.contains(&RoomAction::Leave.label()));
         assert!(!labels.contains(&t!("room_header.room_settings").into_owned()));
         assert!(labels.contains(&RoomAction::Hide.label()));
+    }
+
+    fn labels(ws: &Workspace) -> Vec<String> {
+        menu_entries(ws, "r", &[])
+            .into_iter()
+            .filter_map(|e| match e {
+                MenuEntry::Item(i) => Some(i.label),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gating_follows_the_web() {
+        // Discussions cannot be nested.
+        let disc = ws("p", json!({"prid": "parent"}));
+        assert!(!buttons(&disc, "r").discussions);
+        // No mentions or invites in DMs, even with invite permissions.
+        let mut dm = ws("d", json!({"uids": ["me", "b", "c"]}));
+        dm.apply_permission(
+            Change::Updated,
+            Permission {
+                id: "create-invite-links".into(),
+                roles: vec!["owner".into(), "user".into()],
+                updated_at: None,
+            },
+        );
+        let l = labels(&dm);
+        assert!(!l.contains(&t!("room_header.mentions").into_owned()));
+        assert!(!l.contains(&t!("room_header.invite").into_owned()));
+        assert!(l.contains(&t!("room_header.starred").into_owned()));
+        // Pinned and favorite follow their settings.
+        let mut c = ws("c", json!({}));
+        assert!(labels(&c).contains(&t!("room_header.pinned").into_owned()));
+        for id in ["Message_AllowPinning", "Favorite_Rooms"] {
+            c.apply_setting(
+                Change::Updated,
+                Setting {
+                    id: id.into(),
+                    value: json!(false),
+                    ..Default::default()
+                },
+            );
+        }
+        let l = labels(&c);
+        assert!(!l.contains(&t!("room_header.pinned").into_owned()));
+        assert!(!l.contains(&RoomAction::Favorite(true).label()));
+    }
+
+    #[test]
+    fn hide_closes_the_room() {
+        let a: Action<Message> = RoomAction::Hide.done_action();
+        assert!(a.effects.iter().any(|e| matches!(e, Effect::CloseRoom)));
+        let a: Action<Message> = RoomAction::Favorite(true).done_action();
+        assert!(a.effects.is_empty());
+    }
+
+    #[test]
+    fn narrow_headers_move_buttons_into_the_menu() {
+        let b = Buttons {
+            threads: true,
+            discussions: true,
+            members: true,
+            team_channels: true,
+            info: panel::Kind::Info,
+        };
+        let (inline, over, call) = layout_buttons(&b, 1200.0);
+        assert_eq!(inline.len(), 6);
+        assert!(over.is_empty() && call);
+        // Room for the title plus info, two buttons and the menu trigger.
+        let w = 2.0 * SPACE_4 + 32.0 + 2.0 * SPACE_3 + MIN_TITLE_WIDTH + 4.0 * BUTTON_SLOT;
+        let (inline, over, call) = layout_buttons(&b, w);
+        assert!(!call);
+        let kinds: Vec<_> = inline.iter().map(|b| b.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            vec![panel::Kind::Info, panel::Kind::Members, panel::Kind::Search]
+        );
+        let kinds: Vec<_> = over.iter().map(|b| b.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                panel::Kind::Threads,
+                panel::Kind::TeamChannels,
+                panel::Kind::Discussions
+            ]
+        );
+        // Info stays even when nothing fits.
+        let (inline, _, _) = layout_buttons(&b, 100.0);
+        assert_eq!(inline.len(), 1);
+        assert_eq!(inline[0].kind, panel::Kind::Info);
     }
 }

@@ -3,8 +3,10 @@
 
 use iced::widget::{column, container, mouse_area, row, scrollable, text};
 use iced::{Alignment, Element, Length};
-use rocketchat::models::{Message as RcMessage, Paginated};
+use rocketchat::models::{Message as RcMessage, Paginated, RoomType};
 use rust_i18n::t;
+use rustket_core::room_list;
+use rustket_core::workspace::Workspace;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
@@ -19,6 +21,18 @@ use super::{Kind, debounce, render_action};
 use crate::error::Res;
 use crate::room::render::{self, RenderMsg};
 use crate::room::{Action, Effect, UpdateCtx, ViewCtx};
+
+/// Translated action text of a system message (the sidebar's preview keys).
+pub fn system_text(ws: &Workspace, m: &RcMessage, use_real: bool) -> String {
+    let p = room_list::preview(ws, m, RoomType::Channel, false, use_real);
+    let arg = p.text.unwrap_or_default();
+    let s = t!(p.i18n_key.as_str(), text = arg).into_owned();
+    if s.ends_with(p.i18n_key.as_str()) {
+        t!("preview.system.generic").into_owned()
+    } else {
+        s
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -139,7 +153,42 @@ impl Messages {
         }
     }
 
+    /// A compact line for system messages (topic changed, user joined, …),
+    /// like the web's `SystemMessage` in these lists.
+    fn system_row<'a>(&'a self, m: &'a RcMessage, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
+        let ws = ctx.workspace;
+        let use_real = common::use_real_names(ctx);
+        let username = m.u.username.clone().unwrap_or_default();
+        let name = common::user_display(ws, use_real, &username, m.u.name.as_deref());
+        let line = row![
+            icon::sized(Icon::Info, 13.0).style(style::text_hint),
+            text(system_text(ws, m, use_real))
+                .size(TEXT_CAPTION)
+                .style(style::text_secondary)
+                .width(Length::Fill),
+            text(common::time_label(m.ts, ctx))
+                .size(TEXT_CAPTION)
+                .style(style::text_hint),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+        let line = column![
+            mouse_area(text(name).size(TEXT_CAPTION).font(FONT_SEMIBOLD))
+                .interaction(iced::mouse::Interaction::Pointer)
+                .on_press(Msg::OpenUser(username)),
+            line
+        ]
+        .spacing(2);
+        container(line)
+            .padding([SPACE_2, SPACE_4])
+            .width(Length::Fill)
+            .into()
+    }
+
     fn row<'a>(&'a self, m: &'a RcMessage, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
+        if m.is_system() {
+            return self.system_row(m, ctx);
+        }
         let ws = ctx.workspace;
         let use_real = common::use_real_names(ctx);
         let username = m.u.username.clone().unwrap_or_default();
@@ -278,5 +327,32 @@ impl Messages {
         } else {
             column![top, body].height(Length::Fill).into()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn system_text_is_translated() {
+        let ws = Workspace::new();
+        let m: RcMessage = serde_json::from_value(serde_json::json!({
+            "_id": "m", "rid": "r", "msg": "Release", "t": "room_changed_topic",
+            "u": {"_id": "a", "username": "admin"}
+        }))
+        .unwrap();
+        assert!(m.is_system());
+        assert_eq!(system_text(&ws, &m, false), "Topic changed: Release");
+        let m: RcMessage = serde_json::from_value(serde_json::json!({
+            "_id": "m", "rid": "r", "msg": "", "t": "some-new-type",
+            "u": {"_id": "a", "username": "admin"}
+        }))
+        .unwrap();
+        assert_eq!(
+            system_text(&ws, &m, false),
+            t!("preview.system.generic").into_owned()
+        );
     }
 }

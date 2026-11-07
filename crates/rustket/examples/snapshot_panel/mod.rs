@@ -262,6 +262,35 @@ pub(super) async fn panel_shots(
     );
     d.settle(Duration::from_millis(1200)).await;
     both(d, out, "p03b-members-all");
+    // A profile from the list and Back: the "All" filter and query survive.
+    panel_body(
+        d,
+        sid,
+        rid,
+        panel::BodyMsg::Members(panel::members::Msg::Query("rk-".into())),
+    );
+    d.settle(Duration::from_millis(1200)).await;
+    panel_body(
+        d,
+        sid,
+        rid,
+        panel::BodyMsg::Members(panel::members::Msg::Open(peer.clone())),
+    );
+    d.settle(Duration::from_millis(1500)).await;
+    room_msg(d, sid, rid, room::Message::Panel(panel::Message::Back));
+    d.settle(Duration::from_millis(300)).await;
+    both(d, out, "p03c-members-after-back");
+
+    // A built-in sound selected in the notification preferences.
+    open(d, sid, rid, panel::Kind::NotificationPrefs).await;
+    panel_body(
+        d,
+        sid,
+        rid,
+        panel::BodyMsg::Notify(panel::notify::Msg::Sound("chime".into())),
+    );
+    d.settle(Duration::from_millis(200)).await;
+    both(d, out, "p12b-notifications-chime");
 
     // Thread placeholder of the first thread parent.
     let tmid = d.app.servers[sid].workspace.timeline(rid).and_then(|t| {
@@ -333,6 +362,9 @@ pub(super) async fn panel_shots(
         open_room(d, sid, &dm).await;
         open(d, sid, &dm, panel::Kind::UserInfo(peer.clone())).await;
         both(d, out, "p19-dm-user-info");
+        header_msg(d, sid, &dm, header::Message::ToggleMenu);
+        both(d, out, "p19b-dm-menu");
+        header_msg(d, sid, &dm, header::Message::CloseMenu);
     }
     // Back to the dev channel for the rest of the example.
     open_room(d, sid, rid).await;

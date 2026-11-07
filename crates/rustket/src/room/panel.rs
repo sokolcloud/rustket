@@ -155,14 +155,25 @@ impl Body {
     }
 }
 
+/// The panel a child was opened from, kept with its state (query, filter,
+/// results) so Back restores it instead of reloading.
+struct Stash {
+    kind: Kind,
+    body: Body,
+    generation: u64,
+}
+
 pub struct Panel {
     rid: String,
     open: Option<Kind>,
     back: Option<Kind>,
     body: Option<Body>,
     generation: u64,
+    /// Last generation handed out (generations are never reused).
+    counter: u64,
     /// Generation waiting for its activation.
     pending: Option<u64>,
+    stash: Option<Stash>,
 }
 
 fn wrap<M: Send + 'static>(generation: u64, a: Action<M>, f: fn(M) -> BodyMsg) -> Action<Message> {
@@ -177,7 +188,9 @@ impl Panel {
             back: None,
             body: None,
             generation: 0,
+            counter: 0,
             pending: None,
+            stash: None,
         }
     }
 
@@ -201,10 +214,36 @@ impl Panel {
             .as_ref()
             .filter(|from| kind.back_target(from))
             .cloned();
+        let previous = self.body.take();
+        self.stash = match (&self.back, previous) {
+            // A body that never ran its first load is not worth keeping.
+            (Some(from), Some(body)) if self.pending != Some(self.generation) => Some(Stash {
+                kind: from.clone(),
+                body,
+                generation: self.generation,
+            }),
+            _ => None,
+        };
         self.body = Some(Body::new(&kind));
         self.open = Some(kind);
-        self.generation += 1;
+        self.counter += 1;
+        self.generation = self.counter;
         self.pending = Some(self.generation);
+    }
+
+    /// Back to the stashed panel; `false` when there is none for `kind`.
+    fn restore(&mut self, kind: &Kind) -> bool {
+        match self.stash.take() {
+            Some(st) if &st.kind == kind => {
+                self.open = Some(st.kind);
+                self.body = Some(st.body);
+                self.generation = st.generation;
+                self.back = None;
+                self.pending = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn close(&mut self) {
@@ -212,12 +251,14 @@ impl Panel {
         self.back = None;
         self.body = None;
         self.pending = None;
+        self.stash = None;
     }
 
     pub fn update(&mut self, msg: Message, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
         match msg {
             Message::Close => Action::effect(Effect::ClosePanel),
             Message::Back => match self.back.clone() {
+                Some(kind) if self.restore(&kind) => Action::none(),
                 Some(kind) => Action::effect(Effect::OpenPanel(kind)),
                 None => Action::effect(Effect::ClosePanel),
             },
@@ -229,10 +270,16 @@ impl Panel {
                 self.activate(ctx)
             }
             Message::Body(g, m) => {
-                if g != self.generation {
-                    return Action::none();
+                if g == self.generation {
+                    return Self::update_body(self.body.as_mut(), g, m, ctx);
                 }
-                self.update_body(m, ctx)
+                // Results for the stashed panel keep it up to date.
+                match self.stash.as_mut() {
+                    Some(st) if st.generation == g => {
+                        Self::update_body(Some(&mut st.body), g, m, ctx)
+                    }
+                    _ => Action::none(),
+                }
             }
         }
     }
@@ -254,9 +301,13 @@ impl Panel {
         }
     }
 
-    fn update_body(&mut self, m: BodyMsg, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
-        let g = self.generation;
-        match (self.body.as_mut(), m) {
+    fn update_body(
+        body: Option<&mut Body>,
+        g: u64,
+        m: BodyMsg,
+        ctx: &mut UpdateCtx<'_>,
+    ) -> Action<Message> {
+        match (body, m) {
             (Some(Body::Info(b)), BodyMsg::Info(m)) => wrap(g, b.update(m, ctx), BodyMsg::Info),
             (Some(Body::User(b)), BodyMsg::User(m)) => wrap(g, b.update(m, ctx), BodyMsg::User),
             (Some(Body::Members(b)), BodyMsg::Members(m)) => {
@@ -465,13 +516,44 @@ mod tests {
             Some(Body::Info(info)) => assert_eq!(info.text_keys(), vec!["room_panel.topic"]),
             _ => panic!("info body expected"),
         }
-        // Results tagged with an older generation never reach the new body.
+        // Results tagged with an older generation never reach the new body:
+        // Info → Members → Info gives the same body type a new generation.
         p.open(Kind::Members);
-        let a = p.update(
-            Message::Body(g, BodyMsg::Info(info::Msg::Confirm)),
-            &mut ctx,
-        );
+        p.open(Kind::Info);
+        let g_now = p.generation();
+        assert!(g_now > g);
+        let open = |g| Message::Body(g, BodyMsg::Info(info::Msg::Open(Kind::RoomSettings)));
+        let a = p.update(open(g), &mut ctx);
         assert!(a.effects.is_empty());
+        let a = p.update(open(g_now), &mut ctx);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::OpenPanel(Kind::RoomSettings)]
+        ));
+    }
+
+    #[test]
+    fn back_restores_the_stashed_panel() {
+        let mut p = Panel::new("r");
+        p.open(Kind::Members);
+        let g_members = p.generation();
+        p.pending = None; // activated
+        if let Some(Body::Members(m)) = p.body.as_mut() {
+            m.set_query_for_test("bo");
+        }
+        p.open(Kind::UserInfo("bob".into()));
+        assert!(p.generation() > g_members);
+        assert!(p.restore(&Kind::Members));
+        assert_eq!(p.kind(), Some(&Kind::Members));
+        assert_eq!(p.generation(), g_members);
+        assert!(p.pending.is_none());
+        match &p.body {
+            Some(Body::Members(m)) => assert_eq!(m.query_for_test(), "bo"),
+            _ => panic!("members body expected"),
+        }
+        // New generations never reuse one handed out before.
+        p.open(Kind::Files);
+        assert!(p.generation() > g_members + 1);
     }
 
     #[test]

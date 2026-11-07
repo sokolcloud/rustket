@@ -132,8 +132,8 @@ room_panel.err_invalid_name:
   en: "This room name is not allowed"
   ru: "Такое название комнаты недопустимо"
 room_panel.err_duplicate_name:
-  en: "A room with this name already exists"
-  ru: "Комната с таким названием уже существует"
+  en: "A room, team or user with this name already exists"
+  ru: "Комната, команда или пользователь с таким именем уже существует"
 room_panel.err_name_required:
   en: "Name is required"
   ru: "Укажите название"
@@ -497,3 +497,90 @@ room_panel.link_expires:
 room_panel.thread_soon:
   en: "The thread view is coming soon"
   ru: "Просмотр тредов скоро появится"
+room_panel.err_archived_duplicate_name:
+  en: "An archived room with this name already exists"
+  ru: "Архивная комната с таким названием уже существует"
+room_panel.roles_failed:
+  en: "Could not load room roles: %{error}"
+  ru: "Не удалось загрузить роли в комнате: %{error}"
+room_panel.join:
+  en: "Join"
+  ru: "Присоединиться"
+room_panel.confirm_join:
+  en: "Join %{room}? You will be subscribed and members will see that you joined."
+  ru: "Присоединиться к %{room}? Вы будете подписаны, а участники увидят, что вы присоединились."
+room_panel.size_b:
+  en: "B"
+  ru: "Б"
+room_panel.size_kb:
+  en: "KB"
+  ru: "КБ"
+room_panel.size_mb:
+  en: "MB"
+  ru: "МБ"
+room_panel.size_gb:
+  en: "GB"
+  ru: "ГБ"
+room_panel.link_expiration:
+  en: "Expires in"
+  ru: "Срок действия"
+room_panel.link_max_uses:
+  en: "Max number of uses"
+  ru: "Макс. число использований"
+room_panel.link_never:
+  en: "Never"
+  ru: "Бессрочно"
+room_panel.link_days:
+  en: "%{count} d"
+  ru: "%{count} дн."
+room_panel.link_no_limit:
+  en: "No limit"
+  ru: "Без ограничений"
+room_panel.link_expires_or_uses:
+  en: "Expires %{time} or after %{count} more uses"
+  ru: "Истекает %{time} или после ещё %{count} использований"
+room_panel.link_uses_left:
+  en: "Expires after %{count} more uses"
+  ru: "Истекает после ещё %{count} использований"
+room_panel.link_never_expires:
+  en: "This link never expires"
+  ru: "Срок действия ссылки не ограничен"
+room_panel.sound_chime:
+  en: "Chime"
+  ru: "Перезвон"
+room_panel.sound_door:
+  en: "Door"
+  ru: "Дверь"
+room_panel.sound_beep:
+  en: "Beep"
+  ru: "Бип"
+room_panel.sound_chelle:
+  en: "Chelle"
+  ru: "Chelle"
+room_panel.sound_ding:
+  en: "Ding"
+  ru: "Динь"
+room_panel.sound_droplet:
+  en: "Droplet"
+  ru: "Капля"
+room_panel.sound_highbell:
+  en: "Highbell"
+  ru: "Высокий колокольчик"
+room_panel.sound_seasons:
+  en: "Seasons"
+  ru: "Времена года"
+room_panel.sound_telephone:
+  en: "Telephone"
+  ru: "Телефон"
+room_panel.sound_outbound_call_ringing:
+  en: "Outbound call ringing"
+  ru: "Гудки исходящего звонка"
+room_panel.sound_call_ended:
+  en: "Call ended"
+  ru: "Звонок завершён"
+room_panel.sound_dialtone:
+  en: "Dialtone"
+  ru: "Сигнал линии"
+room_panel.sound_ringtone:
+  en: "Ringtone"
+  ru: "Рингтон"

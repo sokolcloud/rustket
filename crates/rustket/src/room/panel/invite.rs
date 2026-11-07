@@ -1,7 +1,7 @@
 //! Add users to the room (`users.autocomplete` → `channels.invite` /
 //! `groups.invite`) and the room's invite link (`findOrCreateInvite`).
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length, Task};
 use rocketchat::models::UserSummary;
 use rust_i18n::t;
@@ -28,12 +28,13 @@ pub enum Msg {
     Unpick(String),
     Add,
     Added(Res<()>),
+    Days(u64),
+    MaxUses(u64),
     CreateLink,
     Link(Res<InviteLink>),
     Copy,
 }
 
-#[derive(Default)]
 pub struct Invite {
     query: String,
     query_seq: u64,
@@ -44,6 +45,79 @@ pub struct Invite {
     link: Option<InviteLink>,
     link_busy: bool,
     link_error: Option<String>,
+    /// Link settings (`0`: never expires / no use limit).
+    days: u64,
+    max_uses: u64,
+}
+
+impl Default for Invite {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            query_seq: 0,
+            results: Vec::new(),
+            searching: false,
+            selected: Vec::new(),
+            adding: false,
+            link: None,
+            link_busy: false,
+            link_error: None,
+            days: api::INVITE_DAYS,
+            max_uses: api::INVITE_MAX_USES,
+        }
+    }
+}
+
+/// A pick list entry: value plus its label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Choice {
+    value: u64,
+    label: String,
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+fn days_choice(d: u64) -> Choice {
+    Choice {
+        value: d,
+        label: if d == 0 {
+            t!("room_panel.link_never").into_owned()
+        } else {
+            t!("room_panel.link_days", count = d).into_owned()
+        },
+    }
+}
+
+fn uses_choice(n: u64) -> Choice {
+    Choice {
+        value: n,
+        label: if n == 0 {
+            t!("room_panel.link_no_limit").into_owned()
+        } else {
+            n.to_string()
+        },
+    }
+}
+
+/// The web's caption under the link (expiry and uses left).
+pub fn link_caption(l: &InviteLink, expires: impl Fn(rocketchat::RcDate) -> String) -> String {
+    match (l.expires, l.uses_left()) {
+        (Some(e), Some(n)) => {
+            t!(
+                "room_panel.link_expires_or_uses",
+                time = expires(e),
+                count = n
+            )
+        }
+        (Some(e), None) => t!("room_panel.link_expires", time = expires(e)),
+        (None, Some(n)) => t!("room_panel.link_uses_left", count = n),
+        (None, None) => t!("room_panel.link_never_expires"),
+    }
+    .into_owned()
 }
 
 impl Invite {
@@ -139,9 +213,27 @@ impl Invite {
                 self.link_busy = true;
                 self.link_error = None;
                 let rid = ctx.rid.to_owned();
-                Action::task(
-                    ctx.rest_task(move |rest| api::find_or_create_invite(rest, rid), Msg::Link),
-                )
+                Action::task(ctx.rest_task(
+                    {
+                        let (days, uses) = (self.days, self.max_uses);
+                        move |rest| api::find_or_create_invite(rest, rid, days, uses)
+                    },
+                    Msg::Link,
+                ))
+            }
+            Msg::Days(d) => {
+                if d != self.days && !self.link_busy {
+                    self.days = d;
+                    self.link = None;
+                }
+                Action::none()
+            }
+            Msg::MaxUses(n) => {
+                if n != self.max_uses && !self.link_busy {
+                    self.max_uses = n;
+                    self.link = None;
+                }
+                Action::none()
             }
             Msg::Link(r) => {
                 self.link_busy = false;
@@ -248,6 +340,34 @@ impl Invite {
                     .font(FONT_SEMIBOLD)
                     .style(style::text_hint),
             );
+            let picker =
+                |label: String, options: Vec<Choice>, selected: Choice, on: fn(u64) -> Msg| {
+                    common::field(
+                        label,
+                        pick_list(options, Some(selected), move |c: Choice| on(c.value))
+                            .text_size(TEXT_BODY)
+                            .width(Length::Fill)
+                            .style(style::pick_list)
+                            .menu_style(style::menu),
+                    )
+                };
+            col = col.push(
+                row![
+                    picker(
+                        t!("room_panel.link_expiration").into_owned(),
+                        api::INVITE_DAYS_OPTIONS.map(days_choice).to_vec(),
+                        days_choice(self.days),
+                        Msg::Days,
+                    ),
+                    picker(
+                        t!("room_panel.link_max_uses").into_owned(),
+                        api::INVITE_MAX_USES_OPTIONS.map(uses_choice).to_vec(),
+                        uses_choice(self.max_uses),
+                        Msg::MaxUses,
+                    ),
+                ]
+                .spacing(SPACE_3),
+            );
             match &self.link {
                 Some(l) => {
                     col = col.push(
@@ -261,19 +381,11 @@ impl Invite {
                         .spacing(SPACE_2)
                         .align_y(Alignment::Center),
                     );
-                    if let Some(exp) = l.expires {
-                        col = col.push(
-                            text(
-                                t!(
-                                    "room_panel.link_expires",
-                                    time = common::time_label(Some(exp), ctx)
-                                )
-                                .into_owned(),
-                            )
+                    col = col.push(
+                        text(link_caption(l, |e| common::date_time_label(e, ctx)))
                             .size(TEXT_CAPTION)
                             .style(style::text_hint),
-                        );
-                    }
+                    );
                 }
                 None => {
                     col = col.push(
@@ -306,6 +418,24 @@ impl Invite {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_defaults_and_caption() {
+        let i = Invite::default();
+        assert_eq!((i.days, i.max_uses), (1, 0));
+        let l = InviteLink {
+            max_uses: 10,
+            uses: 3,
+            ..Default::default()
+        };
+        assert_eq!(l.uses_left(), Some(7));
+        assert!(link_caption(&l, |_| String::new()).contains('7'));
+        let never = InviteLink::default();
+        assert_eq!(
+            link_caption(&never, |_| String::new()),
+            t!("room_panel.link_never_expires")
+        );
+    }
 
     #[test]
     fn pick_dedups() {

@@ -1,6 +1,6 @@
 //! Room lists: discussions of the room (`rooms.getDiscussions`) and the
 //! channels of a team (`teams.listRooms`). Opening a room the user is not in
-//! joins it first.
+//! asks for confirmation, then joins it.
 
 use iced::widget::{column, row, scrollable, text};
 use iced::{Alignment, Element, Length};
@@ -33,6 +33,8 @@ pub enum Msg {
     More,
     Retry,
     Open(String),
+    ConfirmJoin,
+    CancelJoin,
     Joined(String, Res<()>),
 }
 
@@ -44,6 +46,8 @@ pub struct Rooms {
     /// Joined, waiting for the room to show up in the workspace.
     pending_open: Option<String>,
     joining: Option<String>,
+    /// Not-joined room waiting for the user's confirmation (rid, name).
+    confirm_join: Option<(String, String)>,
 }
 
 impl Rooms {
@@ -55,6 +59,7 @@ impl Rooms {
             list: Paged::default(),
             pending_open: None,
             joining: None,
+            confirm_join: None,
         }
     }
 
@@ -141,6 +146,31 @@ impl Rooms {
                 if self.joining.is_some() {
                     return Action::none();
                 }
+                // Joining subscribes the user and posts a "joined" message,
+                // so it is never a side effect of a plain click.
+                let name = self
+                    .list
+                    .items
+                    .iter()
+                    .find(|r| r.id == rid)
+                    .map(|r| r.display_name().to_owned())
+                    .unwrap_or_default();
+                self.confirm_join = Some((rid, name));
+                Action::none()
+            }
+            Msg::CancelJoin => {
+                if self.joining.is_none() {
+                    self.confirm_join = None;
+                }
+                Action::none()
+            }
+            Msg::ConfirmJoin => {
+                let Some((rid, _)) = self.confirm_join.clone() else {
+                    return Action::none();
+                };
+                if self.joining.is_some() {
+                    return Action::none();
+                }
                 self.joining = Some(rid.clone());
                 let r2 = rid.clone();
                 Action::task(ctx.rest_task(
@@ -150,6 +180,7 @@ impl Rooms {
             }
             Msg::Joined(rid, r) => {
                 self.joining = None;
+                self.confirm_join = None;
                 match r {
                     Ok(_) if ctx.workspace.subscription(&rid).is_some() => {
                         Action::effect(Effect::OpenRoom(rid))
@@ -213,9 +244,9 @@ impl Rooms {
                             )
                             .into_owned(),
                         );
-                        if !joined {
-                            meta.push(t!("room_panel.not_joined").into_owned());
-                        }
+                    }
+                    if !joined {
+                        meta.push(t!("room_panel.not_joined").into_owned());
                     }
                     let glyph = match (self.mode, r.t) {
                         (Mode::Discussions, _) => Icon::MessagesSquare,
@@ -255,6 +286,77 @@ impl Rooms {
                     .into()
             }
         };
-        column![top, body].height(Length::Fill).into()
+        let mut out = column![top].height(Length::Fill);
+        if let Some((_, name)) = &self.confirm_join {
+            out = out.push(
+                iced::widget::container(common::confirm_card(
+                    t!("room_panel.confirm_join", room = name).into_owned(),
+                    t!("room_panel.join").into_owned(),
+                    false,
+                    self.joining.is_some(),
+                    Msg::ConfirmJoin,
+                    Msg::CancelJoin,
+                ))
+                .padding([0.0, SPACE_4])
+                .center_x(Length::Fill),
+            );
+        }
+        out.push(body).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use rocketchat::ServerUrl;
+    use rustket_core::ServerId;
+    use rustket_core::workspace::Workspace;
+
+    #[test]
+    fn open_not_joined_asks_first() {
+        let mut ws = Workspace::new();
+        let (sid, url) = (
+            ServerId("s".into()),
+            ServerUrl::parse("http://localhost:3000").unwrap(),
+        );
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "r",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let mut r = Rooms::new(Mode::Discussions);
+        let req = r.list.reset();
+        r.list.finish(
+            req,
+            Ok(Paginated {
+                items: vec![
+                    serde_json::from_value(
+                        serde_json::json!({"_id": "d1", "t": "c", "name": "x", "fname": "Disc"}),
+                    )
+                    .unwrap(),
+                ],
+                count: 1,
+                offset: 0,
+                total: 1,
+                raw_len: 1,
+                dropped: 0,
+            }),
+        );
+        let a = r.update(Msg::Open("d1".into()), &mut ctx);
+        assert!(a.effects.is_empty());
+        assert_eq!(r.confirm_join, Some(("d1".into(), "Disc".into())));
+        assert!(r.joining.is_none(), "no join before confirmation");
+        let _ = r.update(Msg::CancelJoin, &mut ctx);
+        assert!(r.confirm_join.is_none());
+        let _ = r.update(Msg::Open("d1".into()), &mut ctx);
+        let _ = r.update(Msg::ConfirmJoin, &mut ctx);
+        assert_eq!(r.joining.as_deref(), Some("d1"));
     }
 }

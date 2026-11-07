@@ -1,7 +1,7 @@
 //! Room settings (`rooms.saveRoomSettings`, `rooms.changeArchivationState`),
 //! each field gated by the permission the server checks.
 
-use iced::widget::{column, scrollable, text, toggler};
+use iced::widget::{column, scrollable, text, text_editor, toggler};
 use iced::{Element, Length};
 use rocketchat::models::RoomType;
 use rust_i18n::t;
@@ -9,7 +9,7 @@ use rustket_core::permissions::{self, ids};
 use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
 use rustket_ui::widget::{BannerKind, banner, primary_button, secondary_button, text_field};
 
 use super::api::{self, RoomSettings};
@@ -37,6 +37,8 @@ pub enum Flag {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Text(Field, String),
+    /// Edit in a multi-line field (announcement, description).
+    Editor(Field, text_editor::Action),
     Flag(Flag, bool),
     Reset,
     Save,
@@ -79,13 +81,38 @@ impl Allowed {
     }
 }
 
+/// The text input look for multi-line fields.
+fn editor_style(theme: &iced::Theme, status: text_editor::Status) -> text_editor::Style {
+    use iced::widget::text_input::Status as S;
+    let s = style::text_input(
+        theme,
+        match status {
+            text_editor::Status::Active => S::Active,
+            text_editor::Status::Hovered => S::Hovered,
+            text_editor::Status::Focused { is_hovered } => S::Focused { is_hovered },
+            text_editor::Status::Disabled => S::Disabled,
+        },
+    );
+    text_editor::Style {
+        background: s.background,
+        border: s.border,
+        placeholder: s.placeholder,
+        value: s.value,
+        selection: s.selection,
+    }
+}
+
 #[derive(Default)]
 pub struct Settings {
     form: Option<RoomSettings>,
     before: Option<RoomSettings>,
+    /// The form as sent by the running save.
+    submitted: Option<RoomSettings>,
     saving: bool,
     error: Option<String>,
     name_error: Option<String>,
+    announcement: text_editor::Content,
+    description: text_editor::Content,
 }
 
 impl Settings {
@@ -93,7 +120,11 @@ impl Settings {
         let s = ws
             .room(rid)
             .and_then(|e| e.room.as_ref())
-            .map(RoomSettings::from_room);
+            .map(|r| RoomSettings::from_room(r, ws.settings().allow_special_chars_in_room_names()));
+        if let Some(f) = &s {
+            self.announcement = text_editor::Content::with_text(&f.announcement);
+            self.description = text_editor::Content::with_text(&f.description);
+        }
         self.before = s.clone();
         self.form = s;
         self.error = None;
@@ -129,6 +160,16 @@ impl Settings {
                 }
                 Action::none()
             }
+            Msg::Editor(field, action) => {
+                let (content, value) = match (field, self.form.as_mut()) {
+                    (Field::Announcement, Some(f)) => (&mut self.announcement, &mut f.announcement),
+                    (Field::Description, Some(f)) => (&mut self.description, &mut f.description),
+                    _ => return Action::none(),
+                };
+                content.perform(action);
+                *value = content.text();
+                Action::none()
+            }
             Msg::Flag(flag, v) => {
                 if let Some(f) = &mut self.form {
                     match flag {
@@ -152,11 +193,12 @@ impl Settings {
                 if self.saving {
                     return Action::none();
                 }
-                let is_discussion = ctx
-                    .workspace
-                    .room(ctx.rid)
-                    .is_some_and(|e| e.is_discussion());
-                if let Some(key) = form.validate(is_discussion) {
+                let free_form = ctx.workspace.settings().allow_special_chars_in_room_names()
+                    || ctx
+                        .workspace
+                        .room(ctx.rid)
+                        .is_some_and(|e| e.is_discussion());
+                if let Some(key) = form.validate(free_form) {
                     self.name_error = Some(t!(key).into_owned());
                     return Action::none();
                 }
@@ -166,6 +208,7 @@ impl Settings {
                     return Action::none();
                 }
                 self.saving = true;
+                self.submitted = Some(form);
                 self.error = None;
                 let rid = ctx.rid.to_owned();
                 Action::task(ctx.rest_task(
@@ -183,18 +226,24 @@ impl Settings {
             }
             Msg::Saved(r) => {
                 self.saving = false;
+                let submitted = self.submitted.take();
                 match r {
                     Ok(()) => {
-                        self.before = self.form.clone();
-                        Action::effect(common::ok_toast(t!("room_panel.room_saved").into_owned()))
-                            .with(Effect::OpenPanel(super::Kind::Info))
+                        let toast = Action::effect(common::ok_toast(
+                            t!("room_panel.room_saved").into_owned(),
+                        ));
+                        // Edits made while saving stay in the form.
+                        let untouched = submitted.is_some() && self.form == submitted;
+                        self.before = submitted;
+                        if untouched {
+                            toast.with(Effect::OpenPanel(super::Kind::Info))
+                        } else {
+                            toast
+                        }
                     }
                     Err(e) => {
                         let msg = common::failure_text(&e);
-                        if matches!(
-                            e.error().api_error_code(),
-                            Some("error-invalid-room-name" | "error-duplicate-channel-name")
-                        ) {
+                        if common::is_name_error(&e) {
                             self.name_error = Some(msg);
                         } else {
                             self.error = Some(msg);
@@ -223,6 +272,21 @@ impl Settings {
                 .error(err)
                 .into()
         };
+        let multiline =
+            |label: String, content: &'a text_editor::Content, field: Field| -> Element<'a, Msg> {
+                column![
+                    text(label).size(TEXT_BODY - 1.0).font(FONT_MEDIUM),
+                    text_editor(content)
+                        .on_action(move |a| Msg::Editor(field, a))
+                        .size(TEXT_BODY)
+                        .padding([8, 12])
+                        .min_height(72.0)
+                        .max_height(200.0)
+                        .style(editor_style),
+                ]
+                .spacing(SPACE_1 + 2.0)
+                .into()
+            };
         let toggle = |label: String,
                       hint: Option<String>,
                       value: bool,
@@ -260,17 +324,15 @@ impl Settings {
                 Field::Topic,
                 None,
             ))
-            .push(input(
+            .push(multiline(
                 t!("room_panel.announcement").into_owned(),
-                &f.announcement,
+                &self.announcement,
                 Field::Announcement,
-                None,
             ))
-            .push(input(
+            .push(multiline(
                 t!("room_panel.description").into_owned(),
-                &f.description,
+                &self.description,
                 Field::Description,
-                None,
             ))
             .push(toggle(
                 t!("room_panel.private").into_owned(),
@@ -332,5 +394,61 @@ impl Settings {
             .height(Length::Fill)
             .style(style::scrollable)
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use rocketchat::ServerUrl;
+    use rustket_core::ServerId;
+    use rustket_core::workspace::Change;
+
+    #[test]
+    fn edits_during_save_are_kept() {
+        let mut ws = Workspace::new();
+        ws.apply_room(
+            Change::Inserted,
+            serde_json::from_value(serde_json::json!({
+                "_id": "r", "t": "c", "name": "dev", "topic": "old"
+            }))
+            .unwrap(),
+        );
+        let (sid, url) = (
+            ServerId("s".into()),
+            ServerUrl::parse("http://localhost:3000").unwrap(),
+        );
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "r",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let mut s = Settings::default();
+        let _ = s.activate(&mut ctx);
+        let _ = s.update(Msg::Text(Field::Topic, "new".into()), &mut ctx);
+        let _ = s.update(Msg::Save, &mut ctx);
+        assert!(s.saving);
+        let _ = s.update(
+            Msg::Editor(
+                Field::Description,
+                text_editor::Action::Edit(text_editor::Edit::Insert('x')),
+            ),
+            &mut ctx,
+        );
+        let a = s.update(Msg::Saved(Ok(())), &mut ctx);
+        assert!(
+            !a.effects.iter().any(|e| matches!(e, Effect::OpenPanel(_))),
+            "unsaved edits keep the form open"
+        );
+        assert_eq!(s.before.as_ref().unwrap().topic, "new");
+        assert_eq!(s.before.as_ref().unwrap().description, "");
+        assert_eq!(s.form.as_ref().unwrap().description, "x");
     }
 }

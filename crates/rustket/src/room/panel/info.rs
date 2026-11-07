@@ -104,10 +104,7 @@ impl Info {
                 self.busy = false;
                 self.confirm = None;
                 match r {
-                    Ok(()) => match a.done_text() {
-                        Some(s) => Action::effect(common::ok_toast(s)),
-                        None => Action::none(),
-                    },
+                    Ok(()) => a.done_action(),
                     Err(e) => Action::effect(common::error_toast(&a.label(), &e)),
                 }
             }

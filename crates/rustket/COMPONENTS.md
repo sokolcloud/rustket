@@ -168,6 +168,7 @@ Return them in `Action { task, effects }` (`Action::none()`,
 | `MarkRead` | RoomView | `subscriptions.read` (deduplicated) |
 | `OpenPanel(Kind)` / `ClosePanel` | RoomView | right panel; opening the shown kind toggles it closed |
 | `OpenUrl(url)` | App | external browser; only absolute `http`, `https`, `mailto` URLs (others are refused) |
+| `CloseRoom` | App | close this room's view (e.g. after hiding the room); the room stays in the workspace |
 
 What `RoomView` already does: `workspace.open_room` on open, keeps the
 `watch_room` guard (dropped with the view when the room is closed or removed),

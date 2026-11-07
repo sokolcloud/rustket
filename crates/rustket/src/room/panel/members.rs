@@ -1,9 +1,9 @@
-//! Room members (`rooms.membersOrderedByRole`): search, online/all filter,
+//! Room members (`rooms.membersOrderedByRole`, `im.members` in group DMs): search, online/all filter,
 //! roles; a click opens the user's profile.
 
 use iced::widget::{column, container, row, scrollable, text};
 use iced::{Alignment, Element, Length};
-use rocketchat::models::{Paginated, UserStatus, UserSummary};
+use rocketchat::models::{Paginated, RoomType, UserStatus, UserSummary};
 use rust_i18n::t;
 use rustket_core::permissions;
 use rustket_ui::icon::Icon;
@@ -46,6 +46,16 @@ pub struct Members {
 }
 
 impl Members {
+    #[cfg(test)]
+    pub fn set_query_for_test(&mut self, q: &str) {
+        self.query = q.to_owned();
+    }
+
+    #[cfg(test)]
+    pub fn query_for_test(&self) -> &str {
+        &self.query
+    }
+
     pub fn activate(&mut self, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
         self.reload(ctx)
     }
@@ -56,13 +66,17 @@ impl Members {
     }
 
     fn fetch(&self, req: PageReq, ctx: &UpdateCtx<'_>) -> Action<Msg> {
+        let t = ctx
+            .workspace
+            .room(ctx.rid)
+            .map_or(RoomType::Channel, |e| e.room_type());
         let (rid, q, online) = (
             ctx.rid.to_owned(),
             self.query.clone(),
             self.filter == Filter::Online,
         );
         Action::task(ctx.rest_task(
-            move |rest| api::members(rest, rid, q, online, req.offset),
+            move |rest| api::members(rest, t, rid, q, online, req.offset),
             move |r| Msg::Page(req, r),
         ))
     }
@@ -113,7 +127,10 @@ impl Members {
         ]
         .spacing(SPACE_2)
         .padding([SPACE_3, SPACE_4]);
-        if permissions::can_add_users(ws, ctx.rid) {
+        let direct = ws
+            .room(ctx.rid)
+            .is_some_and(|e| e.room_type() == RoomType::Direct);
+        if !direct && permissions::can_add_users(ws, ctx.rid) {
             top = top.push(
                 primary_button(t!("room_panel.add_users").into_owned(), Some(Msg::Add))
                     .icon(Icon::UserPlus)
