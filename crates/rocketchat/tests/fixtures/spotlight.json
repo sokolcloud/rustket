@@ -1,0 +1,13 @@
+{
+    "users": [
+        {
+            "_id": "SLiu9igvh94B9T9Xu",
+            "username": "bob",
+            "name": "Bob",
+            "status": "offline",
+            "outside": true
+        }
+    ],
+    "rooms": [],
+    "success": true
+}

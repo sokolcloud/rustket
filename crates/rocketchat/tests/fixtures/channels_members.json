@@ -1,0 +1,36 @@
+{
+  "members": [
+    {
+      "_id": "6aef49d4f7fd7082521174fb",
+      "name": "Admin",
+      "username": "admin",
+      "status": "offline",
+      "_updatedAt": "2026-11-07T16:07:57.497Z"
+    },
+    {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice",
+      "name": "Alice",
+      "status": "offline",
+      "_updatedAt": "2026-11-07T16:07:57.065Z"
+    },
+    {
+      "_id": "SLiu9igvh94B9T9Xu",
+      "username": "bob",
+      "name": "Bob",
+      "status": "offline",
+      "_updatedAt": "2026-11-07T16:07:56.112Z"
+    },
+    {
+      "_id": "qJWw3ByDhRtx8mN4p",
+      "username": "carol",
+      "name": "Carol",
+      "status": "offline",
+      "_updatedAt": "2026-11-07T16:07:56.112Z"
+    }
+  ],
+  "count": 4,
+  "offset": 0,
+  "total": 4,
+  "success": true
+}

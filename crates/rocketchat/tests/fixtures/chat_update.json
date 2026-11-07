@@ -1,0 +1,43 @@
+{
+  "message": {
+    "_id": "TCah4b7Dzj6TodGCG",
+    "rid": "6aef4cdcf7fd708252117574",
+    "msg": "after **edit**",
+    "ts": "2026-11-07T16:07:56.981Z",
+    "u": {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice",
+      "name": "Alice"
+    },
+    "_updatedAt": "2026-11-07T16:07:57.009Z",
+    "md": [
+      {
+        "type": "PARAGRAPH",
+        "value": [
+          {
+            "type": "PLAIN_TEXT",
+            "value": "after "
+          },
+          {
+            "type": "BOLD",
+            "value": [
+              {
+                "type": "PLAIN_TEXT",
+                "value": "edit"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "mentions": [],
+    "channels": [],
+    "urls": [],
+    "editedAt": "2026-11-07T16:07:57.009Z",
+    "editedBy": {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice"
+    }
+  },
+  "success": true
+}

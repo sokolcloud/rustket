@@ -35,6 +35,19 @@ MongoDB is 7.0 because 8.0 refuses to start on Linux kernel ≥ 6.19.
 Live tests must create their own uniquely named rooms/messages and never depend on
 state left by other tests.
 
+## Running the GUI from an agent
+
+The user's desktop is a live X11 session on an AMD GPU that has reset (taking the
+display manager down) under VRAM pressure while agents were rendering test windows.
+Every agent-launched window must use the CPU renderer and be short-lived:
+
+```sh
+env -u XAUTHORITY ICED_BACKEND=tiny-skia cargo run -p rustket-ui --example gallery &
+# wait a few seconds, then capture the active window:
+spectacle -b -n -a -o <scratchpad>/shot.png
+# always kill what you started
+```
+
 ## Workspace
 
 - `crates/rocketchat` — protocol only (models, REST, DDP, auth, TLS). No UI, no persistence.

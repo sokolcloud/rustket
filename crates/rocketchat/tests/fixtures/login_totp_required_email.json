@@ -1,0 +1,15 @@
+{
+  "success": false,
+  "error": "totp-required",
+  "status": "error",
+  "details": {
+    "method": "email",
+    "emailOrUsername": "carol",
+    "codeGenerated": false,
+    "codeExpires": "2026-11-07T17:05:23.370Z",
+    "availableMethods": [
+      "email"
+    ]
+  },
+  "message": "TOTP Required"
+}

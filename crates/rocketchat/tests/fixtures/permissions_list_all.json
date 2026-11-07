@@ -1,0 +1,63 @@
+{
+  "update": [
+    {
+      "_id": "access-permissions",
+      "_updatedAt": "2026-11-07T15:54:54.877Z",
+      "roles": [
+        "admin"
+      ]
+    },
+    {
+      "_id": "access-marketplace",
+      "_updatedAt": "2026-11-07T15:54:54.880Z",
+      "roles": [
+        "admin",
+        "user"
+      ]
+    },
+    {
+      "_id": "access-setting-permissions",
+      "_updatedAt": "2026-11-07T15:54:54.885Z",
+      "roles": [
+        "admin"
+      ]
+    },
+    {
+      "_id": "add-oauth-service",
+      "_updatedAt": "2026-11-07T15:54:54.888Z",
+      "roles": [
+        "admin"
+      ]
+    },
+    {
+      "_id": "add-user-to-joined-room",
+      "_updatedAt": "2026-11-07T15:54:54.891Z",
+      "roles": [
+        "admin",
+        "owner",
+        "moderator"
+      ]
+    },
+    {
+      "_id": "add-user-to-any-c-room",
+      "_updatedAt": "2026-11-07T15:54:54.894Z",
+      "roles": [
+        "admin"
+      ]
+    },
+    {
+      "_id": "add-user-to-any-p-room",
+      "_updatedAt": "2026-11-07T15:54:54.897Z",
+      "roles": []
+    },
+    {
+      "_id": "kick-user-from-any-c-room",
+      "_updatedAt": "2026-11-07T15:54:54.900Z",
+      "roles": [
+        "admin"
+      ]
+    }
+  ],
+  "remove": [],
+  "success": true
+}

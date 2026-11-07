@@ -1,0 +1,1715 @@
+{
+  "messages": [
+    {
+      "_id": "6aef4cddf7fd7082521175cb",
+      "t": "au",
+      "rid": "6aef4cdcf7fd708252117574",
+      "ts": "2026-11-07T16:07:57.488Z",
+      "msg": "admin",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice"
+      },
+      "groupable": false,
+      "_updatedAt": "2026-11-07T16:07:57.501Z"
+    },
+    {
+      "_id": "9Mwu6X8dE6m4PeYTG",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "message with url preview https://example.com",
+      "ts": "2026-11-07T16:07:57.398Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:57.423Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "message with url preview "
+            },
+            {
+              "type": "LINK",
+              "value": {
+                "src": {
+                  "type": "PLAIN_TEXT",
+                  "value": "https://example.com"
+                },
+                "label": [
+                  {
+                    "type": "PLAIN_TEXT",
+                    "value": "https://example.com"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [
+        {
+          "url": "https://example.com",
+          "meta": {
+            "pageTitle": "Example Domain"
+          },
+          "headers": {
+            "contentType": "text/html; charset=utf-8"
+          }
+        }
+      ]
+    },
+    {
+      "_id": "JChfDTg49J8Xivwsk",
+      "rid": "6aef4cdcf7fd708252117574",
+      "ts": "2026-11-07T16:07:57.310Z",
+      "msg": "",
+      "groupable": false,
+      "file": {
+        "_id": "6aef4cddf7fd7082521175c3",
+        "name": "notes.txt",
+        "type": "text/plain",
+        "size": 11,
+        "format": "",
+        "typeGroup": "text"
+      },
+      "files": [
+        {
+          "_id": "6aef4cddf7fd7082521175c3",
+          "name": "notes.txt",
+          "type": "text/plain",
+          "size": 11,
+          "format": "",
+          "typeGroup": "text"
+        }
+      ],
+      "attachments": [
+        {
+          "title": "notes.txt",
+          "title_link": "/file-upload/6aef4cddf7fd7082521175c3/notes.txt",
+          "title_link_download": true,
+          "type": "file",
+          "description": "a text file",
+          "format": "TXT",
+          "size": 11,
+          "fileId": "6aef4cddf7fd7082521175c3",
+          "descriptionMd": [
+            {
+              "type": "PARAGRAPH",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "a text file"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:57.325Z",
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "8AXxFeJ5GT26uH46T",
+      "rid": "6aef4cdcf7fd708252117574",
+      "ts": "2026-11-07T16:07:57.222Z",
+      "msg": "image caption",
+      "groupable": false,
+      "file": {
+        "_id": "6aef4cddf7fd7082521175c0",
+        "name": "red.png",
+        "type": "image/png",
+        "size": 75,
+        "format": "png",
+        "typeGroup": "image"
+      },
+      "files": [
+        {
+          "_id": "6aef4cddf7fd7082521175c0",
+          "name": "red.png",
+          "type": "image/png",
+          "size": 75,
+          "format": "png",
+          "typeGroup": "image"
+        }
+      ],
+      "attachments": [
+        {
+          "title": "red.png",
+          "title_link": "/file-upload/6aef4cddf7fd7082521175c0/red.png",
+          "title_link_download": true,
+          "image_dimensions": {
+            "width": 8,
+            "height": 8
+          },
+          "image_preview": "/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAAgACADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFgEBAQEAAAAAAAAAAAAAAAAAAAYI/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AnQCOaRAAAAAAf//Z",
+          "image_url": "/file-upload/6aef4cddf7fd7082521175c0/red.png",
+          "image_type": "image/png",
+          "image_size": 75,
+          "type": "file",
+          "image_alt": "red square",
+          "fileId": "6aef4cddf7fd7082521175c0"
+        }
+      ],
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:57.241Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "image caption"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "6aef4cddf7fd7082521175bd",
+      "t": "discussion-created",
+      "rid": "6aef4cdcf7fd708252117574",
+      "ts": "2026-11-07T16:07:57.079Z",
+      "msg": "fixture-1794067676-discussion",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "groupable": false,
+      "drid": "6aef4cddf7fd7082521175bb",
+      "_updatedAt": "2026-11-07T16:07:57.105Z",
+      "dcount": 1,
+      "dlm": "2026-11-07T16:07:57.084Z"
+    },
+    {
+      "_id": "6aef4cddf7fd7082521175ba",
+      "t": "room_changed_description",
+      "rid": "6aef4cdcf7fd708252117574",
+      "ts": "2026-11-07T16:07:57.047Z",
+      "msg": "fixture description",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "groupable": false,
+      "_updatedAt": "2026-11-07T16:07:57.047Z"
+    },
+    {
+      "_id": "6aef4cddf7fd7082521175b9",
+      "t": "room_changed_announcement",
+      "rid": "6aef4cdcf7fd708252117574",
+      "ts": "2026-11-07T16:07:57.034Z",
+      "msg": "fixture announcement",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "groupable": false,
+      "_updatedAt": "2026-11-07T16:07:57.034Z"
+    },
+    {
+      "_id": "6aef4cddf7fd7082521175b8",
+      "t": "room_changed_topic",
+      "rid": "6aef4cdcf7fd708252117574",
+      "ts": "2026-11-07T16:07:57.023Z",
+      "msg": "fixture topic",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "groupable": false,
+      "_updatedAt": "2026-11-07T16:07:57.023Z"
+    },
+    {
+      "_id": "TCah4b7Dzj6TodGCG",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "after **edit**",
+      "ts": "2026-11-07T16:07:56.981Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:57.009Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "after "
+            },
+            {
+              "type": "BOLD",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "edit"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [],
+      "editedAt": "2026-11-07T16:07:57.009Z",
+      "editedBy": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice"
+      }
+    },
+    {
+      "_id": "ZB2BKj4mc8wZk4NDz",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "star me",
+      "ts": "2026-11-07T16:07:56.945Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.976Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "star me"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [],
+      "starred": [
+        {
+          "_id": "Er3h8XYKahaopbSA7"
+        }
+      ]
+    },
+    {
+      "_id": "6aef4cdcf7fd7082521175b3",
+      "t": "message_pinned",
+      "rid": "6aef4cdcf7fd708252117574",
+      "ts": "2026-11-07T16:07:56.938Z",
+      "msg": "",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "groupable": false,
+      "attachments": [
+        {
+          "text": "pin me",
+          "author_name": "alice",
+          "author_icon": "/avatar/alice",
+          "ts": "2026-11-07T16:07:56.905Z",
+          "attachments": []
+        }
+      ],
+      "_updatedAt": "2026-11-07T16:07:56.938Z"
+    },
+    {
+      "_id": "fa7sjr2gFfePxe9uE",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "pin me",
+      "ts": "2026-11-07T16:07:56.905Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.931Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "pin me"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [],
+      "pinned": true,
+      "pinnedAt": "2026-11-07T16:07:56.931Z",
+      "pinnedBy": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice"
+      }
+    },
+    {
+      "_id": "CRcfQTxxy4ebX5Nn7",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "react to me",
+      "ts": "2026-11-07T16:07:56.848Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.894Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "react to me"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [],
+      "reactions": {
+        ":thumbsup:": {
+          "usernames": [
+            "alice",
+            "bob"
+          ]
+        },
+        ":tada:": {
+          "usernames": [
+            "bob"
+          ]
+        }
+      }
+    },
+    {
+      "_id": "TxqM7zbRF9puS6otS",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "[ ](http://localhost:3000/channel/fixture-1794067676?msg=2CzNqHh25dofKiKaj) quoting it",
+      "ts": "2026-11-07T16:07:56.822Z",
+      "u": {
+        "_id": "SLiu9igvh94B9T9Xu",
+        "username": "bob",
+        "name": "Bob"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.828Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "LINK",
+              "value": {
+                "src": {
+                  "type": "PLAIN_TEXT",
+                  "value": "http://localhost:3000/channel/fixture-1794067676?msg=2CzNqHh25dofKiKaj"
+                },
+                "label": [
+                  {
+                    "type": "PLAIN_TEXT",
+                    "value": " "
+                  }
+                ]
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " quoting it"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [
+        {
+          "url": "http://localhost:3000/channel/fixture-1794067676?msg=2CzNqHh25dofKiKaj",
+          "meta": {},
+          "ignoreParse": true
+        }
+      ],
+      "attachments": [
+        {
+          "text": "message to be quoted",
+          "md": [
+            {
+              "type": "PARAGRAPH",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "message to be quoted"
+                }
+              ]
+            }
+          ],
+          "message_link": "http://localhost:3000/channel/fixture-1794067676?msg=2CzNqHh25dofKiKaj",
+          "author_name": "alice",
+          "author_icon": "/avatar/alice",
+          "attachments": [],
+          "ts": "2026-11-07T16:07:56.798Z"
+        }
+      ]
+    },
+    {
+      "_id": "2CzNqHh25dofKiKaj",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "message to be quoted",
+      "ts": "2026-11-07T16:07:56.798Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.803Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "message to be quoted"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "XJDdYTwPxuZu5ykwm",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "reply also to channel",
+      "tmid": "czxdLqJsvJWbteHzX",
+      "tshow": true,
+      "ts": "2026-11-07T16:07:56.764Z",
+      "u": {
+        "_id": "SLiu9igvh94B9T9Xu",
+        "username": "bob",
+        "name": "Bob"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.769Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "reply also to channel"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "czxdLqJsvJWbteHzX",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "thread parent message",
+      "ts": "2026-11-07T16:07:56.709Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.778Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "thread parent message"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [],
+      "replies": [
+        "Er3h8XYKahaopbSA7",
+        "SLiu9igvh94B9T9Xu"
+      ],
+      "tcount": 2,
+      "tlm": "2026-11-07T16:07:56.764Z"
+    },
+    {
+      "_id": "rbjJ7xBvn48diuTW2",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "nested **bold _italic_ ~strike~** end",
+      "ts": "2026-11-07T16:07:56.687Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.691Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "nested "
+            },
+            {
+              "type": "BOLD",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "bold "
+                },
+                {
+                  "type": "ITALIC",
+                  "value": [
+                    {
+                      "type": "PLAIN_TEXT",
+                      "value": "italic"
+                    }
+                  ]
+                },
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": " "
+                },
+                {
+                  "type": "STRIKE",
+                  "value": [
+                    {
+                      "type": "PLAIN_TEXT",
+                      "value": "strike"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " end"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "pXmZvkSq8hWENgQSc",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "text with emoji :thumbsup: and 🙂 and :rocket:",
+      "ts": "2026-11-07T16:07:56.668Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.672Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "text with emoji "
+            },
+            {
+              "type": "EMOJI",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "thumbsup"
+              },
+              "shortCode": "thumbsup"
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "EMOJI",
+              "value": null,
+              "unicode": "🙂"
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "EMOJI",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "rocket"
+              },
+              "shortCode": "rocket"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "fQqcSuA62DNF35RKu",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "😀 🎉",
+      "ts": "2026-11-07T16:07:56.646Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.652Z",
+      "md": [
+        {
+          "type": "BIG_EMOJI",
+          "value": [
+            {
+              "type": "EMOJI",
+              "value": null,
+              "unicode": "😀"
+            },
+            {
+              "type": "EMOJI",
+              "value": null,
+              "unicode": "🎉"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "HiZ8xdciNvjgmZZgb",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": ":smile:",
+      "ts": "2026-11-07T16:07:56.622Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.627Z",
+      "md": [
+        {
+          "type": "BIG_EMOJI",
+          "value": [
+            {
+              "type": "EMOJI",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "smile"
+              },
+              "shortCode": "smile"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "5cFcbWLSvTK9i9eGZ",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "hello @alice and @bob and @all and @here in #general",
+      "ts": "2026-11-07T16:07:56.592Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.600Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "hello "
+            },
+            {
+              "type": "MENTION_USER",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "alice"
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "MENTION_USER",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "bob"
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "MENTION_USER",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "all"
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "MENTION_USER",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "here"
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " in "
+            },
+            {
+              "type": "MENTION_CHANNEL",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "general"
+              }
+            }
+          ]
+        }
+      ],
+      "mentions": [
+        {
+          "_id": "all",
+          "username": "all"
+        },
+        {
+          "_id": "here",
+          "username": "here"
+        },
+        {
+          "_id": "Er3h8XYKahaopbSA7",
+          "username": "alice",
+          "name": "Alice",
+          "type": "user"
+        },
+        {
+          "_id": "SLiu9igvh94B9T9Xu",
+          "username": "bob",
+          "name": "Bob",
+          "type": "user"
+        }
+      ],
+      "channels": [
+        {
+          "_id": "GENERAL",
+          "name": "general"
+        }
+      ],
+      "urls": []
+    },
+    {
+      "_id": "h64zyaGExRzHJwfM5",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "| a | b |\n|:--|--:|\n| 1 | 2 |",
+      "ts": "2026-11-07T16:07:56.571Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.576Z",
+      "md": [
+        {
+          "type": "TABLE",
+          "value": {
+            "header": [
+              {
+                "type": "TABLE_CELL",
+                "align": "left",
+                "value": [
+                  {
+                    "type": "PLAIN_TEXT",
+                    "value": "a"
+                  }
+                ]
+              },
+              {
+                "type": "TABLE_CELL",
+                "align": "right",
+                "value": [
+                  {
+                    "type": "PLAIN_TEXT",
+                    "value": "b"
+                  }
+                ]
+              }
+            ],
+            "rows": [
+              {
+                "type": "TABLE_ROW",
+                "value": [
+                  {
+                    "type": "TABLE_CELL",
+                    "align": "left",
+                    "value": [
+                      {
+                        "type": "PLAIN_TEXT",
+                        "value": "1"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "TABLE_CELL",
+                    "align": "right",
+                    "value": [
+                      {
+                        "type": "PLAIN_TEXT",
+                        "value": "2"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "fallback": [
+            0,
+            29
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "XGbRp2fjrXu6hWFQp",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "---",
+      "ts": "2026-11-07T16:07:56.543Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.549Z",
+      "md": [
+        {
+          "type": "HORIZONTAL_RULE",
+          "value": null,
+          "fallback": [
+            0,
+            3
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "XrYaZ3gxjbbzkcNaW",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "\\[ x^2 + y^2 \\] and $$ e = mc^2 $$ and \\( a+b \\)",
+      "ts": "2026-11-07T16:07:56.523Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.528Z",
+      "md": [
+        {
+          "type": "KATEX",
+          "value": " x^2 + y^2 "
+        },
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and $$ e = mc^2 $$ and "
+            },
+            {
+              "type": "INLINE_KATEX",
+              "value": " a+b "
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "3DggkTEWvoyPghLY4",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "color:#ff0000 text",
+      "ts": "2026-11-07T16:07:56.502Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.508Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "color:#ff0000 text"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "p3SmNs47nPiHfbJja",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "time <t:1700000000:R> and <t:1700000000:f>",
+      "ts": "2026-11-07T16:07:56.480Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.485Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "time "
+            },
+            {
+              "type": "TIMESTAMP",
+              "value": {
+                "timestamp": "1700000000",
+                "format": "R"
+              },
+              "fallback": [
+                5,
+                21
+              ]
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "TIMESTAMP",
+              "value": {
+                "timestamp": "1700000000",
+                "format": "f"
+              },
+              "fallback": [
+                26,
+                42
+              ]
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "c3EnLLCbuoKaqsnpN",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "||\nblock spoiler paragraph\n||",
+      "ts": "2026-11-07T16:07:56.457Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.461Z",
+      "md": [
+        {
+          "type": "SPOILER_BLOCK",
+          "value": [
+            {
+              "type": "PARAGRAPH",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "block spoiler paragraph"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "ca7YipKS7rmt53csu",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "||spoiler text|| inline spoiler",
+      "ts": "2026-11-07T16:07:56.435Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.441Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "SPOILER",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "spoiler text"
+                }
+              ]
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " inline spoiler"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "Tj3CqFbGSv2S6JmHH",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "![image alt](https://example.com/image.png)",
+      "ts": "2026-11-07T16:07:56.412Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.417Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "IMAGE",
+              "value": {
+                "src": {
+                  "type": "PLAIN_TEXT",
+                  "value": "https://example.com/image.png"
+                },
+                "label": {
+                  "type": "PLAIN_TEXT",
+                  "value": "image alt"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "5TDTCtoFPJe7BAxYT",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "[link label](https://example.com) and bare https://rocket.chat and <https://example.org|piped>",
+      "ts": "2026-11-07T16:07:56.386Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.393Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "LINK",
+              "value": {
+                "src": {
+                  "type": "PLAIN_TEXT",
+                  "value": "https://example.com"
+                },
+                "label": [
+                  {
+                    "type": "PLAIN_TEXT",
+                    "value": "link label"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and bare "
+            },
+            {
+              "type": "LINK",
+              "value": {
+                "src": {
+                  "type": "PLAIN_TEXT",
+                  "value": "https://rocket.chat"
+                },
+                "label": [
+                  {
+                    "type": "PLAIN_TEXT",
+                    "value": "https://rocket.chat"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "LINK",
+              "value": {
+                "src": {
+                  "type": "PLAIN_TEXT",
+                  "value": "https://example.org"
+                },
+                "label": [
+                  {
+                    "type": "PLAIN_TEXT",
+                    "value": "piped"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [
+        {
+          "url": "https://example.com",
+          "meta": {}
+        },
+        {
+          "url": "https://rocket.chat",
+          "meta": {}
+        },
+        {
+          "url": "https://example.org",
+          "meta": {}
+        }
+      ]
+    },
+    {
+      "_id": "3hvq3uehfdrmj2AjC",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "line one\nline two\n\nparagraph two",
+      "ts": "2026-11-07T16:07:56.361Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.366Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "line one"
+            }
+          ]
+        },
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "line two"
+            }
+          ]
+        },
+        {
+          "type": "LINE_BREAK",
+          "value": null
+        },
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "paragraph two"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "6SNNjSBT9xpsAQqJd",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "- [ ] todo task\n- [x] done task",
+      "ts": "2026-11-07T16:07:56.336Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.341Z",
+      "md": [
+        {
+          "type": "TASKS",
+          "value": [
+            {
+              "type": "TASK",
+              "status": false,
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "todo task"
+                }
+              ]
+            },
+            {
+              "type": "TASK",
+              "status": true,
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "done task"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "WZegrdwHWn9TsBitk",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "1. first\n2. second\n3. third",
+      "ts": "2026-11-07T16:07:56.313Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.319Z",
+      "md": [
+        {
+          "type": "ORDERED_LIST",
+          "value": [
+            {
+              "type": "LIST_ITEM",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "first"
+                }
+              ],
+              "number": 1
+            },
+            {
+              "type": "LIST_ITEM",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "second"
+                }
+              ],
+              "number": 2
+            },
+            {
+              "type": "LIST_ITEM",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "third"
+                }
+              ],
+              "number": 3
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "TWp4wRN6kTgtsxKib",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "- item one\n- item **two**\n* item three",
+      "ts": "2026-11-07T16:07:56.285Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.291Z",
+      "md": [
+        {
+          "type": "UNORDERED_LIST",
+          "value": [
+            {
+              "type": "LIST_ITEM",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "item one"
+                }
+              ]
+            },
+            {
+              "type": "LIST_ITEM",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "item "
+                },
+                {
+                  "type": "BOLD",
+                  "value": [
+                    {
+                      "type": "PLAIN_TEXT",
+                      "value": "two"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "UNORDERED_LIST",
+          "value": [
+            {
+              "type": "LIST_ITEM",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "item three"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "Dxct3xSpNFZdBSFgR",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "# Heading 1\n## Heading 2\n### Heading 3\n#### Heading 4",
+      "ts": "2026-11-07T16:07:56.256Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.262Z",
+      "md": [
+        {
+          "type": "HEADING",
+          "level": 1,
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "Heading 1"
+            }
+          ]
+        },
+        {
+          "type": "HEADING",
+          "level": 2,
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "Heading 2"
+            }
+          ]
+        },
+        {
+          "type": "HEADING",
+          "level": 3,
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "Heading 3"
+            }
+          ]
+        },
+        {
+          "type": "HEADING",
+          "level": 4,
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "Heading 4"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "YXeB4yKJkNz8BEQm4",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "> quoted line one\n> quoted line two",
+      "ts": "2026-11-07T16:07:56.227Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.233Z",
+      "md": [
+        {
+          "type": "QUOTE",
+          "value": [
+            {
+              "type": "PARAGRAPH",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "quoted line one"
+                }
+              ]
+            },
+            {
+              "type": "PARAGRAPH",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "quoted line two"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "zAnBW6YqLALS4ShTp",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "```rust\nfn main() {\n    println!(\"hi\");\n}\n```",
+      "ts": "2026-11-07T16:07:56.202Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.208Z",
+      "md": [
+        {
+          "type": "CODE",
+          "language": "rust",
+          "value": [
+            {
+              "type": "CODE_LINE",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "fn main() {"
+              }
+            },
+            {
+              "type": "CODE_LINE",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "    println!(\"hi\");"
+              }
+            },
+            {
+              "type": "CODE_LINE",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "}"
+              }
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "ickArTqQNQyf8a4kD",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "**bold** _italic_ ~strike~ `inline code` *bold2* __italic2__",
+      "ts": "2026-11-07T16:07:56.172Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.181Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "BOLD",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "bold"
+                }
+              ]
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " "
+            },
+            {
+              "type": "ITALIC",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "italic"
+                }
+              ]
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " "
+            },
+            {
+              "type": "STRIKE",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "strike"
+                }
+              ]
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " "
+            },
+            {
+              "type": "INLINE_CODE",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "inline code"
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " "
+            },
+            {
+              "type": "BOLD",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "bold2"
+                }
+              ]
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " "
+            },
+            {
+              "type": "ITALIC",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "italic2"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "BWsajB8WqxcMcRrSe",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "plain text message",
+      "ts": "2026-11-07T16:07:56.131Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.141Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "plain text message"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    }
+  ],
+  "success": true
+}

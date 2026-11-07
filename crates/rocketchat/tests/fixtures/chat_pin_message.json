@@ -1,0 +1,26 @@
+{
+  "message": {
+    "_id": "6aef4cdcf7fd7082521175b3",
+    "t": "message_pinned",
+    "rid": "6aef4cdcf7fd708252117574",
+    "ts": "2026-11-07T16:07:56.938Z",
+    "msg": "",
+    "u": {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice",
+      "name": "Alice"
+    },
+    "groupable": false,
+    "attachments": [
+      {
+        "text": "pin me",
+        "author_name": "alice",
+        "author_icon": "/avatar/alice",
+        "ts": "2026-11-07T16:07:56.905Z",
+        "attachments": []
+      }
+    ],
+    "_updatedAt": "2026-11-07T16:07:56.938Z"
+  },
+  "success": true
+}

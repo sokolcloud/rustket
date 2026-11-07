@@ -1,0 +1,205 @@
+{
+  "update": [
+    {
+      "_id": "6aef4adcf7fd708252117507",
+      "fname": "dev-public",
+      "_updatedAt": "2026-11-07T16:00:00.585Z",
+      "name": "dev-public",
+      "t": "c",
+      "msgs": 2,
+      "usersCount": 4,
+      "u": {
+        "_id": "6aef49d4f7fd7082521174fb",
+        "username": "admin",
+        "name": "Admin"
+      },
+      "ts": "2026-11-07T15:59:24.623Z",
+      "ro": false,
+      "default": false,
+      "sysMes": true
+    },
+    {
+      "_id": "6aef4adcf7fd70825211750c",
+      "fname": "dev-private",
+      "_updatedAt": "2026-11-07T16:00:00.630Z",
+      "name": "dev-private",
+      "t": "p",
+      "msgs": 2,
+      "usersCount": 3,
+      "u": {
+        "_id": "6aef49d4f7fd7082521174fb",
+        "username": "admin",
+        "name": "Admin"
+      },
+      "ts": "2026-11-07T15:59:24.666Z",
+      "ro": false,
+      "default": false,
+      "sysMes": true
+    },
+    {
+      "_id": "6aef4af4f7fd708252117519",
+      "t": "d",
+      "usernames": [
+        "admin",
+        "alice"
+      ],
+      "usersCount": 2,
+      "msgs": 0,
+      "ts": "2026-11-07T15:59:48.929Z",
+      "uids": [
+        "6aef49d4f7fd7082521174fb",
+        "Er3h8XYKahaopbSA7"
+      ],
+      "default": false,
+      "ro": false,
+      "sysMes": true,
+      "_updatedAt": "2026-11-07T15:59:48.929Z"
+    },
+    {
+      "_id": "6aef4cdcf7fd708252117574",
+      "fname": "fixture-1794067676",
+      "_updatedAt": "2026-11-07T16:07:57.501Z",
+      "name": "fixture-1794067676",
+      "t": "c",
+      "msgs": 41,
+      "usersCount": 4,
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "ts": "2026-11-07T16:07:56.104Z",
+      "ro": false,
+      "default": false,
+      "sysMes": true,
+      "lastMessage": {
+        "_id": "9Mwu6X8dE6m4PeYTG",
+        "rid": "6aef4cdcf7fd708252117574",
+        "msg": "message with url preview https://example.com",
+        "ts": "2026-11-07T16:07:57.398Z",
+        "u": {
+          "_id": "Er3h8XYKahaopbSA7",
+          "username": "alice",
+          "name": "Alice"
+        },
+        "_updatedAt": "2026-11-07T16:07:57.423Z",
+        "md": [
+          {
+            "type": "PARAGRAPH",
+            "value": [
+              {
+                "type": "PLAIN_TEXT",
+                "value": "message with url preview "
+              },
+              {
+                "type": "LINK",
+                "value": {
+                  "src": {
+                    "type": "PLAIN_TEXT",
+                    "value": "https://example.com"
+                  },
+                  "label": [
+                    {
+                      "type": "PLAIN_TEXT",
+                      "value": "https://example.com"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "mentions": [],
+        "channels": [],
+        "urls": [
+          {
+            "url": "https://example.com",
+            "meta": {
+              "pageTitle": "Example Domain"
+            },
+            "headers": {
+              "contentType": "text/html; charset=utf-8"
+            }
+          }
+        ]
+      },
+      "lm": "2026-11-07T16:07:57.425Z",
+      "topic": "fixture topic",
+      "announcement": "fixture announcement",
+      "announcementDetails": null,
+      "description": "fixture description"
+    },
+    {
+      "_id": "6aef4cddf7fd7082521175bb",
+      "fname": "fixture-1794067676-discussion",
+      "_updatedAt": "2026-11-07T16:07:57.111Z",
+      "description": null,
+      "topic": "fixture-1794067676",
+      "prid": "6aef4cdcf7fd708252117574",
+      "encrypted": false,
+      "name": "MTD7n9G466fx3fMHc",
+      "t": "c",
+      "msgs": 1,
+      "usersCount": 1,
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "ts": "2026-11-07T16:07:57.057Z",
+      "ro": false,
+      "default": false,
+      "sysMes": true,
+      "lastMessage": {
+        "msg": "first discussion message",
+        "ts": "2026-11-07T16:07:57.084Z",
+        "u": {
+          "_id": "Er3h8XYKahaopbSA7",
+          "username": "alice",
+          "name": "Alice"
+        },
+        "rid": "6aef4cddf7fd7082521175bb",
+        "_id": "Tfubyz4Rv3f4vo4By",
+        "_updatedAt": "2026-11-07T16:07:57.092Z",
+        "md": [
+          {
+            "type": "PARAGRAPH",
+            "value": [
+              {
+                "type": "PLAIN_TEXT",
+                "value": "first discussion message"
+              }
+            ]
+          }
+        ],
+        "mentions": [],
+        "channels": [],
+        "urls": []
+      },
+      "lm": "2026-11-07T16:07:57.084Z"
+    },
+    {
+      "_id": "GENERAL",
+      "_updatedAt": "2026-11-07T15:59:48.076Z",
+      "default": true,
+      "msgs": 5,
+      "name": "general",
+      "t": "c",
+      "ts": "2026-11-07T15:55:00.498Z",
+      "u": {
+        "_id": "rocket.cat",
+        "username": "rocket.cat",
+        "name": "Rocket.Cat"
+      },
+      "usernames": [],
+      "usersCount": 3
+    }
+  ],
+  "remove": [
+    {
+      "_id": "6aef4adcf7fd708252117510",
+      "_deletedAt": "2026-11-07T15:59:47.138Z"
+    }
+  ],
+  "success": true
+}

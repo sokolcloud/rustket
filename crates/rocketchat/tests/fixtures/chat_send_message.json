@@ -1,0 +1,29 @@
+{
+  "message": {
+    "rid": "6aef4cdcf7fd708252117574",
+    "msg": "plain text message",
+    "ts": "2026-11-07T16:07:56.131Z",
+    "u": {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice",
+      "name": "Alice"
+    },
+    "_id": "BWsajB8WqxcMcRrSe",
+    "_updatedAt": "2026-11-07T16:07:56.141Z",
+    "md": [
+      {
+        "type": "PARAGRAPH",
+        "value": [
+          {
+            "type": "PLAIN_TEXT",
+            "value": "plain text message"
+          }
+        ]
+      }
+    ],
+    "mentions": [],
+    "channels": [],
+    "urls": []
+  },
+  "success": true
+}

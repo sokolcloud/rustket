@@ -1,0 +1,63 @@
+{
+  "message": {
+    "_id": "8AXxFeJ5GT26uH46T",
+    "rid": "6aef4cdcf7fd708252117574",
+    "ts": "2026-11-07T16:07:57.222Z",
+    "msg": "image caption",
+    "file": {
+      "_id": "6aef4cddf7fd7082521175c0",
+      "name": "red.png",
+      "type": "image/png",
+      "size": 75,
+      "format": "png",
+      "typeGroup": "image"
+    },
+    "files": [
+      {
+        "_id": "6aef4cddf7fd7082521175c0",
+        "name": "red.png",
+        "type": "image/png",
+        "size": 75,
+        "format": "png",
+        "typeGroup": "image"
+      }
+    ],
+    "attachments": [
+      {
+        "title": "red.png",
+        "title_link": "/file-upload/6aef4cddf7fd7082521175c0/red.png",
+        "title_link_download": true,
+        "image_dimensions": {
+          "width": 8,
+          "height": 8
+        },
+        "image_preview": "/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAAgACADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFgEBAQEAAAAAAAAAAAAAAAAAAAYI/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AnQCOaRAAAAAAf//Z",
+        "image_url": "/file-upload/6aef4cddf7fd7082521175c0/red.png",
+        "image_type": "image/png",
+        "image_size": 75,
+        "type": "file",
+        "image_alt": "red square",
+        "fileId": "6aef4cddf7fd7082521175c0"
+      }
+    ],
+    "u": {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice",
+      "name": "Alice"
+    },
+    "_updatedAt": "2026-11-07T16:07:57.241Z",
+    "md": [
+      {
+        "type": "PARAGRAPH",
+        "value": [
+          {
+            "type": "PLAIN_TEXT",
+            "value": "image caption"
+          }
+        ]
+      }
+    ],
+    "urls": []
+  },
+  "success": true
+}

@@ -1,0 +1,12 @@
+{
+  "user": {
+    "_id": "SLiu9igvh94B9T9Xu",
+    "username": "bob",
+    "name": "Bob",
+    "type": "user",
+    "status": "offline",
+    "active": true,
+    "canViewAllInfo": false
+  },
+  "success": true
+}

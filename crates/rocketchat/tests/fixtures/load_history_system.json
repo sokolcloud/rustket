@@ -1,0 +1,130 @@
+{
+  "msg": "result",
+  "id": "7",
+  "result": {
+    "messages": [
+      {
+        "_id": "aYRRdaHJ8ZEW7axaB",
+        "rid": "6aef4cfdf7fd7082521175d0",
+        "msg": "hi",
+        "ts": {
+          "$date": 1794067709325
+        },
+        "u": {
+          "_id": "Er3h8XYKahaopbSA7",
+          "username": "alice",
+          "name": "Alice"
+        },
+        "_updatedAt": {
+          "$date": 1794067709331
+        },
+        "md": [
+          {
+            "type": "PARAGRAPH",
+            "value": [
+              {
+                "type": "PLAIN_TEXT",
+                "value": "hi"
+              }
+            ]
+          }
+        ],
+        "mentions": [],
+        "channels": [],
+        "urls": []
+      },
+      {
+        "_id": "6aef4cfdf7fd7082521175d8",
+        "t": "subscription-role-added",
+        "rid": "6aef4cfdf7fd7082521175d0",
+        "ts": {
+          "$date": 1794067709318
+        },
+        "msg": "bob",
+        "u": {
+          "_id": "Er3h8XYKahaopbSA7",
+          "username": "alice",
+          "name": "Alice"
+        },
+        "groupable": false,
+        "role": "moderator",
+        "_updatedAt": {
+          "$date": 1794067709318
+        }
+      },
+      {
+        "_id": "6aef4cfdf7fd7082521175d7",
+        "t": "user-muted",
+        "rid": "6aef4cfdf7fd7082521175d0",
+        "ts": {
+          "$date": 1794067709300
+        },
+        "msg": "bob",
+        "u": {
+          "_id": "Er3h8XYKahaopbSA7",
+          "username": "alice",
+          "name": "Alice"
+        },
+        "groupable": false,
+        "_updatedAt": {
+          "$date": 1794067709300
+        }
+      },
+      {
+        "_id": "6aef4cfdf7fd7082521175d6",
+        "t": "r",
+        "rid": "6aef4cfdf7fd7082521175d0",
+        "ts": {
+          "$date": 1794067709286
+        },
+        "msg": "fixture-sys-1794067709-renamed",
+        "u": {
+          "_id": "Er3h8XYKahaopbSA7",
+          "username": "alice",
+          "name": "Alice"
+        },
+        "groupable": false,
+        "_updatedAt": {
+          "$date": 1794067709286
+        }
+      },
+      {
+        "_id": "6aef4cfdf7fd7082521175d5",
+        "t": "uj",
+        "rid": "6aef4cfdf7fd7082521175d0",
+        "ts": {
+          "$date": 1794067709251
+        },
+        "msg": "bob",
+        "u": {
+          "_id": "SLiu9igvh94B9T9Xu",
+          "username": "bob",
+          "name": "Bob"
+        },
+        "groupable": false,
+        "_updatedAt": {
+          "$date": 1794067709262
+        }
+      },
+      {
+        "_id": "6aef4cfdf7fd7082521175d3",
+        "t": "ul",
+        "rid": "6aef4cfdf7fd7082521175d0",
+        "ts": {
+          "$date": 1794067709226
+        },
+        "msg": "bob",
+        "u": {
+          "_id": "SLiu9igvh94B9T9Xu",
+          "username": "bob",
+          "name": "Bob"
+        },
+        "groupable": false,
+        "_updatedAt": {
+          "$date": 1794067709226
+        }
+      }
+    ],
+    "unreadNotLoaded": 0
+  }
+}

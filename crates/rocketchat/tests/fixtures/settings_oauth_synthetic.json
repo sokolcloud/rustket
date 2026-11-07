@@ -1,0 +1,13 @@
+{
+  "services": [
+    {"_id": "s1", "service": "facebook", "appId": "fb-app-id", "buttonLabelText": "", "buttonColor": "", "buttonLabelColor": "", "custom": false},
+    {"_id": "s2", "service": "twitter", "consumerKey": "tw-consumer-key", "custom": false},
+    {"_id": "s3", "service": "linkedin", "clientId": "li-client", "clientConfig": {"requestPermissions": ["r_liteprofile", "r_emailaddress"]}},
+    {"_id": "s4", "service": "wordpress", "clientId": "wp-client", "serverURL": "https://wp.example.com", "custom": false},
+    {"_id": "s5", "service": "meteor-developer", "clientId": "md-client"},
+    {"_id": "s6", "service": "apple", "clientId": "apple-client"},
+    {"_id": "s7", "service": "hidden", "clientId": "h", "custom": true, "serverURL": "https://sso.example.com", "authorizePath": "/authorize", "scope": "openid", "loginStyle": "redirect", "showButton": false, "pkce": true},
+    {"_id": "s8", "service": "future-kind", "unknownField": {"nested": [1, 2, 3]}}
+  ],
+  "success": true
+}

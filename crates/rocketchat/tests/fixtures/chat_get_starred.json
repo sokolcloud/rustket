@@ -1,0 +1,39 @@
+{
+  "messages": [
+    {
+      "_id": "ZB2BKj4mc8wZk4NDz",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "star me",
+      "ts": "2026-11-07T16:07:56.945Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.976Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "star me"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [],
+      "starred": [
+        {
+          "_id": "Er3h8XYKahaopbSA7"
+        }
+      ]
+    }
+  ],
+  "count": 1,
+  "offset": 0,
+  "total": 1,
+  "success": true
+}

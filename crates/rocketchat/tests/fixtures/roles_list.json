@@ -1,0 +1,101 @@
+{
+  "roles": [
+    {
+      "_id": "admin",
+      "scope": "Users",
+      "description": "Admin",
+      "mandatory2fa": false,
+      "name": "admin",
+      "protected": true
+    },
+    {
+      "_id": "moderator",
+      "scope": "Subscriptions",
+      "description": "Moderator",
+      "mandatory2fa": false,
+      "name": "moderator",
+      "protected": true
+    },
+    {
+      "_id": "leader",
+      "scope": "Subscriptions",
+      "description": "Leader",
+      "mandatory2fa": false,
+      "name": "leader",
+      "protected": true
+    },
+    {
+      "_id": "owner",
+      "scope": "Subscriptions",
+      "description": "Owner",
+      "mandatory2fa": false,
+      "name": "owner",
+      "protected": true
+    },
+    {
+      "_id": "user",
+      "scope": "Users",
+      "description": "",
+      "mandatory2fa": false,
+      "name": "user",
+      "protected": true
+    },
+    {
+      "_id": "federated-external",
+      "scope": "Users",
+      "description": "",
+      "mandatory2fa": false,
+      "name": "federated-external",
+      "protected": true
+    },
+    {
+      "_id": "bot",
+      "scope": "Users",
+      "description": "",
+      "mandatory2fa": false,
+      "name": "bot",
+      "protected": true
+    },
+    {
+      "_id": "app",
+      "scope": "Users",
+      "description": "",
+      "mandatory2fa": false,
+      "name": "app",
+      "protected": true
+    },
+    {
+      "_id": "guest",
+      "scope": "Users",
+      "description": "",
+      "mandatory2fa": false,
+      "name": "guest",
+      "protected": true
+    },
+    {
+      "_id": "anonymous",
+      "scope": "Users",
+      "description": "",
+      "mandatory2fa": false,
+      "name": "anonymous",
+      "protected": true
+    },
+    {
+      "_id": "livechat-agent",
+      "scope": "Users",
+      "description": "Livechat Agent",
+      "mandatory2fa": false,
+      "name": "livechat-agent",
+      "protected": true
+    },
+    {
+      "_id": "livechat-manager",
+      "scope": "Users",
+      "description": "Livechat Manager",
+      "mandatory2fa": false,
+      "name": "livechat-manager",
+      "protected": true
+    }
+  ],
+  "success": true
+}

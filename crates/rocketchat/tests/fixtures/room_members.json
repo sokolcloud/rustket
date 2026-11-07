@@ -1,0 +1,58 @@
+{
+  "members": [
+    {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice",
+      "name": "Alice",
+      "_updatedAt": "2026-11-07T16:07:57.065Z",
+      "status": "offline",
+      "subscription": {
+        "_id": "6aef4cdcf7fd708252117575",
+        "ts": "2026-11-07T16:07:56.104Z",
+        "roles": [
+          "owner"
+        ]
+      },
+      "roles": [
+        "owner"
+      ]
+    },
+    {
+      "_id": "6aef49d4f7fd7082521174fb",
+      "name": "Admin",
+      "username": "admin",
+      "_updatedAt": "2026-11-07T16:07:57.497Z",
+      "status": "offline",
+      "subscription": {
+        "_id": "6aef4cddf7fd7082521175ca",
+        "ts": "2026-11-07T16:07:57.488Z"
+      }
+    },
+    {
+      "_id": "SLiu9igvh94B9T9Xu",
+      "username": "bob",
+      "name": "Bob",
+      "_updatedAt": "2026-11-07T16:07:56.112Z",
+      "status": "offline",
+      "subscription": {
+        "_id": "6aef4cdcf7fd708252117576",
+        "ts": "2026-11-07T16:07:56.104Z"
+      }
+    },
+    {
+      "_id": "qJWw3ByDhRtx8mN4p",
+      "username": "carol",
+      "name": "Carol",
+      "_updatedAt": "2026-11-07T16:07:56.112Z",
+      "status": "offline",
+      "subscription": {
+        "_id": "6aef4cdcf7fd708252117577",
+        "ts": "2026-11-07T16:07:56.104Z"
+      }
+    }
+  ],
+  "count": 4,
+  "offset": 0,
+  "total": 4,
+  "success": true
+}

@@ -1,0 +1,40 @@
+{
+  "messages": [
+    {
+      "_id": "fa7sjr2gFfePxe9uE",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "pin me",
+      "ts": "2026-11-07T16:07:56.905Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.931Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "pin me"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [],
+      "pinned": true,
+      "pinnedAt": "2026-11-07T16:07:56.931Z",
+      "pinnedBy": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice"
+      }
+    }
+  ],
+  "count": 1,
+  "offset": 0,
+  "total": 1,
+  "success": true
+}

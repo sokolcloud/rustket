@@ -1,0 +1,24 @@
+{
+  "subscription": {
+    "_id": "6aef4cdcf7fd708252117576",
+    "open": true,
+    "alert": true,
+    "unread": 0,
+    "userMentions": 0,
+    "groupMentions": 0,
+    "ts": "2026-11-07T16:07:56.104Z",
+    "rid": "6aef4cdcf7fd708252117574",
+    "name": "fixture-1794067676",
+    "fname": "fixture-1794067676",
+    "t": "c",
+    "u": {
+      "_id": "SLiu9igvh94B9T9Xu",
+      "username": "bob",
+      "name": "Bob"
+    },
+    "_updatedAt": "2026-11-07T16:07:56.857Z",
+    "lr": "2026-11-07T16:07:56.775Z",
+    "ls": "2026-11-07T16:07:56.836Z"
+  },
+  "success": true
+}

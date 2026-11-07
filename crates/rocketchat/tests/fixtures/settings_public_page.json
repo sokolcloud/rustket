@@ -1,0 +1,145 @@
+{
+  "settings": [
+    {
+      "_id": "AI_Intelligent_Search_Answer_Enabled",
+      "enterprise": true,
+      "invalidValue": false,
+      "modules": [
+        "chat.rocket.rc-ai"
+      ],
+      "value": false
+    },
+    {
+      "_id": "AI_Intelligent_Search_Enabled",
+      "enterprise": true,
+      "invalidValue": false,
+      "modules": [
+        "chat.rocket.rc-ai"
+      ],
+      "value": false
+    },
+    {
+      "_id": "AI_Intelligent_Search_Min_Similarity_Percent",
+      "enterprise": true,
+      "invalidValue": 0,
+      "modules": [
+        "chat.rocket.rc-ai"
+      ],
+      "value": 0
+    },
+    {
+      "_id": "API_Apply_permission_view-outside-room_on_users-list",
+      "enterprise": false,
+      "value": false
+    },
+    {
+      "_id": "API_Drupal_URL",
+      "enterprise": false,
+      "value": ""
+    },
+    {
+      "_id": "API_Embed",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "API_Embed_UserAgent",
+      "enterprise": false,
+      "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2227.0 Safari/537.36"
+    },
+    {
+      "_id": "API_GitHub_Enterprise_URL",
+      "enterprise": false,
+      "value": ""
+    },
+    {
+      "_id": "API_Gitlab_URL",
+      "enterprise": false,
+      "value": ""
+    },
+    {
+      "_id": "API_User_Limit",
+      "enterprise": false,
+      "value": 500
+    },
+    {
+      "_id": "API_Wordpress_URL",
+      "enterprise": false,
+      "value": ""
+    },
+    {
+      "_id": "Accounts_AllowAnonymousRead",
+      "enterprise": false,
+      "value": false
+    },
+    {
+      "_id": "Accounts_AllowAnonymousWrite",
+      "enterprise": false,
+      "value": false
+    },
+    {
+      "_id": "Accounts_AllowDeleteOwnAccount",
+      "enterprise": false,
+      "value": false
+    },
+    {
+      "_id": "Accounts_AllowEmailChange",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "Accounts_AllowEmailNotifications",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "Accounts_AllowFeaturePreview",
+      "enterprise": false,
+      "value": false
+    },
+    {
+      "_id": "Accounts_AllowInvisibleStatusOption",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "Accounts_AllowPasswordChange",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "Accounts_AllowPasswordChangeForOAuthUsers",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "Accounts_AllowRealNameChange",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "Accounts_AllowUserAvatarChange",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "Accounts_AllowUserProfileChange",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "Accounts_AllowUserStatusMessageChange",
+      "enterprise": false,
+      "value": true
+    },
+    {
+      "_id": "Accounts_AllowUsernameChange",
+      "enterprise": false,
+      "value": true
+    }
+  ],
+  "count": 25,
+  "offset": 0,
+  "total": 393,
+  "success": true
+}

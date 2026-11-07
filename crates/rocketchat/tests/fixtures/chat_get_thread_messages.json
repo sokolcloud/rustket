@@ -1,0 +1,63 @@
+{
+  "messages": [
+    {
+      "_id": "sAaD5nKTR6trxJwR5",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "reply in thread",
+      "tmid": "czxdLqJsvJWbteHzX",
+      "ts": "2026-11-07T16:07:56.733Z",
+      "u": {
+        "_id": "SLiu9igvh94B9T9Xu",
+        "username": "bob",
+        "name": "Bob"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.738Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "reply in thread"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    },
+    {
+      "_id": "XJDdYTwPxuZu5ykwm",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "reply also to channel",
+      "tmid": "czxdLqJsvJWbteHzX",
+      "tshow": true,
+      "ts": "2026-11-07T16:07:56.764Z",
+      "u": {
+        "_id": "SLiu9igvh94B9T9Xu",
+        "username": "bob",
+        "name": "Bob"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.769Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "reply also to channel"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": []
+    }
+  ],
+  "count": 2,
+  "offset": 0,
+  "total": 2,
+  "success": true
+}

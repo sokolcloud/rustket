@@ -1,0 +1,5 @@
+{
+  "success": false,
+  "error": "The required \"roomId\" or \"roomName\" param provided does not match any channel [error-room-not-found]",
+  "errorType": "error-room-not-found"
+}

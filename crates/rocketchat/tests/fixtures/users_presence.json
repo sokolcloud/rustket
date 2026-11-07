@@ -1,0 +1,14 @@
+{
+  "users": [
+    {
+      "_id": "rocket.cat",
+      "name": "Rocket.Cat",
+      "status": "online",
+      "username": "rocket.cat",
+      "utcOffset": 0,
+      "avatarETag": "AqZakLA7R3zfdMS3r"
+    }
+  ],
+  "full": true,
+  "success": true
+}

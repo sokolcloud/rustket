@@ -1,0 +1,77 @@
+{
+  "room": {
+    "_id": "6aef4cdcf7fd708252117574",
+    "fname": "fixture-1794067676",
+    "_updatedAt": "2026-11-07T16:07:57.501Z",
+    "name": "fixture-1794067676",
+    "t": "c",
+    "msgs": 41,
+    "usersCount": 4,
+    "u": {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice",
+      "name": "Alice"
+    },
+    "ts": "2026-11-07T16:07:56.104Z",
+    "ro": false,
+    "default": false,
+    "sysMes": true,
+    "lastMessage": {
+      "_id": "9Mwu6X8dE6m4PeYTG",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "message with url preview https://example.com",
+      "ts": "2026-11-07T16:07:57.398Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:57.423Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "message with url preview "
+            },
+            {
+              "type": "LINK",
+              "value": {
+                "src": {
+                  "type": "PLAIN_TEXT",
+                  "value": "https://example.com"
+                },
+                "label": [
+                  {
+                    "type": "PLAIN_TEXT",
+                    "value": "https://example.com"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [
+        {
+          "url": "https://example.com",
+          "meta": {
+            "pageTitle": "Example Domain"
+          },
+          "headers": {
+            "contentType": "text/html; charset=utf-8"
+          }
+        }
+      ]
+    },
+    "lm": "2026-11-07T16:07:57.425Z",
+    "topic": "fixture topic",
+    "announcement": "fixture announcement",
+    "announcementDetails": null,
+    "description": "fixture description"
+  },
+  "success": true
+}

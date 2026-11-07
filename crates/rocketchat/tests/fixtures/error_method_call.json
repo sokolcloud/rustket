@@ -1,0 +1,4 @@
+{
+  "message": "{\"msg\":\"result\",\"id\":\"1\",\"error\":{\"isClientSafe\":true,\"error\":404,\"reason\":\"Method 'noSuchMethod' not found\",\"message\":\"Method 'noSuchMethod' not found [404]\",\"errorType\":\"Meteor.Error\"}}",
+  "success": false
+}

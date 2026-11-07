@@ -1,0 +1,21 @@
+{
+  "channel": {
+    "_id": "6aef4cdcf7fd708252117574",
+    "fname": "fixture-1794067676",
+    "_updatedAt": "2026-11-07T16:07:56.123Z",
+    "name": "fixture-1794067676",
+    "t": "c",
+    "msgs": 0,
+    "usersCount": 3,
+    "u": {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice",
+      "name": "Alice"
+    },
+    "ts": "2026-11-07T16:07:56.104Z",
+    "ro": false,
+    "default": false,
+    "sysMes": true
+  },
+  "success": true
+}

@@ -1,0 +1,141 @@
+{
+  "update": [
+    {
+      "_id": "6aef4af3f7fd708252117515",
+      "open": true,
+      "alert": true,
+      "unread": 1,
+      "userMentions": 1,
+      "groupMentions": 0,
+      "ts": "2026-11-07T15:59:47.252Z",
+      "rid": "GENERAL",
+      "name": "general",
+      "t": "c",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T15:59:47.252Z"
+    },
+    {
+      "_id": "6aef4af4f7fd70825211751b",
+      "rid": "6aef4af4f7fd708252117519",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice"
+      },
+      "_updatedAt": "2026-11-07T16:00:00.430Z",
+      "alert": false,
+      "fname": "Admin",
+      "groupMentions": 0,
+      "name": "admin",
+      "open": false,
+      "t": "d",
+      "ts": "2026-11-07T15:59:48.937Z",
+      "unread": 0,
+      "userMentions": 0
+    },
+    {
+      "_id": "6aef4b00f7fd70825211752a",
+      "open": true,
+      "alert": true,
+      "unread": 1,
+      "userMentions": 1,
+      "groupMentions": 0,
+      "ts": "2026-11-07T16:00:00.469Z",
+      "rid": "6aef4adcf7fd708252117507",
+      "name": "dev-public",
+      "fname": "dev-public",
+      "t": "c",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "inviter": {
+        "_id": "6aef49d4f7fd7082521174fb",
+        "username": "admin",
+        "name": "Admin"
+      },
+      "_updatedAt": "2026-11-07T16:00:00.471Z"
+    },
+    {
+      "_id": "6aef4b00f7fd70825211752c",
+      "open": true,
+      "alert": true,
+      "unread": 1,
+      "userMentions": 1,
+      "groupMentions": 0,
+      "ts": "2026-11-07T16:00:00.523Z",
+      "rid": "6aef4adcf7fd70825211750c",
+      "name": "dev-private",
+      "fname": "dev-private",
+      "t": "p",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "inviter": {
+        "_id": "6aef49d4f7fd7082521174fb",
+        "username": "admin",
+        "name": "Admin"
+      },
+      "_updatedAt": "2026-11-07T16:00:00.526Z"
+    },
+    {
+      "_id": "6aef4cdcf7fd708252117575",
+      "open": true,
+      "alert": false,
+      "unread": 0,
+      "userMentions": 0,
+      "groupMentions": 0,
+      "ts": "2026-11-07T16:07:56.104Z",
+      "rid": "6aef4cdcf7fd708252117574",
+      "name": "fixture-1794067676",
+      "fname": "fixture-1794067676",
+      "t": "c",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "ls": "2026-11-07T16:07:57.438Z",
+      "roles": [
+        "owner"
+      ],
+      "_updatedAt": "2026-11-07T16:07:57.438Z",
+      "lr": "2026-11-07T16:07:56.775Z",
+      "tunread": [
+        "czxdLqJsvJWbteHzX"
+      ]
+    },
+    {
+      "_id": "6aef4cddf7fd7082521175bc",
+      "open": true,
+      "alert": false,
+      "unread": 0,
+      "userMentions": 0,
+      "groupMentions": 0,
+      "ts": "2026-11-07T16:07:57.057Z",
+      "rid": "6aef4cddf7fd7082521175bb",
+      "name": "MTD7n9G466fx3fMHc",
+      "fname": "fixture-1794067676-discussion",
+      "t": "c",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "prid": "6aef4cdcf7fd708252117574",
+      "ls": "2026-11-07T16:07:57.100Z",
+      "roles": [
+        "owner"
+      ],
+      "_updatedAt": "2026-11-07T16:07:57.100Z"
+    }
+  ],
+  "remove": [],
+  "success": true
+}

@@ -1,0 +1,90 @@
+{
+  "status": "success",
+  "data": {
+    "userId": "Er3h8XYKahaopbSA7",
+    "authToken": "C5uOer_1-xJf6DBAgdPSOWfFWJPFL76k7wC_qx64k42",
+    "me": {
+      "_id": "Er3h8XYKahaopbSA7",
+      "services": {
+        "password": {
+          "exists": true
+        }
+      },
+      "username": "alice",
+      "emails": [
+        {
+          "address": "alice@rustket.local",
+          "verified": true
+        }
+      ],
+      "name": "Alice",
+      "roles": [
+        "user"
+      ],
+      "status": "offline",
+      "active": true,
+      "_updatedAt": "2026-11-07T16:07:56.027Z",
+      "requirePasswordChange": false,
+      "settings": {
+        "profile": {},
+        "preferences": {
+          "enableAutoAway": true,
+          "idleTimeLimit": 300,
+          "desktopNotificationRequireInteraction": false,
+          "desktopNotifications": "all",
+          "desktopNotificationVoiceCalls": true,
+          "pushNotifications": "all",
+          "unreadAlert": true,
+          "useEmojis": true,
+          "convertAsciiEmoji": true,
+          "autoImageLoad": true,
+          "saveMobileBandwidth": true,
+          "collapseMediaByDefault": false,
+          "hideUsernames": false,
+          "hideRoles": false,
+          "hideFlexTab": false,
+          "displayAvatars": true,
+          "sidebarGroupByType": true,
+          "themeAppearence": "auto",
+          "sidebarViewMode": "medium",
+          "sidebarDisplayAvatar": true,
+          "sidebarShowUnread": false,
+          "sidebarSortby": "activity",
+          "showThreadsInMainChannel": false,
+          "alsoSendThreadToChannel": "default",
+          "sidebarShowFavorites": true,
+          "sendOnEnter": "normal",
+          "emailNotificationMode": "mentions",
+          "newRoomNotification": "door",
+          "newMessageNotification": "chime",
+          "muteFocusedConversations": true,
+          "masterVolume": 100,
+          "notificationsSoundVolume": 100,
+          "voipRingerVolume": 100,
+          "omnichannelTranscriptEmail": false,
+          "notifyCalendarEvents": true,
+          "enableMobileRinging": true,
+          "sidebarSectionsOrder": [
+            "Incoming_Calls",
+            "Incoming_Livechats",
+            "Open_Livechats",
+            "On_Hold_Chats",
+            "Unread",
+            "Favorites",
+            "Teams",
+            "Discussions",
+            "Channels",
+            "Direct_Messages",
+            "Conversations"
+          ],
+          "featuresPreview": "[]"
+        },
+        "calendar": {}
+      },
+      "email": "alice@rustket.local",
+      "avatarUrl": "http://localhost:3000/avatar/alice",
+      "isOAuthUser": false
+    }
+  },
+  "success": true
+}

@@ -1,0 +1,40 @@
+{
+  "threads": [
+    {
+      "_id": "czxdLqJsvJWbteHzX",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "thread parent message",
+      "ts": "2026-11-07T16:07:56.709Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.778Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "thread parent message"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "channels": [],
+      "urls": [],
+      "replies": [
+        "Er3h8XYKahaopbSA7",
+        "SLiu9igvh94B9T9Xu"
+      ],
+      "tcount": 2,
+      "tlm": "2026-11-07T16:07:56.764Z"
+    }
+  ],
+  "count": 1,
+  "offset": 0,
+  "total": 1,
+  "success": true
+}

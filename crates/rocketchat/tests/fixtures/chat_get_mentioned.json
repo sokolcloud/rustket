@@ -1,0 +1,111 @@
+{
+  "messages": [
+    {
+      "_id": "5cFcbWLSvTK9i9eGZ",
+      "rid": "6aef4cdcf7fd708252117574",
+      "msg": "hello @alice and @bob and @all and @here in #general",
+      "ts": "2026-11-07T16:07:56.592Z",
+      "u": {
+        "_id": "Er3h8XYKahaopbSA7",
+        "username": "alice",
+        "name": "Alice"
+      },
+      "_updatedAt": "2026-11-07T16:07:56.600Z",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "hello "
+            },
+            {
+              "type": "MENTION_USER",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "alice"
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "MENTION_USER",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "bob"
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "MENTION_USER",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "all"
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " and "
+            },
+            {
+              "type": "MENTION_USER",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "here"
+              }
+            },
+            {
+              "type": "PLAIN_TEXT",
+              "value": " in "
+            },
+            {
+              "type": "MENTION_CHANNEL",
+              "value": {
+                "type": "PLAIN_TEXT",
+                "value": "general"
+              }
+            }
+          ]
+        }
+      ],
+      "mentions": [
+        {
+          "_id": "all",
+          "username": "all"
+        },
+        {
+          "_id": "here",
+          "username": "here"
+        },
+        {
+          "_id": "Er3h8XYKahaopbSA7",
+          "username": "alice",
+          "name": "Alice",
+          "type": "user"
+        },
+        {
+          "_id": "SLiu9igvh94B9T9Xu",
+          "username": "bob",
+          "name": "Bob",
+          "type": "user"
+        }
+      ],
+      "channels": [
+        {
+          "_id": "GENERAL",
+          "name": "general"
+        }
+      ],
+      "urls": []
+    }
+  ],
+  "count": 1,
+  "offset": 0,
+  "total": 1,
+  "success": true
+}

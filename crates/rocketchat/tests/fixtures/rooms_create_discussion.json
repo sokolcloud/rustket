@@ -1,0 +1,26 @@
+{
+  "discussion": {
+    "rid": "6aef4cddf7fd7082521175bb",
+    "inserted": true,
+    "_id": "6aef4cddf7fd7082521175bb",
+    "_updatedAt": "2026-11-07T16:07:57.057Z",
+    "fname": "fixture-1794067676-discussion",
+    "topic": "fixture-1794067676",
+    "prid": "6aef4cdcf7fd708252117574",
+    "encrypted": false,
+    "name": "MTD7n9G466fx3fMHc",
+    "t": "c",
+    "msgs": 0,
+    "usersCount": 0,
+    "u": {
+      "_id": "Er3h8XYKahaopbSA7",
+      "username": "alice",
+      "name": "Alice"
+    },
+    "ts": "2026-11-07T16:07:57.057Z",
+    "ro": false,
+    "default": false,
+    "sysMes": true
+  },
+  "success": true
+}
