@@ -65,8 +65,6 @@ pub enum Message {
     Desktop(crate::desktop::Message),
     /// Ctrl+K.
     OpenQuickSwitcher,
-    /// Alt(+Shift)+Up/Down: previous/next (unread) room.
-    RoomStep(crate::desktop::shortcuts::RoomStep),
     SidebarResized(f32),
     /// Room component message: server, session epoch, room id.
     Room(ServerId, u64, String, room::Message),

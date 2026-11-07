@@ -32,17 +32,11 @@ pub struct TrayState {
     pub mentions: u64,
     /// The user's status on the active server (`None`: not logged in).
     pub status: Option<UserStatus>,
+    /// Statuses the active server allows, in menu order.
+    pub offered: Vec<UserStatus>,
     /// Bumped to rebuild labels (language change).
     pub revision: u64,
 }
-
-/// Statuses offered in the menu, in order.
-pub const STATUSES: [UserStatus; 4] = [
-    UserStatus::Online,
-    UserStatus::Away,
-    UserStatus::Busy,
-    UserStatus::Offline,
-];
 
 pub fn status_label(s: UserStatus) -> String {
     match s {
@@ -115,10 +109,16 @@ impl Tray {
         });
     }
 
-    pub fn set_status(&mut self, status: Option<UserStatus>) {
+    /// The status on the active server and the statuses it offers.
+    pub fn set_status(&mut self, status: Option<(UserStatus, Vec<UserStatus>)>) {
+        let (status, offered) = match status {
+            Some((s, o)) => (Some(s), o),
+            None => (None, Vec::new()),
+        };
         self.state.send_if_modified(|s| {
-            let changed = s.status != status;
+            let changed = s.status != status || s.offered != offered;
             s.status = status;
+            s.offered = offered;
             changed
         });
     }
@@ -190,6 +190,16 @@ impl ksni::Tray for RustketTray {
         self.send(Message::Activate);
     }
 
+    fn watcher_online(&self) {
+        self.send(Message::Ready(true));
+    }
+
+    fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
+        // Keep the service: the host may come back (shell restart).
+        self.send(Message::Ready(false));
+        true
+    }
+
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
         let mut items: Vec<ksni::MenuItem<Self>> = vec![
@@ -200,19 +210,22 @@ impl ksni::Tray for RustketTray {
             }
             .into(),
         ];
-        if let Some(status) = self.state.status {
+        if let Some(status) = self.state.status
+            && !self.state.offered.is_empty()
+        {
+            let offered = self.state.offered.clone();
             items.push(
                 SubMenu {
                     label: t!("desktop.tray_status").into_owned(),
                     submenu: vec![
                         RadioGroup {
-                            selected: STATUSES.iter().position(|s| *s == status).unwrap_or(0),
+                            selected: offered.iter().position(|s| *s == status).unwrap_or(0),
                             select: Box::new(|t: &mut Self, i| {
-                                if let Some(s) = STATUSES.get(i) {
+                                if let Some(s) = t.state.offered.get(i) {
                                     t.send(Message::SetStatus(*s));
                                 }
                             }),
-                            options: STATUSES
+                            options: offered
                                 .iter()
                                 .map(|s| RadioItem {
                                     label: status_label(*s),
@@ -270,7 +283,9 @@ fn run(slot: &Slot) -> impl futures::Stream<Item = Message> + use<> {
                         }
                         let state = rx.borrow_and_update().clone();
                         if handle.update(|t| t.state = state).await.is_none() {
-                            break;
+                            // The service died: no icon any more.
+                            let _ = out.send(Message::Ready(false)).await;
+                            return;
                         }
                     }
                     ev = events.next() => match ev {
@@ -298,7 +313,10 @@ mod tests {
         let mut tray = Tray::default();
         assert!(!tray.enabled);
         tray.set_unread(3, 1);
-        tray.set_status(Some(UserStatus::Busy));
+        tray.set_status(Some((
+            UserStatus::Busy,
+            vec![UserStatus::Online, UserStatus::Busy],
+        )));
         let s = tray.state();
         assert_eq!(
             (s.unread, s.mentions, s.status),

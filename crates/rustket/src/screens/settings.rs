@@ -17,7 +17,7 @@ use rustket_ui::theme::{
 use rustket_ui::widget::{BannerKind, banner, divider, secondary_button};
 
 use crate::component::{Action, Effect};
-use crate::desktop::autostart;
+use crate::desktop::{TraySupport, autostart};
 use crate::ui_state::UiState;
 
 /// Zoom step of the −/+ buttons.
@@ -65,6 +65,8 @@ pub struct SettingsView<'a> {
     pub secret_backend: Option<SecretBackend>,
     /// Secrets are kept in memory because nothing else is usable (not in tests).
     pub secrets_in_memory: bool,
+    /// Whether a tray exists and the window can be hidden to it.
+    pub tray: TraySupport,
 }
 
 #[derive(Debug)]
@@ -88,7 +90,7 @@ pub fn zoom_step(current: f32, dir: i8) -> f32 {
         return 1.0;
     }
     let next = current + f32::from(dir.signum()) * ZOOM_STEP;
-    ((next / ZOOM_STEP).round() * ZOOM_STEP).clamp(*ZOOM_RANGE.start(), 2.0)
+    ((next / ZOOM_STEP).round() * ZOOM_STEP).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end())
 }
 
 impl Settings {
@@ -215,20 +217,35 @@ impl Settings {
             _ => {}
         }
 
+        let step = |glyph: &'static str, msg: Option<Message>| {
+            button(
+                text(glyph)
+                    .size(TEXT_SUBTITLE)
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
+            )
+            .width(36)
+            .padding([2, 0])
+            .style(style::button_secondary)
+            .on_press_maybe(msg)
+        };
         let zoom = row![
-            secondary_button(
-                "−",
+            step(
+                "\u{2212}",
                 (ui.zoom > *ZOOM_RANGE.start() + 0.01).then_some(Message::Zoom(-1))
             ),
             text(format!("{:.0} %", ui.zoom * 100.0))
                 .size(TEXT_BODY)
                 .width(64)
                 .align_x(Alignment::Center),
-            secondary_button("+", (ui.zoom < 1.99).then_some(Message::Zoom(1))),
-            button(text(t!("settings.zoom_reset")).size(TEXT_BODY))
-                .padding([6, 12])
-                .style(style::button_ghost)
-                .on_press_maybe(((ui.zoom - 1.0).abs() > 0.01).then_some(Message::Zoom(0))),
+            step(
+                "+",
+                (ui.zoom < *ZOOM_RANGE.end() - 0.01).then_some(Message::Zoom(1))
+            ),
+            secondary_button(
+                t!("settings.zoom_reset"),
+                ((ui.zoom - 1.0).abs() > 0.01).then_some(Message::Zoom(0))
+            ),
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
@@ -353,27 +370,38 @@ impl Settings {
             // Still loading, or no config directory at all.
             None => switch(
                 t!("settings.autostart").into_owned(),
-                self.autostart_home
-                    .is_none()
-                    .then(|| t!("settings.autostart_unknown").into_owned()),
+                Some(if self.autostart_home.is_none() {
+                    t!("settings.autostart_unknown").into_owned()
+                } else {
+                    t!("settings.autostart_loading").into_owned()
+                }),
                 false,
                 None,
             ),
+        };
+        let tray = v.tray;
+        let close_help = if !tray.available {
+            t!("settings.no_tray")
+        } else if !tray.can_hide {
+            t!("settings.tray_help_wayland")
+        } else {
+            t!("settings.tray_help")
         };
         body = body.push(section(
             t!("settings.behaviour").into_owned(),
             vec![
                 switch(
                     t!("settings.close_to_tray").into_owned(),
-                    Some(t!("settings.tray_help").into_owned()),
-                    ui.close_to_tray,
-                    Some(Message::SetCloseToTray),
+                    Some(close_help.into_owned()),
+                    ui.close_to_tray && tray.available,
+                    tray.available.then_some(Message::SetCloseToTray),
                 ),
                 switch(
                     t!("settings.minimize_to_tray").into_owned(),
-                    None,
-                    ui.minimize_to_tray,
-                    Some(Message::SetMinimizeToTray),
+                    (tray.available && !tray.can_hide)
+                        .then(|| t!("settings.minimize_wayland").into_owned()),
+                    ui.minimize_to_tray && tray.can_hide,
+                    (tray.available && tray.can_hide).then_some(Message::SetMinimizeToTray),
                 ),
                 switch(
                     t!("settings.start_minimized").into_owned(),
@@ -457,7 +485,7 @@ impl Settings {
 
         super::page::page(
             t!("settings.title").into_owned(),
-            body.into(),
+            container(body).center_x(Length::Fill).into(),
             Message::Close,
         )
     }
@@ -604,7 +632,9 @@ mod tests {
     fn zoom_steps_are_clamped() {
         assert!((zoom_step(1.0, 1) - 1.1).abs() < 1e-4);
         assert!((zoom_step(1.0, -1) - 0.9).abs() < 1e-4);
-        assert!((zoom_step(2.0, 1) - 2.0).abs() < 1e-4);
+        assert!((zoom_step(2.0, 1) - 2.1).abs() < 1e-4);
+        assert!((zoom_step(2.5, -1) - 2.4).abs() < 1e-4);
+        assert!((zoom_step(3.0, 1) - 3.0).abs() < 1e-4);
         assert!((zoom_step(0.5, -1) - 0.5).abs() < 1e-4);
         assert!((zoom_step(1.37, 0) - 1.0).abs() < 1e-4);
         let mut s = Settings::with_autostart_home(None);

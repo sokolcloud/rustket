@@ -42,8 +42,11 @@ status_menu.logout:
   en: "Log out"
   ru: "Выйти"
 status_menu.logout_everywhere:
-  en: "Log out and revoke the token"
-  ru: "Выйти и отозвать токен"
+  en: "Log out and revoke access"
+  ru: "Выйти и отозвать доступ"
 status_menu.remove_server:
   en: "Remove workspace"
   ru: "Удалить рабочее пространство"
+status_menu.not_allowed:
+  en: "This server does not allow this status."
+  ru: "Сервер не разрешает этот статус."

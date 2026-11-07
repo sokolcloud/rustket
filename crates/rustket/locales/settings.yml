@@ -149,3 +149,15 @@ settings.docs:
 settings.secrets_memory:
   en: "No keyring or writable data directory: you will have to sign in on every start."
   ru: "Нет хранилища паролей и доступного каталога данных: входить придётся при каждом запуске."
+settings.autostart_loading:
+  en: "Checking…"
+  ru: "Проверка…"
+settings.no_tray:
+  en: "No system tray found: closing the window quits Rustket."
+  ru: "Системный трей не найден: закрытие окна завершает Rustket."
+settings.tray_help_wayland:
+  en: "On Wayland the window cannot be hidden, so it is minimized instead."
+  ru: "В Wayland окно нельзя скрыть, поэтому оно сворачивается."
+settings.minimize_wayland:
+  en: "Not supported on Wayland."
+  ru: "Не поддерживается в Wayland."

@@ -44,14 +44,3 @@ pub fn hide_if_minimized() -> Task<bool> {
         None => Task::done(false),
     })
 }
-
-/// Sets the window icon (also done through the window settings at startup).
-pub fn set_icon<T: Send + 'static>() -> Task<T> {
-    match super::icon::window_icon() {
-        Some(icon) => window::latest().then(move |id| match id {
-            Some(id) => window::set_icon(id, icon.clone()),
-            None => Task::none(),
-        }),
-        None => Task::none(),
-    }
-}

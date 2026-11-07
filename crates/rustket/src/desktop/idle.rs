@@ -5,10 +5,13 @@
 //! sessions (pure-Rust `x11rb`), then `org.freedesktop.ScreenSaver`
 //! `GetSessionIdleTime` (KDE Wayland). When the user is idle longer than their
 //! `idleTimeLimit` preference (default 300 s) and `enableAutoAway` is on, the
-//! app calls `UserPresence:away` on every connected server whose status is
-//! `online`, and `UserPresence:online` once the user is back. These change
+//! app calls `UserPresence:away` once on every connected server whose status
+//! is `online`, and `UserPresence:online` once the user is back. These change
 //! only the connection status (as the official clients do): a status the user
 //! chose (busy, away, invisible) is never overridden and comes back on its own.
+//! The server's status aggregates all of the user's sessions (another client
+//! keeps it online), so "away" is re-sent only after a reconnect, which
+//! resets this connection to online.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -53,18 +56,10 @@ impl AwayPrefs {
     /// From `me.settings.preferences` (`enableAutoAway`, `idleTimeLimit` in s).
     pub fn of(ws: &Workspace) -> Self {
         let mut p = Self::default();
-        let Some(prefs) = ws
-            .me()
-            .and_then(|m| m.settings.as_ref())
-            .and_then(|s| s.preferences.as_ref())
-        else {
-            return p;
-        };
-        if let Some(b) = prefs.get("enableAutoAway").and_then(|v| v.as_bool()) {
+        if let Some(b) = super::user_pref(ws, "enableAutoAway").and_then(|v| v.as_bool()) {
             p.enabled = b;
         }
-        if let Some(secs) = prefs
-            .get("idleTimeLimit")
+        if let Some(secs) = super::user_pref(ws, "idleTimeLimit")
             .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
             .filter(|s| s.is_finite() && *s > 0.0)
         {
@@ -93,7 +88,7 @@ impl PresenceCall {
 #[derive(Debug, Default)]
 pub struct Idle {
     enabled: bool,
-    /// Servers we marked away.
+    /// Servers whose connection we marked away.
     away: HashSet<ServerId>,
 }
 
@@ -115,9 +110,9 @@ impl Idle {
         status: UserStatus,
     ) -> Option<PresenceCall> {
         if prefs.enabled && idle >= prefs.limit {
-            // Re-sent after a reconnect (the server resets the connection to
-            // online) but never over a status the user chose.
-            if status == UserStatus::Online {
+            // Once per idle period (until a reconnect) and never over a
+            // status the user chose.
+            if status == UserStatus::Online && !self.away.contains(sid) {
                 self.away.insert(sid.clone());
                 return Some(PresenceCall::Away);
             }
@@ -129,9 +124,15 @@ impl Idle {
         }
     }
 
-    /// Forgets a server (logout, removal).
-    pub fn forget(&mut self, sid: &ServerId) {
+    /// The server's connection was re-established (back to online): mark
+    /// it away again on the next idle sample.
+    pub fn reconnected(&mut self, sid: &ServerId) {
         self.away.remove(sid);
+    }
+
+    /// Forgets servers that are gone (logout, removal).
+    pub fn retain(&mut self, mut keep: impl FnMut(&ServerId) -> bool) {
+        self.away.retain(|s| keep(s));
     }
 
     pub fn update(&mut self, msg: Message) -> (Task<super::Message>, Vec<Request>) {
@@ -279,7 +280,10 @@ mod tests {
         );
         // The server reports away now: nothing more to do while idle.
         assert_eq!(idle.decide(&a, 6 * MIN, p, UserStatus::Away), None);
+        // Another client keeps the aggregate online: not re-sent.
+        assert_eq!(idle.decide(&a, 6 * MIN, p, UserStatus::Online), None);
         // A reconnect reset the connection to online while still idle.
+        idle.reconnected(&a);
         assert_eq!(
             idle.decide(&a, 7 * MIN, p, UserStatus::Online),
             Some(PresenceCall::Away)
@@ -341,7 +345,7 @@ mod tests {
             idle.decide(&b, 2 * MIN, AwayPrefs::default(), UserStatus::Online),
             None
         );
-        idle.forget(&a);
+        idle.retain(|s| s != &a);
         assert_eq!(
             idle.decide(&a, Duration::ZERO, short, UserStatus::Away),
             None

@@ -40,7 +40,13 @@ impl App {
         let sid = self.active.clone();
         match (nav, sid) {
             (Nav::Settings, _) => {
-                let screen = settings::Settings::new();
+                // The real autostart directory only with real desktop integration.
+                let home = self
+                    .desktop
+                    .is_enabled()
+                    .then(crate::desktop::autostart::config_home)
+                    .flatten();
+                let screen = settings::Settings::with_autostart_home(home);
                 let load = screen.load().map(Message::Settings);
                 self.screen = Screen::Settings(Box::new(screen));
                 load
@@ -324,6 +330,7 @@ impl App {
                 }
                 desktop::Request::IdleTime(idle) => self.idle_presence(idle),
                 desktop::Request::SetStatus(status) => self.set_status_everywhere(status),
+                desktop::Request::RoomStep(step) => self.room_step(step),
             });
         }
         Task::batch(tasks)
@@ -430,6 +437,7 @@ impl App {
             handler_registered: self.handler_registered,
             secret_backend: self.secret_backend,
             secrets_in_memory: self.secrets_mode == SecretsMode::System,
+            tray: self.desktop.tray_support(),
         }
     }
 }

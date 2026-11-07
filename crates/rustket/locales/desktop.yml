@@ -47,3 +47,6 @@ desktop.status_busy:
 desktop.status_invisible:
   en: "Invisible"
   ru: "Невидимый"
+desktop.join:
+  en: "Join"
+  ru: "Присоединиться"

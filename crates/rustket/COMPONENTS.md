@@ -93,7 +93,9 @@ app calls:
 
 `Desktop::update` returns `(Task, Vec<Request>)`; requests:
 `OpenRoom { server_id, rid }`, `OpenThread { server_id, rid, tmid }`,
-`ShowWindow`, `Quit`, `IdleTime(Duration)`, `SetStatus(UserStatus)`.
+`ShowWindow`, `Quit`, `IdleTime(Duration)`, `SetStatus(UserStatus)`,
+`RoomStep(RoomStep)` (Alt(+Shift)+Up/Down, from `Desktop::subscription`, which
+also sees keys captured by widgets such as the composer).
 
 ## Room components
 

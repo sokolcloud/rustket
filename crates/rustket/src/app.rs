@@ -798,7 +798,6 @@ impl App {
                 self.flush_config();
                 iced::window::close(id)
             }
-            Message::RoomStep(step) => self.room_step(step),
             Message::FlushImages => Task::none(),
             Message::ImageLoaded(sid, generation, url, r) => {
                 // Results of a purged cache (logout, removal) are dropped and
@@ -2087,11 +2086,6 @@ impl App {
             },
         ));
         subs.push(window::close_requests().map(Message::CloseRequested));
-        // Alt(+Shift)+Up/Down: previous/next (unread) room.
-        subs.push(
-            iced::keyboard::listen()
-                .filter_map(|ev| crate::desktop::shortcuts::from_event(&ev).map(Message::RoomStep)),
-        );
         // Ctrl+K: quick switcher.
         subs.push(iced::keyboard::listen().filter_map(|ev| match ev {
             iced::keyboard::Event::KeyPressed {

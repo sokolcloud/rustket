@@ -17,6 +17,7 @@ pub mod sound;
 pub mod tray;
 pub mod window;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +25,7 @@ use iced::{Subscription, Task};
 use rocketchat::models::UserStatus;
 use rocketchat::session::DesktopNotification;
 use rustket_core::config::UiPrefs;
+use rustket_core::workspace::ConnectionState;
 use rustket_core::{ServerId, Workspace};
 
 pub use notifications::NotifyEnv;
@@ -35,6 +37,8 @@ pub enum Message {
     Idle(idle::Message),
     /// The window was hidden to the tray (`true`) or not.
     WindowHidden(bool),
+    /// Alt(+Shift)+Up/Down.
+    RoomStep(shortcuts::RoomStep),
 }
 
 /// What the desktop layer asks the app to do.
@@ -57,6 +61,34 @@ pub enum Request {
     IdleTime(Duration),
     /// Set this status on every logged-in server (tray menu).
     SetStatus(UserStatus),
+    /// Open the previous/next (unread) room in sidebar order.
+    RoomStep(shortcuts::RoomStep),
+}
+
+/// A value of `me.settings.preferences`.
+pub(crate) fn user_pref<'a>(ws: &'a Workspace, key: &str) -> Option<&'a serde_json::Value> {
+    ws.me()
+        .and_then(|m| m.settings.as_ref())
+        .and_then(|s| s.preferences.as_ref())
+        .and_then(|p| p.get(key))
+}
+
+/// Whether winit will use Wayland (it prefers Wayland whenever a Wayland
+/// display is set), where windows can be neither hidden nor queried for
+/// being minimized.
+pub fn wayland_session() -> bool {
+    ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"]
+        .iter()
+        .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+}
+
+/// What the window can do with the tray (settings screen).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TraySupport {
+    /// A tray host shows our icon.
+    pub available: bool,
+    /// The window can be hidden (not on Wayland: it is minimized instead).
+    pub can_hide: bool,
 }
 
 #[derive(Debug, Default)]
@@ -73,6 +105,11 @@ pub struct Desktop {
     /// Start hidden/minimized once the tray answered.
     start_minimized: bool,
     locale: String,
+    /// Wayland session: "hiding" minimizes.
+    pub wayland: bool,
+    /// Last seen connection state per server (`true`: connected), to notice
+    /// reconnects.
+    connected: HashMap<ServerId, bool>,
 }
 
 impl Desktop {
@@ -98,11 +135,20 @@ impl Desktop {
             focused: true,
             start_minimized: prefs.start_minimized,
             locale: rust_i18n::locale().to_string(),
+            wayland: wayland_session(),
+            connected: HashMap::new(),
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn tray_support(&self) -> TraySupport {
+        TraySupport {
+            available: self.tray.available,
+            can_hide: !self.wayland,
+        }
     }
 
     /// Returns follow-up work and requests for the app.
@@ -124,6 +170,10 @@ impl Desktop {
             }
             Message::Tray(tray::Message::Ready(ok)) => {
                 let (task, requests) = self.tray.update(tray::Message::Ready(ok));
+                if !ok && self.hidden {
+                    // The tray host went away: nothing could bring it back.
+                    return (Task::batch([task, self.show_window()]), requests);
+                }
                 if !std::mem::take(&mut self.start_minimized) {
                     return (task, requests);
                 }
@@ -142,13 +192,23 @@ impl Desktop {
                 }
                 (Task::none(), Vec::new())
             }
+            Message::RoomStep(step) => (Task::none(), vec![Request::RoomStep(step)]),
         }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        // Alt+arrows also while a widget (the composer) captured the key.
+        let shortcuts = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(ev) => shortcuts::from_event(&ev).map(Message::RoomStep),
+            _ => None,
+        });
         Subscription::batch([
+            shortcuts,
             self.tray.subscription().map(Message::Tray),
             self.idle.subscription().map(Message::Idle),
+            self.notifications
+                .subscription()
+                .map(Message::Notifications),
         ])
     }
 
@@ -161,7 +221,12 @@ impl Desktop {
         window::show()
     }
 
+    /// Hides the window to the tray; on Wayland, where a window cannot be
+    /// hidden, it is minimized instead.
     fn hide_window(&mut self) -> Task<Message> {
+        if self.wayland {
+            return window::minimize();
+        }
         self.hidden = true;
         window::hide()
     }
@@ -180,7 +245,7 @@ impl Desktop {
             self.hidden = false;
             return Task::none();
         }
-        if self.enabled && prefs.minimize_to_tray && self.tray.available {
+        if self.enabled && prefs.minimize_to_tray && self.tray.available && !self.wayland {
             return window::hide_if_minimized().map(Message::WindowHidden);
         }
         Task::none()
@@ -220,6 +285,19 @@ impl Desktop {
         active: Option<&ServerId>,
     ) -> Task<Message> {
         let mut tasks = Vec::new();
+        // A reconnect resets the connection status to online: auto-away is
+        // sent again. Servers that are gone are forgotten.
+        self.connected
+            .retain(|sid, _| servers.iter().any(|(s, _)| *s == sid));
+        for (sid, ws) in servers {
+            let now = *ws.connection() == ConnectionState::Connected;
+            let before = self.connected.insert((*sid).clone(), now);
+            if now && before == Some(false) {
+                self.idle.reconnected(sid);
+            }
+        }
+        self.idle
+            .retain(|sid| servers.iter().any(|(s, _)| *s == sid));
         if !self.notifications.is_empty() {
             for (sid, ws) in servers {
                 tasks.push(self.notifications.sync_read(sid, ws));
@@ -227,12 +305,14 @@ impl Desktop {
             let alive: Vec<&ServerId> = servers.iter().map(|(s, _)| *s).collect();
             tasks.push(self.notifications.retain_servers(&alive));
         }
-        let status = servers
+        let active_ws = servers
             .iter()
             .find(|(s, _)| Some(*s) == active)
             .filter(|(_, ws)| ws.user_id().is_some())
-            .map(|(_, ws)| ws.my_status());
-        self.tray.set_status(status);
+            .map(|(_, ws)| *ws);
+        self.tray.set_status(
+            active_ws.map(|ws| (ws.my_status(), crate::workspace::status_menu::offered(ws))),
+        );
         if self.enabled {
             let locale = rust_i18n::locale();
             if *locale != *self.locale {

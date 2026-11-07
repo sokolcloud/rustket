@@ -41,8 +41,9 @@ pub enum Message {
     SubmitText,
     UseRecent(String),
     ClearText,
-    /// `users.setStatus` finished (status, text) for this result.
-    StatusSet(UserStatus, Option<String>, Res<()>),
+    /// `users.setStatus` finished with this status (`None`: text only) and
+    /// text.
+    StatusSet(Option<UserStatus>, Option<String>, Res<()>),
     Account,
     Settings,
     Logout,
@@ -80,6 +81,19 @@ pub fn offered(ws: &Workspace) -> Vec<UserStatus> {
         v.push(UserStatus::Offline);
     }
     v
+}
+
+/// The server's custom statuses this user may pick: none when status texts
+/// are not allowed (a custom status is a text), no invisible ones when
+/// invisible is not allowed.
+pub fn offered_custom(ws: &Workspace) -> Vec<&rocketchat::models::CustomUserStatus> {
+    if !text_allowed(ws) {
+        return Vec::new();
+    }
+    let invisible = invisible_allowed(ws);
+    ws.custom_statuses()
+        .filter(|c| invisible || c.status_type != UserStatus::Offline)
+        .collect()
 }
 
 pub fn status_label(s: UserStatus) -> String {
@@ -122,8 +136,12 @@ impl StatusMenu {
         text: Option<String>,
         ctx: &mut Ctx<'_>,
     ) -> Action<Message> {
-        if status == UserStatus::Offline && !invisible_allowed(ctx.workspace) {
-            return Action::none();
+        if !offered(ctx.workspace).contains(&status) {
+            return Action::effect(Effect::Toast(
+                BannerKind::Error,
+                t!("status_menu.failed").into_owned(),
+                t!("status_menu.not_allowed").into_owned(),
+            ));
         }
         let text = text.filter(|_| text_allowed(ctx.workspace));
         self.busy = true;
@@ -131,7 +149,22 @@ impl StatusMenu {
         let t2 = text.clone();
         Action::task(ctx.rest_task(
             move |rest| async move { rest.users_set_status(status, t2.as_deref()).await },
-            move |r| Message::StatusSet(status, text.clone(), r),
+            move |r| Message::StatusSet(Some(status), text.clone(), r),
+        ))
+    }
+
+    /// Changes only the status text: the server keeps the status the user
+    /// chose, so a transient auto-away is not pinned.
+    fn set_text(&mut self, text: String, ctx: &mut Ctx<'_>) -> Action<Message> {
+        if !text_allowed(ctx.workspace) {
+            return Action::none();
+        }
+        self.busy = true;
+        self.open = false;
+        let t2 = text.clone();
+        Action::task(ctx.rest_task(
+            move |rest| async move { rest.users_set_status_message(&t2).await },
+            move |r| Message::StatusSet(None, Some(text.clone()), r),
         ))
     }
 
@@ -143,18 +176,19 @@ impl StatusMenu {
                     self.text = my_text(ctx.workspace);
                     let current = self.text.clone();
                     remember(&mut self.recent, &current);
+                    if text_allowed(ctx.workspace) {
+                        return Action::task(Self::focus());
+                    }
                 }
                 Action::none()
             }
             Message::SetStatus(status) => {
-                // Keep the current text with the new status.
-                let text = Some(my_text(ctx.workspace));
-                self.set(status, text, ctx)
+                // A preset status clears the text (as the web client does).
+                self.set(status, Some(String::new()), ctx)
             }
             Message::SetCustom(id) => {
-                let Some(custom) = ctx
-                    .workspace
-                    .custom_statuses()
+                let Some(custom) = offered_custom(ctx.workspace)
+                    .into_iter()
                     .find(|c| c.id == id)
                     .cloned()
                 else {
@@ -170,25 +204,23 @@ impl StatusMenu {
             Message::SubmitText => {
                 let text = self.text.trim().to_owned();
                 remember(&mut self.recent, &text);
-                let status = current_choice(ctx.workspace);
-                self.set(status, Some(text), ctx)
+                self.set_text(text, ctx)
             }
             Message::UseRecent(text) => {
                 remember(&mut self.recent, &text);
-                let status = current_choice(ctx.workspace);
                 self.text = text.clone();
-                self.set(status, Some(text), ctx)
+                self.set_text(text, ctx)
             }
             Message::ClearText => {
                 self.text.clear();
-                let status = current_choice(ctx.workspace);
-                self.set(status, Some(String::new()), ctx)
+                self.set_text(String::new(), ctx)
             }
             Message::StatusSet(status, text, r) => {
                 self.busy = false;
                 match r {
                     Ok(()) => {
                         let ws = &mut *ctx.workspace;
+                        let status = status.unwrap_or_else(|| ws.my_status());
                         if let (Some(uid), username) = (
                             ws.user_id().map(str::to_owned),
                             ws.username().map(str::to_owned),
@@ -360,7 +392,7 @@ impl StatusMenu {
                 false,
             ));
         }
-        let customs: Vec<_> = ws.custom_statuses().collect();
+        let customs = offered_custom(ws);
         if !customs.is_empty() {
             col = col.push(caption(t!("status_menu.custom_statuses").into_owned()));
             for c in customs {
@@ -446,14 +478,6 @@ impl StatusMenu {
         .max_height(560)
         .style(style::container_popover)
         .into()
-    }
-}
-
-/// The status the user chose (statuses set by auto-away count as online).
-fn current_choice(ws: &Workspace) -> UserStatus {
-    match ws.my_status() {
-        UserStatus::Unknown => UserStatus::Online,
-        s => s,
     }
 }
 
@@ -548,10 +572,61 @@ mod tests {
             [UserStatus::Online, UserStatus::Away, UserStatus::Busy]
         );
         let mut m = StatusMenu::new();
-        m.update(Message::SetStatus(UserStatus::Offline), &mut fx.ctx());
+        let a = m.update(Message::SetStatus(UserStatus::Offline), &mut fx.ctx());
         assert!(!m.busy, "invisible is refused locally");
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::Toast(BannerKind::Error, ..)]
+        ));
         m.update(Message::SetStatus(UserStatus::Busy), &mut fx.ctx());
         assert!(m.busy);
+    }
+
+    #[test]
+    fn custom_statuses_follow_the_server_settings() {
+        let mut fx = Fx::new();
+        for (id, ty) in [("c1", "busy"), ("c2", "offline")] {
+            fx.ws.apply_custom_status(
+                rustket_core::workspace::Change::Inserted,
+                serde_json::from_value(json!({"_id": id, "name": id, "statusType": ty})).unwrap(),
+            );
+        }
+        assert_eq!(offered_custom(&fx.ws).len(), 2);
+        fx.ws.apply_setting(
+            rustket_core::workspace::Change::Inserted,
+            setting("Accounts_AllowInvisibleStatusOption", false),
+        );
+        let ids: Vec<_> = offered_custom(&fx.ws)
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
+        assert_eq!(ids, ["c1"]);
+        let mut m = StatusMenu::new();
+        m.update(Message::SetCustom("c2".into()), &mut fx.ctx());
+        assert!(!m.busy);
+        fx.ws.apply_setting(
+            rustket_core::workspace::Change::Inserted,
+            setting("Accounts_AllowUserStatusMessageChange", false),
+        );
+        assert!(offered_custom(&fx.ws).is_empty());
+    }
+
+    #[test]
+    fn text_changes_keep_the_status_and_auto_away_is_not_pinned() {
+        let mut fx = Fx::new();
+        // Auto-away set the connection away; the user changes only the text.
+        fx.ws
+            .apply_user_status("me", Some("me"), UserStatus::Away, Some("Lunch"));
+        let mut m = StatusMenu::new();
+        m.text = "Back".into();
+        let a = m.update(Message::SubmitText, &mut fx.ctx());
+        assert!(m.busy && a.effects.is_empty());
+        m.update(
+            Message::StatusSet(None, Some("Back".into()), Ok(())),
+            &mut fx.ctx(),
+        );
+        assert_eq!(fx.ws.my_status(), UserStatus::Away, "status untouched");
+        assert_eq!(my_text(&fx.ws), "Back");
     }
 
     fn setting(id: &str, value: bool) -> rocketchat::models::Setting {
@@ -564,7 +639,7 @@ mod tests {
         let mut m = StatusMenu::new();
         m.busy = true;
         m.update(
-            Message::StatusSet(UserStatus::Busy, Some("Focus".into()), Ok(())),
+            Message::StatusSet(Some(UserStatus::Busy), Some("Focus".into()), Ok(())),
             &mut fx.ctx(),
         );
         assert!(!m.busy);
@@ -575,7 +650,7 @@ mod tests {
             code: None,
         });
         let a = m.update(
-            Message::StatusSet(UserStatus::Away, None, Err(err)),
+            Message::StatusSet(Some(UserStatus::Away), None, Err(err)),
             &mut fx.ctx(),
         );
         assert!(matches!(

@@ -1,13 +1,15 @@
 //! Notification sounds through an external player (`pw-play`, `paplay` or
-//! `canberra-gtk-play`, whichever is on `PATH`) and the freedesktop sound
-//! theme. Used when the notification server does not play the notification's
-//! sound hint itself. Playing never blocks: the player runs detached and is
-//! reaped (or killed after a timeout) on a blocking thread.
+//! `canberra-gtk-play`, whichever is on `PATH`) and a sound theme file
+//! (freedesktop, KDE's ocean, Yaru). Used when the notification server does
+//! not play the notification's sound hint itself. The player and file are
+//! looked up once on a background thread at startup; playing never blocks:
+//! the player runs detached and is reaped (or killed after a timeout) on a
+//! blocking thread.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Freedesktop sound id of an incoming instant message.
@@ -58,6 +60,21 @@ pub fn find_player(path: &std::ffi::OsStr) -> Option<Player> {
         .find_map(|k| find_in_path(k.program(), path).map(|p| Player { kind: *k, path: p }))
 }
 
+/// A player and the file it plays: file players need a theme file;
+/// canberra (which resolves the configured theme by id) is the fallback.
+pub fn resolve(path: &std::ffi::OsStr, file: Option<PathBuf>) -> Option<(Player, Option<PathBuf>)> {
+    let found =
+        |k: PlayerKind| find_in_path(k.program(), path).map(|p| Player { kind: k, path: p });
+    if let Some(file) = file
+        && let Some(p) = [PlayerKind::PwPlay, PlayerKind::Paplay, PlayerKind::Canberra]
+            .into_iter()
+            .find_map(found)
+    {
+        return Some((p, Some(file)));
+    }
+    found(PlayerKind::Canberra).map(|p| (p, None))
+}
+
 /// `$XDG_DATA_HOME` followed by `$XDG_DATA_DIRS` (with the spec defaults).
 pub fn data_dirs(data_home: Option<OsString>, data_dirs: Option<OsString>) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -76,16 +93,23 @@ pub fn data_dirs(data_home: Option<OsString>, data_dirs: Option<OsString>) -> Ve
     out
 }
 
-/// The sound file of `id` in the freedesktop theme (`freedesktop/stereo`).
+/// Sound themes searched for the message sound, in order.
+pub const THEMES: [&str; 3] = ["freedesktop", "ocean", "Yaru"];
+
+/// The sound file of `id` in the first theme of [`THEMES`] that has it.
 pub fn theme_file(dirs: &[PathBuf], id: &str) -> Option<PathBuf> {
-    dirs.iter().find_map(|d| {
-        ["oga", "ogg", "wav"]
-            .iter()
-            .map(|ext| {
-                d.join("sounds/freedesktop/stereo")
-                    .join(format!("{id}.{ext}"))
-            })
-            .find(|p| p.is_file())
+    THEMES.iter().find_map(|theme| {
+        dirs.iter().find_map(|d| {
+            ["oga", "ogg", "wav"]
+                .iter()
+                .map(|ext| {
+                    d.join("sounds")
+                        .join(theme)
+                        .join("stereo")
+                        .join(format!("{id}.{ext}"))
+                })
+                .find(|p| p.is_file())
+        })
     })
 }
 
@@ -93,12 +117,15 @@ pub fn theme_file(dirs: &[PathBuf], id: &str) -> Option<PathBuf> {
 /// except canberra, which looks the id up itself).
 pub fn command(player: &Player, id: &str, file: Option<&Path>) -> Option<Command> {
     let mut c = Command::new(&player.path);
-    match player.kind {
-        PlayerKind::Canberra => {
+    match (player.kind, file) {
+        (PlayerKind::Canberra, Some(f)) => {
+            c.arg("-f").arg(f);
+        }
+        (PlayerKind::Canberra, None) => {
             c.args(["-i", id]);
         }
-        PlayerKind::PwPlay | PlayerKind::Paplay => {
-            c.arg(file?);
+        (PlayerKind::PwPlay | PlayerKind::Paplay, f) => {
+            c.arg(f?);
         }
     }
     c.stdin(Stdio::null())
@@ -107,18 +134,40 @@ pub fn command(player: &Player, id: &str, file: Option<&Path>) -> Option<Command
     Some(c)
 }
 
+type Resolved = Option<(Player, Option<PathBuf>)>;
+
 /// Plays sounds; disabled (a no-op) in tests and snapshots.
 #[derive(Debug, Default)]
 pub struct Sound {
     enabled: bool,
-    resolved: OnceLock<Option<(Player, Option<PathBuf>)>>,
+    /// Filled by the background lookup.
+    resolved: Arc<OnceLock<Resolved>>,
 }
 
 impl Sound {
+    /// Starts looking the player and sound file up in the background.
     pub fn system() -> Self {
+        let resolved = Arc::new(OnceLock::new());
+        let slot = resolved.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sound-lookup".into())
+            .spawn(move || {
+                let file = theme_file(
+                    &data_dirs(
+                        std::env::var_os("XDG_DATA_HOME"),
+                        std::env::var_os("XDG_DATA_DIRS"),
+                    ),
+                    MESSAGE_SOUND,
+                );
+                let r = std::env::var_os("PATH").and_then(|p| resolve(&p, file));
+                let _ = slot.set(r);
+            });
+        if let Err(e) = spawned {
+            tracing::debug!(error = %e, "cannot look the sound player up");
+        }
         Self {
             enabled: true,
-            resolved: OnceLock::new(),
+            resolved,
         }
     }
 
@@ -133,17 +182,12 @@ impl Sound {
         if !self.enabled {
             return;
         }
-        let resolved = self.resolved.get_or_init(|| {
-            let path = std::env::var_os("PATH")?;
-            let player = find_player(&path)?;
-            let dirs = data_dirs(
-                std::env::var_os("XDG_DATA_HOME"),
-                std::env::var_os("XDG_DATA_DIRS"),
-            );
-            Some((player, theme_file(&dirs, MESSAGE_SOUND)))
-        });
+        let Some(resolved) = self.resolved.get() else {
+            tracing::debug!("sound player lookup not finished");
+            return;
+        };
         let Some((player, file)) = resolved else {
-            tracing::debug!("no sound player found");
+            tracing::debug!("no sound player or sound file found");
             return;
         };
         let Some(mut cmd) = command(player, MESSAGE_SOUND, file.as_deref()) else {
@@ -230,6 +274,13 @@ mod tests {
         let c = command(&pw, MESSAGE_SOUND, Some(&file)).unwrap();
         assert_eq!(c.get_args().collect::<Vec<_>>(), [file.as_os_str()]);
         assert!(command(&pw, MESSAGE_SOUND, None).is_none());
+        let ocean = d.path().join("share/sounds/ocean/stereo");
+        std::fs::create_dir_all(&ocean).unwrap();
+        std::fs::write(ocean.join("message-new-email.ogg"), "x").unwrap();
+        assert_eq!(
+            theme_file(&dirs, "message-new-email").unwrap(),
+            ocean.join("message-new-email.ogg")
+        );
         let ca = Player {
             kind: PlayerKind::Canberra,
             path: "/usr/bin/canberra-gtk-play".into(),
@@ -239,6 +290,22 @@ mod tests {
             c.get_args().collect::<Vec<_>>(),
             ["-i", "message-new-instant"]
         );
+    }
+
+    #[test]
+    fn player_and_file_are_chosen_together() {
+        let a = tempfile::tempdir().unwrap();
+        let path = a.path().as_os_str().to_owned();
+        exe(a.path(), "pw-play");
+        // A file player without a file: nothing to play.
+        assert!(resolve(&path, None).is_none());
+        let f = PathBuf::from("/x/message-new-instant.oga");
+        let (p, file) = resolve(&path, Some(f.clone())).unwrap();
+        assert_eq!((p.kind, file), (PlayerKind::PwPlay, Some(f)));
+        // No theme file: canberra resolves the id itself.
+        exe(a.path(), "canberra-gtk-play");
+        let (p, file) = resolve(&path, None).unwrap();
+        assert_eq!((p.kind, file), (PlayerKind::Canberra, None));
     }
 
     #[test]
