@@ -4714,6 +4714,7 @@ name = "rustket"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "bytes",
  "chrono",
  "directories",
  "futures",

@@ -98,5 +98,7 @@ pub enum Message {
     Modal(ModalMessage),
     CloseModal,
     CloseToast(u64),
+    /// A file was dropped onto the window (routed to the active composer).
+    FileDropped(std::path::PathBuf),
     Noop,
 }

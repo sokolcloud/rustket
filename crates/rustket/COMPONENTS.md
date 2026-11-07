@@ -168,6 +168,7 @@ Return them in `Action { task, effects }` (`Action::none()`,
 | `MarkRead` | RoomView | `subscriptions.read` (deduplicated) |
 | `OpenPanel(Kind)` / `ClosePanel` | RoomView | right panel; opening the shown kind toggles it closed |
 | `OpenUrl(url)` | App | external browser; only absolute `http`, `https`, `mailto` URLs (others are refused) |
+| `RecentEmoji(key)` | App | an emoji was used (picker): pushed to `AppConfig::recent_emoji` and saved |
 
 What `RoomView` already does: `workspace.open_room` on open, keeps the
 `watch_room` guard (dropped with the view when the room is closed or removed),
@@ -219,6 +220,14 @@ something; `RoomView` routes it to `Composer::intent(intent, ctx)`:
 `Edit(mid)`, `Quote(mid)`, `Mention(username)`, `InsertText(text)`,
 `React(mid)` (emoji picker for a reaction), `ReplyInThread(tmid)` (also opens
 `Kind::Thread(tmid)`).
+
+`Composer::for_thread(rid, tmid)` builds a thread composer (sends with `tmid`,
+own draft and typing context); call `on_open(ctx)` when it is shown and
+`on_close(ws)` when it goes away (draft). `room/emoji_picker.rs` is reusable:
+keep an `EmojiPicker`, forward its messages to `update`, act on
+`Event::Picked(key)` and return `Effect::RecentEmoji(key)`. Dropped files
+(`window::Event::FileDropped`) reach the active room's composer
+(`composer::Message::FilesDropped`).
 
 ### Shared message rendering (`room/render/`)
 
