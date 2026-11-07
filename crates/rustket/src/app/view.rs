@@ -142,6 +142,7 @@ impl App {
         let room_area: Element<'a, Message> =
             match s.active_room.as_ref().and_then(|r| s.rooms.get(r)) {
                 Some(rv) => {
+                    crate::room::render::set_mode(self.mode());
                     let ctx = ViewCtx {
                         server_id: &s.id,
                         server: &s.url,
