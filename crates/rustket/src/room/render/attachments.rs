@@ -14,7 +14,7 @@ use rustket_ui::theme::{
 };
 use rustket_ui::widget::{AvatarShape, AvatarSource, TooltipPosition, avatar, ellipsis, tooltip};
 
-use super::md::{Cx, blocks_for, format_date_with, quote};
+use super::md::{Cx, blocks_for, format_date_with, mrkdwn_paragraph, quote};
 use super::preview::preview_handle;
 use super::{FileRef, ImageRef, RenderCtx, RenderMsg, Transfer, safe_url};
 
@@ -31,12 +31,14 @@ const MAX_H: f32 = 300.0;
 const MAX_NESTING: usize = 3;
 /// Index offset of link previews in the collapse state.
 const PREVIEW_BASE: usize = 10_000;
+/// First spoiler index of attachments (the message text counts from 0).
+const SPOILER_BASE: usize = 100_000;
 
 pub(super) fn attachments(msg: &Message, rc: &RenderCtx<'_>) -> Vec<El> {
     let Some(list) = &msg.attachments else {
         return Vec::new();
     };
-    let cx = Cx::new(rc, &msg.id, Some(msg));
+    let cx = Cx::new(rc, &msg.id, Some(msg)).with_spoiler_base(SPOILER_BASE);
     let mut counter = 0;
     list.iter()
         .map(|a| attachment(a, msg, &cx, &mut counter, 0))
@@ -84,7 +86,7 @@ fn attachment(
                 .as_deref()
                 .filter(|t| !t.trim().is_empty() && Some(*t) != a.title.as_deref())
         {
-            col = col.push(super::md::plain_paragraph(alt, cx.mid, cx.rc));
+            col = col.push(mrkdwn_paragraph(alt, cx, TEXT_BODY, false));
         }
         return col.into();
     }
@@ -99,7 +101,7 @@ fn attachment(
 fn description(a: &MessageAttachment, cx: &Cx<'_, '_>) -> Option<El> {
     match (&a.description_md, &a.description) {
         (Some(md), _) if !md.is_empty() => Some(blocks_for(md, cx)),
-        (_, Some(d)) if !d.trim().is_empty() => Some(super::md::plain_paragraph(d, cx.mid, cx.rc)),
+        (_, Some(d)) if !d.trim().is_empty() => Some(mrkdwn_paragraph(d, cx, TEXT_BODY, false)),
         _ => None,
     }
 }
@@ -122,11 +124,15 @@ fn media_title(a: &MessageAttachment, idx: usize, collapsed: bool, cx: &Cx<'_, '
                 .style(style::text_hint),
         );
     }
-    r = r.push(collapse_button(cx.mid, idx, collapsed));
+    r = r.push(collapse_button(cx, idx, collapsed));
     r.into()
 }
 
-fn collapse_button(mid: &str, idx: usize, collapsed: bool) -> El {
+fn collapse_button(cx: &Cx<'_, '_>, idx: usize, collapsed: bool) -> El {
+    if !cx.rc.interactive {
+        return space().width(0).into();
+    }
+    let mid = cx.mid;
     let (i, label) = if collapsed {
         (Icon::ChevronRight, t!("room_render.expand"))
     } else {
@@ -169,12 +175,7 @@ fn image_attachment(a: &MessageAttachment, cx: &Cx<'_, '_>) -> El {
         _ => (0.0, 0.0),
     };
     let (bw, bh) = fit_size(w, h, MAX_W, MAX_H);
-    let content: El = match (
-        loaded,
-        a.image_preview
-            .as_deref()
-            .and_then(|p| preview_handle(cx.mid, p)),
-    ) {
+    let content: El = match (loaded, a.image_preview.as_deref().and_then(preview_handle)) {
         (Some(l), _) => image(l.handle.clone())
             .width(bw)
             .height(bh)
@@ -206,10 +207,13 @@ fn image_attachment(a: &MessageAttachment, cx: &Cx<'_, '_>) -> El {
     button(content)
         .padding(0)
         .style(style::button_bare)
-        .on_press(RenderMsg::OpenImage(ImageRef {
-            mid: cx.mid.to_owned(),
-            url: full,
-            title,
+        .on_press_maybe(rc.interactive.then(|| {
+            RenderMsg::OpenImage(ImageRef {
+                mid: cx.mid.to_owned(),
+                url: full,
+                title,
+                mime: a.image_type.clone(),
+            })
         }))
         .into()
 }
@@ -326,6 +330,7 @@ fn file_card(a: &MessageAttachment, msg: &Message, cx: &Cx<'_, '_>) -> El {
         url: url.clone(),
         name: name.clone(),
         size,
+        mime: mime.clone(),
     };
     let glyph = match media {
         Media::Audio => Icon::FileMusic,
@@ -390,12 +395,14 @@ fn file_card(a: &MessageAttachment, msg: &Message, cx: &Cx<'_, '_>) -> El {
         }
     }
     let mut actions = row![].spacing(SPACE_1).align_y(Alignment::Center);
+    let on = |m: RenderMsg| rc.interactive.then_some(m);
     if media != Media::File {
         actions = actions.push(small_icon_button(
             Icon::Play,
             t!("room_render.play").into_owned(),
             (!matches!(transfer, Some(Transfer::Running { .. })))
-                .then(|| RenderMsg::Play(file.clone())),
+                .then(|| RenderMsg::Play(file.clone()))
+                .and_then(on),
         ));
     }
     match transfer {
@@ -403,7 +410,7 @@ fn file_card(a: &MessageAttachment, msg: &Message, cx: &Cx<'_, '_>) -> El {
             actions = actions.push(small_icon_button(
                 Icon::FolderOpen,
                 t!("room_render.open_file").into_owned(),
-                Some(RenderMsg::OpenFile(path.clone())),
+                on(RenderMsg::OpenFile(path.clone())),
             ));
         }
         Some(Transfer::Running { .. }) => {}
@@ -411,7 +418,7 @@ fn file_card(a: &MessageAttachment, msg: &Message, cx: &Cx<'_, '_>) -> El {
             actions = actions.push(small_icon_button(
                 Icon::Download,
                 t!("room_render.download").into_owned(),
-                Some(RenderMsg::Download(file.clone())),
+                on(RenderMsg::Download(file.clone())),
             ));
         }
     }
@@ -498,7 +505,7 @@ fn quote_card(
     match (&a.md, &a.text) {
         (Some(md), _) if !md.is_empty() => col = col.push(blocks_for(md, cx)),
         (_, Some(t)) if !t.trim().is_empty() => {
-            col = col.push(super::md::plain_paragraph(t, cx.mid, cx.rc));
+            col = col.push(mrkdwn_paragraph(t, cx, TEXT_BODY, false));
         }
         _ => {}
     }
@@ -577,7 +584,7 @@ fn generic_card(
     let rc = cx.rc;
     let mut col = column![].spacing(SPACE_1).width(Length::Fill);
     if let Some(p) = a.pretext.as_deref().filter(|p| !p.trim().is_empty()) {
-        col = col.push(super::md::plain_paragraph(p, cx.mid, rc));
+        col = col.push(mrkdwn_paragraph(p, cx, TEXT_BODY, false));
     }
     if let Some(name) = a.author_name.as_deref().filter(|n| !n.is_empty()) {
         let name = clean(name);
@@ -612,7 +619,7 @@ fn generic_card(
             None => text(clean(title)).size(TEXT_BODY).font(FONT_BOLD).into(),
         };
         col = col.push(
-            row![title_el, collapse_button(cx.mid, idx, collapsed)]
+            row![title_el, collapse_button(cx, idx, collapsed)]
                 .spacing(SPACE_1)
                 .align_y(Alignment::Center),
         );
@@ -621,12 +628,12 @@ fn generic_card(
         match (&a.md, &a.text) {
             (Some(md), _) if !md.is_empty() => col = col.push(blocks_for(md, cx)),
             (_, Some(t)) if !t.trim().is_empty() => {
-                col = col.push(super::md::plain_paragraph(t, cx.mid, rc));
+                col = col.push(mrkdwn_paragraph(t, cx, TEXT_BODY, false));
             }
             _ => {}
         }
         if let Some(fields) = &a.fields {
-            col = col.push(fields_grid(fields));
+            col = col.push(fields_grid(fields, cx));
         }
         if a.image_url.is_some() {
             col = col.push(image_attachment(a, cx));
@@ -669,11 +676,11 @@ fn field_value(v: &serde_json::Value) -> String {
     }
 }
 
-fn fields_grid(fields: &[AttachmentField]) -> El {
+fn fields_grid(fields: &[AttachmentField], cx: &Cx<'_, '_>) -> El {
     let cell = |f: &AttachmentField| -> El {
         column![
-            text(clean(&f.title)).size(TEXT_SMALL).font(FONT_BOLD),
-            text(field_value(&f.value)).size(TEXT_SMALL),
+            mrkdwn_paragraph(&clean(&f.title), cx, TEXT_SMALL, true),
+            mrkdwn_paragraph(&field_value(&f.value), cx, TEXT_SMALL, false),
         ]
         .spacing(2)
         .width(Length::FillPortion(1))
@@ -767,7 +774,7 @@ fn link_preview(u: &MessageUrl, idx: usize, cx: &Cx<'_, '_>) -> Option<El> {
     if let Some(site) = &d.site {
         head = head.push(text(clean(site)).size(TEXT_CAPTION).style(style::text_hint));
     }
-    head = head.push(collapse_button(cx.mid, idx, collapsed));
+    head = head.push(collapse_button(cx, idx, collapsed));
     let mut col = column![head].spacing(SPACE_1).width(Length::Fill);
     if !collapsed {
         if let Some(title) = &d.title {

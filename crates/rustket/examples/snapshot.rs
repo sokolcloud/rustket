@@ -9,11 +9,7 @@
 //! Creates throwaway users (one with e-mail 2FA) and two throwaway channels,
 //! posts a few messages and a DM, then renders: add-server, login (with the
 //! Keycloak button), 2FA dialog, pending browser login, token-link
-//! confirmation, workspace light/dark, an open room and a rich timeline
-//! (every markdown construct, code, quotes, an uploaded image and file,
-//! reactions, a thread, a discussion, edits, pins, system messages; tall
-//! light/dark shots, hover toolbar, lightbox, report dialog, failed message).
-//! Everything created is
+//! confirmation, workspace light/dark and an open room. Everything created is
 //! recorded as soon as it exists and deleted at the end, also after a failure
 //! or Ctrl-C. Shared rooms and accounts are not touched.
 
@@ -141,30 +137,24 @@ impl Driver {
     }
 
     fn shoot(&self, dir: &Path, name: &str) {
-        self.shoot_with(dir, name, SIZE, None);
-    }
-
-    /// Renders at `size`, optionally with the mouse at `hover`.
-    fn shoot_with(&self, dir: &Path, name: &str, size: Size, hover: Option<iced::Point>) {
         let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
             rustket_ui::theme::DEFAULT_FONT,
             Pixels(rustket_ui::theme::TEXT_BODY),
         ));
         let theme = self.app.theme();
         let t = rustket_ui::tokens(&theme);
-        let mut ui = UserInterface::build(self.app.view(), size, Cache::default(), &mut renderer);
-        let point = hover.unwrap_or(iced::Point::new(-10.0, -10.0));
-        let cursor = mouse::Cursor::Available(point);
+        let mut ui = UserInterface::build(self.app.view(), SIZE, Cache::default(), &mut renderer);
+        let cursor = mouse::Cursor::Available(iced::Point::new(-10.0, -10.0));
         let mut msgs = Vec::new();
-        let mut events = vec![iced::Event::Window(iced::window::Event::RedrawRequested(
-            Instant::now(),
-        ))];
-        if hover.is_some() {
-            events.push(iced::Event::Mouse(mouse::Event::CursorMoved {
-                position: point,
-            }));
-        }
-        let _ = ui.update(&events, cursor, &mut renderer, &mut NoClip, &mut msgs);
+        let _ = ui.update(
+            &[iced::Event::Window(iced::window::Event::RedrawRequested(
+                Instant::now(),
+            ))],
+            cursor,
+            &mut renderer,
+            &mut NoClip,
+            &mut msgs,
+        );
         ui.draw(
             &mut renderer,
             &theme,
@@ -174,12 +164,12 @@ impl Driver {
             cursor,
         );
         let rgba = renderer.screenshot(
-            Size::new(size.width as u32, size.height as u32),
+            Size::new(SIZE.width as u32, SIZE.height as u32),
             1.0,
             t.surface_room,
         );
         let path = dir.join(format!("{name}.png"));
-        write_png(&path, size.width as u32, size.height as u32, &rgba);
+        write_png(&path, SIZE.width as u32, SIZE.height as u32, &rgba);
         println!("wrote {}", path.display());
     }
 }
@@ -208,22 +198,13 @@ fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) {
 struct Created {
     users: Vec<String>,
     rooms: Vec<String>,
-    /// Deleted with `rooms.delete` (discussions, private rooms).
-    other_rooms: Vec<String>,
 }
 
 type Ledger = Arc<Mutex<Created>>;
 
-#[path = "snapshot/timeline_fixture.rs"]
-mod timeline_fixture;
-
-#[derive(Clone)]
-#[allow(dead_code)]
 struct Fixture {
     user: (String, String, String), // id, username, password
     tfa_user: (String, String),     // username, password (email 2FA)
-    /// Name of the rich timeline channel.
-    rich_room: String,
 }
 
 async fn rest(server: &ServerUrl) -> RestClient {
@@ -345,14 +326,13 @@ async fn setup(server: &ServerUrl, ledger: Ledger) -> Fixture {
         )
         .await
         .expect("dm");
-    let rich_room = format!("rk-snap-rich-{suffix}");
     timeline_fixture::setup(
         &admin,
         &user,
         &other,
         &ledger,
-        &rich_room,
-        [user_name.as_str(), other_name.as_str(), tfa_name.as_str()],
+        &suffix,
+        [&user_name, &other_name, &tfa_name],
     )
     .await;
     let _ = user.logout().await;
@@ -371,30 +351,20 @@ async fn setup(server: &ServerUrl, ledger: Ledger) -> Fixture {
     Fixture {
         user: (uid, user_name, password.clone()),
         tfa_user: (tfa_name, password),
-        rich_room,
     }
 }
 
 /// Deletes everything recorded in the ledger (rooms first, then users).
 async fn teardown(server: &ServerUrl, ledger: &Ledger) {
-    let (rooms, users, other_rooms) = {
+    timeline_fixture::teardown(server).await;
+    let (rooms, users) = {
         let mut g = ledger.lock().expect("ledger");
-        (
-            std::mem::take(&mut g.rooms),
-            std::mem::take(&mut g.users),
-            std::mem::take(&mut g.other_rooms),
-        )
+        (std::mem::take(&mut g.rooms), std::mem::take(&mut g.users))
     };
-    if rooms.is_empty() && users.is_empty() && other_rooms.is_empty() {
+    if rooms.is_empty() && users.is_empty() {
         return;
     }
     let admin = admin(server).await;
-    for rid in other_rooms {
-        match admin.rooms_delete(&rid).await {
-            Ok(()) => println!("deleted room {rid}"),
-            Err(e) => eprintln!("rooms.delete {rid}: {e}"),
-        }
-    }
     for rid in rooms {
         let r: Result<Value, _> = admin.post("channels.delete", &json!({"roomId": rid})).await;
         match r {
@@ -490,7 +460,7 @@ fn confirm_modals(app: &App) -> usize {
 }
 
 async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
-    let user = fixture.user.clone();
+    let user = fixture.user;
     let cache = tempfile::tempdir().expect("cache dir");
     let mut d = Driver::new(Flags {
         ephemeral: true,
@@ -643,8 +613,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "08-room-dark");
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
-
-    timeline_fixture::shoot(&mut d, &out, &sid, &fixture.rich_room).await;
+    timeline_fixture::shoot(&mut d, &out, &sid).await;
 
     // Log out through the app: the login token is revoked on the server.
     let creds: Credentials = d.app.servers[&sid].credentials.clone().expect("creds");
@@ -672,3 +641,6 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     assert!(revoked, "logout must revoke the login token");
     println!("done");
 }
+
+#[path = "snapshot/timeline_fixture.rs"]
+mod timeline_fixture;

@@ -185,9 +185,9 @@ room_timeline.image_fit:
 room_timeline.image_zoom:
   en: "Actual size and zoom"
   ru: "Реальный размер и масштаб"
-room_timeline.open_in_browser:
-  en: "Open in browser"
-  ru: "Открыть в браузере"
+room_timeline.open_in_viewer:
+  en: "Open in image viewer"
+  ru: "Открыть в просмотрщике"
 room_timeline.save_image:
   en: "Save image"
   ru: "Сохранить изображение"
@@ -206,3 +206,27 @@ room_timeline.open_failed:
 room_timeline.room_not_found:
   en: "Room %{name} is not available"
   ru: "Комната %{name} недоступна"
+room_timeline.dl_error_network:
+  en: "Network error"
+  ru: "Ошибка сети"
+room_timeline.dl_error_permission:
+  en: "No permission to write the file"
+  ru: "Нет прав на запись файла"
+room_timeline.dl_error_disk_full:
+  en: "Not enough disk space"
+  ru: "Недостаточно места на диске"
+room_timeline.dl_error_disk:
+  en: "Couldn't write the file"
+  ru: "Не удалось записать файл"
+room_timeline.unsupported_media:
+  en: "This file type can't be played here; save it instead"
+  ru: "Этот тип файла нельзя воспроизвести; сохраните его"
+room_timeline.action_unavailable:
+  en: "This action is no longer available"
+  ru: "Это действие больше недоступно"
+room_timeline.not_a_member:
+  en: "You are not a member of this room"
+  ru: "Вы не участник этой комнаты"
+room_timeline.history_first_failed:
+  en: "Couldn't load messages"
+  ru: "Не удалось загрузить сообщения"

@@ -17,24 +17,60 @@ room_render.long_date:
 room_render.rel_now:
   en: "just now"
   ru: "только что"
-room_render.rel_in_minutes:
+room_render.rel_in_minutes_one:
+  en: "in %{n} minute"
+  ru: "через %{n} минуту"
+room_render.rel_in_minutes_few:
   en: "in %{n} minutes"
-  ru: "через %{n} мин."
-room_render.rel_in_hours:
+  ru: "через %{n} минуты"
+room_render.rel_in_minutes_many:
+  en: "in %{n} minutes"
+  ru: "через %{n} минут"
+room_render.rel_in_hours_one:
+  en: "in %{n} hour"
+  ru: "через %{n} час"
+room_render.rel_in_hours_few:
   en: "in %{n} hours"
-  ru: "через %{n} ч."
-room_render.rel_in_days:
+  ru: "через %{n} часа"
+room_render.rel_in_hours_many:
+  en: "in %{n} hours"
+  ru: "через %{n} часов"
+room_render.rel_in_days_one:
+  en: "in %{n} day"
+  ru: "через %{n} день"
+room_render.rel_in_days_few:
   en: "in %{n} days"
-  ru: "через %{n} дн."
-room_render.rel_ago_minutes:
+  ru: "через %{n} дня"
+room_render.rel_in_days_many:
+  en: "in %{n} days"
+  ru: "через %{n} дней"
+room_render.rel_ago_minutes_one:
+  en: "%{n} minute ago"
+  ru: "%{n} минуту назад"
+room_render.rel_ago_minutes_few:
   en: "%{n} minutes ago"
-  ru: "%{n} мин. назад"
-room_render.rel_ago_hours:
+  ru: "%{n} минуты назад"
+room_render.rel_ago_minutes_many:
+  en: "%{n} minutes ago"
+  ru: "%{n} минут назад"
+room_render.rel_ago_hours_one:
+  en: "%{n} hour ago"
+  ru: "%{n} час назад"
+room_render.rel_ago_hours_few:
   en: "%{n} hours ago"
-  ru: "%{n} ч. назад"
-room_render.rel_ago_days:
+  ru: "%{n} часа назад"
+room_render.rel_ago_hours_many:
+  en: "%{n} hours ago"
+  ru: "%{n} часов назад"
+room_render.rel_ago_days_one:
+  en: "%{n} day ago"
+  ru: "%{n} день назад"
+room_render.rel_ago_days_few:
   en: "%{n} days ago"
-  ru: "%{n} дн. назад"
+  ru: "%{n} дня назад"
+room_render.rel_ago_days_many:
+  en: "%{n} days ago"
+  ru: "%{n} дней назад"
 room_render.file_removed:
   en: "File removed"
   ru: "Файл удалён"

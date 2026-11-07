@@ -26,7 +26,12 @@ pub fn system_text(m: &Message, real_names: bool) -> String {
 pub fn system_text_in(m: &Message, real_names: bool, loc: &str) -> String {
     let user = actor(m, real_names);
     let msg = sanitize_bidi(&m.msg);
-    let role = sanitize_bidi(m.role.as_deref().unwrap_or_default());
+    let role = match m.role.as_deref().unwrap_or_default() {
+        "owner" => t!("room_render.role_owner", locale = loc).into_owned(),
+        "moderator" => t!("room_render.role_moderator", locale = loc).into_owned(),
+        "leader" => t!("room_render.role_leader", locale = loc).into_owned(),
+        other => sanitize_bidi(other).into_owned(),
+    };
     let none = || t!("room_render.sys.none", locale = loc).into_owned();
     let or_none = |s: &str| {
         if s.trim().is_empty() {
@@ -266,8 +271,8 @@ pub fn system_text_in(m: &Message, real_names: bool, loc: &str) -> String {
                 value = or_none(&msg)
             )
         }
-        "room_e2e_enabled" => t!("room_render.sys.e2e_enabled", user = user),
-        "room_e2e_disabled" => t!("room_render.sys.e2e_disabled", user = user),
+        "room_e2e_enabled" => t!("room_render.sys.e2e_enabled", locale = loc, user = user),
+        "room_e2e_disabled" => t!("room_render.sys.e2e_disabled", locale = loc, user = user),
         "message_pinned" | "message_pinned_e2e" => {
             t!("room_render.sys.message_pinned", locale = loc, user = user)
         }
@@ -499,6 +504,15 @@ mod tests {
             "omnichannel_placed_chat_on_hold",
             "omnichannel_on_hold_chat_resumed",
         ];
+        // Every type has its own Russian text (none falls back to English).
+        for kind in TYPES {
+            let en = system_text_in(&sys(kind, "x"), false, "en");
+            let ru = system_text_in(&sys(kind, "x"), false, "ru");
+            assert_ne!(en, ru, "{kind} is not translated");
+        }
+        let mut role = sys("subscription-role-added", "bob");
+        role.role = Some("moderator".into());
+        assert!(system_text_in(&role, false, "ru").contains("модератор"));
         for locale in ["en", "ru"] {
             for kind in TYPES {
                 let s = system_text_in(&sys(kind, "x"), false, locale);

@@ -110,8 +110,8 @@ pub fn lightbox(img: &ImageRef, zoom: bool, loaded: Option<&Loaded>) -> Element<
         ),
         tool(
             Icon::ExternalLink,
-            t!("room_timeline.open_in_browser").into_owned(),
-            Message::OpenImageInBrowser,
+            t!("room_timeline.open_in_viewer").into_owned(),
+            Message::OpenImageExternally,
             false,
         ),
         tool(

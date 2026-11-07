@@ -5,7 +5,12 @@
 //! failed outgoing message.
 
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use iced::advanced::renderer::Headless as _;
+use iced::{Pixels, Size, mouse};
+use iced_runtime::user_interface::{Cache, UserInterface};
 
 use rocketchat::RestClient;
 use rocketchat::models::{Message as RcMessage, UserRef};
@@ -18,6 +23,71 @@ use rustket_core::ServerId;
 use serde_json::{Value, json};
 
 use super::{Driver, Ledger};
+
+/// The rich channel's name and rooms deleted with `rooms.delete`
+/// (discussions), kept here so `snapshot.rs` only calls in.
+static STATE: Mutex<(String, Vec<String>)> = Mutex::new((String::new(), Vec::new()));
+
+/// Deletes the discussions created by [`setup`] (the channel itself is in
+/// the shared ledger).
+pub async fn teardown(server: &rocketchat::ServerUrl) {
+    let rooms = std::mem::take(&mut STATE.lock().expect("state").1);
+    if rooms.is_empty() {
+        return;
+    }
+    let admin = super::admin(server).await;
+    for rid in rooms {
+        match admin.rooms_delete(&rid).await {
+            Ok(()) => println!("deleted room {rid}"),
+            Err(e) => eprintln!("rooms.delete {rid}: {e}"),
+        }
+    }
+}
+
+/// Renders at `size`, optionally with the mouse at `hover`.
+fn shoot_with(d: &Driver, dir: &Path, name: &str, size: Size, hover: Option<iced::Point>) {
+    let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+        rustket_ui::theme::DEFAULT_FONT,
+        Pixels(rustket_ui::theme::TEXT_BODY),
+    ));
+    let theme = d.app.theme();
+    let t = rustket_ui::tokens(&theme);
+    let mut ui = UserInterface::build(d.app.view(), size, Cache::default(), &mut renderer);
+    let point = hover.unwrap_or(iced::Point::new(-10.0, -10.0));
+    let cursor = mouse::Cursor::Available(point);
+    let mut msgs = Vec::new();
+    let mut events = vec![iced::Event::Window(iced::window::Event::RedrawRequested(
+        Instant::now(),
+    ))];
+    if hover.is_some() {
+        events.push(iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: point,
+        }));
+    }
+    let _ = ui.update(
+        &events,
+        cursor,
+        &mut renderer,
+        &mut super::NoClip,
+        &mut msgs,
+    );
+    ui.draw(
+        &mut renderer,
+        &theme,
+        &iced::advanced::renderer::Style {
+            text_color: t.text_primary,
+        },
+        cursor,
+    );
+    let rgba = renderer.screenshot(
+        Size::new(size.width as u32, size.height as u32),
+        1.0,
+        t.surface_room,
+    );
+    let path = dir.join(format!("{name}.png"));
+    super::write_png(&path, size.width as u32, size.height as u32, &rgba);
+    println!("wrote {}", path.display());
+}
 
 const TALL: iced::Size = iced::Size::new(1280.0, 3000.0);
 
@@ -61,9 +131,12 @@ pub async fn setup(
     user: &RestClient,
     other: &RestClient,
     ledger: &Ledger,
-    name: &str,
+    suffix: &str,
     [user_name, other_name, tfa_name]: [&str; 3],
 ) {
+    let name = format!("rk-snap-rich-{suffix}");
+    let name = name.as_str();
+    STATE.lock().expect("state").0 = name.to_owned();
     let v: Value = admin
         .post(
             "channels.create",
@@ -156,10 +229,11 @@ pub async fn setup(
                 "color": "#158D65",
                 "title": "staging-42",
                 "title_link": "https://example.com/deploys/42",
-                "text": "All checks passed",
+                "pretext": "Pipeline for <https://example.com/mr/7|MR !7> finished",
+                "text": "All checks **passed**, see `make test` and [the log](https://example.com/log)",
                 "fields": [
                     {"short": true, "title": "Duration", "value": "3m 12s"},
-                    {"short": true, "title": "Commit", "value": "a1b2c3d"}
+                    {"short": true, "title": "Commit", "value": "_a1b2c3d_"}
                 ]
             }]
         }),
@@ -186,11 +260,7 @@ pub async fn setup(
         .rooms_create_discussion(&rid, "Retro agenda", Some("Let's collect topics"), &[])
         .await
         .expect("discussion");
-    ledger
-        .lock()
-        .expect("ledger")
-        .other_rooms
-        .push(disc.id.clone());
+    STATE.lock().expect("state").1.push(disc.id.clone());
     // Edit, pin, star, quote.
     let edited = text(other, &rid, "Deploy at 15:00").await;
     let _: Value = other
@@ -245,15 +315,16 @@ fn timeline_msg(d: &Driver, sid: &ServerId, rid: &str, m: room::timeline::Messag
 /// Renders, lets the wanted images load, renders again.
 async fn shoot_loaded(d: &mut Driver, out: &Path, name: &str, size: iced::Size) {
     for _ in 0..3 {
-        d.shoot_with(out, name, size, None);
+        shoot_with(d, out, name, size, None);
         d.send(Message::FlushImages);
         d.settle(Duration::from_millis(1500)).await;
     }
-    d.shoot_with(out, name, size, None);
+    shoot_with(d, out, name, size, None);
 }
 
-pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId, name: &str) {
-    let rid = rich_rid(d, sid, name);
+pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId) {
+    let name = STATE.lock().expect("state").0.clone();
+    let rid = rich_rid(d, sid, &name);
     d.send(Message::Sidebar(
         sid.clone(),
         sidebar::Message::Open(rid.clone()),
@@ -273,7 +344,8 @@ pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId, name: &str) {
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
 
     // Hover toolbar over the last message (bottom of the timeline).
-    d.shoot_with(
+    shoot_with(
+        d,
         out,
         "12-timeline-hover",
         super::SIZE,
@@ -304,6 +376,7 @@ pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId, name: &str) {
             mid: image.0.clone(),
             url,
             title: image.1.title.clone().unwrap_or_default(),
+            mime: image.1.image_type.clone(),
         })),
     );
     d.send(m);

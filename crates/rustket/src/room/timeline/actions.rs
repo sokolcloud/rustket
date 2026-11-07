@@ -117,22 +117,29 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
         let starred = me.is_some_and(|id| m.is_starred_by(id));
         v.push(if starred { Act::Unstar } else { Act::Star });
     }
-    if subscribed && !own {
+    let omnichannel = ws
+        .room(rid)
+        .is_some_and(|e| e.room_type() == RoomType::Livechat);
+    if subscribed && !own && !omnichannel {
         v.push(Act::MarkUnread);
     }
-    if m.tcount.unwrap_or(0) > 0 && ws.settings().threads_enabled() {
-        let following = me.is_some_and(|id| {
-            m.replies
-                .as_ref()
-                .is_some_and(|r| r.iter().any(|u| u == id))
-        });
+    if ws.settings().threads_enabled() && !omnichannel {
+        // Like the web: any message; a reply follows its parent thread.
+        let replies = match m.tmid.as_deref() {
+            Some(tmid) => ws
+                .timeline(rid)
+                .and_then(|t| t.get(tmid))
+                .and_then(|p| p.message.replies.as_ref()),
+            None => m.replies.as_ref(),
+        };
+        let following = me.is_some_and(|id| replies.is_some_and(|r| r.iter().any(|u| u == id)));
         v.push(if following {
             Act::Unfollow
         } else {
             Act::Follow
         });
     }
-    if !own && me.is_some() {
+    if subscribed && !own && me.is_some() && !omnichannel {
         v.push(Act::Report);
     }
     if perm::can_delete_message(ws, m, now) {
@@ -161,8 +168,34 @@ pub fn menu_entries<M: Clone>(acts: &[Act], msg: impl Fn(Act) -> M) -> Vec<MenuE
     out
 }
 
-/// `{server}/{channel|group|direct|live}/{name or rid}?msg={id}` like the web
-/// client's `getPermaLink`.
+/// Base of links shared with others: the `Site_Url` setting (the server
+/// turns only links containing it into quotes), else the connection URL.
+fn site_base(server: &ServerUrl, ws: &Workspace) -> String {
+    ws.settings()
+        .str("Site_Url")
+        .map(str::trim)
+        .filter(|s| s.starts_with("https://") || s.starts_with("http://"))
+        .filter(|s| url::Url::parse(s).is_ok())
+        .map_or_else(|| server.join(""), str::to_owned)
+        .trim_end_matches('/')
+        .to_owned()
+}
+
+/// Percent-encodes one path segment (spaces as `%20`).
+fn segment(s: &str) -> String {
+    url::form_urlencoded::byte_serialize(s.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
+}
+
+/// Web URL of channel `name` (for channels the user has not joined).
+pub fn channel_url(server: &ServerUrl, ws: &Workspace, name: &str) -> Option<String> {
+    let name = name.trim().trim_start_matches('#');
+    (!name.is_empty()).then(|| format!("{}/channel/{}", site_base(server, ws), segment(name)))
+}
+
+/// `{Site_Url}/{channel|group|direct|live}/{name or rid}?msg={id}` like the
+/// web client's `getPermaLink`.
 pub fn permalink(server: &ServerUrl, ws: &Workspace, m: &Message) -> String {
     let entry = ws.room(&m.rid);
     let kind = entry.map(|e| e.room_type()).unwrap_or_default();
@@ -175,8 +208,12 @@ pub fn permalink(server: &ServerUrl, ws: &Workspace, m: &Message) -> String {
     let target = target
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| m.rid.clone());
-    let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
-    server.join(&format!("{route}/{}?msg={}", enc(&target), enc(&m.id)))
+    format!(
+        "{}/{route}/{}?msg={}",
+        site_base(server, ws),
+        segment(&target),
+        segment(&m.id)
+    )
 }
 
 #[cfg(test)]
@@ -294,7 +331,8 @@ mod tests {
         assert!(other.contains(&Act::Report));
         assert!(other.contains(&Act::MarkUnread));
         assert!(other.contains(&Act::CopyLink));
-        // Thread parent: follow/unfollow.
+        // Any message can be followed; following shows unfollow.
+        assert!(other.contains(&Act::Follow));
         let mut parent = msg("c", "bob");
         parent.tcount = Some(2);
         parent.replies = Some(vec!["me".into()]);
@@ -350,6 +388,30 @@ mod tests {
             permalink(&server, &w, &msg("abc", "me")),
             "https://chat.example.com/sub/direct/r1?msg=abc"
         );
+        // Site_Url wins over the connection URL.
+        let w = ws(
+            &[],
+            &[("Site_Url", serde_json::json!("https://chat.example.org/"))],
+            RoomType::Channel,
+        );
+        assert_eq!(
+            permalink(&server, &w, &msg("abc", "me")),
+            "https://chat.example.org/channel/dev-team?msg=abc"
+        );
+        assert_eq!(
+            channel_url(&server, &w, "my room").as_deref(),
+            Some("https://chat.example.org/channel/my%20room")
+        );
+        // Omnichannel rooms: no mark unread, report or follow.
+        let w = ws(
+            &[],
+            &[("Threads_enabled", serde_json::json!(true))],
+            RoomType::Livechat,
+        );
+        let acts = available(&w, &msg("x", "bob"), now());
+        assert!(!acts.contains(&Act::MarkUnread));
+        assert!(!acts.contains(&Act::Report));
+        assert!(!acts.contains(&Act::Follow));
     }
 
     #[test]

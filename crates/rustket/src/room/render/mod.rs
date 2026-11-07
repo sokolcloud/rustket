@@ -1,7 +1,9 @@
 //! Message rendering shared by the timeline and the right panel (threads,
 //! pinned, search results …). Owner: timeline agent; other components only
 //! call [`message_body`] (or [`message_body_with`] when they keep a
-//! [`RenderState`]) and handle [`RenderMsg`].
+//! [`RenderState`]) and handle [`RenderMsg`]. [`message_body`] has no state,
+//! so it renders spoilers revealed and file/image/collapse controls inert;
+//! only `OpenUrl`, `OpenRoom`, `OpenUser` and `Copy` come out of it.
 //! Strings: `locales/room_render.yml` (`room_render.*`).
 //!
 //! Everything built here is `'static` (owned strings), so callers can wrap
@@ -37,7 +39,7 @@ pub use preview::preview_handle;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderMsg {
     OpenUrl(String),
-    /// A `#channel` mention: room id when known, else the room name.
+    /// A `#channel` mention (room name).
     OpenRoom(String),
     /// A `@user` mention (username).
     OpenUser(String),
@@ -64,6 +66,8 @@ pub struct ImageRef {
     /// Absolute URL.
     pub url: String,
     pub title: String,
+    /// `image_type` of the attachment.
+    pub mime: Option<String>,
 }
 
 /// A file attachment to download.
@@ -74,6 +78,8 @@ pub struct FileRef {
     pub url: String,
     pub name: String,
     pub size: Option<u64>,
+    /// Declared MIME type (`audio_type`, `video_type`, file type).
+    pub mime: Option<String>,
 }
 
 /// Progress of a download started from a message.
@@ -194,6 +200,10 @@ pub struct RenderCtx<'a> {
     pub state: &'a RenderState,
     pub clock_24h: bool,
     pub use_real_names: bool,
+    /// Stateful caller that handles every [`RenderMsg`]: spoilers can be
+    /// revealed, images/files/collapse toggles are clickable. Without it
+    /// spoilers render revealed and those controls are inert.
+    pub interactive: bool,
 }
 
 impl<'a> RenderCtx<'a> {
@@ -206,13 +216,18 @@ impl<'a> RenderCtx<'a> {
             state,
             clock_24h: ctx.prefs.clock_24h,
             use_real_names: ctx.workspace.use_real_names(ctx.prefs.use_real_names),
+            interactive: true,
         }
     }
 }
 
 /// The body of `msg` (markdown, attachments, …) without author/time.
 pub fn message_body<'a>(msg: &'a Message, ctx: &ViewCtx<'a>) -> Element<'a, RenderMsg> {
-    message_body_with(msg, &RenderCtx::from_view(ctx, &EMPTY_STATE))
+    let rc = RenderCtx {
+        interactive: false,
+        ..RenderCtx::from_view(ctx, &EMPTY_STATE)
+    };
+    message_body_with(msg, &rc)
 }
 
 /// Like [`message_body`] with interaction state (spoilers, collapsed
@@ -237,6 +252,44 @@ pub fn text_part(msg: &Message, rc: &RenderCtx<'_>) -> Option<Element<'static, R
         Some(root) if !root.is_empty() => Some(md::blocks(root, &msg.id, msg, rc)),
         _ if !msg.msg.trim().is_empty() => Some(md::plain_paragraph(&msg.msg, &msg.id, rc)),
         _ => None,
+    }
+}
+
+/// Room id for a `#channel` mention ([`RenderMsg::OpenRoom`]): a joined
+/// room with that name (or display name); a room id is accepted as well.
+pub fn resolve_room(ws: &Workspace, target: &str) -> Option<String> {
+    let target = target.trim().trim_start_matches('#');
+    if ws.room(target).is_some() {
+        return Some(target.to_owned());
+    }
+    ws.rooms()
+        .values()
+        .find(|e| e.name() == target)
+        .or_else(|| ws.rooms().values().find(|e| e.fname() == Some(target)))
+        .map(|e| e.rid().to_owned())
+}
+
+/// Image URL a link preview of `u` shows, if any.
+pub fn preview_image(u: &rocketchat::models::MessageUrl) -> Option<String> {
+    if u.ignore_parse == Some(true) {
+        return None;
+    }
+    attachments::preview_data(u)?
+        .image
+        .as_deref()
+        .and_then(safe_url)
+}
+
+/// Plural category of `n` for keys with `_one`/`_few`/`_many` forms
+/// (Russian rules; English `few` texts equal `many`).
+pub fn plural(n: u64) -> &'static str {
+    let (m10, m100) = (n % 10, n % 100);
+    if m10 == 1 && m100 != 11 {
+        "one"
+    } else if (2..=4).contains(&m10) && !(12..=14).contains(&m100) {
+        "few"
+    } else {
+        "many"
     }
 }
 

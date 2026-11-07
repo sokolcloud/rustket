@@ -15,15 +15,18 @@ mod transfer;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
-use chrono::{Local, Utc};
+use chrono::{Datelike, Local, Utc};
 use iced::widget::scrollable::{RelativeOffset, Viewport};
 use iced::widget::{
-    Column, button, column, container, lazy, row as hrow, scrollable, space, stack, text,
+    button, column, container, keyed_column, lazy, row as hrow, scrollable, sensor, space, stack,
+    text,
 };
 use iced::{Alignment, Element, Length, Padding, Subscription, Task};
 use rocketchat::models::{Message as RcMessage, OutgoingMessage};
 use rust_i18n::t;
-use rustket_core::timeline::{DeliveryState, TimelineItem, is_new_day, is_sequential};
+use rustket_core::timeline::{
+    DeliveryState, Timeline as CoreTimeline, TimelineItem, is_new_day, is_sequential,
+};
 use rustket_core::workspace::{Changes, Dirty};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
@@ -75,17 +78,17 @@ pub enum Message {
     ActionDone(Act, Res<()>),
     CloseDialog,
     ConfirmDelete,
-    Deleted(Res<()>),
+    Deleted(String, Res<()>),
     ReportText(String),
     SubmitReport,
-    Reported(Res<()>),
+    Reported(String, Res<()>),
     ToggleZoom,
-    OpenImageInBrowser,
+    /// Download the lightbox image privately and open it in the image viewer.
+    OpenImageExternally,
     SaveImage,
     SaveTo(FileRef, Option<PathBuf>),
     Transfer(FileRef, DlEvent, bool),
     Opened(Result<(), String>),
-    Focus(bool),
 }
 
 pub struct Timeline {
@@ -97,7 +100,9 @@ pub struct Timeline {
     /// While scrolled up: the newest message shown (`ts` ms, id); newer ones
     /// wait below the "jump to latest" button so the view does not move.
     frozen: Option<(i64, String)>,
-    focused: bool,
+    /// Newest item seen by `on_changes` (grows the window instead of
+    /// shifting it when messages arrive at the bottom).
+    newest: Option<(i64, String)>,
     menu: Option<String>,
     dialog: Option<Dialog>,
     scroll_id: iced::widget::Id,
@@ -119,15 +124,11 @@ impl Timeline {
             window: WINDOW,
             at_bottom: true,
             frozen: None,
-            focused: true,
+            newest: None,
             menu: None,
             dialog: None,
             scroll_id: iced::widget::Id::unique(),
         }
-    }
-
-    pub fn is_at_bottom(&self) -> bool {
-        self.at_bottom
     }
 
     fn toast_error(title: String, body: String) -> Effect {
@@ -157,19 +158,12 @@ impl Timeline {
                 self.frozen = None;
                 self.at_bottom = true;
                 self.window = WINDOW;
+                // A click: the window is focused and this room is visible.
                 let mut a = Action::task(self.snap_to_bottom());
-                if self.focused && Self::unread(ctx) {
+                if Self::unread(ctx) {
                     a = a.with(Effect::MarkRead);
                 }
                 a
-            }
-            Message::Focus(f) => {
-                self.focused = f;
-                if f && self.at_bottom && self.frozen.is_none() && Self::unread(ctx) {
-                    Action::effect(Effect::MarkRead)
-                } else {
-                    Action::none()
-                }
             }
             Message::Render(r) => self.render_msg(r, ctx),
             Message::Act(mid, act) => {
@@ -190,7 +184,16 @@ impl Timeline {
                 ))
             }
             Message::OpenThread(mid) => Action::effect(Effect::OpenPanel(Kind::Thread(mid))),
-            Message::OpenRoom(rid) => Action::effect(Effect::OpenRoom(rid)),
+            Message::OpenRoom(rid) => {
+                if ctx.workspace.room(&rid).is_some() {
+                    Action::effect(Effect::OpenRoom(rid))
+                } else {
+                    Action::effect(Self::toast_error(
+                        t!("room_timeline.not_a_member").into_owned(),
+                        String::new(),
+                    ))
+                }
+            }
             Message::OpenUser(u) => Action::effect(Effect::OpenPanel(Kind::UserInfo(u))),
             Message::Retry(mid) => self.retry(&mid, ctx),
             Message::Discard(mid) => {
@@ -233,13 +236,16 @@ impl Timeline {
                 };
                 *busy = true;
                 let (rid, mid) = (ctx.rid.to_owned(), mid.clone());
+                let done = mid.clone();
                 Action::task(ctx.rest_task(
                     move |rest| async move { rest.delete_message(&rid, &mid).await },
-                    Message::Deleted,
+                    move |r| Message::Deleted(done.clone(), r),
                 ))
             }
-            Message::Deleted(r) => {
-                self.dialog = None;
+            Message::Deleted(mid, r) => {
+                if matches!(&self.dialog, Some(Dialog::Delete { mid: m, .. }) if *m == mid) {
+                    self.dialog = None;
+                }
                 match r {
                     Ok(()) => Action::none(),
                     Err(e) => Action::effect(Self::toast_error(
@@ -268,18 +274,23 @@ impl Timeline {
                 }
                 *busy = true;
                 let body = json!({"messageId": mid, "description": description.trim()});
+                let done = mid.clone();
                 Action::task(ctx.rest_task(
                     move |rest| async move { rest.post_ok("chat.reportMessage", &body).await },
-                    Message::Reported,
+                    move |r| Message::Reported(done.clone(), r),
                 ))
             }
-            Message::Reported(r) => match r {
+            Message::Reported(mid, r) => match r {
                 Ok(()) => {
-                    self.dialog = None;
+                    if matches!(&self.dialog, Some(Dialog::Report { mid: m, .. }) if *m == mid) {
+                        self.dialog = None;
+                    }
                     Action::effect(Self::toast_ok(t!("room_timeline.reported").into_owned()))
                 }
                 Err(e) => {
-                    if let Some(Dialog::Report { busy, .. }) = &mut self.dialog {
+                    if let Some(Dialog::Report { mid: m, busy, .. }) = &mut self.dialog
+                        && *m == mid
+                    {
                         *busy = false;
                     }
                     Action::effect(Self::toast_error(
@@ -294,9 +305,22 @@ impl Timeline {
                 }
                 Action::none()
             }
-            Message::OpenImageInBrowser => match &self.dialog {
+            Message::OpenImageExternally => match &self.dialog {
                 Some(Dialog::Image { image, .. }) => {
-                    Action::effect(Effect::OpenUrl(image.url.clone()))
+                    let ext = image
+                        .mime
+                        .as_deref()
+                        .and_then(transfer::media_ext)
+                        .filter(|e| transfer::media_ext(&format!("image/{e}")).is_some())
+                        .or_else(|| transfer::image_ext_from_url(&image.url));
+                    let f = FileRef {
+                        mid: image.mid.clone(),
+                        url: image.url.clone(),
+                        name: image.title.clone(),
+                        size: None,
+                        mime: image.mime.clone(),
+                    };
+                    self.open_privately(f, ext, ctx)
                 }
                 _ => Action::none(),
             },
@@ -311,13 +335,14 @@ impl Timeline {
                             image.title.clone()
                         },
                         size: None,
+                        mime: image.mime.clone(),
                     };
                     self.render_msg(RenderMsg::Download(f), ctx)
                 }
                 _ => Action::none(),
             },
             Message::SaveTo(f, path) => match path {
-                Some(p) => self.start_download(f, p, false, ctx),
+                Some(p) => self.start_download(f, p, transfer::Target::Chosen, false, ctx),
                 None => Action::none(),
             },
             Message::Transfer(f, ev, open_after) => match ev {
@@ -367,8 +392,9 @@ impl Timeline {
         if self.at_bottom && !was_bottom {
             // Back at the bottom: show what arrived meanwhile.
             self.frozen = None;
-            self.window = self.window.min(WINDOW.max(self.window / 2));
-            if self.focused && Self::unread(ctx) {
+            self.window = WINDOW;
+            // Scrolling happens in the visible room of a focused window.
+            if Self::unread(ctx) {
                 action = action.with(Effect::MarkRead);
             }
         } else if !self.at_bottom && self.frozen.is_none() {
@@ -440,10 +466,32 @@ impl Timeline {
         ))
     }
 
+    /// Downloads `f` into a new private media file with extension `ext` (from
+    /// an allow-list of media types) and opens it with the system handler.
+    fn open_privately(
+        &mut self,
+        f: FileRef,
+        ext: Option<&'static str>,
+        ctx: &UpdateCtx<'_>,
+    ) -> Action<Message> {
+        let dir = transfer::media_dir(ctx.images.disk_dir());
+        match (ext, dir) {
+            (Some(ext), Some(dir)) => {
+                let path = transfer::media_path(&dir, ext);
+                self.start_download(f, path, transfer::Target::Private, true, ctx)
+            }
+            _ => Action::effect(Self::toast_error(
+                t!("room_timeline.unsupported_media").into_owned(),
+                String::new(),
+            )),
+        }
+    }
+
     fn start_download(
         &mut self,
         f: FileRef,
         path: PathBuf,
+        target: transfer::Target,
         open_after: bool,
         ctx: &UpdateCtx<'_>,
     ) -> Action<Message> {
@@ -461,7 +509,7 @@ impl Timeline {
                 total: f.size,
             },
         );
-        let stream = transfer::download(rest, f.url.clone(), path);
+        let stream = transfer::download(rest, f.url.clone(), path, target);
         Action::task(Task::run(stream, move |ev| {
             Message::Transfer(f.clone(), ev, open_after)
         }))
@@ -473,24 +521,17 @@ impl Timeline {
         }
         match r {
             RenderMsg::OpenUrl(u) => Action::effect(Effect::OpenUrl(u)),
-            RenderMsg::OpenRoom(target) => {
-                let ws = &*ctx.workspace;
-                let rid = if ws.room(&target).is_some() {
-                    Some(target.clone())
-                } else {
-                    ws.rooms()
-                        .values()
-                        .find(|e| e.name() == target)
-                        .map(|e| e.rid().to_owned())
-                };
-                match rid {
-                    Some(rid) => Action::effect(Effect::OpenRoom(rid)),
+            RenderMsg::OpenRoom(name) => match render::resolve_room(ctx.workspace, &name) {
+                Some(rid) => Action::effect(Effect::OpenRoom(rid)),
+                // Not joined: the web shows a preview; open the channel there.
+                None => match actions::channel_url(ctx.server, ctx.workspace, &name) {
+                    Some(url) => Action::effect(Effect::OpenUrl(url)),
                     None => Action::effect(Self::toast_error(
-                        t!("room_timeline.room_not_found", name = target.as_str()).into_owned(),
+                        t!("room_timeline.room_not_found", name = name.as_str()).into_owned(),
                         String::new(),
                     )),
-                }
-            }
+                },
+            },
             RenderMsg::OpenUser(u) => Action::effect(Effect::OpenPanel(Kind::UserInfo(u))),
             RenderMsg::Copy(s) => Action::task(iced::clipboard::write(s))
                 .with(Self::toast_ok(t!("room_timeline.copied").into_owned())),
@@ -509,16 +550,12 @@ impl Timeline {
                 }))
             }
             RenderMsg::Play(f) => {
-                if let Some(Transfer::Done(path)) = self.render.transfer(&f.mid, &f.url)
-                    && path.exists()
-                {
-                    return Action::task(Task::perform(
-                        transfer::open_path(path.clone()),
-                        Message::Opened,
-                    ));
+                let ext = f.mime.as_deref().and_then(transfer::media_ext);
+                if ext.is_none() {
+                    // Not a known audio/video type: let the user save it.
+                    return self.render_msg(RenderMsg::Download(f), ctx);
                 }
-                let path = transfer::media_path(&f.mid, &f.name);
-                self.start_download(f, path, true, ctx)
+                self.open_privately(f, ext, ctx)
             }
             RenderMsg::OpenFile(p) => {
                 Action::task(Task::perform(transfer::open_path(p), Message::Opened))
@@ -534,12 +571,19 @@ impl Timeline {
         if item.state != DeliveryState::Sent
             || !actions::available(ctx.workspace, &item.message, Utc::now()).contains(&act)
         {
-            return Action::none();
+            // The toolbar was built before a time limit or a permission changed.
+            return Action::effect(Self::toast_error(
+                t!("room_timeline.action_unavailable").into_owned(),
+                String::new(),
+            ));
         }
         let m = item.message.clone();
         let mid = mid.to_owned();
+        // A reply follows its parent thread.
+        let thread = m.tmid.clone().unwrap_or_else(|| mid.clone());
         let rest_act = |ctx: &UpdateCtx<'_>, act: Act| {
             let mid = mid.clone();
+            let thread = thread.clone();
             let rid = ctx.rid.to_owned();
             Action::task(ctx.rest_task(
                 move |rest| async move {
@@ -548,8 +592,8 @@ impl Timeline {
                         Act::Unpin => rest.unpin_message(&mid).await,
                         Act::Star => rest.star_message(&mid).await,
                         Act::Unstar => rest.unstar_message(&mid).await,
-                        Act::Follow => rest.follow_message(&mid).await,
-                        Act::Unfollow => rest.unfollow_message(&mid).await,
+                        Act::Follow => rest.follow_message(&thread).await,
+                        Act::Unfollow => rest.unfollow_message(&thread).await,
                         Act::MarkUnread => rest.subscriptions_unread(&rid, Some(&mid)).await,
                         _ => Ok(()),
                     }
@@ -610,6 +654,27 @@ impl Timeline {
         if self.menu.as_ref().is_some_and(|m| !tl.contains(m)) {
             self.menu = None;
         }
+        // New messages at the bottom grow the window rather than shifting
+        // every row; it is trimmed back once in a while.
+        let newest = tl.iter().next_back().map(|i| {
+            let (ts, id) = item_key(i);
+            (ts, id.to_owned())
+        });
+        if let (Some(prev), Some(_)) = (&self.newest, &newest)
+            && self.at_bottom
+            && self.frozen.is_none()
+        {
+            let added = tl
+                .iter()
+                .rev()
+                .take_while(|i| item_key(i) > (prev.0, prev.1.as_str()))
+                .count();
+            self.window += added;
+            if self.window > WINDOW + WINDOW_STEP {
+                self.window = WINDOW;
+            }
+        }
+        self.newest = newest;
         // An own message being sent while scrolled up: jump down to it.
         let own_pending = tl
             .iter()
@@ -623,12 +688,10 @@ impl Timeline {
         Action::none()
     }
 
+    /// Window focus is handled by the app (`mark_active_room_read`), which
+    /// knows which server and room are visible.
     pub fn subscription(&self) -> Subscription<Message> {
-        iced::event::listen_with(|event, _status, _window| match event {
-            iced::Event::Window(iced::window::Event::Focused) => Some(Message::Focus(true)),
-            iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::Focus(false)),
-            _ => None,
-        })
+        Subscription::none()
     }
 
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
@@ -659,6 +722,9 @@ impl Timeline {
             return loading_placeholder(Some(t!("room_timeline.loading").into_owned()));
         };
         if tl.is_empty() && !tl.pagination.loaded {
+            if tl.pagination.error.is_some() && !tl.pagination.loading_before {
+                return first_page_failed();
+            }
             return loading_placeholder(Some(t!("room_timeline.loading").into_owned()));
         }
         let env = row::Env {
@@ -679,29 +745,17 @@ impl Timeline {
             !m.t.as_deref()
                 .is_some_and(|t| m.is_system() && system::is_hidden(t, &hidden, room_sys))
         };
-        // Newest first: skip what waits below while frozen, take the window
-        // plus one row of context for grouping.
-        let mut new_below = 0usize;
-        let mut picked: Vec<&'a TimelineItem> = Vec::with_capacity(self.window + 1);
-        for item in tl.iter().rev() {
-            if !visible(&item.message) {
-                continue;
-            }
-            if let Some((fts, fid)) = &self.frozen {
-                let (ts, id) = item_key(item);
-                if (ts, id) > (*fts, fid.as_str()) {
-                    new_below += 1;
-                    continue;
-                }
-            }
-            if picked.len() > self.window {
-                break;
-            }
-            picked.push(item);
-        }
-        let more_loaded_above = picked.len() > self.window;
-        picked.reverse();
-        if picked.is_empty() && new_below == 0 {
+        let me = ws.user_id().unwrap_or_default();
+        let plan = plan(
+            tl,
+            visible,
+            self.frozen.as_ref().map(|(ts, id)| (*ts, id.as_str())),
+            self.window,
+            me,
+            ws.settings().grouping_period_secs(),
+            &Local,
+        );
+        if plan.rows.is_empty() && plan.new_below == 0 {
             return empty_state(
                 Icon::MessagesSquare,
                 t!("room_timeline.empty_title"),
@@ -709,44 +763,46 @@ impl Timeline {
             );
         }
 
-        let me = ws.user_id().unwrap_or_default();
-        let divider = tl.unread_divider(me);
-        let grouping = ws.settings().grouping_period_secs();
         let tunread = ws.subscription(&self.rid).and_then(|s| s.tunread.as_ref());
         let dark = render::mode() == rustket_ui::theme::Mode::Dark;
         let revs = (
             ws.revision(Dirty::SETTINGS | Dirty::PERMISSIONS | Dirty::ROLES | Dirty::ME),
             ws.revision(Dirty::EMOJI),
-            ctx.images.len(),
+            room_state_key(ws, &self.rid),
             ctx.images.generation(ctx.server_id),
         );
         let prefs = (
             ctx.prefs.clock_24h,
             ws.use_real_names(ctx.prefs.use_real_names),
         );
+        let locale = locale_key();
+        let now = Utc::now();
+        // Edit/delete limits are time based: own rows rebuild every minute.
+        let minute = now.timestamp() / 60;
         let now_local = Local::now();
-        let mut col: Column<'a, Message> = Column::new()
+        let today = now_local.date_naive();
+        let mut col = keyed_column::<u64, Message, _, _>([])
             .width(Length::Fill)
             .padding(Padding::from([SPACE_2, 0.0]));
-        if !more_loaded_above {
-            col = col.push(top_indicator(tl));
-        }
-        for (i, item) in picked.iter().enumerate() {
-            if more_loaded_above && i == 0 {
-                continue;
-            }
+        // Near the top (also when nothing scrolls yet): build more rows or
+        // load the next page; the key re-arms it after every change.
+        let top: Element<'a, Message> = if plan.more_above {
+            space().height(1).into()
+        } else {
+            top_indicator(tl)
+        };
+        col = col.push(
+            TOP_KEY,
+            sensor(top)
+                .key((tl.len(), self.window, tl.pagination.loading_before))
+                .anticipate(TOP_THRESHOLD)
+                .on_show(|_| Message::ReachedTop),
+        );
+        for r in &plan.rows {
+            let item: &'a TimelineItem = r.item;
             let m = &item.message;
-            let prev = i.checked_sub(1).map(|p| &picked[p].message);
-            if let Some(ts) = m.ts
-                && is_new_day(prev, m, &Local)
-            {
-                col = col.push(date_separator(row::day_label(ts, now_local)));
-            }
-            if divider == Some(m.id.as_str()) {
-                col = col.push(unread_separator(t!("room_timeline.unread").into_owned()));
-            }
             let flags = row::RowFlags {
-                sequential: prev.is_some_and(|p| is_sequential(p, m, grouping, &Local, divider)),
+                sequential: r.sequential,
                 menu_open: self.menu.as_deref() == Some(m.id.as_str()),
                 thread_unread: tunread.is_some_and(|t| t.contains(&m.id)),
             };
@@ -755,20 +811,48 @@ impl Timeline {
                 DeliveryState::Sending => 1,
                 DeliveryState::Failed { .. } => 2,
             };
+            let own = !me.is_empty() && m.u.id == me;
+            let day = r
+                .new_day
+                .then(|| m.ts.map(|ts| row::day_label(ts, now_local)));
             let dep = RowKey {
                 msg: render::message_key(m),
                 state,
                 render: self.render.key(&m.id),
                 flags,
+                separators: (r.new_day, r.unread_before),
                 dark,
                 prefs,
                 revs,
+                images: row::images_key(&env, m),
+                locale,
+                minute: if own { minute } else { 0 },
+                today: if r.new_day {
+                    today.num_days_from_ce()
+                } else {
+                    0
+                },
             };
-            let item: &'a TimelineItem = item;
-            col = col.push(lazy(dep, move |_| {
-                row::build(&env, item, flags, Utc::now())
-            }));
+            let unread_before = r.unread_before;
+            col = col.push(
+                id_key(&m.id),
+                lazy(dep, move |_| {
+                    let row = row::build(&env, item, flags, now);
+                    if day.is_none() && !unread_before {
+                        return row;
+                    }
+                    let mut c = column![].width(Length::Fill);
+                    if let Some(Some(label)) = &day {
+                        c = c.push(date_separator(label.clone()));
+                    }
+                    if unread_before {
+                        c = c.push(unread_separator(t!("room_timeline.unread").into_owned()));
+                    }
+                    c.push(row).into()
+                }),
+            );
         }
+        let new_below = plan.new_below;
         let list = scrollable(col)
             .id(self.scroll_id.clone())
             .anchor_bottom()
@@ -808,6 +892,156 @@ impl Timeline {
     }
 }
 
+/// Key of the top sensor in the keyed column (rows use [`id_key`]).
+const TOP_KEY: u64 = 0;
+
+fn id_key(id: &str) -> u64 {
+    let mut h = std::hash::DefaultHasher::new();
+    id.hash(&mut h);
+    h.finish().max(1)
+}
+
+/// Room/subscription state the row actions depend on (read-only, muted,
+/// room roles …); `Dirty::ROOMS` would change with every new message.
+fn room_state_key(ws: &rustket_core::Workspace, rid: &str) -> u64 {
+    use rustket_core::permissions as perm;
+    let mut h = std::hash::DefaultHasher::new();
+    (
+        perm::can_post(ws, rid),
+        perm::can_react(ws, rid),
+        perm::can_pin(ws, rid),
+        perm::can_star(ws, rid),
+        perm::is_read_only(ws, rid),
+    )
+        .hash(&mut h);
+    let sub = ws.subscription(rid);
+    sub.is_some().hash(&mut h);
+    sub.and_then(|s| s.roles.as_ref()).hash(&mut h);
+    h.finish()
+}
+
+fn locale_key() -> u64 {
+    let mut h = std::hash::DefaultHasher::new();
+    rust_i18n::locale().hash(&mut h);
+    h.finish()
+}
+
+/// One row to build, with its separators and grouping.
+#[derive(Debug)]
+struct PlannedRow<'a> {
+    item: &'a TimelineItem,
+    new_day: bool,
+    unread_before: bool,
+    sequential: bool,
+}
+
+/// What [`Timeline::list`] shows.
+#[derive(Debug)]
+struct Plan<'a> {
+    rows: Vec<PlannedRow<'a>>,
+    /// Visible messages newer than the frozen view (behind "jump to latest").
+    new_below: usize,
+    /// More visible loaded messages exist above the window.
+    more_above: bool,
+}
+
+/// Picks the newest `window` visible messages (skipping what waits below a
+/// frozen view), with day separators, the unread divider (above the first
+/// visible unread message) and grouping. One extra older row is used as
+/// grouping context only.
+fn plan<'a, Tz: chrono::TimeZone>(
+    tl: &'a CoreTimeline,
+    visible: impl Fn(&RcMessage) -> bool,
+    frozen: Option<(i64, &str)>,
+    window: usize,
+    me: &str,
+    grouping_secs: i64,
+    tz: &Tz,
+) -> Plan<'a> {
+    let divider_key = tl
+        .unread_divider(me)
+        .and_then(|id| tl.get(id))
+        .map(item_key);
+    let mut divider: Option<&'a str> = None;
+    let mut reached_divider = divider_key.is_none();
+    let mut new_below = 0usize;
+    let mut picked: Vec<&'a TimelineItem> = Vec::with_capacity(window + 1);
+    let mut exhausted = true;
+    for item in tl.iter().rev() {
+        let key = item_key(item);
+        if let Some(dk) = divider_key
+            && key <= dk
+        {
+            reached_divider = true;
+        }
+        if !visible(&item.message) {
+            continue;
+        }
+        if let Some(dk) = divider_key
+            && key >= dk
+            && !item.is_pending()
+            && item.message.u.id != me
+        {
+            divider = Some(item.message.id.as_str());
+        }
+        if let Some(f) = frozen
+            && key > f
+        {
+            new_below += 1;
+            continue;
+        }
+        if picked.len() > window {
+            exhausted = false;
+            break;
+        }
+        picked.push(item);
+    }
+    if !(reached_divider || exhausted) {
+        divider = None;
+    }
+    let more_above = picked.len() > window;
+    picked.reverse();
+    let mut rows = Vec::with_capacity(picked.len());
+    for (i, item) in picked.iter().enumerate() {
+        if more_above && i == 0 {
+            continue;
+        }
+        let m = &item.message;
+        let prev = i.checked_sub(1).map(|p| &picked[p].message);
+        rows.push(PlannedRow {
+            item,
+            new_day: m.ts.is_some() && is_new_day(prev, m, tz),
+            unread_before: divider == Some(m.id.as_str()),
+            sequential: prev.is_some_and(|p| is_sequential(p, m, grouping_secs, tz, divider)),
+        });
+    }
+    Plan {
+        rows,
+        new_below,
+        more_above,
+    }
+}
+
+/// The first history page failed: error with a retry button.
+fn first_page_failed<'a>() -> Element<'a, Message> {
+    container(
+        column![
+            icon::sized(Icon::CircleAlert, 28.0).style(style::text_danger),
+            text(t!("room_timeline.history_first_failed").into_owned())
+                .size(TEXT_SMALL)
+                .style(style::text_secondary),
+            button(text(t!("room_timeline.retry").into_owned()).size(TEXT_SMALL))
+                .padding([4, 12])
+                .style(style::button_secondary)
+                .on_press(Message::LoadOlder),
+        ]
+        .spacing(SPACE_2)
+        .align_x(Alignment::Center),
+    )
+    .center(Length::Fill)
+    .into()
+}
+
 /// `lazy` dependency of a row.
 #[derive(Clone, Copy)]
 struct RowKey {
@@ -815,9 +1049,18 @@ struct RowKey {
     state: u8,
     render: u64,
     flags: row::RowFlags,
+    /// Day separator, unread divider above the row.
+    separators: (bool, bool),
     dark: bool,
     prefs: (bool, bool),
-    revs: (u64, u64, usize, u64),
+    revs: (u64, u64, u64, u64),
+    /// Which of the row's images are loaded.
+    images: u64,
+    locale: u64,
+    /// Current minute for own rows (time-limited edit/delete), else 0.
+    minute: i64,
+    /// Current day for rows with a day separator ("Today"/"Yesterday").
+    today: i32,
 }
 
 impl Hash for RowKey {
@@ -826,9 +1069,14 @@ impl Hash for RowKey {
         self.state.hash(h);
         self.render.hash(h);
         self.flags.hash(h);
+        self.separators.hash(h);
         self.dark.hash(h);
         self.prefs.hash(h);
         self.revs.hash(h);
+        self.images.hash(h);
+        self.locale.hash(h);
+        self.minute.hash(h);
+        self.today.hash(h);
     }
 }
 
@@ -880,6 +1128,93 @@ fn top_indicator<'a>(tl: &rustket_core::timeline::Timeline) -> Element<'a, Messa
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    use rocketchat::RcDate;
+    use rocketchat::models::UserRef;
+
+    fn m(id: &str, uid: &str, ts: i64, t: Option<&str>) -> RcMessage {
+        RcMessage {
+            id: id.into(),
+            rid: "r".into(),
+            msg: id.into(),
+            t: t.map(Into::into),
+            ts: RcDate::from_millis(ts),
+            u: UserRef {
+                id: uid.into(),
+                username: Some(uid.into()),
+                name: None,
+            },
+            ..Default::default()
+        }
+    }
+
+    fn ids<'a>(p: &Plan<'a>) -> Vec<&'a str> {
+        p.rows.iter().map(|r| r.item.message.id.as_str()).collect()
+    }
+
+    const T0: i64 = 1_800_000_000_000;
+
+    fn timeline() -> CoreTimeline {
+        let mut tl = CoreTimeline::new_room("r");
+        tl.extend([
+            m("a", "bob", T0, None),
+            m("b", "bob", T0 + 1_000, None),
+            m("j", "carol", T0 + 2_000, Some("uj")),
+            m("c", "carol", T0 + 3_000, None),
+            m("d", "me", T0 + 4_000, None),
+            m("e", "bob", T0 + 5_000, None),
+        ]);
+        tl
+    }
+
+    #[test]
+    fn plan_groups_and_hides() {
+        let tl = timeline();
+        let visible = |m: &RcMessage| m.t.as_deref() != Some("uj");
+        let p = plan(&tl, visible, None, 60, "me", 300, &Utc);
+        assert_eq!(ids(&p), ["a", "b", "c", "d", "e"]);
+        assert!(!p.more_above);
+        assert_eq!(p.new_below, 0);
+        let seq: Vec<bool> = p.rows.iter().map(|r| r.sequential).collect();
+        assert_eq!(seq, [false, true, false, false, false]);
+        assert!(p.rows[0].new_day && !p.rows[1].new_day);
+        // Window of 2: one extra row of context, not shown.
+        let p = plan(&tl, visible, None, 2, "me", 300, &Utc);
+        assert_eq!(ids(&p), ["d", "e"]);
+        assert!(p.more_above);
+        assert!(!p.rows[0].new_day, "the context row continues the day");
+        // Frozen at "c": newer ones wait below.
+        let p = plan(&tl, visible, Some((T0 + 3_000, "c")), 60, "me", 300, &Utc);
+        assert_eq!(ids(&p), ["a", "b", "c"]);
+        assert_eq!(p.new_below, 2);
+    }
+
+    #[test]
+    fn unread_divider_skips_hidden_messages() {
+        let mut tl = timeline();
+        // Last seen after "b": the first unread is the hidden join.
+        tl.set_unread_since(RcDate::from_millis(T0 + 1_500));
+        assert_eq!(tl.unread_divider("me"), Some("j"));
+        let visible = |m: &RcMessage| m.t.as_deref() != Some("uj");
+        let p = plan(&tl, visible, None, 60, "me", 300, &Utc);
+        let marked: Vec<&str> = p
+            .rows
+            .iter()
+            .filter(|r| r.unread_before)
+            .map(|r| r.item.message.id.as_str())
+            .collect();
+        assert_eq!(marked, ["c"]);
+        // Shown when the join is visible.
+        let p = plan(&tl, |_| true, None, 60, "me", 300, &Utc);
+        assert!(
+            p.rows
+                .iter()
+                .any(|r| r.unread_before && r.item.message.id == "j")
+        );
+        // Older than the window: no divider (and no wrong one).
+        let p = plan(&tl, visible, None, 1, "me", 300, &Utc);
+        assert!(p.rows.iter().all(|r| !r.unread_before));
+    }
 
     #[test]
     fn render_state_toggles() {

@@ -44,6 +44,8 @@ pub(super) struct Cx<'r, 'a> {
     pub me: Option<&'r str>,
     pub t: &'static Tokens,
     spoiler: Cell<usize>,
+    /// A dropped quote link left whitespace behind: trim the next text.
+    trim_next: Cell<bool>,
 }
 
 impl<'r, 'a> Cx<'r, 'a> {
@@ -55,7 +57,25 @@ impl<'r, 'a> Cx<'r, 'a> {
             me: rc.workspace.username(),
             t: tokens(),
             spoiler: Cell::new(0),
+            trim_next: Cell::new(false),
         }
+    }
+
+    /// Spoiler indices start at `base` (attachments use their own range so
+    /// they never share an index with the message text).
+    pub fn with_spoiler_base(self, base: usize) -> Self {
+        self.spoiler.set(base);
+        self
+    }
+
+    fn spoiler_shown(&self, idx: usize) -> bool {
+        !self.rc.interactive || self.rc.state.is_revealed(self.mid, idx)
+    }
+
+    fn spoiler_toggle(&self, idx: usize) -> Option<RenderMsg> {
+        self.rc
+            .interactive
+            .then(|| RenderMsg::ToggleSpoiler(self.mid.to_owned(), idx))
     }
 
     fn next_spoiler(&self) -> usize {
@@ -114,6 +134,193 @@ pub(super) fn plain_paragraph(text: &str, mid: &str, rc: &RenderCtx<'_>) -> El {
     paragraph(spans, TEXT_BODY)
 }
 
+/// Markdown text without an `md` AST (attachment text, pretext, fields,
+/// upload descriptions), rendered with [`mrkdwn_spans`].
+pub(super) fn mrkdwn_paragraph(text: &str, cx: &Cx<'_, '_>, size: f32, bold: bool) -> El {
+    let mut spans = Vec::new();
+    let fmt = Fmt {
+        bold,
+        ..Fmt::default()
+    };
+    mrkdwn_spans(&mut spans, text, &fmt, cx, 0);
+    paragraph(spans, size)
+}
+
+/// Byte index of the closing `delim` for an opening one ending at `from`:
+/// non-empty content that does not start or end with a space, and (for
+/// `_`) no word character right after it.
+fn closing(text: &str, from: usize, delim: &str) -> Option<usize> {
+    let rest = &text[from..];
+    if rest.starts_with(char::is_whitespace) || rest.starts_with(delim) {
+        return None;
+    }
+    let mut search = 0;
+    while let Some(off) = rest[search..].find(delim) {
+        let at = search + off;
+        let end = from + at;
+        let before_ok = at > 0 && !rest[..at].ends_with(char::is_whitespace);
+        let after = &text[end + delim.len()..];
+        let after_ok = !delim.starts_with('_') || !after.starts_with(char::is_alphanumeric);
+        let doubled = delim.len() == 1 && after.starts_with(delim);
+        if before_ok && after_ok && !doubled && !rest[..at].contains('\n') {
+            return Some(end);
+        }
+        search = at + delim.len();
+    }
+    None
+}
+
+/// A small markdown subset like the web's `MarkdownText` for attachments:
+/// `**b**`/`*b*`, `__i__`/`_i_`, `~~s~~`/`~s~`, `` `code` ``,
+/// `[label](url)`, `<url|label>`, bare URLs and line breaks.
+fn mrkdwn_spans(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>, depth: usize) {
+    if depth > 4 {
+        push_linkified(out, text, fmt, cx);
+        return;
+    }
+    let mut plain = 0;
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &text[i..];
+        let prev_word = text[..i]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric);
+        type Emit<'e> = Box<dyn FnOnce(&mut Vec<Sp>) + 'e>;
+        let mut matched: Option<(usize, Emit<'_>)> = None;
+        if let Some(after) = rest.strip_prefix('`') {
+            if let Some(len) = after.find('`').filter(|l| *l > 0) {
+                let code = after[..len].to_owned();
+                let f = fmt.clone();
+                let t = cx.t;
+                matched = Some((len + 2, Box::new(move |o| o.push(code_span(&code, t, &f)))));
+            }
+        } else if rest.starts_with('[') {
+            if let Some(mid) = rest.find("](")
+                && let Some(close) = rest[mid + 2..].find(')')
+            {
+                let label = &rest[1..mid];
+                let src = &rest[mid + 2..mid + 2 + close];
+                if !label.contains('\n') && !src.contains(char::is_whitespace) {
+                    let target = safe_url(src);
+                    let f = Fmt {
+                        link: target.clone().map(RenderMsg::OpenUrl),
+                        color: target.is_some().then_some(cx.t.link).or(fmt.color),
+                        ..fmt.clone()
+                    };
+                    let (label, src) = (label.to_owned(), src.to_owned());
+                    matched = Some((
+                        mid + 3 + close,
+                        Box::new(move |o| {
+                            if label.trim().is_empty() {
+                                push_text(o, &src, &f);
+                            } else {
+                                mrkdwn_spans(o, &label, &f, cx, depth + 1);
+                                push_link_host(o, &label, &src, &f, cx);
+                            }
+                        }),
+                    ));
+                }
+            }
+        } else if rest.starts_with('<') {
+            if let Some(close) = rest.find('>') {
+                let inner = &rest[1..close];
+                let (src, label) = inner.split_once('|').unwrap_or((inner, inner));
+                if let Some(target) = safe_url(src).filter(|_| !src.contains(char::is_whitespace)) {
+                    let f = Fmt {
+                        link: Some(RenderMsg::OpenUrl(target)),
+                        color: Some(cx.t.link),
+                        ..fmt.clone()
+                    };
+                    let (label, src) = (label.to_owned(), src.to_owned());
+                    matched = Some((
+                        close + 1,
+                        Box::new(move |o| {
+                            push_text(o, &label, &f);
+                            push_link_host(o, &label, &src, &f, cx);
+                        }),
+                    ));
+                }
+            }
+        } else if !prev_word {
+            for delim in ["**", "__", "~~", "*", "_", "~"] {
+                if !rest.starts_with(delim) {
+                    continue;
+                }
+                if let Some(end) = closing(text, i + delim.len(), delim) {
+                    let inner = text[i + delim.len()..end].to_owned();
+                    let f = match delim.as_bytes()[0] {
+                        b'*' => Fmt {
+                            bold: true,
+                            ..fmt.clone()
+                        },
+                        b'_' => Fmt {
+                            italic: true,
+                            ..fmt.clone()
+                        },
+                        _ => Fmt {
+                            strike: true,
+                            ..fmt.clone()
+                        },
+                    };
+                    matched = Some((
+                        end + delim.len() - i,
+                        Box::new(move |o| mrkdwn_spans(o, &inner, &f, cx, depth + 1)),
+                    ));
+                }
+                break;
+            }
+        }
+        match matched {
+            Some((len, emit)) => {
+                if plain < i {
+                    push_linkified(out, &text[plain..i], fmt, cx);
+                }
+                emit(out);
+                i += len;
+                plain = i;
+            }
+            None => i += rest.chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    if plain < text.len() {
+        push_linkified(out, &text[plain..], fmt, cx);
+    }
+}
+
+/// After a link whose label looks like a URL of another host, shows the
+/// real target host so it is visible before clicking.
+fn push_link_host(out: &mut Vec<Sp>, label: &str, src: &str, fmt: &Fmt, cx: &Cx<'_, '_>) {
+    let host = |s: &str| {
+        let s = s.trim();
+        let with_scheme = if s.contains("://") {
+            s.to_owned()
+        } else {
+            format!("https://{s}")
+        };
+        url::Url::parse(&with_scheme).ok().and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches("www.").to_ascii_lowercase())
+        })
+    };
+    let label = label.trim();
+    let looks_like_url = !label.contains(char::is_whitespace)
+        && label.contains('.')
+        && find_links(label).first() == Some(&(0, label.len()));
+    if !looks_like_url {
+        return;
+    }
+    if let (Some(shown), Some(real)) = (host(label), host(src))
+        && shown != real
+    {
+        out.push(
+            span(format!(" ({real})"))
+                .font(fmt.font())
+                .color(cx.t.text_hint),
+        );
+    }
+}
+
 fn block_list(list: &[Block], cx: &Cx<'_, '_>, depth: usize) -> El {
     let mut col: Column<'static, RenderMsg> = column![].spacing(SPACE_1).width(Length::Fill);
     for b in list {
@@ -129,7 +336,10 @@ fn block(b: &Block, cx: &Cx<'_, '_>, depth: usize) -> El {
         return paragraph(vec![span(s)], TEXT_BODY);
     }
     match b {
-        Block::Paragraph { value } => paragraph(inline_spans(value, cx), TEXT_BODY),
+        Block::Paragraph { value } => {
+            cx.trim_next.set(false);
+            paragraph(inline_spans(value, cx), TEXT_BODY)
+        }
         Block::BigEmoji { value } => big_emoji(value, cx),
         Block::Code { language, value } => code_block(language.as_deref(), value),
         Block::Heading { level, value } => {
@@ -155,7 +365,7 @@ fn block(b: &Block, cx: &Cx<'_, '_>, depth: usize) -> El {
         }
         Block::SpoilerBlock { value } => {
             let idx = cx.next_spoiler();
-            if cx.rc.state.is_revealed(cx.mid, idx) {
+            if cx.spoiler_shown(idx) {
                 let inner = block_list(value, cx, depth + 1);
                 container(inner)
                     .padding([SPACE_1, SPACE_2])
@@ -245,6 +455,9 @@ fn styled(text: String, fmt: &Fmt, emoji: bool) -> Sp {
 
 /// Text with emoji runs in the colour emoji font.
 fn push_text(out: &mut Vec<Sp>, text: &str, fmt: &Fmt) {
+    if text.is_empty() {
+        return;
+    }
     for (emoji, run) in segments(text) {
         out.push(styled(run.to_owned(), fmt, emoji));
     }
@@ -278,7 +491,13 @@ fn push_linkified(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>) {
 fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
     let t = cx.t;
     match node {
-        Inline::PlainText { value } => push_text(out, value, fmt),
+        Inline::PlainText { value } => {
+            if cx.trim_next.replace(false) {
+                push_text(out, value.trim_start(), fmt);
+            } else {
+                push_text(out, value, fmt);
+            }
+        }
         Inline::Bold { value } => {
             let f = Fmt {
                 bold: true,
@@ -302,17 +521,23 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
         }
         Inline::Spoiler { value } => {
             let idx = cx.next_spoiler();
-            let f = if cx.rc.state.is_revealed(cx.mid, idx) {
+            let f = if cx.spoiler_shown(idx) {
                 Fmt {
                     background: Some(t.surface_sunken),
-                    link: Some(RenderMsg::ToggleSpoiler(cx.mid.to_owned(), idx)),
+                    link: cx.spoiler_toggle(idx),
                     ..fmt.clone()
                 }
             } else {
+                // Dimmer in dark mode, where a light block would glare.
+                let cover = if t.mode == rustket_ui::theme::Mode::Dark {
+                    t.border_strong
+                } else {
+                    t.text_secondary
+                };
                 Fmt {
-                    color: Some(t.text_secondary),
-                    background: Some(t.text_secondary),
-                    link: Some(RenderMsg::ToggleSpoiler(cx.mid.to_owned(), idx)),
+                    color: Some(cover),
+                    background: Some(cover),
+                    link: cx.spoiler_toggle(idx),
                     ..fmt.clone()
                 }
             };
@@ -337,6 +562,7 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
                 s.trim().is_empty()
             });
             if quoted && blank {
+                cx.trim_next.set(true);
                 return;
             }
             let target = safe_url(src);
@@ -353,6 +579,9 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
             if empty {
                 out.truncate(before);
                 push_text(out, src, &f);
+            } else {
+                let shown: String = out[before..].iter().map(|s| s.text.as_ref()).collect();
+                push_link_host(out, &shown, src, &f, cx);
             }
         }
         Inline::Image { value } => {
@@ -379,11 +608,6 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
         Inline::MentionUser { value } => out.push(mention_user(&value.value, cx, fmt)),
         Inline::MentionChannel { value } => {
             let name = value.value.as_str();
-            let target = cx
-                .msg
-                .and_then(|m| m.channels.as_ref())
-                .and_then(|c| c.iter().find(|c| c.name.as_deref() == Some(name)))
-                .map_or_else(|| name.to_owned(), |c| c.id.clone());
             out.push(
                 span(format!("#{name}"))
                     .font(Font {
@@ -391,7 +615,7 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
                         ..fmt.font()
                     })
                     .color(t.link)
-                    .link(RenderMsg::OpenRoom(target)),
+                    .link(RenderMsg::OpenRoom(name.to_owned())),
             );
         }
         Inline::Emoji(e) => {
@@ -837,11 +1061,12 @@ fn relative(d: DateTime<Local>, now: DateTime<Local>) -> String {
         s if s < 86_400 => (s / 3600, "hours"),
         s => (s / 86_400, "days"),
     };
-    if secs > 0 {
-        t!(format!("room_render.rel_in_{unit}"), n = n).into_owned()
-    } else {
-        t!(format!("room_render.rel_ago_{unit}"), n = n).into_owned()
-    }
+    let dir = if secs > 0 { "in" } else { "ago" };
+    t!(
+        format!("room_render.rel_{dir}_{unit}_{}", super::plural(n)),
+        n = n
+    )
+    .into_owned()
 }
 
 #[cfg(test)]
@@ -883,6 +1108,7 @@ mod tests {
                 state: &self.state,
                 clock_24h: true,
                 use_real_names: false,
+                interactive: true,
             }
         }
     }
@@ -980,6 +1206,121 @@ mod tests {
     }
 
     #[test]
+    fn mrkdwn_subset() {
+        let fx = Fx::new();
+        let rc = fx.rc();
+        let cx = Cx::new(&rc, "m1", None);
+        let mut spans = Vec::new();
+        mrkdwn_spans(
+            &mut spans,
+            "All **checks** _ok_ ~no~ `make` [log](https://ci.example/1) <https://x.example/mr|MR> snake_case 2*3*4",
+            &Fmt::default(),
+            &cx,
+            0,
+        );
+        let texts: Vec<&str> = spans.iter().map(|s| s.text.as_ref()).collect();
+        assert_eq!(
+            texts,
+            [
+                "All ",
+                "checks",
+                " ",
+                "ok",
+                " ",
+                "no",
+                " ",
+                "make",
+                " ",
+                "log",
+                " ",
+                "MR",
+                " snake_case 2*3*4"
+            ]
+        );
+        assert_eq!(spans[1].font.unwrap().weight, Weight::Bold);
+        assert_eq!(spans[3].font.unwrap().style, FontStyle::Italic);
+        assert!(spans[5].strikethrough);
+        assert_eq!(spans[7].font, Some(MONOSPACE_FONT));
+        assert_eq!(
+            spans[9].link,
+            Some(RenderMsg::OpenUrl("https://ci.example/1".into()))
+        );
+        assert_eq!(
+            spans[11].link,
+            Some(RenderMsg::OpenUrl("https://x.example/mr".into()))
+        );
+    }
+
+    #[test]
+    fn deceptive_link_shows_its_host() {
+        let fx = Fx::new();
+        let rc = fx.rc();
+        let cx = Cx::new(&rc, "m1", None);
+        let value = para(serde_json::json!([
+            {"type": "LINK", "value": {"src": plain("https://evil.example/x"), "label": [plain("https://bank.example")]}},
+            {"type": "LINK", "value": {"src": plain("https://www.rust-lang.org/learn"), "label": [plain("rust-lang.org")]}},
+            {"type": "LINK", "value": {"src": plain("https://evil.example"), "label": [plain("Docs")]}},
+        ]));
+        let texts: Vec<String> = inline_spans(&value, &cx)
+            .iter()
+            .map(|s| s.text.to_string())
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "https://bank.example",
+                " (evil.example)",
+                "rust-lang.org",
+                "Docs"
+            ]
+        );
+    }
+
+    #[test]
+    fn quote_link_space_is_trimmed() {
+        let fx = Fx::new();
+        let rc = fx.rc();
+        let link = "https://chat.example.com/channel/x?msg=q1";
+        let msg: Message = serde_json::from_value(serde_json::json!({
+            "_id": "m1", "rid": "r", "msg": "", "u": {"_id": "u"},
+            "attachments": [{"message_link": link, "text": "quoted"}]
+        }))
+        .unwrap();
+        let cx = Cx::new(&rc, "m1", Some(&msg));
+        let value = para(serde_json::json!([
+            {"type": "LINK", "value": {"src": plain(link), "label": [plain(" ")]}},
+            plain(" Agreed"),
+        ]));
+        let texts: Vec<String> = inline_spans(&value, &cx)
+            .iter()
+            .map(|s| s.text.to_string())
+            .collect();
+        assert_eq!(texts, ["Agreed"]);
+    }
+
+    #[test]
+    fn stateless_bodies_reveal_spoilers() {
+        let fx = Fx::new();
+        let rc = RenderCtx {
+            interactive: false,
+            ..fx.rc()
+        };
+        let cx = Cx::new(&rc, "m1", None);
+        let value = para(serde_json::json!([{"type": "SPOILER", "value": [plain("s")]}]));
+        let spans = inline_spans(&value, &cx);
+        assert_eq!(spans[0].link, None, "nobody would handle the toggle");
+        assert_eq!(spans[0].color, None, "shown in the text colour");
+        // Attachment spoilers have their own index range.
+        let rc = fx.rc();
+        let cx = Cx::new(&rc, "m1", None).with_spoiler_base(100);
+        let spans = inline_spans(&value, &cx);
+        assert_eq!(
+            spans[0].link,
+            Some(RenderMsg::ToggleSpoiler("m1".into(), 100))
+        );
+    }
+
+    #[test]
     fn plain_fallback_linkifies() {
         let fx = Fx::new();
         let rc = fx.rc();
@@ -1063,6 +1404,8 @@ mod tests {
         assert_eq!(format_date_with(later, "R", true, now), "in 3 hours");
         let before = RcDate::from_millis((now - Duration::minutes(5)).timestamp_millis()).unwrap();
         assert_eq!(format_date_with(before, "R", true, now), "5 minutes ago");
+        let one = RcDate::from_millis((now - Duration::minutes(1)).timestamp_millis()).unwrap();
+        assert_eq!(format_date_with(one, "R", true, now), "1 minute ago");
     }
 
     #[test]

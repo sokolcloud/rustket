@@ -4,7 +4,7 @@
 
 use chrono::{DateTime, Local, TimeZone, Utc};
 use iced::widget::{button, column, container, row, text};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Element};
 use rocketchat::models::Message as RcMessage;
 use rocketchat::{RcDate, ServerUrl};
 use rust_i18n::t;
@@ -51,6 +51,7 @@ impl<'a> Env<'a> {
             state: self.render,
             clock_24h: self.prefs.clock_24h,
             use_real_names: self.ws.use_real_names(self.prefs.use_real_names),
+            interactive: true,
         }
     }
 }
@@ -95,18 +96,7 @@ pub(super) fn day_label(ts: RcDate, now: DateTime<Local>) -> String {
     }
 }
 
-/// Russian-style plural category (`one`, `few`, `many`); English uses `one`
-/// and `many` (its `few` texts equal `many`).
-pub(super) fn plural(n: u64) -> &'static str {
-    let (m10, m100) = (n % 10, n % 100);
-    if m10 == 1 && m100 != 11 {
-        "one"
-    } else if (2..=4).contains(&m10) && !(12..=14).contains(&m100) {
-        "few"
-    } else {
-        "many"
-    }
-}
+pub(super) use render::plural;
 
 /// Display name of a message author (alias, real name or username).
 pub(super) fn author_name(m: &RcMessage, real_names: bool) -> String {
@@ -123,6 +113,96 @@ pub(super) fn author_name(m: &RcMessage, real_names: bool) -> String {
         .or(m.u.username.as_deref())
         .unwrap_or_default();
     sanitize_bidi(name).into_owned()
+}
+
+/// Which of the images row `m` shows are loaded (or answered with
+/// initials): rows rebuild when one of their own images arrives, not on
+/// every image load.
+pub(super) fn images_key(env: &Env<'_>, m: &RcMessage) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    let mut probe = |url: &str| {
+        (env.images.contains(url) || env.images.shows_initials(url)).hash(&mut h);
+    };
+    let custom_emoji = |text: &str, probe: &mut dyn FnMut(&str)| {
+        if text.len() > 8192 || !text.contains(':') {
+            return;
+        }
+        for code in text.split(':').filter(|c| {
+            !c.is_empty()
+                && c.len() <= 64
+                && c.chars()
+                    .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '+'))
+        }) {
+            if let Some(url) = env
+                .ws
+                .emoji()
+                .resolve(code)
+                .and_then(|e| e.custom_url(env.server))
+            {
+                probe(&url);
+            }
+        }
+    };
+    if let Some(e) = m.emoji.as_deref().filter(|e| !e.is_empty()) {
+        custom_emoji(&format!(":{}:", e.trim_matches(':')), &mut probe);
+    } else if let Some(url) = m.avatar.as_deref().filter(|u| !u.is_empty()) {
+        probe(&env.server.absolute(url));
+    } else if let Some(u) = m.u.username.as_deref() {
+        probe(&Images::avatar_url(
+            env.server,
+            &Avatar::User {
+                username: u.to_owned(),
+            },
+        ));
+    }
+    custom_emoji(&m.msg, &mut probe);
+    for key in m.reactions.iter().flat_map(|r| r.keys()) {
+        custom_emoji(key, &mut probe);
+    }
+    if m.tcount.unwrap_or(0) > 0 {
+        for u in m
+            .replies
+            .iter()
+            .flatten()
+            .take(3)
+            .filter_map(|uid| username_of(env, uid))
+        {
+            probe(&Images::avatar_url(
+                env.server,
+                &Avatar::User { username: u },
+            ));
+        }
+    }
+    fn walk(
+        list: &[rocketchat::models::MessageAttachment],
+        server: &ServerUrl,
+        probe: &mut dyn FnMut(&str),
+        depth: usize,
+    ) {
+        if depth > 3 {
+            return;
+        }
+        for a in list {
+            for url in [&a.image_url, &a.author_icon, &a.thumb_url]
+                .into_iter()
+                .flatten()
+                .filter(|u| !u.is_empty())
+            {
+                probe(&server.absolute(url));
+            }
+            if let Some(n) = &a.attachments {
+                walk(n, server, probe, depth + 1);
+            }
+        }
+    }
+    if let Some(list) = &m.attachments {
+        walk(list, env.server, &mut probe, 0);
+    }
+    for img in m.urls.iter().flatten().filter_map(render::preview_image) {
+        probe(&img);
+    }
+    h.finish()
 }
 
 fn author_avatar(env: &Env<'_>, m: &RcMessage, name: &str) -> El {
@@ -442,38 +522,33 @@ pub(super) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: Da
             message_row(p)
         }
         DeliveryState::Failed { .. } => {
-            p.is_failed = true;
-            p.failed_label = t!("room_timeline.not_sent").into_owned();
-            p.retry = Some((
-                t!("room_timeline.retry").into_owned(),
-                Message::Retry(m.id.clone()),
-            ));
-            let row = message_row(p);
-            let discard = button(
-                text(t!("room_timeline.discard").into_owned())
-                    .size(TEXT_CAPTION)
-                    .font(FONT_SEMIBOLD),
-            )
-            .padding([0, 4])
-            .style(style::button_link)
-            .on_press(Message::Discard(m.id.clone()));
-            column![
-                row,
-                container(
-                    row![
-                        icon::sized(Icon::Trash2, 12.0).style(style::text_hint),
-                        discard
-                    ]
-                    .spacing(SPACE_1)
-                    .align_y(Alignment::Center)
-                )
-                .padding(
-                    iced::Padding::ZERO
-                        .left(rustket_ui::widget::GUTTER + rustket_ui::theme::SPACE_5)
-                )
-            ]
-            .width(Length::Fill)
-            .into()
+            // Error line with Retry and Discard side by side.
+            let link = |label: String, msg: Message| {
+                button(text(label).size(TEXT_CAPTION).font(FONT_SEMIBOLD))
+                    .padding([0, 4])
+                    .style(style::button_link)
+                    .on_press(msg)
+            };
+            p.attachments.push(
+                row![
+                    icon::sized(Icon::CircleAlert, 14.0).style(style::text_danger),
+                    text(t!("room_timeline.not_sent").into_owned())
+                        .size(TEXT_CAPTION)
+                        .style(style::text_danger),
+                    link(
+                        t!("room_timeline.retry").into_owned(),
+                        Message::Retry(m.id.clone())
+                    ),
+                    link(
+                        t!("room_timeline.discard").into_owned(),
+                        Message::Discard(m.id.clone())
+                    ),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center)
+                .into(),
+            );
+            message_row(p)
         }
     }
 }
