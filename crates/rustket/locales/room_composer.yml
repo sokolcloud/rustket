@@ -2,3 +2,348 @@ _version: 2
 room_composer.placeholder:
   en: "Message"
   ru: "Сообщение"
+room_composer.placeholder_room:
+  en: "Message %{room}"
+  ru: "Сообщение в %{room}"
+room_composer.placeholder_thread:
+  en: "Reply in thread"
+  ru: "Ответить в треде"
+room_composer.send:
+  en: "Send"
+  ru: "Отправить"
+room_composer.save:
+  en: "Save"
+  ru: "Сохранить"
+room_composer.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+room_composer.attach:
+  en: "Upload a file"
+  ru: "Загрузить файл"
+room_composer.emoji:
+  en: "Emoji"
+  ru: "Эмодзи"
+room_composer.add_reaction:
+  en: "Add reaction"
+  ru: "Добавить реакцию"
+room_composer.editing:
+  en: "Editing message"
+  ru: "Редактирование сообщения"
+room_composer.quoting:
+  en: "Quote of %{user}"
+  ru: "Цитата %{user}"
+room_composer.error:
+  en: "Error"
+  ru: "Ошибка"
+room_composer.cannot_edit:
+  en: "You cannot edit this message."
+  ru: "Вы не можете изменить это сообщение."
+room_composer.edit_failed:
+  en: "Could not save the message"
+  ru: "Не удалось сохранить сообщение"
+room_composer.command_failed:
+  en: "Command failed"
+  ru: "Не удалось выполнить команду"
+room_composer.react_failed:
+  en: "Could not add the reaction"
+  ru: "Не удалось добавить реакцию"
+room_composer.join_failed:
+  en: "Could not join the room"
+  ru: "Не удалось присоединиться к комнате"
+room_composer.too_long_title:
+  en: "Message too long"
+  ru: "Слишком длинное сообщение"
+room_composer.too_long:
+  en: "Messages may have at most %{max} characters."
+  ru: "Сообщение может содержать не более %{max} символов."
+room_composer.failed:
+  en: "Not sent: %{error}"
+  ru: "Не отправлено: %{error}"
+room_composer.retry:
+  en: "Retry"
+  ru: "Повторить"
+room_composer.discard:
+  en: "Discard"
+  ru: "Удалить"
+room_composer.join:
+  en: "Join"
+  ru: "Присоединиться"
+room_composer.block.not_subscribed:
+  en: "Join this room to send messages."
+  ru: "Присоединитесь к комнате, чтобы писать сообщения."
+room_composer.block.archived:
+  en: "This room is archived."
+  ru: "Эта комната в архиве."
+room_composer.block.muted:
+  en: "You have been muted in this room."
+  ru: "Вам запрещено писать в этой комнате."
+room_composer.block.read_only:
+  en: "This room is read only."
+  ru: "Эта комната только для чтения."
+room_composer.block.you_blocked:
+  en: "You have blocked this user."
+  ru: "Вы заблокировали этого пользователя."
+room_composer.block.blocked:
+  en: "This user has blocked you."
+  ru: "Этот пользователь заблокировал вас."
+room_composer.format.bold:
+  en: "Bold"
+  ru: "Жирный"
+room_composer.format.italic:
+  en: "Italic"
+  ru: "Курсив"
+room_composer.format.strike:
+  en: "Strikethrough"
+  ru: "Зачёркнутый"
+room_composer.format.code:
+  en: "Inline code"
+  ru: "Код в строке"
+room_composer.format.code_block:
+  en: "Code block"
+  ru: "Блок кода"
+room_composer.format.link:
+  en: "Link"
+  ru: "Ссылка"
+room_composer.format.quote:
+  en: "Quote"
+  ru: "Цитата"
+room_composer.ac.people:
+  en: "People"
+  ru: "Люди"
+room_composer.ac.rooms:
+  en: "Rooms"
+  ru: "Комнаты"
+room_composer.ac.emoji:
+  en: "Emoji"
+  ru: "Эмодзи"
+room_composer.ac.commands:
+  en: "Commands"
+  ru: "Команды"
+room_composer.ac.no_results:
+  en: "No results"
+  ru: "Ничего не найдено"
+room_composer.ac.all_hint:
+  en: "Notify everyone in this room"
+  ru: "Уведомить всех в комнате"
+room_composer.ac.here_hint:
+  en: "Notify active users in this room"
+  ru: "Уведомить активных участников комнаты"
+room_composer.emoji.search:
+  en: "Search emoji"
+  ru: "Поиск эмодзи"
+room_composer.emoji.search_results:
+  en: "Search results"
+  ru: "Результаты поиска"
+room_composer.emoji.no_results:
+  en: "No emoji found"
+  ru: "Эмодзи не найдены"
+room_composer.emoji.skin_tone:
+  en: "Skin tone"
+  ru: "Оттенок кожи"
+room_composer.emoji.recent:
+  en: "Frequently used"
+  ru: "Часто используемые"
+room_composer.emoji.custom:
+  en: "Custom"
+  ru: "Свои"
+room_composer.emoji.people:
+  en: "Smileys & People"
+  ru: "Смайлики и люди"
+room_composer.emoji.nature:
+  en: "Animals & Nature"
+  ru: "Животные и природа"
+room_composer.emoji.food:
+  en: "Food & Drink"
+  ru: "Еда и напитки"
+room_composer.emoji.activities:
+  en: "Activities"
+  ru: "Занятия"
+room_composer.emoji.travel:
+  en: "Travel & Places"
+  ru: "Путешествия и места"
+room_composer.emoji.objects:
+  en: "Objects"
+  ru: "Предметы"
+room_composer.emoji.symbols:
+  en: "Symbols"
+  ru: "Символы"
+room_composer.emoji.flags:
+  en: "Flags"
+  ru: "Флаги"
+room_composer.upload.title:
+  en: "Upload file"
+  ru: "Загрузка файла"
+room_composer.upload.title_more:
+  en: "Upload file (%{count} more)"
+  ru: "Загрузка файла (ещё %{count})"
+room_composer.upload.choose:
+  en: "Choose files to upload"
+  ru: "Выберите файлы для загрузки"
+room_composer.upload.file_name:
+  en: "File name"
+  ru: "Имя файла"
+room_composer.upload.description:
+  en: "Description"
+  ru: "Описание"
+room_composer.upload.description_hint:
+  en: "Optional"
+  ru: "Необязательно"
+room_composer.upload.message:
+  en: "Message"
+  ru: "Сообщение"
+room_composer.upload.message_hint:
+  en: "Optional message with the file"
+  ru: "Необязательное сообщение к файлу"
+room_composer.upload.size:
+  en: "Size: %{size}"
+  ru: "Размер: %{size}"
+room_composer.upload.send:
+  en: "Upload"
+  ru: "Загрузить"
+room_composer.upload.skip:
+  en: "Skip"
+  ru: "Пропустить"
+room_composer.upload.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+room_composer.upload.error_title:
+  en: "Upload not possible"
+  ru: "Загрузка невозможна"
+room_composer.upload.failed:
+  en: "Upload of %{name} failed"
+  ru: "Не удалось загрузить %{name}"
+room_composer.upload.disabled:
+  en: "File uploads are disabled here."
+  ru: "Загрузка файлов здесь отключена."
+room_composer.upload.not_connected:
+  en: "Not connected to the server."
+  ru: "Нет соединения с сервером."
+room_composer.upload.empty:
+  en: "The file is empty."
+  ru: "Файл пустой."
+room_composer.upload.too_large:
+  en: "The file is too large (at most %{max})."
+  ru: "Файл слишком большой (не более %{max})."
+room_composer.upload.type_not_allowed:
+  en: "Files of type %{mime} are not allowed."
+  ru: "Файлы типа %{mime} не разрешены."
+room_composer.not_delivered:
+  en: "The message was not delivered."
+  ru: "Сообщение не доставлено."
+room_composer.commands_unavailable:
+  en: "The list of slash commands could not be loaded. Try again in a moment."
+  ru: "Не удалось загрузить список команд. Повторите попытку чуть позже."
+room_composer.delete_failed:
+  en: "Could not delete the message"
+  ru: "Не удалось удалить сообщение"
+room_composer.delete.title:
+  en: "Delete message"
+  ru: "Удалить сообщение"
+room_composer.delete.body:
+  en: "The text is empty. Delete this message? This cannot be undone."
+  ru: "Текст пуст. Удалить это сообщение? Это действие нельзя отменить."
+room_composer.delete.confirm:
+  en: "Delete"
+  ru: "Удалить"
+room_composer.join_code:
+  en: "Join code"
+  ru: "Код для входа"
+room_composer.upload.unit.b:
+  en: "B"
+  ru: "Б"
+room_composer.upload.unit.kb:
+  en: "KB"
+  ru: "КБ"
+room_composer.upload.unit.mb:
+  en: "MB"
+  ru: "МБ"
+room_composer.upload.unit.gb:
+  en: "GB"
+  ru: "ГБ"
+room_composer.upload.unit.tb:
+  en: "TB"
+  ru: "ТБ"
+room_composer.cmd.Archive:
+  en: "Archive the channel"
+  ru: "Архивировать канал"
+room_composer.cmd.Unarchive:
+  en: "Unarchive the channel"
+  ru: "Разархивировать"
+room_composer.cmd.Slash_Gimme_Description:
+  en: "Displays ༼ つ ◕_◕ ༽つ before your message"
+  ru: "Показывает ༼ つ ◕_◕ ༽つ перед сообщением"
+room_composer.cmd.Slash_LennyFace_Description:
+  en: "Displays ( ͡° ͜ʖ ͡°) after your message"
+  ru: "Показывает ( ͡° ͜ʖ ͡°) после сообщения"
+room_composer.cmd.Slash_Shrug_Description:
+  en: "Displays ¯\\_(ツ)_/¯ after your message"
+  ru: "Показывает ¯\\_(ツ)_/¯ после сообщения"
+room_composer.cmd.Slash_Tableflip_Description:
+  en: "Displays (╯°□°）╯︵ ┻━┻"
+  ru: "Показывает (╯°□°）╯︵ ┻━┻"
+room_composer.cmd.Slash_TableUnflip_Description:
+  en: "Displays ┬─┬ ノ( ゜-゜ノ)"
+  ru: "Показывает ┬─┬ ノ( ゜-゜ノ)"
+room_composer.cmd.Ban_user_from_room:
+  en: "Ban user from room"
+  ru: "Заблокировать пользователя в комнате"
+room_composer.cmd.Unban_user_from_room:
+  en: "Unban user from room"
+  ru: "Разблокировать пользователя в комнате"
+room_composer.cmd.Create_A_New_Channel:
+  en: "Create a New Channel"
+  ru: "Создать новый канал"
+room_composer.cmd.Show_the_keyboard_shortcut_list:
+  en: "Show the keyboard shortcut list"
+  ru: "Показать список горячих клавиш"
+room_composer.cmd.Hide_room:
+  en: "Hide the room"
+  ru: "Скрыть комнату"
+room_composer.cmd.Invite_user_to_join_channel:
+  en: "Invite one user to join this channel"
+  ru: "Пригласить пользователя в канал"
+room_composer.cmd.Invite_user_to_join_channel_all_to:
+  en: "Invite all users from this channel to join [#channel]"
+  ru: "Пригласить всех пользователей этого канала присоединиться к [#channel]"
+room_composer.cmd.Invite_user_to_join_channel_all_from:
+  en: "Invite all users from [#channel] to join this channel"
+  ru: "Пригласить всех пользователей из [#channel] присоединиться к этому каналу"
+room_composer.cmd.Join_the_given_channel:
+  en: "Join the given channel"
+  ru: "Присоединиться к этому каналу"
+room_composer.cmd.Remove_someone_from_room:
+  en: "Remove someone from the room"
+  ru: "Удалить кого-либо из комнаты"
+room_composer.cmd.Leave_the_current_channel:
+  en: "Leave the current channel"
+  ru: "Покинуть текущий канал"
+room_composer.cmd.Displays_action_text:
+  en: "Displays action text"
+  ru: "Показать текст действия"
+room_composer.cmd.Direct_message_someone:
+  en: "Direct message someone"
+  ru: "Личная переписка с кем-нибудь"
+room_composer.cmd.Mute_someone_in_room:
+  en: "Mute someone in the room"
+  ru: "Заглушить кого-нибудь в комнате"
+room_composer.cmd.Unmute_someone_in_room:
+  en: "Unmute someone in the room"
+  ru: "Снять заглушение с кого-нибудь в комнате"
+room_composer.cmd.Slash_Status_Params:
+  en: "Status message"
+  ru: "Текст статуса"
+room_composer.cmd.Slash_Status_Description:
+  en: "Set your status message"
+  ru: "Установить Ваш статус"
+room_composer.cmd.Slash_Topic_Params:
+  en: "Topic message"
+  ru: "Тема"
+room_composer.cmd.Slash_Topic_Description:
+  en: "Set topic"
+  ru: "Установить тему"
+room_composer.cmd.your_message_optional:
+  en: "your message (optional)"
+  ru: "ваше сообщение (опционально)"
+room_composer.cmd.your_message:
+  en: "your message"
+  ru: "ваше сообщение"

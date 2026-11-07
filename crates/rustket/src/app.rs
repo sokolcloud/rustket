@@ -236,6 +236,7 @@ impl App {
         } else {
             crate::desktop::Desktop::new()
         };
+        crate::room::emoji_picker::set_recent(&config.recent_emoji);
         let ui_state = config_dir.as_deref().map(UiState::load).unwrap_or_default();
         let writer = config_dir.clone().and_then(ConfigWriter::spawn);
         let mut servers = BTreeMap::new();
@@ -679,6 +680,7 @@ impl App {
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Noop => Task::none(),
+            Message::FileDropped(path) => self.route_file_drop(path),
             Message::SecretsReady(s) => self.on_secrets_ready(s),
             Message::SystemTheme(mode) => {
                 self.system_mode = match mode {
@@ -1438,9 +1440,33 @@ impl App {
                 | room::Effect::OpenPanel(_)
                 | room::Effect::ClosePanel
                 | room::Effect::Compose(_) => Task::none(),
+                room::Effect::RecentEmoji(key) => {
+                    self.config.push_recent_emoji(&key);
+                    crate::room::emoji_picker::set_recent(&self.config.recent_emoji);
+                    self.save_config()
+                }
             });
         }
         Task::batch(tasks)
+    }
+
+    /// Hands a dropped file to the composer of the active room.
+    fn route_file_drop(&mut self, path: std::path::PathBuf) -> Task<Message> {
+        let Some(sid) = self.active.clone() else {
+            return Task::none();
+        };
+        let Some(s) = self.servers.get(&sid) else {
+            return Task::none();
+        };
+        let Some(rid) = s.active_room.clone().filter(|r| s.rooms.contains_key(r)) else {
+            return Task::none();
+        };
+        Task::done(Message::Room(
+            sid,
+            s.generation,
+            rid,
+            room::Message::Composer(room::composer::Message::FilesDropped(vec![path])),
+        ))
     }
 
     fn on_server_event(&mut self, sid: ServerId, ev: ServerEvent) -> Task<Message> {
@@ -2086,6 +2112,15 @@ impl App {
             },
         ));
         subs.push(window::close_requests().map(Message::CloseRequested));
+        // Files dropped onto the window go to the active composer.
+        subs.push(iced::event::listen_with(
+            |event, _status, _id| match event {
+                iced::Event::Window(window::Event::FileDropped(path)) => {
+                    Some(Message::FileDropped(path))
+                }
+                _ => None,
+            },
+        ));
         // Ctrl+K: quick switcher.
         subs.push(iced::keyboard::listen().filter_map(|ev| match ev {
             iced::keyboard::Event::KeyPressed {

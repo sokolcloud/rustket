@@ -722,3 +722,11 @@ fn dropped_list_elements_are_counted() {
     .unwrap();
     assert_eq!((s.updated.len(), s.dropped), (1, 1));
 }
+
+#[test]
+fn room_join_code_flag() {
+    let r: Room = serde_json::from_str(r#"{"_id":"r","t":"c","joinCodeRequired":true}"#).unwrap();
+    assert_eq!(r.join_code_required, Some(true));
+    let r: Room = serde_json::from_str(r#"{"_id":"r","t":"c"}"#).unwrap();
+    assert_eq!(r.join_code_required, None);
+}

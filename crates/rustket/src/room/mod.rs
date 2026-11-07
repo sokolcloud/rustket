@@ -4,10 +4,12 @@
 //! component contract.
 
 pub mod composer;
+pub mod emoji_picker;
 pub mod header;
 pub mod panel;
 pub mod render;
 pub mod timeline;
+pub mod upload;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -137,6 +139,8 @@ pub enum Effect {
     /// Ask the composer to do something (edit, quote, react, …); routed to
     /// `Composer::intent`.
     Compose(ComposeIntent),
+    /// An emoji was used (picker): record it in the persisted recent list.
+    RecentEmoji(String),
 }
 
 /// Requests other room components make to the composer.
@@ -264,6 +268,9 @@ impl RoomView {
         };
         let mut action = view.load_older(ctx);
         action.task = Task::batch([action.task, watch]);
+        let composer = view.composer.on_open(ctx).map(Message::Composer);
+        action.task = Task::batch([action.task, composer.task]);
+        action.effects.extend(composer.effects);
         let read = view.mark_read(ctx);
         action.task = Task::batch([action.task, read]);
         (view, action)
@@ -271,6 +278,7 @@ impl RoomView {
 
     /// Forgets the timeline; the room watch ends when `self` is dropped.
     pub fn close(self, ws: &mut Workspace) {
+        self.composer.on_close(ws);
         ws.close_room(&self.rid);
     }
 

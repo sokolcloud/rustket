@@ -288,6 +288,16 @@ async fn setup(server: &ServerUrl, ledger: Ledger) -> Fixture {
             .expect("topic");
         rooms.push(rid);
     }
+    // A read-only throwaway channel (composer notice).
+    let v: Value = admin
+        .post(
+            "channels.create",
+            &json!({"name": format!("rk-snap-ro-{suffix}"), "members": [user_name], "readOnly": true}),
+        )
+        .await
+        .expect("channels.create read-only");
+    let ro = v["channel"]["_id"].as_str().expect("rid").to_owned();
+    ledger.lock().expect("ledger").rooms.push(ro);
 
     let user = rest(server).await;
     user.login_password(&user_name, &password, None)
@@ -641,6 +651,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "08-room-dark");
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
+    composer_snapshots(&mut d, &out, &sid, &rid).await;
 
     // Log out through the app: the login token is revoked on the server.
     let creds: Credentials = d.app.servers[&sid].credentials.clone().expect("creds");
@@ -667,4 +678,164 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     }
     assert!(revoked, "logout must revoke the login token");
     println!("done");
+}
+
+/// Composer states: idle, `@` autocomplete, emoji picker, upload dialog (via
+/// a file dropped onto the window), edit mode and the read-only notice.
+async fn composer_snapshots(d: &mut Driver, out: &Path, sid: &rustket_core::ServerId, rid: &str) {
+    use iced::widget::text_editor::{Action as EditorAction, Edit};
+    use rustket::room::{self, composer};
+
+    fn send(d: &mut Driver, sid: &rustket_core::ServerId, rid: &str, m: composer::Message) {
+        let epoch = d.app.servers[sid].generation;
+        d.send(Message::Room(
+            sid.clone(),
+            epoch,
+            rid.to_owned(),
+            room::Message::Composer(m),
+        ));
+    }
+    fn type_text(d: &mut Driver, sid: &rustket_core::ServerId, rid: &str, text: &str) {
+        for ch in text.chars() {
+            send(
+                d,
+                sid,
+                rid,
+                composer::Message::Editor(EditorAction::Edit(Edit::Insert(ch))),
+            );
+        }
+    }
+    fn clear(d: &mut Driver, sid: &rustket_core::ServerId, rid: &str) {
+        send(
+            d,
+            sid,
+            rid,
+            composer::Message::Editor(EditorAction::SelectAll),
+        );
+        send(
+            d,
+            sid,
+            rid,
+            composer::Message::Editor(EditorAction::Edit(Edit::Backspace)),
+        );
+    }
+    fn both(d: &mut Driver, out: &Path, name: &str) {
+        d.app.config.ui.theme = rustket_core::config::Theme::Light;
+        d.shoot(out, &format!("{name}-light"));
+        d.app.config.ui.theme = rustket_core::config::Theme::Dark;
+        d.shoot(out, &format!("{name}-dark"));
+    }
+    fn composer_in<'a>(
+        a: &'a App,
+        sid: &rustket_core::ServerId,
+        rid: &str,
+    ) -> Option<&'a composer::Composer> {
+        a.servers.get(sid)?.rooms.get(rid).map(|r| &r.composer)
+    }
+    let composer_of = |a: &App| {
+        composer_in(a, sid, rid).map(|c| {
+            (
+                c.popup_items().len(),
+                c.is_upload_dialog_open(),
+                c.is_editing(),
+            )
+        })
+    };
+
+    both(d, out, "10-composer-idle");
+
+    type_text(d, sid, rid, "Hi @rk");
+    d.pump_until("@ autocomplete", Duration::from_secs(10), |a| {
+        composer_of(a).is_some_and(|c| c.0 >= 2)
+    })
+    .await;
+    d.settle(Duration::from_millis(800)).await;
+    both(d, out, "11-composer-mention");
+    send(d, sid, rid, composer::Message::AcClose);
+    clear(d, sid, rid);
+
+    send(d, sid, rid, composer::Message::TogglePicker);
+    d.settle(Duration::from_millis(300)).await;
+    both(d, out, "12-composer-emoji-picker");
+    send(d, sid, rid, composer::Message::TogglePicker);
+
+    let tmp = tempfile::tempdir().expect("tmp");
+    let png = tmp.path().join("release-diagram.png");
+    let img = image_bytes(480, 300);
+    std::fs::write(&png, img).expect("write png");
+    d.send(Message::FileDropped(png));
+    d.pump_until("upload dialog", Duration::from_secs(10), |a| {
+        composer_of(a).is_some_and(|c| c.1)
+    })
+    .await;
+    both(d, out, "13-composer-upload");
+    send(
+        d,
+        sid,
+        rid,
+        composer::Message::Upload(rustket::room::upload::Message::Close),
+    );
+
+    type_text(d, sid, rid, "Release notes are ready for review");
+    send(d, sid, rid, composer::Message::Send);
+    d.pump_until("message sent", Duration::from_secs(10), |a| {
+        a.servers[sid].workspace.pending_messages(rid).is_empty()
+            && a.servers[sid].workspace.timeline(rid).is_some_and(|t| {
+                t.messages()
+                    .any(|m| m.msg == "Release notes are ready for review")
+            })
+    })
+    .await;
+    send(d, sid, rid, composer::Message::EditLast);
+    assert!(composer_of(&d.app).is_some_and(|c| c.2), "edit mode");
+    type_text(d, sid, rid, " (v2)");
+    both(d, out, "14-composer-edit");
+    send(d, sid, rid, composer::Message::Cancel);
+
+    // Slash commands: descriptions and parameter hints are translated.
+    type_text(d, sid, rid, "/");
+    d.pump_until("/ autocomplete", Duration::from_secs(10), |a| {
+        composer_of(a).is_some_and(|c| c.0 >= 5)
+    })
+    .await;
+    both(d, out, "16-composer-commands");
+    send(d, sid, rid, composer::Message::AcClose);
+    clear(d, sid, rid);
+
+    let ro = d.app.servers[sid]
+        .workspace
+        .rooms()
+        .values()
+        .find(|e| e.name().starts_with("rk-snap-ro-"))
+        .map(|e| e.rid().to_owned())
+        .expect("read-only channel");
+    d.send(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open(ro.clone()),
+    ));
+    d.pump_until("read-only room open", Duration::from_secs(20), |a| {
+        a.servers[sid].rooms.get(&ro).is_some_and(|r| r.loaded)
+    })
+    .await;
+    d.settle(Duration::from_millis(500)).await;
+    both(d, out, "15-composer-read-only");
+    d.app.config.ui.theme = rustket_core::config::Theme::Light;
+}
+
+/// A small gradient PNG for the upload dialog.
+fn image_bytes(w: u32, h: u32) -> Vec<u8> {
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            data.extend_from_slice(&[(x * 255 / w) as u8, (y * 255 / h) as u8, 200, 255]);
+        }
+    }
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut wr = enc.write_header().expect("png header");
+    wr.write_image_data(&data).expect("png data");
+    drop(wr);
+    out
 }

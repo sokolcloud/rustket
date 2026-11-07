@@ -75,6 +75,10 @@ pub struct Room {
     pub broadcast: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub react_when_read_only: Option<bool>,
+    /// Joining needs a code (`joinCode`) unless the user has
+    /// `join-without-join-code`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join_code_required: Option<bool>,
     #[serde(rename = "avatarETag", skip_serializing_if = "Option::is_none")]
     pub avatar_etag: Option<String>,
     #[serde(
