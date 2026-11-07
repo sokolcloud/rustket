@@ -1,0 +1,23 @@
+[package]
+name = "rustket"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+arboard = "3.7.0"
+iced = { version = "0.14.0", features = ["tokio", "image", "svg", "advanced", "lazy", "qr_code"] }
+ksni = "0.3.7"
+notify-rust = "4.18.2"
+open = "5.4.5"
+rfd = "0.18.0"
+rocketchat = { version = "0.1.0", path = "../rocketchat" }
+rustket-core = { version = "0.1.0", path = "../rustket-core" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+webbrowser = "1.2.6"
+
+[lints]
+workspace = true

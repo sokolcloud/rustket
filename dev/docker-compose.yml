@@ -1,0 +1,59 @@
+# Local Rocket.Chat stack for development and integration tests.
+# Host networking keeps URLs identical for the browser, the client and the
+# Rocket.Chat server (important for OAuth/OpenID redirects). Every service binds
+# to 127.0.0.1 only.
+name: rustket-dev
+
+services:
+  mongo:
+    image: mongo:7.0
+    network_mode: host
+    command: ["--replSet", "rs0", "--bind_ip", "127.0.0.1", "--port", "27017"]
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { rs.status().ok } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: '127.0.0.1:27017'}]}).ok }"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:latest
+    network_mode: host
+    environment:
+      MP_SMTP_BIND_ADDR: 127.0.0.1:1025
+      MP_UI_BIND_ADDR: 127.0.0.1:8025
+
+  rocketchat:
+    image: rocketchat/rocket.chat:8.9.1
+    network_mode: host
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://127.0.0.1:27017/rocketchat?replicaSet=rs0
+      ROOT_URL: http://localhost:3000
+      PORT: "3000"
+      BIND_IP: 127.0.0.1
+      DEPLOY_METHOD: docker
+      ADMIN_USERNAME: admin
+      ADMIN_PASS: adminpass
+      ADMIN_EMAIL: admin@rustket.local
+      ADMIN_NAME: Admin
+      OVERWRITE_SETTING_Show_Setup_Wizard: completed
+      OVERWRITE_SETTING_API_Enable_Rate_Limiter: "false"
+      OVERWRITE_SETTING_DDP_Rate_Limit_IP_Enabled: "false"
+      OVERWRITE_SETTING_DDP_Rate_Limit_User_Enabled: "false"
+      OVERWRITE_SETTING_DDP_Rate_Limit_Connection_Enabled: "false"
+      OVERWRITE_SETTING_DDP_Rate_Limit_User_By_Method_Enabled: "false"
+      OVERWRITE_SETTING_DDP_Rate_Limit_Connection_By_Method_Enabled: "false"
+      OVERWRITE_SETTING_Block_Multiple_Failed_Logins_Enabled: "false"
+      OVERWRITE_SETTING_Accounts_RegistrationForm: Public
+      OVERWRITE_SETTING_Accounts_EmailVerification: "false"
+      OVERWRITE_SETTING_Accounts_TwoFactorAuthentication_By_Email_Auto_Opt_In: "false"
+      OVERWRITE_SETTING_SMTP_Host: 127.0.0.1
+      OVERWRITE_SETTING_SMTP_Port: "1025"
+      OVERWRITE_SETTING_From_Email: rocketchat@rustket.local
+
+volumes:
+  mongo-data:

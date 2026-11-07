@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["crates/meteor-ddp", "crates/rocketchat", "crates/rustket-core", "crates/rustket"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+dbg_macro = "warn"
