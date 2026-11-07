@@ -182,9 +182,9 @@ account.err_password_policy:
 account.err_password_mismatch:
   en: "The passwords do not match"
   ru: "Пароли не совпадают"
-account.err_positive_number:
-  en: "Enter a positive number"
-  ru: "Введите положительное число"
+account.err_idle_min:
+  en: "Enter a number of seconds, at least %{min}"
+  ru: "Введите число секунд, не меньше %{min}"
 account.tfa_title:
   en: "Confirm it's you"
   ru: "Подтвердите, что это вы"
@@ -423,8 +423,8 @@ account.pref_idle_limit:
   en: "Idle time limit (seconds)"
   ru: "Время бездействия (секунды)"
 account.pref_idle_help:
-  en: "After this time without activity you appear away."
-  ru: "После этого времени без активности ваш статус станет «Отошёл»."
+  en: "After this time without activity you appear away (at least 60 seconds)."
+  ru: "После этого времени без активности ваш статус станет «Отошёл» (не меньше 60 секунд)."
 account.pref_highlights:
   en: "Highlighted words"
   ru: "Выделяемые слова"
@@ -491,3 +491,24 @@ account.opt_sound_highbell:
 account.opt_sound_seasons:
   en: "Seasons"
   ru: "Времена года"
+account.token_regenerate_confirm:
+  en: "Regenerate? The current token stops working right away."
+  ru: "Пересоздать? Текущий токен сразу перестанет работать."
+account.totp_logout_hint:
+  en: "Enabling it signs you out of your other sessions."
+  ru: "После включения другие ваши сеансы будут завершены."
+account.err_name_required:
+  en: "The name cannot be empty"
+  ru: "Имя не может быть пустым"
+account.tfa_rate_limited:
+  en: "Too many attempts. Try again in %{s} s."
+  ru: "Слишком много попыток. Повторите через %{s} с."
+account.tfa_rate_limited_soon:
+  en: "Too many attempts. Try again in a minute."
+  ru: "Слишком много попыток. Повторите через минуту."
+account.err_rate_limited:
+  en: "The server allows one profile change per minute. Try again in %{s} s."
+  ru: "Сервер разрешает менять профиль раз в минуту. Повторите через %{s} с."
+account.err_rate_limited_soon:
+  en: "The server allows one profile change per minute. Try again shortly."
+  ru: "Сервер разрешает менять профиль раз в минуту. Повторите чуть позже."

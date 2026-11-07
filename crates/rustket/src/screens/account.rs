@@ -16,7 +16,7 @@ use iced::{Element, Length, Subscription, Task};
 use rust_i18n::t;
 use rustket_ui::style;
 use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SUBTITLE};
-use rustket_ui::widget::{BannerKind, loading_placeholder, modal};
+use rustket_ui::widget::{BannerKind, loading_placeholder, modal_keyed};
 
 use crate::component::{Action, Ctx, Effect, ViewCtx};
 use crate::error::Res;
@@ -77,6 +77,9 @@ pub struct Account {
     pub security: security::Security,
     pub tokens: tokens::Tokens,
     pub prompt: Option<Prompt>,
+    /// The password last entered in the prompt for TOTP setup, reused for
+    /// `users.validateTotp` (which asks for it again).
+    totp_password: Option<rocketchat::auth::TwoFactorCode>,
 }
 
 #[allow(clippy::new_without_default)]
@@ -91,6 +94,7 @@ impl Account {
             security: Default::default(),
             tokens: Default::default(),
             prompt: None,
+            totp_password: None,
         }
     }
 
@@ -131,7 +135,8 @@ impl Account {
                 t!("account.copied").into_owned(),
                 String::new(),
             )),
-            Message::Profile(m) => self.profile.update(m, ctx, &self.policy),
+            Message::Profile(profile::Msg::Save) => self.save_profile(ctx),
+            Message::Profile(m) => self.profile.update(m, ctx),
             Message::Prefs(m) => self.prefs.update(m, ctx),
             Message::Security(m) => self.security.update(m, ctx),
             Message::Tokens(m) => self.tokens.update(m, ctx),
@@ -148,6 +153,13 @@ impl Account {
                         self.prompt = Some(p);
                         Action::task(iced::widget::operation::focus(two_factor::INPUT_ID))
                     }
+                    Outcome::Wait(text) => {
+                        if let Some(p) = self.prompt.as_mut() {
+                            p.busy = false;
+                            p.error = Some(text);
+                        }
+                        Action::none()
+                    }
                     Outcome::Invalid => {
                         if let Some(p) = self.prompt.as_mut() {
                             p.busy = false;
@@ -158,7 +170,18 @@ impl Account {
                     }
                     Outcome::Failed(f) => {
                         self.prompt = None;
-                        self.finish(op, Some(Err(f.user_text())), ctx)
+                        let text = match f.error() {
+                            rocketchat::Error::RateLimited { retry_after, .. }
+                                if matches!(op, Op::SaveProfile { .. }) =>
+                            {
+                                match two_factor::wait_secs(*retry_after) {
+                                    Some(s) => t!("account.err_rate_limited", s = s).into_owned(),
+                                    None => t!("account.err_rate_limited_soon").into_owned(),
+                                }
+                            }
+                            _ => f.user_text(),
+                        };
+                        self.finish(op, Some(Err(text)), ctx)
                     }
                 },
             },
@@ -184,6 +207,9 @@ impl Account {
                 p.busy = true;
                 p.error = None;
                 let (op, code) = (p.op.clone(), p.code());
+                if op == Op::EnableTotp && code.method == rocketchat::TwoFactorMethod::Password {
+                    self.totp_password = Some(code.clone());
+                }
                 Action::task(two_factor::run(ctx, op, Some(code)))
             }
             M::Cancel => match self.prompt.take() {
@@ -204,6 +230,12 @@ impl Account {
                     |r| Message::Tfa(M::Resent(r)),
                 ))
             }
+            M::Sent(r) => {
+                if let (Some(p), Err(e)) = (self.prompt.as_mut(), r) {
+                    p.error = Some(e.user_text());
+                }
+                Action::none()
+            }
             M::Resent(r) => {
                 if let Some(p) = self.prompt.as_mut() {
                     match r {
@@ -213,6 +245,34 @@ impl Account {
                 }
                 Action::none()
             }
+        }
+    }
+
+    /// Saves the profile with a single `updateOwnBasicInfo` call: a TOTP or
+    /// e-mail code is asked for first (the e-mail code is sent now).
+    fn save_profile(&mut self, ctx: &mut Ctx<'_>) -> Action<Message> {
+        let Some((op, factor, code)) = self.profile.begin_save(ctx.workspace, &self.policy) else {
+            return Action::none();
+        };
+        let method = match factor {
+            profile::Factor::Totp => rocketchat::TwoFactorMethod::Totp,
+            profile::Factor::Email => rocketchat::TwoFactorMethod::Email,
+            profile::Factor::None | profile::Factor::Password => {
+                return Action::task(two_factor::run(ctx, op, code));
+            }
+        };
+        let who = ctx.workspace.username().map(str::to_owned);
+        self.prompt = Some(Prompt::ahead(op, method.clone(), who.clone()));
+        let focus = iced::widget::operation::focus(two_factor::INPUT_ID);
+        match (method, who) {
+            (rocketchat::TwoFactorMethod::Email, Some(who)) => Action::task(Task::batch([
+                focus,
+                ctx.rest_task(
+                    move |rest| async move { rest.send_email_2fa_code(&who).await },
+                    |r| Message::Tfa(two_factor::Msg::Sent(r)),
+                ),
+            ])),
+            _ => Action::task(focus),
         }
     }
 
@@ -242,6 +302,25 @@ impl Account {
                     Some(Err(e)) => Err(e),
                 };
                 self.tokens.done(r, ctx)
+            }
+            Op::EnableTotp => {
+                let password = self.totp_password.take();
+                let r = r.map(|r| {
+                    r.and_then(|d| match d {
+                        Done::TotpStarted(s) => Ok(s),
+                        _ => Err(String::new()),
+                    })
+                });
+                self.security.totp_started(r, password)
+            }
+            Op::ValidateTotp { .. } => {
+                let r = r.map(|r| {
+                    r.and_then(|d| match d {
+                        Done::TotpVerified(c) => Ok(c),
+                        _ => Err(String::new()),
+                    })
+                });
+                self.security.verified(r, ctx.workspace)
             }
             Op::DisableEmail2fa => {
                 let r = r.map(|r| r.map(|_| ()));
@@ -287,19 +366,21 @@ impl Account {
             body.into(),
             Message::Close,
         );
+        // Backup codes and new tokens are shown once: they only close with
+        // their "Done" button.
         let (overlay, dismiss) = if let Some(p) = &self.prompt {
             (
-                Some(two_factor::view(p)),
+                Some(("2fa", two_factor::view(p))),
                 Some(Message::Tfa(two_factor::Msg::Cancel)),
             )
         } else if let Some(d) = self.security.codes_dialog() {
-            (Some(d), Some(Message::Security(security::Msg::CloseCodes)))
+            (Some(("codes", d)), None)
         } else if let Some(d) = self.tokens.shown_dialog(ctx) {
-            (Some(d), Some(Message::Tokens(tokens::Msg::CloseShown)))
+            (Some(("token", d)), None)
         } else {
             (None, None)
         };
-        modal(page, overlay, dismiss)
+        modal_keyed(page, overlay, dismiss)
     }
 }
 

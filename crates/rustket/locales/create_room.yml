@@ -110,3 +110,6 @@ create_room.close:
 create_room.create:
   en: "Create"
   ru: "Создать"
+create_room.first_message_encrypted:
+  en: "The parent room is end-to-end encrypted: an encrypted discussion cannot start with a message."
+  ru: "Родительская комната зашифрована сквозным шифрованием: зашифрованное обсуждение нельзя начать с сообщения."

@@ -40,19 +40,28 @@ pub fn local_dm(ws: &Workspace, username: &str) -> Option<String> {
         .map(|e| e.rid().to_owned())
 }
 
-/// Whether `target` can be opened without a request.
+/// Whether `target` can be opened without a request. A hidden room
+/// (`open: false`) needs `rooms.open` first to come back to the sidebar.
 pub fn local(ws: &Workspace, target: &Target) -> Option<String> {
-    match target {
+    let rid = match target {
         Target::Room(rid) => ws.room(rid).map(|_| rid.clone()),
         Target::Join(rid) => ws.subscription(rid).map(|_| rid.clone()),
         Target::User(u) => local_dm(ws, u),
         Target::Users(_) => None,
-    }
+    }?;
+    let hidden = ws.subscription(&rid).is_some_and(|s| !s.open);
+    (!hidden).then_some(rid)
 }
 
+/// The room and the user's subscription; a hidden subscription is opened
+/// again (`rooms.open`).
 async fn fetch(rest: &RestClient, rid: &str) -> Result<Opened> {
     let room = rest.rooms_info(rid).await?;
-    let sub = rest.subscriptions_get_one(rid).await.ok();
+    let mut sub = rest.subscriptions_get_one(rid).await.ok();
+    if let Some(s) = sub.as_mut().filter(|s| !s.open) {
+        rest.rooms_open(rid).await?;
+        s.open = true;
+    }
     Ok(Opened { room, sub })
 }
 
@@ -165,5 +174,11 @@ mod tests {
         );
         assert_eq!(local(&ws, &Target::Room("c1".into())), Some("c1".into()));
         assert_eq!(local(&ws, &Target::Join("c1".into())), None);
+        // A hidden DM is opened through the server (`rooms.open`).
+        let mut sub = ws.subscription("d1").unwrap().clone();
+        sub.open = false;
+        ws.apply_subscription(Change::Updated, sub);
+        assert_eq!(local(&ws, &Target::User("bob".into())), None);
+        assert_eq!(local(&ws, &Target::Room("d1".into())), None);
     }
 }

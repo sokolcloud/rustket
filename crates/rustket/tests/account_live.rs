@@ -1,7 +1,9 @@
 //! Live checks of the account agent's server calls (account screen, directory,
 //! create dialogs, quick switcher opening) against the dev server. Skipped
 //! without `RUSTKET_TEST_SERVER`. Creates throwaway users and rooms and deletes
-//! them at the end (also when a check fails).
+//! them at the end (also when a check fails). The profile test makes several
+//! `users.updateOwnBasicInfo` calls in a row, so it needs the dev server's
+//! disabled API rate limiter (the default allows one per minute).
 //!
 //! ```sh
 //! RUSTKET_TEST_SERVER=http://localhost:3000 cargo test -p rustket --test account_live -- --test-threads=1
@@ -410,10 +412,15 @@ async fn profile_preferences_and_avatar() {
         let mut png = Vec::new();
         img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
+        let before = c.download(&format!("/avatar/{username}")).await.unwrap();
+        assert!(
+            before.content_type.as_deref().is_some_and(|t| t.contains("svg")),
+            "default avatar is SVG: {:?}",
+            before.content_type
+        );
         c.users_set_avatar("me.png", "image/png", png).await.unwrap();
-        // The upload records an avatar etag on the user. (The dev server's
-        // `/avatar/…` route answers SVG initials even then, so the image itself
-        // is not compared.)
+        // `/avatar/…` needs the rc_uid/rc_token cookies (blocked for
+        // anonymous requests by default); the download sends them.
         let mut etag = None;
         for _ in 0..20 {
             etag = env
@@ -428,6 +435,11 @@ async fn profile_preferences_and_avatar() {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert!(etag.is_some(), "uploaded avatar has an etag");
+        let after = c.download(&format!("/avatar/{username}")).await.unwrap();
+        let ct = after.content_type.clone().unwrap_or_default();
+        assert!(ct.starts_with("image/") && !ct.contains("svg"), "{ct}");
+        let bytes = after.bytes().await.unwrap();
+        assert!(image::load_from_memory(&bytes).is_ok());
         c.users_reset_avatar(&uid).await.unwrap();
     })
     .await;
@@ -447,12 +459,23 @@ async fn totp_and_tokens() {
         assert_eq!(list[0].name, "t1");
         assert!(t1.ends_with(&list[0].last_token_part));
 
-        // TOTP setup.
-        let setup = api::totp_enable(&c).await.unwrap();
+        // TOTP setup (`users.enableTotp` / `users.validateTotp` take the
+        // password as second factor; a fresh user may skip it).
+        let second = Some(TwoFactorCode::password(pw));
+        let e = api::totp_enable(&c, Some(TwoFactorCode::password("wrong"))).await;
+        if let Err(e) = e {
+            assert!(matches!(e, Error::TwoFactorInvalid(_)), "{e:?}");
+        }
+        let setup = api::totp_enable(&c, second.clone()).await.unwrap();
         assert!(setup.url.starts_with("otpauth://totp/"));
         assert!(setup.url.contains(&setup.secret));
-        assert_eq!(api::totp_validate(&c, "000000").await.unwrap(), None);
-        let codes = api::totp_validate(&c, &totp(&setup.secret))
+        assert_eq!(
+            api::totp_validate(&c, "000000", second.clone())
+                .await
+                .unwrap(),
+            None
+        );
+        let codes = api::totp_validate(&c, &totp(&setup.secret), second.clone())
             .await
             .unwrap()
             .expect("backup codes");
@@ -615,6 +638,7 @@ async fn create_rooms_directory_and_open() {
             .unwrap();
         env.room(&o.room.id);
         assert_eq!(o.room.t, rocketchat::models::RoomType::Direct);
+        let dm = o.room.id.clone();
         let o = create_room::create(
             c.clone(),
             Request::Direct(vec![peer.clone(), "alice".into()]),
@@ -687,6 +711,15 @@ async fn create_rooms_directory_and_open() {
             .await
             .unwrap();
         assert!(joined.sub.is_some());
+
+        // A hidden DM is shown again when opened.
+        c.rooms_hide(&dm).await.unwrap();
+        assert!(!c.subscriptions_get_one(&dm).await.unwrap().open);
+        let reopened = open::resolve(c.clone(), Target::Room(dm.clone()))
+            .await
+            .unwrap();
+        assert!(reopened.sub.unwrap().open);
+        assert!(c.subscriptions_get_one(&dm).await.unwrap().open);
     })
     .await;
 }

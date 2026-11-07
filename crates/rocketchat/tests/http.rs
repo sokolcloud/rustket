@@ -119,6 +119,12 @@ async fn download_redirect_to_foreign_storage_drops_credentials() {
     assert_eq!(d.content_type.as_deref(), Some("image/png"));
     assert_eq!(&d.bytes().await.unwrap()[..], b"ok");
     assert!(joined(&log_a).contains("x-auth-token: secret-auth-token"));
+    // `/avatar/` only reads the credentials from cookies.
+    assert!(
+        joined(&log_a).contains("cookie: rc_uid=uid123; rc_token=secret-auth-token"),
+        "{}",
+        joined(&log_a)
+    );
     let b = joined(&log_b);
     assert!(b.contains("x-amz-signature=abc"));
     for h in [

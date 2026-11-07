@@ -196,17 +196,51 @@ pub async fn send_confirmation_email(rest: &RestClient, email: &str) -> Result<(
         .await
 }
 
-pub async fn totp_enable(rest: &RestClient) -> Result<TotpSetup> {
-    rest.method_call("2fa:enable", json!([])).await
+/// The endpoint does not exist (an older server without the REST variant).
+fn missing_endpoint(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Status { status: 404, .. } | Error::Api { status: 404, .. }
+    )
+}
+
+/// Starts the TOTP setup. `users.enableTotp` asks for a second factor
+/// (`TwoFactorRequired`; the password when the user has no 2FA): repeat with
+/// `code`. Servers without it use the `2fa:enable` method (removed in 9.0).
+pub async fn totp_enable(rest: &RestClient, code: Option<TwoFactorCode>) -> Result<TotpSetup> {
+    match rest
+        .post_with::<Value, _>("users.enableTotp", &json!({}), code.as_ref())
+        .await
+    {
+        Ok(v) => Ok(serde_json::from_value(v)?),
+        Err(e) if missing_endpoint(&e) => rest.method_call("2fa:enable", json!([])).await,
+        Err(e) => Err(e),
+    }
 }
 
 /// Confirms the TOTP setup; the backup codes (shown once), or `None` for a wrong
-/// code.
-pub async fn totp_validate(rest: &RestClient, code: &str) -> Result<Option<Vec<String>>> {
-    match rest
-        .method_call_raw("2fa:validateTempToken", json!([code]), false)
+/// code. `users.validateTotp` asks for a second factor like
+/// [`totp_enable`] (it never remembers one).
+pub async fn totp_validate(
+    rest: &RestClient,
+    code: &str,
+    second: Option<TwoFactorCode>,
+) -> Result<Option<Vec<String>>> {
+    let r = match rest
+        .post_with::<Value, _>(
+            "users.validateTotp",
+            &json!({ "code": code }),
+            second.as_ref(),
+        )
         .await
     {
+        Err(e) if missing_endpoint(&e) => {
+            rest.method_call_raw("2fa:validateTempToken", json!([code]), false)
+                .await
+        }
+        r => r,
+    };
+    match r {
         Ok(v) => Ok(codes(v)),
         Err(e) if is_invalid_totp(&e) => Ok(None),
         Err(e) => Err(e),
@@ -215,24 +249,50 @@ pub async fn totp_validate(rest: &RestClient, code: &str) -> Result<Option<Vec<S
 
 /// `false` for a wrong code.
 pub async fn totp_disable(rest: &RestClient, code: &str) -> Result<bool> {
-    let v = rest
-        .method_call_raw("2fa:disable", json!([code]), false)
-        .await?;
+    let v = match rest
+        .post::<Value, _>("users.disableTotp", &json!({ "code": code }))
+        .await
+    {
+        Ok(v) => v.get("disabled").cloned().unwrap_or(Value::Null),
+        Err(e) if missing_endpoint(&e) => {
+            rest.method_call_raw("2fa:disable", json!([code]), false)
+                .await?
+        }
+        Err(e) if is_invalid_totp(&e) => return Ok(false),
+        Err(e) => return Err(e),
+    };
     Ok(v.as_bool().unwrap_or(false))
 }
 
-/// New backup codes, or `None` for a wrong code (the server returns nothing).
+/// New backup codes, or `None` for a wrong code.
 pub async fn totp_regenerate_codes(rest: &RestClient, code: &str) -> Result<Option<Vec<String>>> {
-    let v = rest
-        .method_call_raw("2fa:regenerateCodes", json!([code]), false)
-        .await?;
-    Ok(codes(v))
+    match rest
+        .post::<Value, _>("users.regenerateTotpCodes", &json!({ "code": code }))
+        .await
+    {
+        Ok(v) => Ok(codes(v)),
+        Err(e) if missing_endpoint(&e) => {
+            let v = rest
+                .method_call_raw("2fa:regenerateCodes", json!([code]), false)
+                .await?;
+            Ok(codes(v))
+        }
+        Err(e) if is_invalid_totp(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn totp_codes_remaining(rest: &RestClient) -> Result<u64> {
-    let v = rest
-        .method_call_raw("2fa:checkCodesRemaining", json!([]), false)
-        .await?;
+    let v = match rest
+        .get::<Value>("users.totpCodesRemaining", &Query::new())
+        .await
+    {
+        Err(e) if missing_endpoint(&e) => {
+            rest.method_call_raw("2fa:checkCodesRemaining", json!([]), false)
+                .await?
+        }
+        r => r?,
+    };
     Ok(v.get("remaining").and_then(Value::as_u64).unwrap_or(0))
 }
 
@@ -314,9 +374,19 @@ fn codes(v: Value) -> Option<Vec<String>> {
     (!list.is_empty()).then_some(list)
 }
 
+/// A wrong TOTP code in the body (`invalid-totp`), not a second-factor
+/// challenge for the request itself.
 fn is_invalid_totp(e: &Error) -> bool {
-    let text = e.to_string();
-    text.contains("invalid-totp") || matches!(e, Error::TwoFactorInvalid(_))
+    match e {
+        Error::Api {
+            error, error_type, ..
+        } => [error, error_type]
+            .into_iter()
+            .flatten()
+            .any(|s| s.contains("invalid-totp")),
+        Error::TwoFactorInvalid(_) | Error::TwoFactorRequired(_) => false,
+        e => e.to_string().contains("invalid-totp"),
+    }
 }
 
 fn field<T: serde::de::DeserializeOwned>(mut v: Value, key: &str) -> Result<T> {

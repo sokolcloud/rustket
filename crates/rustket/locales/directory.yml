@@ -42,10 +42,10 @@ directory.joined:
   en: "joined"
   ru: "вы участник"
 directory.members:
-  en: "%{n} members"
+  en: "Members: %{n}"
   ru: "участников: %{n}"
 directory.rooms:
-  en: "%{n} rooms"
+  en: "Rooms: %{n}"
   ru: "комнат: %{n}"
 directory.range:
   en: "%{first}–%{last} of %{total}"

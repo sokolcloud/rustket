@@ -32,6 +32,7 @@ pub enum Msg {
     Name(String),
     Bypass(bool),
     Generate,
+    AskRegenerate(String),
     Regenerate(String),
     AskRemove(String),
     Remove(String),
@@ -51,6 +52,7 @@ pub struct Tokens {
     /// A freshly (re)generated token, shown once: (name, token).
     pub shown: Option<(String, String)>,
     pub confirm_remove: Option<String>,
+    pub confirm_regenerate: Option<String>,
 }
 
 impl Tokens {
@@ -113,20 +115,28 @@ impl Tokens {
                     None,
                 ))
             }
+            Msg::AskRegenerate(name) => {
+                self.confirm_remove = None;
+                self.confirm_regenerate = Some(name);
+                Action::none()
+            }
             Msg::Regenerate(name) => {
                 if self.busy.is_some() {
                     return Action::none();
                 }
+                self.confirm_regenerate = None;
                 self.busy = Some(name.clone());
                 self.error = None;
                 Action::task(two_factor::run(ctx, Op::RegenerateToken(name), None))
             }
             Msg::AskRemove(name) => {
+                self.confirm_regenerate = None;
                 self.confirm_remove = Some(name);
                 Action::none()
             }
             Msg::CancelRemove => {
                 self.confirm_remove = None;
+                self.confirm_regenerate = None;
                 Action::none()
             }
             Msg::Remove(name) => {
@@ -257,6 +267,7 @@ impl Tokens {
                 .size(TEXT_CAPTION)
                 .style(style::text_secondary),
             text(format!("…{}", tok.last_token_part))
+                .wrapping(iced::widget::text::Wrapping::None)
                 .font(MONOSPACE_FONT)
                 .size(TEXT_CAPTION)
                 .style(style::text_secondary),
@@ -270,9 +281,6 @@ impl Tokens {
         let idle = self.busy.is_none();
         let actions: Element<'a, Message> = if self.confirm_remove.as_deref() == Some(&tok.name) {
             row![
-                text(t!("account.token_remove_confirm"))
-                    .size(TEXT_SMALL)
-                    .style(style::text_danger),
                 secondary_button(t!("account.cancel"), Some(k(Msg::CancelRemove))),
                 danger_button(
                     t!("account.token_remove"),
@@ -282,11 +290,23 @@ impl Tokens {
             .spacing(SPACE_2)
             .align_y(Alignment::Center)
             .into()
+        } else if self.confirm_regenerate.as_deref() == Some(&tok.name) {
+            row![
+                secondary_button(t!("account.cancel"), Some(k(Msg::CancelRemove))),
+                danger_button(
+                    t!("account.token_regenerate"),
+                    idle.then(|| k(Msg::Regenerate(tok.name.clone())))
+                )
+                .loading(busy),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .into()
         } else {
             row![
                 ghost_button(
                     t!("account.token_regenerate"),
-                    idle.then(|| k(Msg::Regenerate(tok.name.clone())))
+                    idle.then(|| k(Msg::AskRegenerate(tok.name.clone())))
                 )
                 .icon(Icon::RefreshCw)
                 .loading(busy),
@@ -299,18 +319,26 @@ impl Tokens {
             .spacing(SPACE_1)
             .into()
         };
-        row![
-            column![
-                text(tok.name.as_str()).size(TEXT_BODY).font(FONT_MEDIUM),
-                meta
-            ]
-            .spacing(SPACE_1)
-            .width(Length::Fill),
-            actions,
+        let mut info = column![
+            text(tok.name.as_str()).size(TEXT_BODY).font(FONT_MEDIUM),
+            meta
         ]
-        .spacing(SPACE_2)
-        .align_y(Alignment::Center)
-        .into()
+        .spacing(SPACE_1)
+        .width(Length::Fill);
+        let question = if self.confirm_remove.as_deref() == Some(&tok.name) {
+            Some(t!("account.token_remove_confirm"))
+        } else if self.confirm_regenerate.as_deref() == Some(&tok.name) {
+            Some(t!("account.token_regenerate_confirm"))
+        } else {
+            None
+        };
+        if let Some(q) = question {
+            info = info.push(text(q).size(TEXT_SMALL).style(style::text_danger));
+        }
+        row![info, actions,]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .into()
     }
 
     /// The token shown once after generating it.
@@ -318,19 +346,29 @@ impl Tokens {
         let (name, token) = self.shown.as_ref()?;
         let uid = ctx.workspace.user_id().unwrap_or_default();
         let k = |m| Message::Tokens(m);
+        // The copy button sits on the label row so the value gets the whole
+        // width and stays on one line.
         let value = |label: String, v: &'a str| -> Element<'a, Message> {
             column![
-                text(label).size(TEXT_CAPTION).style(style::text_secondary),
                 row![
-                    container(text(v).font(MONOSPACE_FONT).size(TEXT_SMALL))
-                        .padding([SPACE_2, SPACE_3])
-                        .width(Length::Fill)
-                        .style(style::container_code_block),
+                    text(label)
+                        .size(TEXT_CAPTION)
+                        .style(style::text_secondary)
+                        .width(Length::Fill),
                     ghost_button(t!("account.copy"), Some(Message::Copy(v.to_owned())))
                         .icon(Icon::Copy),
                 ]
-                .spacing(SPACE_2)
                 .align_y(Alignment::Center),
+                container(
+                    text(v)
+                        .font(MONOSPACE_FONT)
+                        .size(TEXT_SMALL)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                )
+                .padding([SPACE_2, SPACE_3])
+                .width(Length::Fill)
+                .clip(true)
+                .style(style::container_code_block),
             ]
             .spacing(SPACE_1)
             .into()
@@ -345,7 +383,8 @@ impl Tokens {
             t!("account.token_shown_title", name = name.as_str()),
             body,
             vec![primary_button(t!("account.backup_codes_done"), Some(k(Msg::CloseShown))).into()],
-            Some(k(Msg::CloseShown)),
+            // Shown once: only "Done" closes it (no backdrop/Escape/close button).
+            None,
         ))
     }
 }

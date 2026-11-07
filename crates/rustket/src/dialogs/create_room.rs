@@ -253,7 +253,8 @@ impl CreateRoom {
                 } else {
                     k
                 };
-                if k.tab() != self.kind.tab() {
+                let current = self.effective_kind(ctx.workspace).unwrap_or(self.kind);
+                if k.tab() != current.tab() {
                     self.kind = k;
                     self.error = None;
                     self.name_taken = None;
@@ -263,7 +264,8 @@ impl CreateRoom {
                 Action::none()
             }
             Message::Private(p) => {
-                if self.kind == Kind::Team {
+                if self.effective_kind(ctx.workspace) == Some(Kind::Team) {
+                    self.kind = Kind::Team;
                     self.team_private = p;
                 } else {
                     let want = if p { Kind::Group } else { Kind::Channel };
@@ -433,7 +435,7 @@ impl CreateRoom {
                 };
                 self.busy = true;
                 self.error = None;
-                let req = self.request(kind);
+                let req = self.submit_request(kind, ctx.workspace);
                 Action::task(ctx.rest_task(
                     move |rest| create(rest, req),
                     |r| Message::Created(Box::new(r)),
@@ -452,6 +454,27 @@ impl CreateRoom {
             }
             Message::Close => Action::effect(Effect::Close),
         }
+    }
+
+    /// The discussion parent is end-to-end encrypted (the discussion inherits
+    /// it and cannot get a first message).
+    pub fn parent_encrypted(&self, ws: &Workspace) -> bool {
+        self.parent
+            .as_ref()
+            .and_then(|(rid, _)| ws.room(rid))
+            .is_some_and(|e| e.is_encrypted())
+    }
+
+    /// [`Self::request`] adjusted to the workspace: no first message in a
+    /// discussion of an encrypted room (the server refuses it).
+    pub fn submit_request(&self, kind: Kind, ws: &Workspace) -> Request {
+        let mut req = self.request(kind);
+        if let Request::Discussion { reply, .. } = &mut req
+            && self.parent_encrypted(ws)
+        {
+            *reply = None;
+        }
+        req
     }
 
     /// The request for the current form.
@@ -560,14 +583,18 @@ impl CreateRoom {
         }
         body = body.push(self.member_picker(ctx, kind));
         if kind == Kind::Discussion {
-            body = body.push(
-                text_field(
-                    t!("create_room.first_message"),
-                    &self.first_message,
-                    Message::FirstMessage,
-                )
-                .placeholder(t!("create_room.first_message_placeholder")),
-            );
+            let encrypted = self.parent_encrypted(ws);
+            let mut f = text_field(
+                t!("create_room.first_message"),
+                if encrypted { "" } else { &self.first_message },
+                Message::FirstMessage,
+            )
+            .placeholder(t!("create_room.first_message_placeholder"))
+            .disabled(encrypted);
+            if encrypted {
+                f = f.help(t!("create_room.first_message_encrypted"));
+            }
+            body = body.push(f);
         }
         if matches!(kind, Kind::Channel | Kind::Group | Kind::Team) {
             let private = match kind {
@@ -692,7 +719,7 @@ impl CreateRoom {
             let mut col = column![
                 text(t!("create_room.parent")).size(TEXT_BODY - 1.0),
                 row![
-                    icon::sized(Icon::Hash, 14.0).style(style::text_secondary),
+                    icon::sized(parent_icon(ctx.workspace, rid), 14.0).style(style::text_secondary),
                     text(name.as_str()).size(TEXT_BODY).width(Length::Fill),
                     button(icon::sized(Icon::X, 14.0))
                         .style(style::button_icon)
@@ -756,6 +783,15 @@ impl CreateRoom {
             );
         }
         col.into()
+    }
+}
+
+/// Icon of a known parent room (`#` when unknown).
+fn parent_icon(ws: &Workspace, rid: &str) -> Icon {
+    match ws.room(rid) {
+        Some(e) if e.is_encrypted() => Icon::Lock,
+        Some(e) if e.room_type() == RoomType::Private => Icon::Lock,
+        _ => Icon::Hash,
     }
 }
 
@@ -946,6 +982,73 @@ mod tests {
         assert!(!disc.ready(&w), "needs a parent");
         disc.parent = Some(("unknown-room".into(), "x".into()));
         assert!(disc.ready(&w));
+    }
+
+    fn with_ctx<R>(ws: &mut Workspace, f: impl FnOnce(&mut Ctx<'_>) -> R) -> R {
+        let sid = rustket_core::ServerId("s".into());
+        let url = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let images = crate::images::Images::new(None);
+        let config = rustket_core::AppConfig::default();
+        let mut ctx = Ctx {
+            server_id: &sid,
+            server: &url,
+            workspace: ws,
+            session: None,
+            images: &images,
+            config: &config,
+        };
+        f(&mut ctx)
+    }
+
+    #[test]
+    fn private_toggle_follows_the_effective_kind() {
+        // Only teams allowed: the channel dialog falls back to the team tab,
+        // and its Private toggle sets the team type.
+        let mut w = ws(&["create-team"]);
+        let mut c = CreateRoom::new(Kind::Channel);
+        with_ctx(&mut w, |ctx| {
+            assert_eq!(c.effective_kind(ctx.workspace), Some(Kind::Team));
+            let _ = c.update(Message::Private(true), ctx);
+        });
+        assert!(c.team_private);
+        c.name = "rk-team".into();
+        assert!(matches!(c.request(Kind::Team), Request::Team(v) if v["type"] == 1));
+    }
+
+    #[test]
+    fn encrypted_parent_has_no_first_message() {
+        let mut w = ws(&["start-discussion"]);
+        w.apply_room(
+            Change::Inserted,
+            rocketchat::models::Room {
+                id: "E".into(),
+                t: RoomType::Private,
+                encrypted: Some(true),
+                ..Default::default()
+            },
+        );
+        let mut c = CreateRoom::discussion_in("E", "secret");
+        c.name = "disc".into();
+        c.first_message = "hello".into();
+        assert!(c.parent_encrypted(&w));
+        assert!(matches!(parent_icon(&w, "E"), Icon::Lock));
+        assert!(matches!(parent_icon(&w, "unknown"), Icon::Hash));
+        assert!(matches!(
+            c.submit_request(Kind::Discussion, &w),
+            Request::Discussion { reply: None, .. }
+        ));
+        w.apply_room(
+            Change::Updated,
+            rocketchat::models::Room {
+                id: "E".into(),
+                t: RoomType::Private,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            c.submit_request(Kind::Discussion, &w),
+            Request::Discussion { reply: Some(_), .. }
+        ));
     }
 
     #[test]

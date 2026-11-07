@@ -821,10 +821,16 @@ async fn account_shots(d: &mut Driver, out: &Path, sid: &rustket_core::ServerId)
     d.send(am(account::Message::Tokens(
         account::tokens::Msg::CloseShown,
     )));
+    d.send(am(account::Message::Tokens(
+        account::tokens::Msg::AskRegenerate("ci-bot".into()),
+    )));
     both(d, out, "32-account-tokens");
+    d.send(am(account::Message::Tokens(
+        account::tokens::Msg::CancelRemove,
+    )));
 
-    // A password change without the current password: the server asks for it
-    // through the second-factor prompt (cancelled, nothing changes).
+    // A password change: without 2FA the current password is asked inline and
+    // Save waits for it (one `updateOwnBasicInfo` call; nothing is sent here).
     d.send(am(account::Message::Tab(account::Tab::Profile)));
     for m in [
         account::profile::Msg::NewPassword("Snapshot-pass-2468!".into()),
@@ -833,12 +839,9 @@ async fn account_shots(d: &mut Driver, out: &Path, sid: &rustket_core::ServerId)
     ] {
         d.send(am(account::Message::Profile(m)));
     }
-    d.pump_until("2fa prompt", Duration::from_secs(10), |a| {
-        acct(a).is_some_and(|x| x.prompt.is_some())
-    })
-    .await;
-    both(d, out, "33-account-2fa-prompt");
-    d.send(am(account::Message::Tfa(account::two_factor::Msg::Cancel)));
+    d.settle(Duration::from_millis(500)).await;
+    both(d, out, "33-account-password-change");
+    d.send(am(account::Message::Profile(account::profile::Msg::Revert)));
     d.send(am(account::Message::Close));
     d.app.config.ui.theme = Theme::Light;
 }

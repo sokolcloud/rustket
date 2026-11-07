@@ -20,8 +20,7 @@ use rustket_ui::theme::{
     FONT_MEDIUM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    AvatarShape, BannerKind, avatar, banner, empty_state, ghost_button, loading_placeholder,
-    secondary_button,
+    AvatarShape, BannerKind, avatar, banner, empty_state, loading_placeholder, secondary_button,
 };
 use serde_json::{Value, json};
 
@@ -545,7 +544,7 @@ impl Directory {
             EntryKind::Channel { private: false } => Icon::Hash,
             EntryKind::Channel { private: true } => Icon::Lock,
             EntryKind::Team { .. } => Icon::Users,
-            EntryKind::User => Icon::AtSign,
+            EntryKind::User => Icon::User,
         };
         let joined = ws.subscription(&e.id).is_some();
         let mut title = row![
@@ -579,16 +578,18 @@ impl Directory {
             meta = meta.push(stat(
                 Icon::User,
                 t!("directory.members", n = n).into_owned(),
+                110.0,
             ));
         }
         if let (EntryKind::Team { .. }, Some(n)) = (e.kind, e.rooms_count) {
             meta = meta.push(stat(
                 Icon::MessagesSquare,
                 t!("directory.rooms", n = n).into_owned(),
+                100.0,
             ));
         }
         if let Some(d) = e.created {
-            meta = meta.push(stat(Icon::Calendar, date_label(d)));
+            meta = meta.push(stat(Icon::Calendar, date_label(d), 96.0));
         }
         let busy = self.busy.as_deref() == Some(e.id.as_str());
         let mut line = row![
@@ -606,7 +607,7 @@ impl Directory {
         if e.kind != EntryKind::User {
             // A fixed slot keeps the columns aligned with or without the button.
             let slot: Element<'a, Message> = if joinable {
-                ghost_button(
+                secondary_button(
                     t!("directory.join"),
                     self.busy.is_none().then(|| Message::Join(e.id.clone())),
                 )
@@ -626,13 +627,18 @@ impl Directory {
     }
 }
 
-fn stat<'a>(i: Icon, label: String) -> Element<'a, Message> {
+/// A fixed-width stat column, so rows line up whatever the numbers.
+fn stat<'a>(i: Icon, label: String, width: f32) -> Element<'a, Message> {
     row![
         icon::sized(i, 13.0).style(style::text_hint),
-        text(label).size(TEXT_CAPTION).style(style::text_secondary)
+        text(label)
+            .size(TEXT_CAPTION)
+            .style(style::text_secondary)
+            .wrapping(iced::widget::text::Wrapping::None)
     ]
     .spacing(SPACE_1)
     .align_y(Alignment::Center)
+    .width(width)
     .into()
 }
 

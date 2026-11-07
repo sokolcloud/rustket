@@ -260,6 +260,17 @@ fn text_of(kind: Kind, v: &Value) -> String {
 }
 
 /// Parses a `Words` input: trimmed, non-empty, deduplicated.
+/// The server refuses an `idleTimeLimit` below this
+/// (`invalid-idle-time-limit-value`).
+pub const MIN_IDLE_SECONDS: u32 = 60;
+
+pub fn parse_seconds(s: &str) -> Option<u32> {
+    s.trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n >= MIN_IDLE_SECONDS)
+}
+
 pub fn parse_words(s: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for w in s.split(',').map(str::trim).filter(|w| !w.is_empty()) {
@@ -312,11 +323,11 @@ impl Preferences {
             .collect()
     }
 
-    /// The idle limit text is not a positive number.
+    /// The idle limit text is not a number of at least [`MIN_IDLE_SECONDS`].
     pub fn invalid(&self) -> bool {
         self.texts
             .get("idleTimeLimit")
-            .is_some_and(|s| s.trim().parse::<u32>().map_or(true, |n| n == 0))
+            .is_some_and(|s| parse_seconds(s).is_none())
     }
 
     pub fn update(&mut self, msg: Msg, ctx: &mut Ctx<'_>) -> Action<Message> {
@@ -333,9 +344,7 @@ impl Preferences {
                         self.values.insert(k.to_owned(), json!(parse_words(&s)));
                     }
                     Some(Kind::Seconds) => {
-                        if let Ok(n) = s.trim().parse::<u32>()
-                            && n > 0
-                        {
+                        if let Some(n) = parse_seconds(&s) {
                             self.values.insert(k.to_owned(), json!(n));
                         }
                     }
@@ -538,7 +547,7 @@ impl Preferences {
                     let s = self.texts.get(key).map(String::as_str).unwrap_or_default();
                     let err = self
                         .invalid()
-                        .then(|| t!("account.err_positive_number").into_owned());
+                        .then(|| t!("account.err_idle_min", min = MIN_IDLE_SECONDS).into_owned());
                     text_field(label, s, move |s| Message::Prefs(Msg::Text(key, s)))
                         .help(t!("account.pref_idle_help"))
                         .error(err)
@@ -631,6 +640,8 @@ mod tests {
         let mut p = Preferences::default();
         p.sync(&ws_with_prefs(json!({})));
         p.texts.insert("idleTimeLimit", "abc".into());
+        assert!(p.invalid());
+        p.texts.insert("idleTimeLimit", "30".into());
         assert!(p.invalid());
         p.texts.insert("idleTimeLimit", "120".into());
         assert!(!p.invalid());

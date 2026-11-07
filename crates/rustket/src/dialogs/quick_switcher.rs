@@ -4,6 +4,7 @@
 //! Owner: account agent. Strings: `locales/quick_switcher.yml`
 //! (`quick_switcher.*`).
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use iced::widget::{button, column, container, row, text, text_input};
@@ -12,6 +13,7 @@ use rocketchat::models::{RoomType, SpotlightResult};
 use rust_i18n::t;
 use rustket_core::Workspace;
 use rustket_core::room_list::{self, Avatar, BadgeVariant, RoomKind, RoomListOptions};
+use rustket_core::workspace::RoomEntry;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL};
@@ -51,6 +53,9 @@ pub enum Item {
         avatar: Avatar,
         unread: u64,
         mention: bool,
+        /// Not in the sidebar (`open: false`); opening it shows it again.
+        hidden: bool,
+        archived: bool,
     },
     /// A user without a DM yet (from `spotlight`).
     User { username: String, name: String },
@@ -71,6 +76,9 @@ impl Item {
     }
 }
 
+/// (generation, room count).
+type CacheKey = (u64, usize);
+
 #[derive(Debug, Default)]
 pub struct QuickSwitcher {
     pub query: String,
@@ -82,6 +90,11 @@ pub struct QuickSwitcher {
     pub searching: bool,
     pub busy: bool,
     pub error: Option<String>,
+    /// Bumped whenever the results may change (query, spotlight answer).
+    generation: u64,
+    /// The rows for (`generation`, room count), so `view` and the arrow keys
+    /// don't rescore every room.
+    cache: RefCell<Option<(CacheKey, Vec<Item>)>>,
 }
 
 /// Fuzzy score of `candidate` for `query` (lowercase); 0 = no match.
@@ -120,79 +133,123 @@ pub fn score(query: &str, candidate: &str) -> u32 {
     (200usize.saturating_sub(span * 4)).max(10) as u32
 }
 
-/// The rows for `query`: matching sidebar rooms (unread first, then score,
-/// then activity), then spotlight users without a DM and rooms not joined.
+/// What a `@` / `#` prefix limits the search to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    All,
+    People,
+    Rooms,
+}
+
+/// The rows for `query`: matching subscribed rooms, hidden and archived ones
+/// included (unread first, then score, then activity), then spotlight users
+/// without a listed DM and rooms not joined. `@` limits the search to people
+/// and direct messages, `#` to rooms.
 pub fn results(
     ws: &Workspace,
     opts: &RoomListOptions,
     query: &str,
     remote: Option<&SpotlightResult>,
 ) -> Vec<Item> {
-    let q = query.trim().trim_start_matches(['@', '#']).to_lowercase();
-    let mut local: Vec<(bool, u32, Option<rocketchat::RcDate>, Item)> =
-        room_list::compute(ws, opts, "")
-            .into_iter()
-            .flat_map(|s| s.items)
-            .filter_map(|i| {
-                let s = [Some(i.display_name.as_str()), Some(i.name.as_str())]
-                    .into_iter()
-                    .flatten()
-                    .chain(ws.room(&i.rid).and_then(|e| e.fname()))
-                    .map(|c| score(&q, c))
-                    .max()
-                    .unwrap_or(0);
-                (s > 0).then(|| {
-                    let unread = i.badge.count > 0 || i.badge.dot || i.badge.highlighted;
-                    (
-                        unread,
-                        s,
-                        i.last_activity,
-                        Item::Local {
-                            mention: i.badge.variant == BadgeVariant::Mention,
-                            unread: i.badge.count,
-                            rid: i.rid,
-                            name: i.display_name,
-                            kind: i.kind,
-                            avatar: i.avatar,
-                        },
-                    )
-                })
-            })
-            .collect();
-    local.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
+    let query = query.trim();
+    let scope = if query.starts_with('@') {
+        Scope::People
+    } else if query.starts_with('#') {
+        Scope::Rooms
+    } else {
+        Scope::All
+    };
+    let q = query.trim_start_matches(['@', '#']).to_lowercase();
+    let mut local: Vec<(bool, u32, Option<rocketchat::RcDate>, &RoomEntry)> = ws
+        .rooms()
+        .values()
+        .filter(|e| e.sub.is_some())
+        .filter(|e| {
+            let direct = e.room_type() == RoomType::Direct;
+            match scope {
+                Scope::All => true,
+                Scope::People => direct,
+                Scope::Rooms => !direct,
+            }
+        })
+        .filter_map(|e| {
+            let shown = room_list::display_name(ws, e, opts.use_real_names);
+            let s = [Some(shown.as_str()), Some(e.name()), e.fname()]
+                .into_iter()
+                .flatten()
+                .map(|c| score(&q, c))
+                .max()
+                .unwrap_or(0);
+            (s > 0).then(|| (room_list::room_is_unread(e), s, e.last_activity(), e))
+        })
+        .collect();
+    local.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then(b.2.cmp(&a.2))
+            .then(a.3.rid().cmp(b.3.rid()))
+    });
     let mut out: Vec<Item> = local
         .into_iter()
         .take(MAX_LOCAL)
-        .map(|(_, _, _, i)| i)
+        .map(|(_, _, _, e)| {
+            let i = room_list::item(ws, e, opts);
+            Item::Local {
+                mention: i.badge.variant == BadgeVariant::Mention,
+                unread: i.badge.count,
+                hidden: !e.sub.as_ref().is_some_and(|s| s.open),
+                archived: i.archived,
+                rid: i.rid,
+                name: i.display_name,
+                kind: i.kind,
+                avatar: i.avatar,
+            }
+        })
         .collect();
     if let Some(r) = remote {
         let me = ws.username().unwrap_or_default();
-        for u in &r.users {
-            let Some(username) = u.username.as_deref() else {
-                continue;
-            };
-            if username == me || open::local_dm(ws, username).is_some() {
-                continue;
+        let listed = |rid: &str| {
+            out.iter()
+                .any(|i| matches!(i, Item::Local { rid: r, .. } if r == rid))
+        };
+        let mut extra = Vec::new();
+        if scope != Scope::Rooms {
+            for u in &r.users {
+                let Some(username) = u.username.as_deref() else {
+                    continue;
+                };
+                // Skip people whose DM is in the sidebar or in the results.
+                let has_dm = open::local_dm(ws, username).is_some_and(|rid| {
+                    listed(&rid) || ws.subscription(&rid).is_some_and(|s| s.open)
+                });
+                if username == me || has_dm {
+                    continue;
+                }
+                extra.push(Item::User {
+                    username: username.to_owned(),
+                    name: u.name.clone().unwrap_or_else(|| username.to_owned()),
+                });
             }
-            out.push(Item::User {
-                username: username.to_owned(),
-                name: u.name.clone().unwrap_or_else(|| username.to_owned()),
-            });
         }
-        for room in &r.rooms {
-            if ws.subscription(&room.id).is_some() || room.t == RoomType::Direct {
-                continue;
+        if scope != Scope::People {
+            for room in &r.rooms {
+                if room.t == RoomType::Direct
+                    || (ws.subscription(&room.id).is_some() && listed(&room.id))
+                {
+                    continue;
+                }
+                extra.push(Item::Room {
+                    rid: room.id.clone(),
+                    name: room
+                        .fname
+                        .clone()
+                        .or_else(|| room.name.clone())
+                        .unwrap_or_else(|| room.id.clone()),
+                    private: room.t == RoomType::Private,
+                });
             }
-            out.push(Item::Room {
-                rid: room.id.clone(),
-                name: room
-                    .fname
-                    .clone()
-                    .or_else(|| room.name.clone())
-                    .unwrap_or_else(|| room.id.clone()),
-                private: room.t == RoomType::Private,
-            });
         }
+        out.extend(extra);
     }
     out.truncate(MAX_TOTAL);
     out
@@ -215,18 +272,27 @@ impl QuickSwitcher {
     }
 
     fn items(&self, ws: &Workspace, prefs: &rustket_core::config::UiPrefs) -> Vec<Item> {
+        let key = (self.generation, ws.rooms().len());
+        if let Some((k, items)) = self.cache.borrow().as_ref()
+            && *k == key
+        {
+            return items.clone();
+        }
         let remote = self
             .remote
             .as_ref()
             .filter(|(q, _)| *q == self.query.trim())
             .map(|(_, r)| r);
-        results(ws, &options(ws, prefs), &self.query, remote)
+        let items = results(ws, &options(ws, prefs), &self.query, remote);
+        *self.cache.borrow_mut() = Some((key, items.clone()));
+        items
     }
 
     pub fn update(&mut self, msg: Message, ctx: &mut Ctx<'_>) -> Action<Message> {
         match msg {
             Message::Query(q) => {
                 self.query = q;
+                self.generation += 1;
                 self.selected = 0;
                 self.seq += 1;
                 self.error = None;
@@ -256,6 +322,7 @@ impl QuickSwitcher {
                     return Action::none();
                 }
                 self.searching = false;
+                self.generation += 1;
                 match r {
                     Ok(res) => self.remote = Some((q, res)),
                     Err(e) => self.error = Some(e.user_text()),
@@ -358,6 +425,7 @@ impl QuickSwitcher {
             );
         }
         let mut input_row = row![
+            icon::sized(Icon::Search, 16.0).style(style::text_secondary),
             text_input(&t!("quick_switcher.placeholder"), &self.query)
                 .id(INPUT_ID)
                 .on_input(Message::Query)
@@ -406,8 +474,24 @@ impl QuickSwitcher {
     fn row<'a>(&'a self, i: usize, item: &Item, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
         let (av, name, kind_icon, hint): (Avatar, String, Icon, Option<String>) = match item {
             Item::Local {
-                name, kind, avatar, ..
-            } => (avatar.clone(), name.clone(), kind_icon(*kind), None),
+                name,
+                kind,
+                avatar,
+                hidden,
+                archived,
+                ..
+            } => (
+                avatar.clone(),
+                name.clone(),
+                kind_icon(*kind),
+                if *archived {
+                    Some(t!("quick_switcher.archived").into_owned())
+                } else if *hidden {
+                    Some(t!("quick_switcher.hidden").into_owned())
+                } else {
+                    None
+                },
+            ),
             Item::User { username, name } => (
                 Avatar::User {
                     username: username.clone(),
@@ -607,6 +691,29 @@ mod tests {
         assert_eq!(r[2].target(), Target::User("devon".into()));
     }
 
+    #[test]
+    fn hidden_and_archived_rooms_are_found_and_prefixes_scope() {
+        let mut ws = ws();
+        let mut s = ws.subscription("d1").unwrap().clone();
+        s.open = false;
+        ws.apply_subscription(Change::Updated, s);
+        add(&mut ws, "r4", "old-dev", RoomType::Channel, 0);
+        let mut s = ws.subscription("r4").unwrap().clone();
+        s.archived = Some(true);
+        ws.apply_subscription(Change::Updated, s);
+        let opts = RoomListOptions::default();
+        let r = results(&ws, &opts, "bob", Some(&spotlight_with("bob")));
+        // The hidden DM is listed (once); spotlight's bob is not repeated.
+        assert_eq!(rids(&r), vec!["d1"]);
+        assert!(matches!(&r[0], Item::Local { hidden: true, .. }));
+        let r = results(&ws, &opts, "old", None);
+        assert!(matches!(&r[..], [Item::Local { archived: true, .. }]));
+        // `@` only people and DMs, `#` only rooms.
+        assert_eq!(rids(&results(&ws, &opts, "@", None)), vec!["d1"]);
+        assert!(!rids(&results(&ws, &opts, "#", None)).contains(&"d1".to_owned()));
+        assert!(results(&ws, &opts, "#bob", Some(&spotlight_with("bob"))).is_empty());
+    }
+
     fn with_ctx<R>(ws: &mut Workspace, f: impl FnOnce(&mut Ctx<'_>) -> R) -> R {
         let sid = rustket_core::ServerId("s".into());
         let url = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
@@ -681,6 +788,7 @@ mod tests {
             assert!(matches!(&a.effects[..], [Effect::OpenRoom(r), Effect::Close] if r == "r1"));
             // A user without a DM needs `im.create` first (a task, no effect yet).
             qs.remote = Some(("dev".into(), spotlight_with("devon")));
+            qs.generation += 1;
             let n = qs.items(ctx.workspace, &ctx.config.ui).len();
             let a = qs.update(Message::Open(n - 1), ctx);
             assert!(a.effects.is_empty() && qs.busy);

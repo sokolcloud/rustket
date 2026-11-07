@@ -29,15 +29,23 @@ pub enum Op {
     RegenerateToken(String),
     RemoveToken(String),
     DisableEmail2fa,
+    EnableTotp,
+    ValidateTotp { code: String },
 }
 
 /// Result of a successful [`Op`].
 #[derive(Debug, Clone)]
 pub enum Done {
     Profile(Box<User>),
-    Token { name: String, token: String },
+    Token {
+        name: String,
+        token: String,
+    },
     Removed(String),
     EmailDisabled,
+    TotpStarted(api::TotpSetup),
+    /// Backup codes, or `None` for a wrong TOTP code.
+    TotpVerified(Option<Vec<String>>),
 }
 
 /// Runs `op` (with `code` when the user already gave one).
@@ -63,6 +71,10 @@ pub fn run(ctx: &Ctx<'_>, op: Op, code: Option<TwoFactorCode>) -> Task<Message> 
                 Op::DisableEmail2fa => api::email_2fa_disable(&rest, code)
                     .await
                     .map(|()| Done::EmailDisabled),
+                Op::EnableTotp => api::totp_enable(&rest, code).await.map(Done::TotpStarted),
+                Op::ValidateTotp { code: totp } => api::totp_validate(&rest, &totp, code)
+                    .await
+                    .map(Done::TotpVerified),
             }
         },
         move |r| Message::Guarded(tag, r),
@@ -76,6 +88,8 @@ pub enum Msg {
     Cancel,
     Resend,
     Resent(Res<()>),
+    /// The code e-mailed when the prompt opened was sent (or not).
+    Sent(Res<()>),
 }
 
 /// The open prompt.
@@ -107,6 +121,20 @@ impl Prompt {
         }
     }
 
+    /// A prompt opened before the call, for a factor the server is known to
+    /// ask for (so the protected call is sent once, with the code).
+    pub fn ahead(op: Op, method: TwoFactorMethod, email_or_username: Option<String>) -> Self {
+        Self {
+            op,
+            method,
+            email_or_username,
+            code: String::new(),
+            error: None,
+            busy: false,
+            resent: false,
+        }
+    }
+
     pub fn code(&self) -> TwoFactorCode {
         match self.method {
             TwoFactorMethod::Password => TwoFactorCode::password(&self.code),
@@ -122,6 +150,9 @@ pub enum Outcome {
     Prompt(Prompt),
     /// The prompt stays open with an error.
     Invalid,
+    /// Rate limited while the prompt is open: it stays open (the code is
+    /// kept) with the wait time.
+    Wait(String),
     /// A real failure (prompt closed).
     Failed(Failure),
 }
@@ -131,6 +162,9 @@ pub fn on_failure(op: &Op, prompt: Option<&Prompt>, f: Failure) -> Outcome {
     let open = prompt.filter(|p| &p.op == op);
     match f.error() {
         RcError::TwoFactorInvalid(_) if open.is_some() => Outcome::Invalid,
+        RcError::RateLimited { retry_after, .. } if open.is_some() => {
+            Outcome::Wait(prompt_rate_limited(*retry_after))
+        }
         RcError::TwoFactorRequired(ch) | RcError::TwoFactorInvalid(ch) => {
             let mut p = Prompt::new(op.clone(), ch);
             if matches!(f.error(), RcError::TwoFactorInvalid(_)) {
@@ -139,6 +173,21 @@ pub fn on_failure(op: &Op, prompt: Option<&Prompt>, f: Failure) -> Outcome {
             Outcome::Prompt(p)
         }
         _ => Outcome::Failed(f),
+    }
+}
+
+/// Whole seconds to wait, if the server said.
+pub fn wait_secs(retry_after: Option<std::time::Duration>) -> Option<u64> {
+    retry_after
+        .map(|d| d.as_secs_f64().ceil() as u64)
+        .filter(|s| *s > 0)
+}
+
+/// "Too many attempts, try again in N s" for the open prompt.
+pub fn prompt_rate_limited(retry_after: Option<std::time::Duration>) -> String {
+    match wait_secs(retry_after) {
+        Some(s) => t!("account.tfa_rate_limited", s = s).into_owned(),
+        None => t!("account.tfa_rate_limited_soon").into_owned(),
     }
 }
 
@@ -232,6 +281,16 @@ mod tests {
             panic!("prompt expected");
         };
         assert!(p2.error.is_some());
+
+        let f = Failure::from(RcError::RateLimited {
+            retry_after: Some(std::time::Duration::from_millis(41_200)),
+            message: None,
+        });
+        let Outcome::Wait(text) = on_failure(&op, Some(&p), f.clone()) else {
+            panic!("the prompt stays open");
+        };
+        assert!(text.contains("42"), "{text}");
+        assert!(matches!(on_failure(&op, None, f), Outcome::Failed(_)));
 
         let f = Failure::from(RcError::Protocol("boom".into()));
         assert!(matches!(on_failure(&op, Some(&p), f), Outcome::Failed(_)));

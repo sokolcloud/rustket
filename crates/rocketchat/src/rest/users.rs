@@ -61,7 +61,7 @@ impl RestClient {
     }
 
     /// Sets the current user's avatar from an image (`users.setAvatar`,
-    /// multipart field `image`).
+    /// multipart field `image`). Sent like file uploads: no total timeout.
     pub async fn users_set_avatar(&self, filename: &str, mime: &str, bytes: Vec<u8>) -> Result<()> {
         let part = reqwest::multipart::Part::bytes(bytes)
             .file_name(filename.to_owned())
@@ -71,7 +71,7 @@ impl RestClient {
         let url = self.server().api("users.setAvatar");
         let _: Value = self
             .send(
-                self.request(reqwest::Method::POST, &url, None)
+                self.authed(self.upload_http(), reqwest::Method::POST, &url, None)
                     .multipart(form),
             )
             .await?;

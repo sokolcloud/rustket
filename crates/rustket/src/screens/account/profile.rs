@@ -21,7 +21,7 @@ use rustket_ui::widget::{
 use serde_json::{Map, Value};
 
 use super::api::PasswordPolicy;
-use super::two_factor::{self, Op};
+use super::two_factor::Op;
 use super::{Message, section};
 use crate::component::{Action, Ctx, Effect, ViewCtx};
 use crate::dialogs::create_room::names::{self, NameError};
@@ -61,6 +61,15 @@ fn primary_email(u: &User) -> Option<&str> {
         .and_then(|e| e.first())
         .map(|e| e.address.as_str())
         .or(u.email.as_deref())
+}
+
+/// Second factor a profile save needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Factor {
+    None,
+    Password,
+    Totp,
+    Email,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -221,9 +230,8 @@ impl Profile {
         let mut e = Errors::default();
         let (f, o) = (&self.form, &self.original);
         if f.name.trim() != o.name.trim() {
-            if f.name.trim().is_empty()
-                && ws.settings().bool_or("Accounts_RequireNameForSignUp", true)
-            {
+            // The server keeps the old name when it gets an empty one.
+            if f.name.trim().is_empty() {
                 e.name = Some(t!("account.err_required").into_owned());
             } else if f.name.contains(['<', '>', '\\', '/']) {
                 e.name = Some(t!("account.err_name_chars").into_owned());
@@ -262,21 +270,66 @@ impl Profile {
         e
     }
 
-    /// The server wants the current password for an e-mail or password change
-    /// (as the 2FA fallback) when the user has no other second factor.
-    pub fn wants_current_password(&self, ws: &Workspace, allowed: Allowed) -> bool {
+    /// The second factor the server will ask for to save the changes: an
+    /// e-mail or password change needs one (TOTP first, then e-mail 2FA, else
+    /// the current password). `users.updateOwnBasicInfo` allows one call per
+    /// minute, so the save is sent once, already carrying it.
+    pub fn factor(&self, ws: &Workspace, allowed: Allowed) -> Factor {
+        if !ws
+            .settings()
+            .bool_or("Accounts_TwoFactorAuthentication_Enabled", true)
+        {
+            return Factor::None;
+        }
         let c = self.changes(allowed);
-        let me = ws.me();
-        (c.contains_key("email") || c.contains_key("newPassword"))
-            && !me.is_some_and(|m| m.totp_enabled() || m.email_2fa_enabled())
+        if !(c.contains_key("email") || c.contains_key("newPassword")) {
+            return Factor::None;
+        }
+        match ws.me() {
+            Some(m) if m.totp_enabled() => Factor::Totp,
+            Some(m) if m.email_2fa_enabled() => Factor::Email,
+            _ => Factor::Password,
+        }
     }
 
-    pub fn update(
+    /// The current password is asked inline (no other second factor).
+    pub fn wants_current_password(&self, ws: &Workspace, allowed: Allowed) -> bool {
+        self.factor(ws, allowed) == Factor::Password
+    }
+
+    /// Whether Save can be pressed.
+    pub fn can_save(&self, ws: &Workspace, policy: &PasswordPolicy) -> bool {
+        let allowed = Allowed::from(ws);
+        !self.saving
+            && !self.changes(allowed).is_empty()
+            && !self.validate(ws, policy).any()
+            && !(self.wants_current_password(ws, allowed) && self.current_password.is_empty())
+    }
+
+    /// Starts a save: the operation, the factor to ask for first (TOTP or
+    /// e-mail code) and the code to send right away (current password).
+    pub fn begin_save(
         &mut self,
-        msg: Msg,
-        ctx: &mut Ctx<'_>,
+        ws: &Workspace,
         policy: &PasswordPolicy,
-    ) -> Action<Message> {
+    ) -> Option<(Op, Factor, Option<TwoFactorCode>)> {
+        if !self.can_save(ws, policy) {
+            return None;
+        }
+        let allowed = Allowed::from(ws);
+        let factor = self.factor(ws, allowed);
+        self.saving = true;
+        self.error = None;
+        self.saved = false;
+        let code =
+            (factor == Factor::Password).then(|| TwoFactorCode::password(&self.current_password));
+        let op = Op::SaveProfile {
+            data: Value::Object(self.changes(allowed)),
+        };
+        Some((op, factor, code))
+    }
+
+    pub fn update(&mut self, msg: Msg, ctx: &mut Ctx<'_>) -> Action<Message> {
         let p = |m| Message::Profile(m);
         match msg {
             Msg::Name(s) => self.edit(|f| f.name = s),
@@ -344,26 +397,8 @@ impl Profile {
                 self.username_state = Availability::Unknown;
                 Action::none()
             }
-            Msg::Save => {
-                let allowed = Allowed::from(ctx.workspace);
-                let changes = self.changes(allowed);
-                if self.saving || changes.is_empty() || self.validate(ctx.workspace, policy).any() {
-                    return Action::none();
-                }
-                self.saving = true;
-                self.error = None;
-                self.saved = false;
-                let code = (!self.current_password.is_empty()
-                    && self.wants_current_password(ctx.workspace, allowed))
-                .then(|| TwoFactorCode::password(&self.current_password));
-                Action::task(two_factor::run(
-                    ctx,
-                    Op::SaveProfile {
-                        data: Value::Object(changes),
-                    },
-                    code,
-                ))
-            }
+            // Handled by the account screen (it may open the 2FA prompt first).
+            Msg::Save => Action::none(),
             Msg::PickAvatar => {
                 if self.avatar_busy {
                     return Action::none();
@@ -537,7 +572,7 @@ impl Profile {
                      err: Option<String>,
                      on: fn(String) -> Msg| {
             let mut f = text_field(label, value, move |s| p(on(s)))
-                .disabled(!ok)
+                .disabled(!ok || self.saving)
                 .error(err)
                 .on_submit(p(Msg::Save));
             if let Some(h) = locked(ok) {
@@ -555,7 +590,7 @@ impl Profile {
             text_field(t!("account.username"), &self.form.username, move |s| {
                 p(Msg::Username(s))
             })
-            .disabled(!allowed.username)
+            .disabled(!allowed.username || self.saving)
             .error(errors.username.clone())
             .on_submit(p(Msg::Save));
         if let Some(h) = username_help.or_else(|| locked(allowed.username)) {
@@ -646,6 +681,7 @@ impl Profile {
                         p(Msg::NewPassword(s))
                     })
                     .password(true)
+                    .disabled(self.saving)
                     .error(errors.password.clone()),
                 )
                 .push(
@@ -655,6 +691,7 @@ impl Profile {
                         move |s| p(Msg::ConfirmPassword(s)),
                     )
                     .password(true)
+                    .disabled(self.saving)
                     .error(errors.confirm.clone()),
                 );
             if policy.enabled && !policy.rules.is_empty() {
@@ -705,6 +742,7 @@ impl Profile {
                     move |s| p(Msg::CurrentPassword(s)),
                 )
                 .password(true)
+                .disabled(self.saving)
                 .help(t!("account.current_password_help"))
                 .on_submit(p(Msg::Save)),
             );
@@ -718,7 +756,7 @@ impl Profile {
         if let Some(n) = &self.notice {
             actions = actions.push(banner(BannerKind::Info, n.clone(), None));
         }
-        let can_save = !changes.is_empty() && !errors.any() && !self.saving;
+        let can_save = self.can_save(ws, policy);
         actions = actions.push(
             row![
                 secondary_button(
@@ -781,15 +819,25 @@ async fn pick_and_upload(rest: Option<rocketchat::RestClient>, max: Option<u64>)
         return Ok(false);
     };
     let name = file.file_name();
-    let bytes = file.read().await;
-    if max.is_some_and(|m| m > 0 && bytes.len() as u64 > m) {
-        return Err(Failure::from(rocketchat::Error::Api {
+    let too_large = || {
+        Failure::from(rocketchat::Error::Api {
             status: 413,
             error: None,
             error_type: None,
             message: Some(t!("account.avatar_too_large").into_owned()),
             details: None,
-        }));
+        })
+    };
+    let over = |len: u64| max.is_some_and(|m| m > 0 && len > m);
+    // Check the size before reading the whole file into memory.
+    if let Ok(meta) = tokio::fs::metadata(file.path()).await
+        && over(meta.len())
+    {
+        return Err(too_large());
+    }
+    let bytes = file.read().await;
+    if over(bytes.len() as u64) {
+        return Err(too_large());
     }
     let mime = image_mime(&name);
     rest.users_set_avatar(&name, mime, bytes)
@@ -938,6 +986,36 @@ mod tests {
         assert_eq!(p.original.bio, "bio");
         assert_eq!(p.form, p.original);
         assert!(p.new_password.is_empty() && p.saved);
+    }
+
+    #[test]
+    fn save_carries_its_second_factor() {
+        let mut ws = ws();
+        let policy = PasswordPolicy::default();
+        let mut p = Profile::default();
+        p.sync(&ws);
+        p.form.nickname = "nick".into();
+        assert_eq!(p.factor(&ws, all()), Factor::None);
+        assert!(p.can_save(&ws, &policy));
+        p.form.email = "new@x.io".into();
+        // No 2FA: the current password is required before saving.
+        assert_eq!(p.factor(&ws, all()), Factor::Password);
+        assert!(!p.can_save(&ws, &policy));
+        p.current_password = "secret".into();
+        let (op, factor, code) = p.begin_save(&ws, &policy).unwrap();
+        assert!(matches!(op, Op::SaveProfile { .. }) && factor == Factor::Password);
+        assert_eq!(code.unwrap().method, rocketchat::TwoFactorMethod::Password);
+        assert!(p.saving && p.begin_save(&ws, &policy).is_none());
+        p.saving = false;
+        // With TOTP / e-mail 2FA the code is asked for before the one call.
+        crate::screens::account::security::set_factor(&mut ws, None, Some(true));
+        assert_eq!(p.factor(&ws, all()), Factor::Email);
+        crate::screens::account::security::set_factor(&mut ws, Some(true), None);
+        p.current_password.clear();
+        assert!(p.can_save(&ws, &policy));
+        let (_, factor, code) = p.begin_save(&ws, &policy).unwrap();
+        assert_eq!(factor, Factor::Totp);
+        assert!(code.is_none());
     }
 
     #[test]

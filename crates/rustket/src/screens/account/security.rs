@@ -1,6 +1,7 @@
-//! Security tab: TOTP two-factor authentication (`2fa:enable`,
-//! `2fa:validateTempToken`, `2fa:disable`, `2fa:regenerateCodes`) and e-mail
-//! 2FA (`users.2fa.enableEmail` / `disableEmail`).
+//! Security tab: TOTP two-factor authentication (`users.enableTotp`,
+//! `users.validateTotp`, `users.disableTotp`, `users.regenerateTotpCodes`;
+//! the `2fa:*` methods on older servers) and e-mail 2FA
+//! (`users.2fa.enableEmail` / `disableEmail`).
 
 use iced::widget::{column, container, qr_code, row, text};
 use iced::{Alignment, Color, Element, Length};
@@ -29,10 +30,8 @@ pub const SETUP_INPUT_ID: &str = "account-totp-setup";
 #[derive(Debug, Clone)]
 pub enum Msg {
     EnableTotp,
-    TotpStarted(Res<TotpSetup>),
     SetupCode(String),
     VerifySetup,
-    Verified(Res<Option<Vec<String>>>),
     CancelSetup,
     DisableCode(String),
     DisableTotp,
@@ -54,6 +53,8 @@ pub struct Pending {
     pub code: String,
     pub error: Option<String>,
     pub busy: bool,
+    /// The password given to start the setup, sent again to confirm it.
+    pub second: Option<rocketchat::auth::TwoFactorCode>,
 }
 
 impl std::fmt::Debug for Pending {
@@ -124,30 +125,7 @@ impl Security {
                 self.busy = Some(Busy::Starting);
                 self.error = None;
                 self.notice = None;
-                Action::task(ctx.rest_task(
-                    |rest| async move { api::totp_enable(&rest).await },
-                    move |r| s(Msg::TotpStarted(r)),
-                ))
-            }
-            Msg::TotpStarted(r) => {
-                self.busy = None;
-                match r {
-                    Ok(setup) => {
-                        let qr = qr_code::Data::new(setup.url.as_bytes()).ok();
-                        self.pending = Some(Pending {
-                            setup,
-                            qr,
-                            code: String::new(),
-                            error: None,
-                            busy: false,
-                        });
-                        Action::task(iced::widget::operation::focus(SETUP_INPUT_ID))
-                    }
-                    Err(e) => {
-                        self.error = Some(e.user_text());
-                        Action::none()
-                    }
-                }
+                Action::task(two_factor::run(ctx, Op::EnableTotp, None))
             }
             Msg::SetupCode(c) => {
                 if let Some(p) = self.pending.as_mut() {
@@ -165,34 +143,18 @@ impl Security {
                 }
                 p.busy = true;
                 p.error = None;
-                Action::task(ctx.rest_task(
-                    move |rest| async move { api::totp_validate(&rest, &code).await },
-                    move |r| s(Msg::Verified(r)),
+                Action::task(two_factor::run(
+                    ctx,
+                    Op::ValidateTotp { code },
+                    p.second.clone(),
                 ))
             }
-            Msg::Verified(r) => {
-                let Some(p) = self.pending.as_mut() else {
-                    return Action::none();
-                };
-                p.busy = false;
-                match r {
-                    Ok(Some(codes)) => {
-                        self.pending = None;
-                        self.remaining = Some(codes.len() as u64);
-                        self.codes = Some(codes);
-                        self.notice = Some(t!("account.totp_enabled_notice").into_owned());
-                        set_factor(ctx.workspace, Some(true), None);
-                    }
-                    Ok(None) => {
-                        p.error = Some(t!("account.tfa_invalid").into_owned());
-                        p.code.clear();
-                    }
-                    Err(e) => p.error = Some(e.user_text()),
-                }
-                Action::none()
-            }
             Msg::CancelSetup => {
-                self.pending = None;
+                // Not while the confirmation is in flight: its backup codes
+                // would be lost.
+                if !self.pending.as_ref().is_some_and(|p| p.busy) {
+                    self.pending = None;
+                }
                 Action::none()
             }
             Msg::DisableCode(c) => {
@@ -301,6 +263,64 @@ impl Security {
         }
     }
 
+    /// The guarded `users.enableTotp` finished (`None`: prompt cancelled).
+    pub fn totp_started(
+        &mut self,
+        r: Option<Result<TotpSetup, String>>,
+        second: Option<rocketchat::auth::TwoFactorCode>,
+    ) -> Action<Message> {
+        self.busy = None;
+        match r {
+            Some(Ok(setup)) => {
+                let qr = qr_code::Data::new(setup.url.as_bytes()).ok();
+                self.pending = Some(Pending {
+                    setup,
+                    qr,
+                    code: String::new(),
+                    error: None,
+                    busy: false,
+                    second,
+                });
+                Action::task(iced::widget::operation::focus(SETUP_INPUT_ID))
+            }
+            Some(Err(e)) => {
+                self.error = Some(e);
+                Action::none()
+            }
+            None => Action::none(),
+        }
+    }
+
+    /// The guarded `users.validateTotp` finished (`None`: prompt cancelled).
+    pub fn verified(
+        &mut self,
+        r: Option<Result<Option<Vec<String>>, String>>,
+        ws: &mut Workspace,
+    ) -> Action<Message> {
+        if let Some(Ok(Some(codes))) = r {
+            // Even when the setup view is gone: TOTP is on now.
+            self.pending = None;
+            self.remaining = Some(codes.len() as u64);
+            self.codes = Some(codes);
+            self.notice = Some(t!("account.totp_enabled_notice").into_owned());
+            set_factor(ws, Some(true), None);
+            return Action::none();
+        }
+        let Some(p) = self.pending.as_mut() else {
+            return Action::none();
+        };
+        p.busy = false;
+        match r {
+            Some(Ok(None)) => {
+                p.error = Some(t!("account.tfa_invalid").into_owned());
+                p.code.clear();
+            }
+            Some(Err(e)) => p.error = Some(e),
+            _ => {}
+        }
+        Action::none()
+    }
+
     /// The guarded e-mail 2FA disable finished (or was cancelled: `ok = None`).
     pub fn email_disabled(&mut self, ok: Option<Result<(), String>>, ws: &mut Workspace) {
         self.busy = None;
@@ -389,6 +409,11 @@ impl Security {
                         .loading(self.busy == Some(Busy::Starting))
                     ]
                     .spacing(SPACE_2),
+                );
+                c = c.push(
+                    text(t!("account.totp_logout_hint"))
+                        .size(TEXT_CAPTION)
+                        .style(style::text_hint),
                 );
             }
             body = body.push(section(t!("account.sec_totp").into_owned(), c.into()));
@@ -487,7 +512,8 @@ impl Security {
                 .into(),
                 primary_button(t!("account.backup_codes_done"), Some(s(Msg::CloseCodes))).into(),
             ],
-            Some(s(Msg::CloseCodes)),
+            // Shown once: only "Done" closes it (no backdrop/Escape/close button).
+            None,
         ))
     }
 }
@@ -595,7 +621,10 @@ fn setup_view(p: &Pending) -> Element<'_, Message> {
         .on_submit(s(Msg::VerifySetup))
         .width(Length::Fixed(220.0)),
         row![
-            secondary_button(t!("account.cancel"), Some(s(Msg::CancelSetup))),
+            secondary_button(
+                t!("account.cancel"),
+                (!p.busy).then_some(s(Msg::CancelSetup))
+            ),
             primary_button(
                 t!("account.tfa_verify"),
                 (!p.busy && !p.code.trim().is_empty()).then_some(s(Msg::VerifySetup))
@@ -641,6 +670,32 @@ mod tests {
         set_factor(&mut ws, Some(false), Some(true));
         assert!(!ws.me().unwrap().totp_enabled());
         assert!(ws.me().unwrap().email_2fa_enabled());
+    }
+
+    #[test]
+    fn late_verification_still_shows_the_codes() {
+        let mut ws = Workspace::new();
+        ws.apply_me(User {
+            id: "u".into(),
+            ..Default::default()
+        });
+        let mut sec = Security::default();
+        let _ = sec.totp_started(
+            Some(Ok(TotpSetup {
+                secret: "ABC".into(),
+                url: "otpauth://totp/x?secret=ABC".into(),
+            })),
+            None,
+        );
+        sec.pending.as_mut().unwrap().busy = true;
+        // Cancel is ignored while the confirmation is in flight.
+        let p = sec.pending.as_ref().unwrap();
+        assert!(p.busy);
+        sec.pending = None; // e.g. the screen state was reset meanwhile
+        let _ = sec.verified(Some(Ok(Some(vec!["a".into(), "b".into()]))), &mut ws);
+        assert_eq!(sec.codes.as_ref().unwrap().len(), 2);
+        assert!(ws.me().unwrap().totp_enabled());
+        assert_eq!(sec.remaining, Some(2));
     }
 
     #[test]

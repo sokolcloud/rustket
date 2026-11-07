@@ -26,3 +26,9 @@ quick_switcher.hint_open:
 quick_switcher.hint_close:
   en: "close"
   ru: "закрыть"
+quick_switcher.hidden:
+  en: "Hidden"
+  ru: "Скрыта"
+quick_switcher.archived:
+  en: "Archived"
+  ru: "В архиве"
