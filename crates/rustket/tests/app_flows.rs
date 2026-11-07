@@ -952,3 +952,54 @@ async fn component_navigation() {
     // Views render without panicking.
     let _ = app.view();
 }
+
+/// Alt(+Shift)+Up/Down walk the sidebar; the desktop layer sees unread totals.
+#[tokio::test]
+async fn room_shortcuts_and_desktop_totals() {
+    use rustket::desktop::shortcuts::RoomStep;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid, _) = app_with(dir.path(), Some("A"), vec![]);
+    let me = user("A", "alice");
+    let m = ev(
+        &app,
+        &sid,
+        SessionEvent::Ready {
+            me: Box::new(me.clone()),
+        },
+    );
+    let _ = app.update(m);
+    let m = loaded(&app, &sid, initial(me, &[("r1", 0), ("r2", 2), ("r3", 0)]));
+    let _ = app.update(m);
+    assert_eq!(app.desktop.tray.state().unread, 1);
+    let order: Vec<String> = app.servers[&sid]
+        .sidebar
+        .sections
+        .iter()
+        .flat_map(|s| s.items.iter().map(|i| i.rid.clone()))
+        .collect();
+    assert_eq!(order.len(), 3);
+    let next = RoomStep {
+        delta: 1,
+        unread_only: false,
+    };
+    let _ = app.update(Message::RoomStep(next));
+    assert_eq!(
+        app.servers[&sid].active_room.as_deref(),
+        Some(order[0].as_str())
+    );
+    let _ = app.update(Message::RoomStep(next));
+    assert_eq!(
+        app.servers[&sid].active_room.as_deref(),
+        Some(order[1].as_str())
+    );
+    let _ = app.update(Message::RoomStep(RoomStep {
+        delta: -1,
+        unread_only: true,
+    }));
+    if order[1] != "r2" {
+        assert_eq!(app.servers[&sid].active_room.as_deref(), Some("r2"));
+    }
+    // A second launch without links raises the (inert) window: no work.
+    let t = app.update(Message::DeepLinks(Vec::new()));
+    assert_eq!(t.units(), 0);
+}

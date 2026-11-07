@@ -57,6 +57,7 @@ fn main() -> iced::Result {
         urls,
         listener,
         open_urls: true,
+        desktop: true,
         ..Flags::default()
     };
     let result = iced::application(move || App::new(flags.clone()), App::update, App::view)
@@ -64,6 +65,15 @@ fn main() -> iced::Result {
         .title(App::title)
         .theme(App::theme)
         .subscription(App::subscription)
+        .scale_factor(App::scale_factor)
+        .window(iced::window::Settings {
+            icon: rustket::desktop::icon::window_icon(),
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: "rustket".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
         .window_size((1280.0, 820.0))
         // Closing goes through `Message::CloseRequested` (flushes the config).
         .exit_on_close_request(false)

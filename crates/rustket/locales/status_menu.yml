@@ -1,12 +1,42 @@
 _version: 2
-status_menu.status_soon:
-  en: "Status: coming soon"
-  ru: "Статус: скоро"
+status_menu.status:
+  en: "Status"
+  ru: "Статус"
+status_menu.online:
+  en: "Online"
+  ru: "В сети"
+status_menu.away:
+  en: "Away"
+  ru: "Отошёл"
+status_menu.busy:
+  en: "Busy"
+  ru: "Занят"
+status_menu.invisible:
+  en: "Invisible"
+  ru: "Невидимый"
+status_menu.unknown:
+  en: "Unknown"
+  ru: "Неизвестно"
+status_menu.custom_statuses:
+  en: "Custom statuses"
+  ru: "Особые статусы"
+status_menu.status_text:
+  en: "Status message"
+  ru: "Текст статуса"
+status_menu.text_placeholder:
+  en: "What are you up to?"
+  ru: "Чем вы заняты?"
+status_menu.clear_text:
+  en: "Clear status message"
+  ru: "Очистить текст статуса"
+status_menu.failed:
+  en: "Status not changed"
+  ru: "Статус не изменён"
 status_menu.account:
   en: "My account"
   ru: "Мой аккаунт"
 status_menu.settings:
-  en: "Settings"
+  en: "Preferences"
   ru: "Настройки"
 status_menu.logout:
   en: "Log out"

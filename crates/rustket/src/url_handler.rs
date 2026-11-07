@@ -175,7 +175,7 @@ pub fn check_executable(exe: &Path) -> Result<Vec<String>, RegisterError> {
 /// Quotes an `Exec` argument per the Desktop Entry spec: field-code `%`
 /// doubling, the quoting rule, then the string-level backslash escape (which
 /// the spec applies before unquoting, so a literal backslash becomes four).
-fn quote_exec(arg: &str) -> String {
+pub fn quote_exec(arg: &str) -> String {
     quote_arg(arg).replace('\\', "\\\\")
 }
 

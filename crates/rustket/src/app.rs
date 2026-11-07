@@ -77,6 +77,9 @@ pub struct Flags {
     pub listener: Option<ListenerSlot>,
     /// Open URLs in the external browser (off for tests/snapshots).
     pub open_urls: bool,
+    /// Real desktop integration: tray, notifications, sounds, idle → away,
+    /// window hiding (off for tests/snapshots).
+    pub desktop: bool,
 }
 
 pub enum Screen {
@@ -228,6 +231,11 @@ impl App {
             None => AppConfig::default(),
         };
         crate::i18n::apply(config.ui.language);
+        let desktop = if flags.desktop {
+            crate::desktop::Desktop::system(&config.ui)
+        } else {
+            crate::desktop::Desktop::new()
+        };
         let ui_state = config_dir.as_deref().map(UiState::load).unwrap_or_default();
         let writer = config_dir.clone().and_then(ConfigWriter::spawn);
         let mut servers = BTreeMap::new();
@@ -274,7 +282,7 @@ impl App {
             stamp: 0,
             confirm_queue: VecDeque::new(),
             save_stamp: 0,
-            desktop: crate::desktop::Desktop::new(),
+            desktop,
             last_unread: (0, 0),
         };
         let wanted: Vec<(ServerId, String)> = app
@@ -316,6 +324,11 @@ impl App {
 
     pub fn theme(&self) -> Theme {
         rustket_ui::theme(self.mode())
+    }
+
+    /// UI zoom (`UiPrefs::zoom`).
+    pub fn scale_factor(&self) -> f32 {
+        self.config.ui.zoom
     }
 
     pub fn title(&self) -> String {
@@ -677,10 +690,14 @@ impl App {
             }
             Message::WindowFocused(f) => {
                 self.focused = f;
+                let desktop = self
+                    .desktop
+                    .on_focus_changed(f, &self.config.ui)
+                    .map(Message::Desktop);
                 if f {
-                    return self.mark_active_room_read();
+                    return Task::batch([desktop, self.mark_active_room_read()]);
                 }
-                Task::none()
+                desktop
             }
             Message::Tick => {
                 let now = Instant::now();
@@ -775,9 +792,13 @@ impl App {
                 Task::none()
             }
             Message::CloseRequested(id) => {
+                if let Some(hide) = self.desktop.on_close_requested(&self.config.ui) {
+                    return hide.map(Message::Desktop);
+                }
                 self.flush_config();
                 iced::window::close(id)
             }
+            Message::RoomStep(step) => self.room_step(step),
             Message::FlushImages => Task::none(),
             Message::ImageLoaded(sid, generation, url, r) => {
                 // Results of a purged cache (logout, removal) are dropped and
@@ -803,15 +824,18 @@ impl App {
                 }
             }
             Message::DeepLinks(urls) => {
+                // Another launch (with or without links): raise the window.
+                let raise = self.desktop.show_window().map(Message::Desktop);
+                if urls.is_empty() {
+                    return raise;
+                }
                 if !self.booted {
                     self.queued_links.extend(urls);
-                    return Task::none();
+                    return raise;
                 }
-                Task::batch(
-                    urls.into_iter()
-                        .map(|u| self.handle_link(&u))
-                        .collect::<Vec<_>>(),
-                )
+                let mut tasks: Vec<_> = urls.into_iter().map(|u| self.handle_link(&u)).collect();
+                tasks.push(raise);
+                Task::batch(tasks)
             }
             Message::TokenUser(sid, creds, r) => self.on_token_user(sid, creds, r),
             Message::TokenStored(sid, r) => {
@@ -1201,6 +1225,39 @@ impl App {
         Task::batch([t, self.save_config()])
     }
 
+    /// Alt(+Shift)+Up/Down: the previous/next (unread) room in sidebar order
+    /// of the active server (collapsed sections are skipped).
+    fn room_step(&mut self, step: crate::desktop::shortcuts::RoomStep) -> Task<Message> {
+        if !matches!(self.screen, Screen::Server) || !self.modals.is_empty() {
+            return Task::none();
+        }
+        let Some(sid) = self.active.clone() else {
+            return Task::none();
+        };
+        let Some(s) = self.servers.get(&sid) else {
+            return Task::none();
+        };
+        let rows: Vec<(&str, bool)> = s
+            .sidebar
+            .sections
+            .iter()
+            .filter(|sec| {
+                !self
+                    .ui_state
+                    .collapsed_sections
+                    .contains(sec.kind.i18n_key())
+            })
+            .flat_map(|sec| sec.items.iter())
+            .map(|i| (i.rid.as_str(), i.badge.count > 0 || i.badge.dot))
+            .collect();
+        let Some(rid) = crate::desktop::shortcuts::target(&rows, s.active_room.as_deref(), step)
+            .map(str::to_owned)
+        else {
+            return Task::none();
+        };
+        self.open_room(&sid, &rid)
+    }
+
     fn on_sidebar(&mut self, sid: ServerId, m: sidebar::Message) -> Task<Message> {
         let Some(s) = self.servers.get_mut(&sid) else {
             return Task::none();
@@ -1402,15 +1459,27 @@ impl App {
                 Followup::None => Task::none(),
                 Followup::Notification(n) => {
                     let name = s.name.clone();
+                    let server_active =
+                        self.active.as_ref() == Some(&sid) && matches!(self.screen, Screen::Server);
+                    let focused_rid = s.active_room.as_deref();
+                    let focused_tmid =
+                        focused_rid.and_then(|rid| s.rooms.get(rid)).and_then(|rv| {
+                            match rv.panel.kind() {
+                                Some(room::panel::Kind::Thread(tmid)) => Some(tmid.as_str()),
+                                _ => None,
+                            }
+                        });
+                    let env = crate::desktop::NotifyEnv {
+                        images: &self.images,
+                        server: &s.url,
+                        server_active,
+                        focused_rid,
+                        focused_tmid,
+                        window_active: self.focused,
+                        multi_server: self.config.servers.len() > 1,
+                    };
                     self.desktop
-                        .on_notification(
-                            &sid,
-                            &name,
-                            &n,
-                            &s.workspace,
-                            &self.config.ui,
-                            self.focused,
-                        )
+                        .on_notification(&sid, &name, &n, &s.workspace, &self.config.ui, &env)
                         .map(Message::Desktop)
                 }
                 Followup::InitialLoad => self.initial_load(&sid),
@@ -2018,6 +2087,11 @@ impl App {
             },
         ));
         subs.push(window::close_requests().map(Message::CloseRequested));
+        // Alt(+Shift)+Up/Down: previous/next (unread) room.
+        subs.push(
+            iced::keyboard::listen()
+                .filter_map(|ev| crate::desktop::shortcuts::from_event(&ev).map(Message::RoomStep)),
+        );
         // Ctrl+K: quick switcher.
         subs.push(iced::keyboard::listen().filter_map(|ev| match ev {
             iced::keyboard::Event::KeyPressed {
