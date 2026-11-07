@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-iced = { version = "0.14", features = ["tokio", "image", "svg", "advanced", "lazy", "qr_code"] }
+iced = { version = "0.14", features = ["tokio", "image", "advanced", "lazy", "qr_code"] }
 iced_aw = { version = "0.14", default-features = false, features = ["context_menu", "menu", "drop_down", "badge", "spinner", "date_picker", "time_picker", "color_picker", "number_input", "wrap", "selection_list"] }
 lucide-icons = { version = "1.70", features = ["iced"] }
 unicode-properties = "0.1"

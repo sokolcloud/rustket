@@ -1,0 +1,19 @@
+_version: 2
+connection.connecting:
+  en: "Connecting…"
+  ru: "Подключение…"
+connection.reconnecting:
+  en: "Connection lost. Reconnecting (attempt %{attempt})…"
+  ru: "Соединение потеряно. Переподключение (попытка %{attempt})…"
+connection.offline:
+  en: "Offline"
+  ru: "Нет соединения"
+connection.failed:
+  en: "Cannot connect: %{error}"
+  ru: "Не удаётся подключиться: %{error}"
+connection.retry:
+  en: "Retry now"
+  ru: "Повторить"
+connection.sync_failed:
+  en: "Could not load the workspace (%{error}). Retrying…"
+  ru: "Не удалось загрузить рабочее пространство (%{error}). Повтор…"

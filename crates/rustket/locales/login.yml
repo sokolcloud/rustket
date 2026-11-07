@@ -1,0 +1,118 @@
+_version: 2
+login.title:
+  en: "Sign in to %{site}"
+  ru: "Вход в %{site}"
+login.title_generic:
+  en: "Sign in"
+  ru: "Вход"
+login.retry:
+  en: "Retry"
+  ru: "Повторить"
+login.user:
+  en: "Username or email"
+  ru: "Имя пользователя или e-mail"
+login.user_placeholder:
+  en: "alice or alice@example.com"
+  ru: "alice или alice@example.com"
+login.ldap_user:
+  en: "LDAP username"
+  ru: "Имя пользователя LDAP"
+login.ldap_user_placeholder:
+  en: "Your directory login"
+  ru: "Ваш логин в каталоге"
+login.password:
+  en: "Password"
+  ru: "Пароль"
+login.sign_in:
+  en: "Sign in"
+  ru: "Войти"
+login.or:
+  en: "or"
+  ru: "или"
+login.continue_with:
+  en: "Continue with %{service}"
+  ru: "Войти через %{service}"
+login.browser:
+  en: "Sign in with browser"
+  ru: "Войти через браузер"
+login.use_token:
+  en: "Use a personal access token"
+  ru: "Использовать персональный токен"
+login.token_help:
+  en: "Create a token under My Account → Personal Access Tokens."
+  ru: "Создайте токен в разделе «Мой аккаунт → Персональные токены доступа»."
+login.token_user_id:
+  en: "User ID"
+  ru: "ID пользователя"
+login.token:
+  en: "Token"
+  ru: "Токен"
+login.back:
+  en: "Back"
+  ru: "Назад"
+login.pat_mismatch:
+  en: "The token belongs to another user."
+  ru: "Токен принадлежит другому пользователю."
+login.pending_title:
+  en: "Continue in your browser (%{service})"
+  ru: "Продолжите в браузере (%{service})"
+login.pending_help:
+  en: "Finish signing in in the browser window. Rustket continues automatically when the browser opens the rocketchat:// link."
+  ru: "Завершите вход в окне браузера. Rustket продолжит автоматически, когда браузер откроет ссылку rocketchat://."
+login.pending_polling:
+  en: "Finish signing in in the browser window. Rustket is waiting for the server (up to 5 minutes)."
+  ru: "Завершите вход в окне браузера. Rustket ждёт ответа сервера (до 5 минут)."
+login.open_again:
+  en: "Open browser again"
+  ru: "Открыть браузер снова"
+login.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+login.paste_label:
+  en: "Link from the browser"
+  ru: "Ссылка из браузера"
+login.paste_help:
+  en: "If nothing happens, copy the rocketchat://auth… link from the browser and paste it here."
+  ru: "Если ничего не происходит, скопируйте ссылку rocketchat://auth… из браузера и вставьте её сюда."
+login.paste_submit:
+  en: "Continue"
+  ru: "Продолжить"
+login.paste_invalid:
+  en: "This is not a rocketchat:// link."
+  ru: "Это не ссылка rocketchat://."
+login.handler_hint:
+  en: "Rustket is not registered for rocketchat:// links."
+  ru: "Rustket не зарегистрирован для ссылок rocketchat://."
+login.register_handler:
+  en: "Register"
+  ru: "Зарегистрировать"
+login.service_unavailable:
+  en: "This login service is not configured."
+  ru: "Этот способ входа не настроен."
+login.tfa_title:
+  en: "Two-factor authentication"
+  ru: "Двухфакторная аутентификация"
+login.tfa_totp_help:
+  en: "Enter the code from your authenticator app."
+  ru: "Введите код из приложения-аутентификатора."
+login.tfa_email_help:
+  en: "We sent a code to the e-mail address of %{who}."
+  ru: "Мы отправили код на e-mail пользователя %{who}."
+login.tfa_password_help:
+  en: "Confirm with your password."
+  ru: "Подтвердите паролем."
+login.tfa_code:
+  en: "Code"
+  ru: "Код"
+login.tfa_resend:
+  en: "Send code again"
+  ru: "Отправить код ещё раз"
+login.tfa_resent:
+  en: "Code sent"
+  ru: "Код отправлен"
+login.tfa_verify:
+  en: "Verify"
+  ru: "Подтвердить"
+login.link_error:
+  en: "The browser reported a sign-in error: %{error}"
+  ru: "Браузер сообщил об ошибке входа: %{error}"

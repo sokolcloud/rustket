@@ -1,0 +1,58 @@
+_version: 2
+add_server.title:
+  en: "Add a workspace"
+  ru: "Добавить рабочее пространство"
+add_server.subtitle:
+  en: "Enter the address of your Rocket.Chat server."
+  ru: "Введите адрес вашего сервера Rocket.Chat."
+add_server.url_label:
+  en: "Server address"
+  ru: "Адрес сервера"
+add_server.url_placeholder:
+  en: "chat.example.com"
+  ru: "chat.example.com"
+add_server.url_help:
+  en: "https:// is used when no scheme is given."
+  ru: "Если схема не указана, используется https://."
+add_server.connect:
+  en: "Connect"
+  ru: "Подключиться"
+add_server.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+add_server.invalid_url:
+  en: "Invalid address: %{reason}"
+  ru: "Неверный адрес: %{reason}"
+add_server.duplicate:
+  en: "This workspace is already added."
+  ru: "Это рабочее пространство уже добавлено."
+add_server.certificate_rejected:
+  en: "The certificate was not trusted."
+  ru: "Сертификату не доверились."
+add_server.cert_title:
+  en: "Untrusted certificate"
+  ru: "Недоверенный сертификат"
+add_server.cert_warning:
+  en: "%{host} presented a certificate that is not trusted by your system."
+  ru: "%{host} предъявил сертификат, которому не доверяет ваша система."
+add_server.cert_subject:
+  en: "Issued to"
+  ru: "Кому выдан"
+add_server.cert_issuer:
+  en: "Issued by"
+  ru: "Кем выдан"
+add_server.cert_unknown:
+  en: "Unknown"
+  ru: "Неизвестно"
+add_server.cert_fingerprint:
+  en: "SHA-256 fingerprint"
+  ru: "Отпечаток SHA-256"
+add_server.cert_hint:
+  en: "Only trust it if the fingerprint matches the one your administrator gave you."
+  ru: "Доверяйте, только если отпечаток совпадает с тем, что дал администратор."
+add_server.cert_reject:
+  en: "Cancel"
+  ru: "Отмена"
+add_server.cert_trust:
+  en: "Trust this certificate"
+  ru: "Доверять этому сертификату"

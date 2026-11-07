@@ -1,0 +1,85 @@
+_version: 2
+preview.you:
+  en: "You: %{text}"
+  ru: "Вы: %{text}"
+preview.author:
+  en: "%{author}: %{text}"
+  ru: "%{author}: %{text}"
+preview.text:
+  en: "Message"
+  ru: "Сообщение"
+preview.image:
+  en: "Image"
+  ru: "Изображение"
+preview.video:
+  en: "Video"
+  ru: "Видео"
+preview.audio:
+  en: "Audio"
+  ru: "Аудио"
+preview.file:
+  en: "File"
+  ru: "Файл"
+preview.attachment:
+  en: "Attachment"
+  ru: "Вложение"
+preview.encrypted:
+  en: "Encrypted message"
+  ru: "Зашифрованное сообщение"
+preview.system.generic:
+  en: "System message"
+  ru: "Системное сообщение"
+preview.system.uj:
+  en: "%{text} joined"
+  ru: "%{text} присоединился(-ась)"
+preview.system.ujt:
+  en: "%{text} joined the team"
+  ru: "%{text} присоединился(-ась) к команде"
+preview.system.ul:
+  en: "%{text} left"
+  ru: "%{text} вышел(-ла)"
+preview.system.ult:
+  en: "%{text} left the team"
+  ru: "%{text} покинул(а) команду"
+preview.system.au:
+  en: "%{text} was added"
+  ru: "%{text} добавлен(а)"
+preview.system.ru:
+  en: "%{text} was removed"
+  ru: "%{text} удалён(а)"
+preview.system.r:
+  en: "Room renamed to %{text}"
+  ru: "Комната переименована в %{text}"
+preview.system.room_changed_topic:
+  en: "Topic changed: %{text}"
+  ru: "Тема изменена: %{text}"
+preview.system.room_changed_announcement:
+  en: "Announcement changed"
+  ru: "Объявление изменено"
+preview.system.room_changed_description:
+  en: "Description changed"
+  ru: "Описание изменено"
+preview.system.message_pinned:
+  en: "Message pinned"
+  ru: "Сообщение закреплено"
+preview.system.discussion-created:
+  en: "Discussion started: %{text}"
+  ru: "Создано обсуждение: %{text}"
+preview.system.user-muted:
+  en: "%{text} was muted"
+  ru: "%{text} без права голоса"
+preview.system.user-unmuted:
+  en: "%{text} was unmuted"
+  ru: "%{text} снова может писать"
+preview.system.room-archived:
+  en: "Room archived"
+  ru: "Комната архивирована"
+preview.system.room-unarchived:
+  en: "Room unarchived"
+  ru: "Комната разархивирована"
+preview.system.subscription-role-added:
+  en: "Role added"
+  ru: "Роль назначена"
+preview.system.subscription-role-removed:
+  en: "Role removed"
+  ru: "Роль снята"

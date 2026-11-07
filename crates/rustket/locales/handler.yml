@@ -1,0 +1,22 @@
+_version: 2
+handler.title:
+  en: "Open rocketchat:// links with Rustket"
+  ru: "Открывать ссылки rocketchat:// в Rustket"
+handler.body:
+  en: "Browser sign-in finishes by opening a rocketchat:// link. Registering Rustket as its handler makes this automatic."
+  ru: "Вход через браузер завершается открытием ссылки rocketchat://. Если зарегистрировать Rustket как её обработчик, вход завершится автоматически."
+handler.replaces:
+  en: "rocketchat:// links currently open %{current} (e.g. the official desktop app). Registering replaces it."
+  ru: "Сейчас ссылки rocketchat:// открывает %{current} (например, официальное приложение). Регистрация заменит его."
+handler.already:
+  en: "Rustket is already registered."
+  ru: "Rustket уже зарегистрирован."
+handler.register:
+  en: "Register"
+  ru: "Зарегистрировать"
+handler.registered:
+  en: "Rustket now opens rocketchat:// links"
+  ru: "Теперь ссылки rocketchat:// открываются в Rustket"
+handler.shared_group:
+  en: "%{path} can be changed by other members of its group."
+  ru: "%{path} могут изменять другие участники его группы."

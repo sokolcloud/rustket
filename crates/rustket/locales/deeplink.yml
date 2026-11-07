@@ -1,0 +1,49 @@
+_version: 2
+deeplink.token_rejected:
+  en: "The sign-in link is not valid"
+  ru: "Ссылка для входа недействительна"
+deeplink.auth_error:
+  en: "Sign-in failed: %{error}"
+  ru: "Вход не удался: %{error}"
+deeplink.room_not_found:
+  en: "Room not found"
+  ru: "Комната не найдена"
+deeplink.confirm_title:
+  en: "Confirm sign-in"
+  ru: "Подтвердите вход"
+deeplink.confirm_warning:
+  en: "Only continue if you just signed in in your browser."
+  ru: "Продолжайте, только если вы только что вошли в браузере."
+deeplink.confirm_sign_in:
+  en: "Sign in"
+  ru: "Войти"
+deeplink.add_server_title:
+  en: "Add workspace?"
+  ru: "Добавить рабочее пространство?"
+deeplink.add_server_body:
+  en: "A link points to %{server}, which is not added yet. Add it?"
+  ru: "Ссылка ведёт на %{server}, которого ещё нет в списке. Добавить?"
+deeplink.add_server_confirm:
+  en: "Add"
+  ru: "Добавить"
+deeplink.room_link_timeout:
+  en: "The linked room could not be opened: the workspace did not load in time"
+  ru: "Не удалось открыть комнату по ссылке: рабочее пространство не загрузилось вовремя"
+deeplink.duplicate_token:
+  en: "More than one sign-in link arrived for this login. Start the browser sign-in again."
+  ru: "Для этого входа пришло несколько ссылок. Начните вход через браузер заново."
+deeplink.other_origin_title:
+  en: "Link to a different address"
+  ru: "Ссылка на другой адрес"
+deeplink.other_origin_body:
+  en: "The link points to %{link}, but this workspace is configured as %{server}. The link was ignored."
+  ru: "Ссылка ведёт на %{link}, а рабочее пространство настроено как %{server}. Ссылка проигнорирована."
+deeplink.confirm_question:
+  en: "Sign in to this account?"
+  ru: "Войти в этот аккаунт?"
+deeplink.confirm_display_name:
+  en: "Display name: %{name}"
+  ru: "Отображаемое имя: %{name}"
+deeplink.confirm_server:
+  en: "Server"
+  ru: "Сервер"

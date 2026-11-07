@@ -1,0 +1,7 @@
+_version: 2
+room_header.unknown_room:
+  en: "Room"
+  ru: "Комната"
+room_header.room_info:
+  en: "Room information"
+  ru: "Информация о комнате"

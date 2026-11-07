@@ -1,0 +1,103 @@
+_version: 2
+app.title:
+  en: "Rustket"
+  ru: "Rustket"
+app.yesterday:
+  en: "Yesterday"
+  ru: "Вчера"
+app.weekday_0:
+  en: "Monday"
+  ru: "Понедельник"
+app.weekday_1:
+  en: "Tuesday"
+  ru: "Вторник"
+app.weekday_2:
+  en: "Wednesday"
+  ru: "Среда"
+app.weekday_3:
+  en: "Thursday"
+  ru: "Четверг"
+app.weekday_4:
+  en: "Friday"
+  ru: "Пятница"
+app.weekday_5:
+  en: "Saturday"
+  ru: "Суббота"
+app.weekday_6:
+  en: "Sunday"
+  ru: "Воскресенье"
+app.error:
+  en: "Something went wrong"
+  ru: "Что-то пошло не так"
+app.token_not_saved:
+  en: "The login could not be saved"
+  ru: "Не удалось сохранить вход"
+app.keyring_missing:
+  en: "System keyring unavailable"
+  ru: "Системное хранилище паролей недоступно"
+app.keyring_file:
+  en: "Login tokens are stored in a file readable only by you."
+  ru: "Токены входа хранятся в файле, доступном только вам."
+app.not_yet:
+  en: "Not available yet"
+  ru: "Пока недоступно"
+app.force_logout:
+  en: "You were signed out by the server."
+  ru: "Сервер завершил ваш сеанс."
+app.session_expired:
+  en: "Your session has expired. Please sign in again."
+  ru: "Сеанс истёк. Войдите снова."
+app.connect_failed:
+  en: "Cannot connect to %{server}"
+  ru: "Не удаётся подключиться к %{server}"
+app.sync_failed:
+  en: "Loading %{server} failed"
+  ru: "Не удалось загрузить %{server}"
+app.loading_rooms:
+  en: "Loading rooms…"
+  ru: "Загрузка комнат…"
+app.no_room_title:
+  en: "No conversation selected"
+  ru: "Беседа не выбрана"
+app.no_room_subtitle:
+  en: "Pick a room or a direct message on the left."
+  ru: "Выберите комнату или личную переписку слева."
+app.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+app.close:
+  en: "Close"
+  ru: "Закрыть"
+app.remove_title:
+  en: "Remove workspace?"
+  ru: "Удалить рабочее пространство?"
+app.remove_body:
+  en: "%{server} will be removed from this app and you will be signed out."
+  ru: "%{server} будет удалено из приложения, а вы выйдете из аккаунта."
+app.remove_confirm:
+  en: "Remove"
+  ru: "Удалить"
+app.keyring_unavailable:
+  en: "The system keyring is unavailable: %{reason}"
+  ru: "Системное хранилище паролей недоступно: %{reason}"
+app.keyring_unreachable:
+  en: "Logins saved in the system keyring cannot be read now; sign in again or unlock the keyring."
+  ru: "Входы, сохранённые в системном хранилище паролей, сейчас недоступны; войдите снова или разблокируйте хранилище."
+app.keyring_migrated:
+  en: "%{count} saved login(s) were moved into the system keyring."
+  ru: "Сохранённые входы (%{count}) перенесены в системное хранилище паролей."
+app.plaintext_left:
+  en: "%{count} saved login(s) are still stored in a plain file."
+  ru: "Сохранённые входы (%{count}) всё ещё хранятся в обычном файле."
+app.secret_file_recovered:
+  en: "The damaged login file was moved to %{path}."
+  ru: "Повреждённый файл входов перемещён в %{path}."
+app.secrets_notice:
+  en: "Saved logins"
+  ru: "Сохранённые входы"
+app.url_refused:
+  en: "This link cannot be opened"
+  ru: "Эту ссылку нельзя открыть"
+app.revoke_failed:
+  en: "The token could not be revoked on the server"
+  ru: "Не удалось отозвать токен на сервере"

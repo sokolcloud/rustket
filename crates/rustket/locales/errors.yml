@@ -1,0 +1,34 @@
+_version: 2
+errors.login_blocked:
+  en: "Too many failed attempts. Try again later."
+  ru: "Слишком много неудачных попыток. Попробуйте позже."
+errors.unauthorized:
+  en: "Wrong username or password."
+  ru: "Неверное имя пользователя или пароль."
+errors.two_factor_invalid:
+  en: "Invalid code."
+  ru: "Неверный код."
+errors.two_factor_required:
+  en: "A two-factor code is required."
+  ru: "Требуется код двухфакторной аутентификации."
+errors.certificate:
+  en: "The certificate of %{host} is not trusted."
+  ru: "Сертификат %{host} не является доверенным."
+errors.tls:
+  en: "Secure connection failed: %{reason}"
+  ru: "Ошибка защищённого соединения: %{reason}"
+errors.timeout:
+  en: "The server did not answer in time."
+  ru: "Сервер не ответил вовремя."
+errors.rate_limited:
+  en: "Too many requests. Wait a moment."
+  ru: "Слишком много запросов. Подождите немного."
+errors.bad_url:
+  en: "Invalid address: %{reason}"
+  ru: "Неверный адрес: %{reason}"
+errors.network:
+  en: "The server is unreachable."
+  ru: "Сервер недоступен."
+errors.not_rocketchat:
+  en: "This does not look like a Rocket.Chat server."
+  ru: "Это не похоже на сервер Rocket.Chat."

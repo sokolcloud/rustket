@@ -1,0 +1,37 @@
+_version: 2
+room_panel.room_info:
+  en: "Room information"
+  ru: "Информация о комнате"
+room_panel.members:
+  en: "Members"
+  ru: "Участники"
+room_panel.thread:
+  en: "Thread"
+  ru: "Тред"
+room_panel.threads:
+  en: "Threads"
+  ru: "Треды"
+room_panel.discussions:
+  en: "Discussions"
+  ru: "Обсуждения"
+room_panel.search:
+  en: "Search messages"
+  ru: "Поиск сообщений"
+room_panel.pinned:
+  en: "Pinned messages"
+  ru: "Закреплённые сообщения"
+room_panel.starred:
+  en: "Starred messages"
+  ru: "Отмеченные сообщения"
+room_panel.mentions:
+  en: "Mentions"
+  ru: "Упоминания"
+room_panel.files:
+  en: "Files"
+  ru: "Файлы"
+room_panel.close:
+  en: "Close"
+  ru: "Закрыть"
+room_panel.placeholder:
+  en: "Coming soon"
+  ru: "Скоро"

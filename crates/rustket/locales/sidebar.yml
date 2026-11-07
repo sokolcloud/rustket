@@ -1,0 +1,58 @@
+_version: 2
+sidebar.search:
+  en: "Search"
+  ru: "Поиск"
+sidebar.no_rooms:
+  en: "No conversations yet"
+  ru: "Пока нет бесед"
+sidebar.no_results:
+  en: "Nothing found"
+  ru: "Ничего не найдено"
+sidebar.status_soon:
+  en: "Status: coming soon"
+  ru: "Статус: скоро"
+sidebar.settings:
+  en: "Settings"
+  ru: "Настройки"
+sidebar.logout:
+  en: "Log out"
+  ru: "Выйти"
+sidebar.remove_server:
+  en: "Remove workspace"
+  ru: "Удалить рабочее пространство"
+sidebar.directory:
+  en: "Directory"
+  ru: "Каталог"
+sidebar.create:
+  en: "Create new"
+  ru: "Создать"
+sidebar.unread:
+  en: "Unread"
+  ru: "Непрочитанные"
+sidebar.favorites:
+  en: "Favorites"
+  ru: "Избранное"
+sidebar.teams:
+  en: "Teams"
+  ru: "Команды"
+sidebar.discussions:
+  en: "Discussions"
+  ru: "Обсуждения"
+sidebar.channels:
+  en: "Channels"
+  ru: "Каналы"
+sidebar.private_groups:
+  en: "Private groups"
+  ru: "Приватные группы"
+sidebar.direct_messages:
+  en: "Direct messages"
+  ru: "Личные сообщения"
+sidebar.conversations:
+  en: "Conversations"
+  ru: "Беседы"
+sidebar.omnichannel:
+  en: "Omnichannel"
+  ru: "Омниканал"
+sidebar.logout_everywhere:
+  en: "Log out and revoke the token"
+  ru: "Выйти и отозвать токен"

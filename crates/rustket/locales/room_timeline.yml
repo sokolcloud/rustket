@@ -1,0 +1,10 @@
+_version: 2
+room_timeline.loading:
+  en: "Loading messages…"
+  ru: "Загрузка сообщений…"
+room_timeline.placeholder_title:
+  en: "Timeline coming soon"
+  ru: "Лента сообщений скоро появится"
+room_timeline.placeholder_count:
+  en: "%{count} messages loaded"
+  ru: "Загружено сообщений: %{count}"

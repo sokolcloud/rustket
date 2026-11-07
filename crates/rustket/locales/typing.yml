@@ -1,0 +1,25 @@
+_version: 2
+typing.typing:
+  en: "%{names} is typing…"
+  ru: "%{names} печатает…"
+typing.typing_many:
+  en: "%{names} are typing…"
+  ru: "%{names} печатают…"
+typing.recording:
+  en: "%{names} is recording…"
+  ru: "%{names} записывает…"
+typing.recording_many:
+  en: "%{names} are recording…"
+  ru: "%{names} записывают…"
+typing.uploading:
+  en: "%{names} is uploading…"
+  ru: "%{names} загружает файл…"
+typing.uploading_many:
+  en: "%{names} are uploading…"
+  ru: "%{names} загружают файлы…"
+typing.and:
+  en: "%{first} and %{last}"
+  ru: "%{first} и %{last}"
+typing.and_others:
+  en: "%{first} and %{count} others"
+  ru: "%{first} и ещё %{count}"
