@@ -1,0 +1,924 @@
+//! Headless widget tests: drive `iced_runtime::UserInterface` with the tiny-skia
+//! renderer (no window, no GPU) and check behaviour and that drawing succeeds.
+
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+use iced::advanced::layout::{self, Layout};
+use iced::advanced::renderer::{self as adv_renderer, Headless};
+use iced::advanced::widget::operation::{self, focusable};
+use iced::advanced::widget::{self, Id, Operation, Tree, Widget};
+use iced::advanced::{Clipboard, clipboard};
+use iced::widget::{button, column, container, scrollable, space, text, text_input};
+use iced::{
+    Color, Element, Event, Length, Point, Rectangle, Size, Theme, Vector, keyboard, mouse, window,
+};
+use iced_runtime::user_interface::{Cache, State, UserInterface};
+
+use rustket_ui::widget as w;
+
+#[derive(Debug, Clone, PartialEq)]
+enum M {
+    Base,
+    Trig,
+    Dismiss,
+    Close(u64),
+    Item,
+    Resize(f32),
+    Input(String),
+    Scrolled,
+    Noop,
+}
+
+struct NoClip;
+
+impl Clipboard for NoClip {
+    fn read(&self, _kind: clipboard::Kind) -> Option<String> {
+        None
+    }
+
+    fn write(&mut self, _kind: clipboard::Kind, _contents: String) {}
+}
+
+const SIZE: Size = Size::new(800.0, 600.0);
+
+fn renderer() -> iced::Renderer {
+    iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+        rustket_ui::theme::DEFAULT_FONT,
+        iced::Pixels(14.0),
+    ))
+}
+
+type Ui<'a> = UserInterface<'a, M, Theme, iced::Renderer>;
+
+fn moved(p: Point) -> Event {
+    Event::Mouse(mouse::Event::CursorMoved { position: p })
+}
+
+fn press() -> Event {
+    Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+}
+
+fn release() -> Event {
+    Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+}
+
+fn redraw() -> Event {
+    Event::Window(window::Event::RedrawRequested(Instant::now()))
+}
+
+fn wheel(y: f32) -> Event {
+    Event::Mouse(mouse::Event::WheelScrolled {
+        delta: mouse::ScrollDelta::Lines { x: 0.0, y },
+    })
+}
+
+fn escape() -> Event {
+    Event::Keyboard(keyboard::Event::KeyPressed {
+        key: keyboard::Key::Named(keyboard::key::Named::Escape),
+        modified_key: keyboard::Key::Named(keyboard::key::Named::Escape),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Escape),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::default(),
+        text: None,
+        repeat: false,
+    })
+}
+
+fn draw(ui: &mut Ui<'_>, r: &mut iced::Renderer, cursor: mouse::Cursor) {
+    let theme = rustket_ui::theme(rustket_ui::Mode::Light);
+    ui.draw(
+        r,
+        &theme,
+        &adv_renderer::Style {
+            text_color: Color::BLACK,
+        },
+        cursor,
+    );
+}
+
+/// Feeds events with the cursor at `at`, draws, returns messages and interaction.
+fn step(
+    ui: &mut Ui<'_>,
+    r: &mut iced::Renderer,
+    events: &[Event],
+    at: Point,
+) -> (Vec<M>, mouse::Interaction) {
+    let mut msgs = Vec::new();
+    let cursor = mouse::Cursor::Available(at);
+    let (state, _) = ui.update(events, cursor, r, &mut NoClip, &mut msgs);
+    let interaction = match state {
+        State::Updated {
+            mouse_interaction, ..
+        } => mouse_interaction,
+        State::Outdated => mouse::Interaction::None,
+    };
+    draw(ui, r, cursor);
+    (msgs, interaction)
+}
+
+fn screenshot(r: &mut iced::Renderer) {
+    let _ = r.screenshot(
+        Size::new(SIZE.width as u32, SIZE.height as u32),
+        1.0,
+        Color::WHITE,
+    );
+}
+
+/// Offsets of every scrollable, in tree order.
+fn scroll_offsets(ui: &mut Ui<'_>, r: &iced::Renderer) -> Vec<Vector> {
+    struct Probe(Vec<Vector>);
+    impl Operation for Probe {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<()>)) {
+            operate(self);
+        }
+
+        fn scrollable(
+            &mut self,
+            _id: Option<&Id>,
+            _bounds: Rectangle,
+            _content_bounds: Rectangle,
+            translation: Vector,
+            _state: &mut dyn widget::operation::Scrollable,
+        ) {
+            self.0.push(translation);
+        }
+    }
+    let mut probe = Probe(Vec::new());
+    ui.operate(r, &mut probe);
+    probe.0
+}
+
+fn is_focused(ui: &mut Ui<'_>, r: &iced::Renderer, id: Id) -> bool {
+    struct Probe(Id, bool);
+    impl Operation for Probe {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<()>)) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            id: Option<&Id>,
+            _bounds: Rectangle,
+            state: &mut dyn widget::operation::Focusable,
+        ) {
+            if id == Some(&self.0) {
+                self.1 = state.is_focused();
+            }
+        }
+    }
+    let mut probe = Probe(id, false);
+    ui.operate(r, &mut probe);
+    probe.1
+}
+
+fn focus(ui: &mut Ui<'_>, r: &iced::Renderer, id: Id) {
+    let mut op = operation::map(focusable::focus::<()>(id), |()| ());
+    ui.operate(r, &mut op);
+}
+
+fn timeline<'a>(input: &Id) -> Element<'a, M> {
+    let mut col = column![
+        text_input("composer", "")
+            .id(input.clone())
+            .on_input(M::Input)
+    ]
+    .spacing(4);
+    for i in 0..200 {
+        col = col.push(text(format!("row {i}")).height(20));
+    }
+    scrollable(col)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .on_scroll(|_| M::Scrolled)
+        .into()
+}
+
+fn toast_list(n: u64) -> Vec<w::Toast> {
+    (0..n)
+        .map(|id| w::Toast {
+            id,
+            kind: w::BannerKind::Info,
+            title: "Message sent".into(),
+            body: "delivered".into(),
+        })
+        .collect()
+}
+
+fn app<'a>(input: &Id, modal_open: bool, list: &'a [w::Toast]) -> Element<'a, M> {
+    let base = w::modal(
+        timeline(input),
+        modal_open.then(|| container(text("dialog")).width(200).height(100).into()),
+        Some(M::Dismiss),
+    );
+    w::toasts(base, list, M::Close)
+}
+
+#[test]
+fn base_state_survives_modal_and_toasts() {
+    let mut r = renderer();
+    let input = Id::new("composer");
+    let none = toast_list(0);
+    let some = toast_list(2);
+    let center = Point::new(400.0, 300.0);
+
+    let mut ui = UserInterface::build(app(&input, false, &none), SIZE, Cache::default(), &mut r);
+    step(&mut ui, &mut r, &[moved(center), wheel(-20.0)], center);
+    focus(&mut ui, &r, input.clone());
+    let scrolled = scroll_offsets(&mut ui, &r);
+    assert!(
+        scrolled[0].y > 100.0,
+        "wheel scrolled the timeline: {scrolled:?}"
+    );
+    assert!(is_focused(&mut ui, &r, input.clone()));
+
+    for (modal_open, list) in [(false, &some), (true, &some), (true, &none), (false, &none)] {
+        let cache = ui.into_cache();
+        ui = UserInterface::build(app(&input, modal_open, list), SIZE, cache, &mut r);
+        step(&mut ui, &mut r, &[redraw()], center);
+        assert_eq!(
+            scroll_offsets(&mut ui, &r),
+            scrolled,
+            "modal {modal_open}, toasts {}",
+            list.len()
+        );
+        // Focus probes do not reach the base while a modal blocks it; focus is
+        // checked again once it is closed.
+        if !modal_open {
+            assert!(
+                is_focused(&mut ui, &r, input.clone()),
+                "toasts {}",
+                list.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn modal_blocks_base_and_dismisses() {
+    let mut r = renderer();
+    let view = || -> Element<'static, M> {
+        w::modal(
+            button(space().width(Length::Fill).height(Length::Fill)).on_press(M::Base),
+            Some(
+                container(button(text("ok")).on_press(M::Item))
+                    .width(200)
+                    .height(100)
+                    .into(),
+            ),
+            Some(M::Dismiss),
+        )
+    };
+    let mut ui = UserInterface::build(view(), SIZE, Cache::default(), &mut r);
+    let outside = Point::new(50.0, 50.0);
+    let (_, interaction) = step(&mut ui, &mut r, &[moved(outside)], outside);
+    assert_ne!(
+        interaction,
+        mouse::Interaction::Pointer,
+        "base button must not show a pointer"
+    );
+    let (msgs, _) = step(&mut ui, &mut r, &[press(), release()], outside);
+    assert_eq!(msgs, vec![M::Dismiss]);
+    let (msgs, _) = step(&mut ui, &mut r, &[wheel(-5.0)], outside);
+    assert!(msgs.is_empty());
+    let ok = Point::new(310.0, 260.0);
+    let (msgs, _) = step(&mut ui, &mut r, &[moved(ok), press(), release()], ok);
+    assert_eq!(msgs, vec![M::Item]);
+    screenshot(&mut r);
+}
+
+#[test]
+fn single_escape_dismisses_modal_with_focused_input() {
+    let mut r = renderer();
+    let id = Id::new("dialog-input");
+    let view = |id: &Id| -> Element<'static, M> {
+        w::modal(
+            text("base"),
+            Some(
+                container(text_input("x", "").id(id.clone()).on_input(M::Input))
+                    .width(300)
+                    .into(),
+            ),
+            Some(M::Dismiss),
+        )
+    };
+    let mut ui = UserInterface::build(view(&id), SIZE, Cache::default(), &mut r);
+    let at = Point::new(400.0, 300.0);
+    step(&mut ui, &mut r, &[redraw()], at);
+    focus(&mut ui, &r, id.clone());
+    let (msgs, _) = step(&mut ui, &mut r, &[escape()], at);
+    assert_eq!(msgs, vec![M::Dismiss]);
+}
+
+#[test]
+fn toast_cards_capture_clicks() {
+    let mut r = renderer();
+    let list = toast_list(1);
+    fn view(list: &[w::Toast]) -> Element<'_, M> {
+        w::toasts(
+            button(space().width(Length::Fill).height(Length::Fill)).on_press(M::Base),
+            list,
+            M::Close,
+        )
+    }
+    let mut ui = UserInterface::build(view(&list), SIZE, Cache::default(), &mut r);
+    // Card: 340 wide, bottom-right with 20px margin; click on its text area.
+    let on_card = Point::new(SIZE.width - 20.0 - 250.0, SIZE.height - 20.0 - 20.0);
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[moved(on_card), press(), release()],
+        on_card,
+    );
+    assert!(!msgs.contains(&M::Base), "{msgs:?}");
+    let elsewhere = Point::new(100.0, 100.0);
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[moved(elsewhere), press(), release()],
+        elsewhere,
+    );
+    assert_eq!(msgs, vec![M::Base]);
+}
+
+/// Counts how often it is drawn.
+struct DrawProbe(Rc<Cell<u32>>);
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for DrawProbe {
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fixed(40.0), Length::Fixed(20.0))
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::Node::new(limits.resolve(40.0, 20.0, Size::new(40.0, 20.0)))
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        _renderer: &mut iced::Renderer,
+        _theme: &Theme,
+        _style: &adv_renderer::Style,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+    ) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+#[test]
+fn hover_toolbar_tooltip_closes_when_leaving_row() {
+    let hits = Rc::new(Cell::new(0));
+    let mut r = renderer();
+    let view = |hits: Rc<Cell<u32>>| -> Element<'static, M> {
+        let tip = iced::widget::tooltip(
+            button(space()).width(30).height(30).on_press(M::Item),
+            Element::new(DrawProbe(hits)),
+            iced::widget::tooltip::Position::Bottom,
+        )
+        .delay(Duration::ZERO);
+        let mut p = w::MessageRowProps::new(
+            space().width(36).height(36),
+            "alice",
+            "10:00",
+            text("hello world body"),
+        );
+        p.actions_toolbar = Some(w::message_toolbar(vec![tip.into()]));
+        column![
+            space().height(100),
+            w::message_row(p),
+            space().height(Length::Fill)
+        ]
+        .into()
+    };
+    let mut ui = UserInterface::build(view(hits.clone()), SIZE, Cache::default(), &mut r);
+    // Find the toolbar button: scan the row's right edge for a pointer.
+    let mut on_button = None;
+    'scan: for y in (100..170).step_by(2) {
+        for x in (600..800).rev().step_by(2) {
+            let p = Point::new(x as f32, y as f32);
+            let (_, i) = step(&mut ui, &mut r, &[moved(p)], p);
+            if i == mouse::Interaction::Pointer {
+                on_button = Some(p);
+                break 'scan;
+            }
+        }
+    }
+    let on_button = on_button.expect("toolbar button is shown on hover");
+    let shown = hits.get();
+    step(&mut ui, &mut r, &[redraw()], on_button);
+    step(&mut ui, &mut r, &[redraw()], on_button);
+    assert!(
+        hits.get() > shown,
+        "tooltip is drawn while hovering its button"
+    );
+    // Press on the button, release outside the row: it must not stay pressed.
+    step(&mut ui, &mut r, &[press()], on_button);
+    step(&mut ui, &mut r, &[redraw()], on_button);
+    let away = Point::new(on_button.x, 40.0);
+    let (msgs, _) = step(&mut ui, &mut r, &[moved(away), release()], away);
+    assert!(msgs.is_empty(), "{msgs:?}");
+    step(&mut ui, &mut r, &[redraw()], away);
+    let before = hits.get();
+    let cache = ui.into_cache();
+    let mut ui = UserInterface::build(view(hits.clone()), SIZE, cache, &mut r);
+    step(&mut ui, &mut r, &[redraw()], away);
+    assert_eq!(
+        hits.get(),
+        before,
+        "tooltip still drawn after leaving the row"
+    );
+}
+
+#[test]
+fn popover_does_not_click_through() {
+    let entries = vec![
+        w::MenuEntry::Header("Group".into()),
+        w::MenuItem::new("Disabled item", M::Item)
+            .disabled(true)
+            .into(),
+        w::MenuEntry::Separator,
+        w::MenuItem::new("Enabled", M::Item).into(),
+    ];
+    let mut r = renderer();
+    let view = |entries: &[w::MenuEntry<M>]| -> Element<'_, M> {
+        column![
+            w::popover_menu(
+                button(text("T")).width(30).height(30).on_press(M::Trig),
+                entries,
+                true,
+                M::Dismiss,
+                w::Placement::BelowStart,
+            ),
+            button(space().width(Length::Fill).height(Length::Fill)).on_press(M::Base),
+        ]
+        .into()
+    };
+    let mut ui = UserInterface::build(view(&entries), SIZE, Cache::default(), &mut r);
+    for (what, p) in [
+        ("header", Point::new(60.0, 46.0)),
+        ("disabled", Point::new(60.0, 72.0)),
+    ] {
+        let (_, interaction) = step(&mut ui, &mut r, &[moved(p)], p);
+        assert_ne!(interaction, mouse::Interaction::None, "{what}");
+        let (msgs, _) = step(&mut ui, &mut r, &[press(), release(), wheel(-3.0)], p);
+        assert!(msgs.is_empty(), "{what}: {msgs:?}");
+    }
+    let enabled = Point::new(60.0, 110.0);
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[moved(enabled), press(), release()],
+        enabled,
+    );
+    assert_eq!(msgs, vec![M::Item]);
+    let outside = Point::new(600.0, 400.0);
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[moved(outside), press(), release()],
+        outside,
+    );
+    assert!(msgs.contains(&M::Dismiss), "{msgs:?}");
+}
+
+#[test]
+fn split_handle_drag_does_not_scroll_sidebar() {
+    let mut r = renderer();
+    let input = Id::new("x");
+    let view = |input: &Id| -> Element<'static, M> {
+        w::split(
+            timeline(input),
+            text("content"),
+            280.0,
+            200.0,
+            480.0,
+            M::Resize,
+        )
+    };
+    let mut ui = UserInterface::build(view(&input), SIZE, Cache::default(), &mut r);
+    let handle = Point::new(280.0 + w::HANDLE_WIDTH / 2.0, 20.0);
+    let (_, interaction) = step(&mut ui, &mut r, &[moved(handle)], handle);
+    assert_eq!(interaction, mouse::Interaction::ResizingHorizontally);
+    step(&mut ui, &mut r, &[press()], handle);
+    let to = Point::new(330.0, 300.0);
+    let (msgs, _) = step(&mut ui, &mut r, &[moved(to)], to);
+    step(&mut ui, &mut r, &[release()], to);
+    assert!(
+        msgs.iter()
+            .any(|m| matches!(m, M::Resize(w) if (*w - 330.0).abs() < 4.0)),
+        "{msgs:?}"
+    );
+    assert!(!msgs.contains(&M::Scrolled), "{msgs:?}");
+    assert_eq!(scroll_offsets(&mut ui, &r), vec![Vector::ZERO]);
+    // Degenerate input does not panic.
+    let _ = UserInterface::build(
+        w::split(
+            text("a"),
+            text("b"),
+            f32::NAN,
+            f32::NAN,
+            f32::NAN,
+            M::Resize,
+        ),
+        SIZE,
+        Cache::default(),
+        &mut r,
+    );
+}
+
+#[test]
+fn ellipsis_renders_rtl_mixed_and_multiline() {
+    let mut r = renderer();
+    let samples = [
+        "مرحبا بالعالم هذا نص طويل جدا للاختبار",
+        "שלום עולם זה טקסט ארוך מאוד",
+        "hello مرحبا world שלום",
+        "Hi\nthis second line is very much longer than the first one",
+        "👩‍💻 Привет мир, this is long enough to truncate",
+        "",
+    ];
+    for width in [0.0, 30.0, 80.0, 150.0, 400.0] {
+        let mut col = column![].spacing(4);
+        for s in samples {
+            col = col.push(container(w::ellipsis(s)).width(width));
+            col = col.push(container(w::ellipsis(s).width(Length::Shrink)).width(width));
+        }
+        let mut ui: Ui<'_> =
+            UserInterface::build(Element::from(col), SIZE, Cache::default(), &mut r);
+        draw(&mut ui, &mut r, mouse::Cursor::Unavailable);
+        screenshot(&mut r);
+    }
+    // Multi-line content collapses to one line and truncates.
+    let el: Element<'_, M> = container(
+        w::ellipsis("Hi\nthis second line is long enough to be cut").width(Length::Shrink),
+    )
+    .width(120)
+    .into();
+    let mut ui: Ui<'_> = UserInterface::build(el, SIZE, Cache::default(), &mut r);
+    let mut op = TextProbe(Vec::new());
+    ui.operate(&r, &mut op);
+    let (bounds, content) = op.0.first().cloned().expect("ellipsis exposes its text");
+    assert!(content.starts_with("Hi\n"));
+    assert!(bounds.width <= 120.0 && bounds.width > 60.0, "{bounds:?}");
+    assert!(bounds.height < 14.0 * 1.3 + 1.0, "single line: {bounds:?}");
+}
+
+struct TextProbe(Vec<(Rectangle, String)>);
+
+impl Operation for TextProbe {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<()>)) {
+        operate(self);
+    }
+
+    fn text(&mut self, _id: Option<&Id>, bounds: Rectangle, text: &str) {
+        self.0.push((bounds, text.to_owned()));
+    }
+}
+
+#[test]
+fn room_list_relayout_is_bounded() {
+    let mut r = renderer();
+    let long = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(20);
+    let rows = |width: f32, long: &str| -> Element<'static, M> {
+        let mut col = column![];
+        for i in 0..1000 {
+            let mut p = w::RoomListItemProps::new(
+                w::AvatarSource::initials(format!("Room {i}"), format!("r{i}")),
+                format!("very-long-room-name-number-{i}-with-suffix"),
+                M::Noop,
+            );
+            p.subtitle = Some(long.to_owned());
+            p.time = Some("10:00".into());
+            col = col.push(w::room_list_item(p));
+        }
+        container(scrollable(col)).width(width).into()
+    };
+    let ui = UserInterface::build(rows(300.0, &long), SIZE, Cache::default(), &mut r);
+    let mut cache = ui.into_cache();
+    let mut worst = Duration::ZERO;
+    for width in [301.0, 302.0, 303.0, 304.0] {
+        let t = Instant::now();
+        let ui = UserInterface::build(rows(width, &long), SIZE, cache, &mut r);
+        worst = worst.max(t.elapsed());
+        cache = ui.into_cache();
+    }
+    eprintln!("1000 rooms, one drag step: {worst:?}");
+    // Generous bound for unoptimized test builds; release is far below this.
+    let limit = if cfg!(debug_assertions) { 4000 } else { 250 };
+    assert!(worst < Duration::from_millis(limit), "{worst:?}");
+}
+
+fn key(named: keyboard::key::Named, shift: bool) -> Event {
+    let mut modifiers = keyboard::Modifiers::default();
+    if shift {
+        modifiers.insert(keyboard::Modifiers::SHIFT);
+    }
+    Event::Keyboard(keyboard::Event::KeyPressed {
+        key: keyboard::Key::Named(named),
+        modified_key: keyboard::Key::Named(named),
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Tab),
+        location: keyboard::Location::Standard,
+        modifiers,
+        text: None,
+        repeat: false,
+    })
+}
+
+fn focused_of(ui: &mut Ui<'_>, r: &iced::Renderer, ids: &[&Id]) -> Vec<bool> {
+    ids.iter()
+        .map(|id| is_focused(ui, r, (*id).clone()))
+        .collect()
+}
+
+#[test]
+fn tab_cycles_inside_modal_and_never_reaches_base() {
+    let mut r = renderer();
+    let (base_id, a, b) = (Id::new("base"), Id::new("a"), Id::new("b"));
+    let view = |base_id: &Id, a: &Id, b: &Id| -> Element<'static, M> {
+        w::modal(
+            text_input("base", "")
+                .id(base_id.clone())
+                .on_input(M::Input),
+            Some(
+                container(column![
+                    text_input("a", "").id(a.clone()).on_input(M::Input),
+                    text_input("b", "").id(b.clone()).on_input(M::Input),
+                ])
+                .width(300)
+                .into(),
+            ),
+            Some(M::Dismiss),
+        )
+    };
+    let mut ui = UserInterface::build(view(&base_id, &a, &b), SIZE, Cache::default(), &mut r);
+    let at = Point::new(10.0, 10.0);
+    step(&mut ui, &mut r, &[redraw()], at);
+    let ids = [&base_id, &a, &b];
+    step(
+        &mut ui,
+        &mut r,
+        &[key(keyboard::key::Named::Tab, false)],
+        at,
+    );
+    assert_eq!(focused_of(&mut ui, &r, &ids), [false, true, false]);
+    step(
+        &mut ui,
+        &mut r,
+        &[key(keyboard::key::Named::Tab, false)],
+        at,
+    );
+    assert_eq!(focused_of(&mut ui, &r, &ids), [false, false, true]);
+    step(
+        &mut ui,
+        &mut r,
+        &[key(keyboard::key::Named::Tab, false)],
+        at,
+    );
+    assert_eq!(
+        focused_of(&mut ui, &r, &ids),
+        [false, true, false],
+        "wraps around"
+    );
+    step(&mut ui, &mut r, &[key(keyboard::key::Named::Tab, true)], at);
+    assert_eq!(
+        focused_of(&mut ui, &r, &ids),
+        [false, false, true],
+        "shift+tab goes back"
+    );
+    // App-level focus operations skip the base too.
+    for _ in 0..3 {
+        let mut op: Box<dyn Operation> = Box::new(focusable::focus_next::<()>());
+        loop {
+            ui.operate(&r, op.as_mut());
+            match op.finish() {
+                operation::Outcome::Chain(next) => op = next,
+                _ => break,
+            }
+        }
+        assert!(!is_focused(&mut ui, &r, base_id.clone()));
+    }
+}
+
+/// Captures Escape, like a widget closing its own popup.
+struct EscapeEater;
+
+impl Widget<M, Theme, iced::Renderer> for EscapeEater {
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fixed(10.0), Length::Fixed(10.0))
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut Tree,
+        _renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        layout::Node::new(limits.resolve(10.0, 10.0, Size::new(10.0, 10.0)))
+    }
+
+    fn draw(
+        &self,
+        _tree: &Tree,
+        _renderer: &mut iced::Renderer,
+        _theme: &Theme,
+        _style: &adv_renderer::Style,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+    ) {
+    }
+
+    fn update(
+        &mut self,
+        _tree: &mut Tree,
+        event: &Event,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &iced::Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut iced::advanced::Shell<'_, M>,
+        _viewport: &Rectangle,
+    ) {
+        if let Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) = event
+        {
+            shell.publish(M::Item);
+            shell.capture_event();
+        }
+    }
+}
+
+#[test]
+fn escape_goes_to_content_first() {
+    let mut r = renderer();
+    let at = Point::new(10.0, 10.0);
+    let mut ui = UserInterface::build(
+        w::modal(
+            text("base"),
+            Some(Element::new(EscapeEater)),
+            Some(M::Dismiss),
+        ),
+        SIZE,
+        Cache::default(),
+        &mut r,
+    );
+    step(&mut ui, &mut r, &[redraw()], at);
+    let (msgs, _) = step(&mut ui, &mut r, &[escape()], at);
+    assert_eq!(msgs, vec![M::Item]);
+    let mut ui = UserInterface::build(
+        w::modal(text("base"), Some(text("plain").into()), Some(M::Dismiss)),
+        SIZE,
+        Cache::default(),
+        &mut r,
+    );
+    let (msgs, _) = step(&mut ui, &mut r, &[escape()], at);
+    assert_eq!(msgs, vec![M::Dismiss]);
+}
+
+#[test]
+fn keyed_modal_resets_replaced_dialog_state() {
+    let mut r = renderer();
+    let id = Id::new("field");
+    let view = |key: &'static str, id: &Id| -> Element<'static, M> {
+        w::modal_keyed(
+            text("base"),
+            Some((
+                key,
+                container(text_input("x", "").id(id.clone()).on_input(M::Input))
+                    .width(300)
+                    .into(),
+            )),
+            Some(M::Dismiss),
+        )
+    };
+    let at = Point::new(10.0, 10.0);
+    let mut ui = UserInterface::build(view("a", &id), SIZE, Cache::default(), &mut r);
+    step(&mut ui, &mut r, &[redraw()], at);
+    focus(&mut ui, &r, id.clone());
+    let cache = ui.into_cache();
+    let mut ui = UserInterface::build(view("a", &id), SIZE, cache, &mut r);
+    assert!(is_focused(&mut ui, &r, id.clone()), "same key keeps state");
+    let cache = ui.into_cache();
+    let mut ui = UserInterface::build(view("b", &id), SIZE, cache, &mut r);
+    assert!(!is_focused(&mut ui, &r, id.clone()), "new key starts fresh");
+}
+
+fn drag_split_releasing_over(overlay_at: Point, view: impl Fn() -> Element<'static, M>) {
+    let mut r = renderer();
+    let mut ui = UserInterface::build(view(), SIZE, Cache::default(), &mut r);
+    let handle = Point::new(280.0 + w::HANDLE_WIDTH / 2.0, 20.0);
+    step(&mut ui, &mut r, &[moved(handle), press()], handle);
+    let (msgs, _) = step(&mut ui, &mut r, &[moved(overlay_at)], overlay_at);
+    assert!(
+        msgs.iter().any(|m| matches!(m, M::Resize(_))),
+        "dragging: {msgs:?}"
+    );
+    step(&mut ui, &mut r, &[release()], overlay_at);
+    let later = Point::new(overlay_at.x - 40.0, overlay_at.y);
+    let (msgs, _) = step(&mut ui, &mut r, &[moved(later)], later);
+    assert!(
+        !msgs.iter().any(|m| matches!(m, M::Resize(_))),
+        "drag ended: {msgs:?}"
+    );
+}
+
+#[test]
+fn drag_released_over_toast_ends() {
+    static LIST: std::sync::LazyLock<Vec<w::Toast>> = std::sync::LazyLock::new(|| toast_list(1));
+    let on_card = Point::new(SIZE.width - 20.0 - 250.0, SIZE.height - 20.0 - 20.0);
+    drag_split_releasing_over(on_card, || {
+        w::toasts(
+            w::split(
+                text("side"),
+                text("content"),
+                280.0,
+                100.0,
+                780.0,
+                M::Resize,
+            ),
+            &LIST,
+            M::Close,
+        )
+    });
+}
+
+#[test]
+fn drag_released_over_popup_ends() {
+    static ENTRIES: std::sync::LazyLock<Vec<w::MenuEntry<M>>> = std::sync::LazyLock::new(|| {
+        vec![
+            w::MenuEntry::Header("Group".into()),
+            w::MenuItem::new("Item", M::Item).into(),
+        ]
+    });
+    // Popup anchored at the top of the content pane, below a 30px trigger.
+    drag_split_releasing_over(Point::new(420.0, 46.0), || {
+        w::split(
+            text("side"),
+            column![w::popover_menu(
+                button(text("T")).width(30).height(30).on_press(M::Trig),
+                &ENTRIES,
+                true,
+                M::Dismiss,
+                w::Placement::BelowStart,
+            )]
+            .padding(iced::Padding::ZERO.left(100.0)),
+            280.0,
+            100.0,
+            780.0,
+            M::Resize,
+        )
+    });
+}
+
+#[test]
+fn bidi_ellipsis_is_cheap_and_correct() {
+    let mut r = renderer();
+    // An RLO-prefixed name must not collapse to just "…".
+    let el: Element<'_, M> =
+        container(w::ellipsis("\u{202E}gnp.exe some text that is long").width(Length::Shrink))
+            .width(120)
+            .into();
+    let mut ui: Ui<'_> = UserInterface::build(el, SIZE, Cache::default(), &mut r);
+    let mut op = TextProbe(Vec::new());
+    ui.operate(&r, &mut op);
+    assert!(op.0[0].0.width > 60.0, "{:?}", op.0[0].0);
+    draw(&mut ui, &mut r, mouse::Cursor::Unavailable);
+    screenshot(&mut r);
+
+    let rtl = "مرحبا بالعالم هذا نص طويل جدا للاختبار وهو أطول من العرض المتاح ".repeat(4);
+    let rows = |width: f32, long: &str| -> Element<'static, M> {
+        let mut col = column![];
+        for i in 0..1000 {
+            let mut p = w::RoomListItemProps::new(
+                w::AvatarSource::initials(format!("غرفة {i}"), format!("r{i}")),
+                format!("غرفة طويلة جدا رقم {i} مع لاحقة"),
+                M::Noop,
+            );
+            p.subtitle = Some(long.to_owned());
+            col = col.push(w::room_list_item(p));
+        }
+        container(scrollable(col)).width(width).into()
+    };
+    let ui = UserInterface::build(rows(300.0, &rtl), SIZE, Cache::default(), &mut r);
+    let mut cache = ui.into_cache();
+    let mut worst = Duration::ZERO;
+    for width in [301.0, 302.0, 303.0, 304.0, 303.0, 302.0] {
+        let t = Instant::now();
+        let ui = UserInterface::build(rows(width, &rtl), SIZE, cache, &mut r);
+        worst = worst.max(t.elapsed());
+        cache = ui.into_cache();
+    }
+    eprintln!("1000 RTL rooms, one drag step: {worst:?}");
+    let limit = if cfg!(debug_assertions) { 4000 } else { 250 };
+    assert!(worst < Duration::from_millis(limit), "{worst:?}");
+}
