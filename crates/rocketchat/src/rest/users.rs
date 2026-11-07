@@ -60,6 +60,30 @@ impl RestClient {
         field(v, "items")
     }
 
+    /// Sets the current user's avatar from an image (`users.setAvatar`,
+    /// multipart field `image`).
+    pub async fn users_set_avatar(&self, filename: &str, mime: &str, bytes: Vec<u8>) -> Result<()> {
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename.to_owned())
+            .mime_str(mime)
+            .map_err(|e| crate::Error::Protocol(format!("invalid MIME type {mime}: {e}")))?;
+        let form = reqwest::multipart::Form::new().part("image", part);
+        let url = self.server().api("users.setAvatar");
+        let _: Value = self
+            .send(
+                self.request(reqwest::Method::POST, &url, None)
+                    .multipart(form),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Back to the default avatar (`users.resetAvatar`).
+    pub async fn users_reset_avatar(&self, user_id: &str) -> Result<()> {
+        self.post_ok("users.resetAvatar", &json!({ "userId": user_id }))
+            .await
+    }
+
     /// `#` autocomplete over channels and private groups the user can see.
     pub async fn rooms_autocomplete_channel_and_private(
         &self,

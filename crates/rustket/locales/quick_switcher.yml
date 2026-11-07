@@ -5,3 +5,24 @@ quick_switcher.title:
 quick_switcher.placeholder:
   en: "Room or person"
   ru: "Комната или человек"
+quick_switcher.more_results:
+  en: "More on the server"
+  ru: "Ещё на сервере"
+quick_switcher.no_results:
+  en: "No matches"
+  ru: "Совпадений нет"
+quick_switcher.start_dm:
+  en: "Direct message"
+  ru: "Личное сообщение"
+quick_switcher.not_joined:
+  en: "Not joined"
+  ru: "Вы не участник"
+quick_switcher.hint_navigate:
+  en: "select"
+  ru: "выбор"
+quick_switcher.hint_open:
+  en: "open"
+  ru: "открыть"
+quick_switcher.hint_close:
+  en: "close"
+  ru: "закрыть"
