@@ -1,0 +1,7 @@
+_version: 2
+quick_switcher.title:
+  en: "Jump to"
+  ru: "Перейти"
+quick_switcher.placeholder:
+  en: "Room or person"
+  ru: "Комната или человек"

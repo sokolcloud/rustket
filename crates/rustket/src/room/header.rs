@@ -72,14 +72,14 @@ impl Header {
             .and_then(|e| e.room.as_ref())
             .and_then(|r| r.topic.clone())
             .filter(|t| !t.trim().is_empty());
-        let info_active = matches!(ctx.panel, Some(panel::Kind::RoomInfo));
+        let info_active = matches!(ctx.panel, Some(panel::Kind::Info));
         header_bar(
             Some(avatar(avatar_src, 32.0, AvatarShape::Rounded).into()),
             name,
             topic,
             vec![icon_button_with(
                 Icon::Info,
-                Some(Message::TogglePanel(panel::Kind::RoomInfo)),
+                Some(Message::TogglePanel(panel::Kind::Info)),
                 t!("room_header.room_info"),
                 info_active,
                 32.0,

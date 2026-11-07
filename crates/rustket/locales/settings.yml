@@ -35,3 +35,6 @@ settings.handler_register:
 settings.secrets_memory:
   en: "No keyring or writable data directory: you will have to sign in on every start."
   ru: "Нет хранилища паролей и доступного каталога данных: входить придётся при каждом запуске."
+settings.more_soon:
+  en: "More preferences are coming"
+  ru: "Другие настройки скоро появятся"

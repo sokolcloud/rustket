@@ -1,0 +1,16 @@
+_version: 2
+account.title:
+  en: "My account"
+  ru: "Мой аккаунт"
+account.profile:
+  en: "Profile"
+  ru: "Профиль"
+account.security:
+  en: "Security"
+  ru: "Безопасность"
+account.tokens:
+  en: "Personal access tokens"
+  ru: "Персональные токены доступа"
+account.preferences:
+  en: "Preferences"
+  ru: "Предпочтения"

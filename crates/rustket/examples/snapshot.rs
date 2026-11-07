@@ -558,6 +558,18 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "06-workspace-light");
     d.app.config.ui.theme = rustket_core::config::Theme::Dark;
     d.shoot(&out, "07-workspace-dark");
+    d.send(Message::OpenQuickSwitcher);
+    d.send(Message::QuickSwitcher(
+        sid.clone(),
+        rustket::dialogs::quick_switcher::Message::Query("rk-snap".into()),
+    ));
+    d.shoot(&out, "07b-quick-switcher-dark");
+    d.send(Message::CloseModal);
+    d.send(Message::Rail(rustket::workspace::rail::Message::Settings));
+    d.shoot(&out, "07c-settings-dark");
+    d.send(Message::Settings(
+        rustket::screens::settings::Message::Close,
+    ));
 
     // Open the throwaway dev channel through the sidebar.
     let rid = {
@@ -594,7 +606,10 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
 
     // Log out through the app: the login token is revoked on the server.
     let creds: Credentials = d.app.servers[&sid].credentials.clone().expect("creds");
-    d.send(Message::Sidebar(sid.clone(), sidebar::Message::Logout));
+    d.send(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
+    ));
     d.pump_until("login after logout", Duration::from_secs(20), |a| {
         a.servers[&sid]
             .login

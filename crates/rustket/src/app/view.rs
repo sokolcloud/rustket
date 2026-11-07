@@ -2,12 +2,10 @@
 
 use std::time::Instant;
 
-use iced::widget::{button, column, container, row, text};
+use iced::widget::{column, container, row, text};
 use iced::{Alignment, Element, Font, Length};
 use rust_i18n::t;
-use rustket_core::config::{Language, Theme as ThemePref};
 use rustket_core::room_list;
-use rustket_core::secrets::SecretBackend;
 use rustket_core::workspace::ConnectionState;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
@@ -21,7 +19,7 @@ use rustket_ui::widget::{
     toasts,
 };
 
-use super::{App, Modal, Screen, SecretsMode};
+use super::{App, Modal, Screen};
 use crate::message::{Message, ModalMessage};
 use crate::room::ViewCtx;
 use crate::screens::add_server;
@@ -29,6 +27,7 @@ use crate::screens::login;
 use crate::url_handler;
 use crate::workspace::sidebar::SidebarCtx;
 use crate::workspace::{ServerState, rail};
+use rustket_core::ServerId;
 
 impl App {
     // --- view --------------------------------------------------------------------
@@ -45,14 +44,44 @@ impl App {
                 }
             }
             Screen::Server => self.server_view(),
+            Screen::Settings(c) => row![
+                self.rail(),
+                c.view(&self.settings_view_data()).map(Message::Settings)
+            ]
+            .into(),
+            Screen::Account(sid, c) => self.server_page(sid, |s| {
+                let sid = sid.clone();
+                c.view(&self.component_view_ctx(s))
+                    .map(move |m| Message::Account(sid.clone(), m))
+            }),
+            Screen::Directory(sid, c) => self.server_page(sid, |s| {
+                let sid = sid.clone();
+                c.view(&self.component_view_ctx(s))
+                    .map(move |m| Message::Directory(sid.clone(), m))
+            }),
         };
         let (overlay, dismiss) = self.overlay();
         let content = modal(base, overlay, dismiss);
         toasts(content, &self.toasts, Message::CloseToast)
     }
 
+    /// Rail plus a page of server `sid`.
+    fn server_page<'a>(
+        &'a self,
+        sid: &ServerId,
+        page: impl FnOnce(&'a ServerState) -> Element<'a, Message>,
+    ) -> Element<'a, Message> {
+        match self.servers.get(sid) {
+            Some(s) => row![self.rail(), page(s)].into(),
+            None => loading_placeholder(None),
+        }
+    }
+
     fn rail(&self) -> Element<'_, Message> {
-        let adding = matches!(self.screen, Screen::AddServer(_));
+        let adding = !matches!(
+            self.screen,
+            Screen::Server | Screen::Account(..) | Screen::Directory(..)
+        );
         let entries = self
             .config
             .sorted_servers()
@@ -105,8 +134,9 @@ impl App {
             .into()
         } else {
             let sid = sid.clone();
+            let status = s.status_menu.view(&self.component_view_ctx(s));
             s.sidebar
-                .view(&sidebar_ctx)
+                .view(&sidebar_ctx, status)
                 .map(move |m| Message::Sidebar(sid.clone(), m))
         };
         let room_area: Element<'a, Message> =
@@ -227,7 +257,7 @@ impl App {
                     None => (None, None),
                 }
             }
-            Screen::Loading => (None, None),
+            _ => (None, None),
         }
     }
 
@@ -362,7 +392,22 @@ impl App {
                     Some(Message::CloseModal),
                 )
             }
-            Modal::Settings => self.settings_view(),
+            Modal::CreateRoom(sid, c) => match self.servers.get(sid) {
+                Some(s) => {
+                    let sid = sid.clone();
+                    c.view(&self.component_view_ctx(s))
+                        .map(move |m| Message::CreateRoom(sid.clone(), m))
+                }
+                None => text("").into(),
+            },
+            Modal::QuickSwitcher(sid, c) => match self.servers.get(sid) {
+                Some(s) => {
+                    let sid = sid.clone();
+                    c.view(&self.component_view_ctx(s))
+                        .map(move |m| Message::QuickSwitcher(sid.clone(), m))
+                }
+                None => text("").into(),
+            },
             Modal::ConfirmRemove(sid) => {
                 let name = self
                     .servers
@@ -384,114 +429,5 @@ impl App {
                 )
             }
         }
-    }
-
-    fn settings_view(&self) -> Element<'_, Message> {
-        fn choice<'a, T: Clone + PartialEq + 'a>(
-            label: String,
-            current: &T,
-            value: T,
-            to_msg: fn(T) -> ModalMessage,
-        ) -> Element<'a, Message> {
-            let selected = current == &value;
-            button(text(label).size(TEXT_BODY))
-                .padding([6, 12])
-                .style(if selected {
-                    style::button_primary
-                } else {
-                    style::button_secondary
-                })
-                .on_press(Message::Modal(to_msg(value)))
-                .into()
-        }
-        let ui = &self.config.ui;
-        let mut body = column![
-            text(t!("settings.theme"))
-                .size(TEXT_CAPTION)
-                .style(style::text_secondary),
-            row![
-                choice(
-                    t!("settings.theme_system").into_owned(),
-                    &ui.theme,
-                    ThemePref::System,
-                    ModalMessage::SetTheme
-                ),
-                choice(
-                    t!("settings.theme_light").into_owned(),
-                    &ui.theme,
-                    ThemePref::Light,
-                    ModalMessage::SetTheme
-                ),
-                choice(
-                    t!("settings.theme_dark").into_owned(),
-                    &ui.theme,
-                    ThemePref::Dark,
-                    ModalMessage::SetTheme
-                ),
-            ]
-            .spacing(SPACE_2),
-            text(t!("settings.language"))
-                .size(TEXT_CAPTION)
-                .style(style::text_secondary),
-            row![
-                choice(
-                    t!("settings.language_system").into_owned(),
-                    &ui.language,
-                    Language::System,
-                    ModalMessage::SetLanguage
-                ),
-                choice(
-                    "English".to_owned(),
-                    &ui.language,
-                    Language::En,
-                    ModalMessage::SetLanguage
-                ),
-                choice(
-                    "Русский".to_owned(),
-                    &ui.language,
-                    Language::Ru,
-                    ModalMessage::SetLanguage
-                ),
-            ]
-            .spacing(SPACE_2),
-            text(t!("settings.links"))
-                .size(TEXT_CAPTION)
-                .style(style::text_secondary),
-            row![
-                text(if self.handler_registered {
-                    t!("settings.handler_on")
-                } else {
-                    t!("settings.handler_off")
-                })
-                .size(TEXT_BODY)
-                .width(Length::Fill),
-                secondary_button(
-                    t!("settings.handler_register"),
-                    Some(Message::Modal(ModalMessage::OpenRegisterHandler))
-                ),
-            ]
-            .spacing(SPACE_2)
-            .align_y(Alignment::Center),
-        ]
-        .spacing(SPACE_2);
-        match self.secret_backend {
-            Some(SecretBackend::File) => {
-                body = body.push(banner(BannerKind::Warning, t!("app.keyring_file"), None));
-            }
-            Some(SecretBackend::Memory) if self.secrets_mode == SecretsMode::System => {
-                body = body.push(banner(
-                    BannerKind::Warning,
-                    t!("settings.secrets_memory"),
-                    None,
-                ));
-            }
-            _ => {}
-        }
-        dialog(
-            t!("settings.title"),
-            body,
-            vec![primary_button(t!("app.close"), Some(Message::CloseModal)).into()],
-            Some(Message::CloseModal),
-        )
     }
 }

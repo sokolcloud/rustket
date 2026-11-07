@@ -1,5 +1,6 @@
 //! Application state, update and subscriptions (`view` is in `app/view.rs`).
 
+mod components;
 mod view;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -25,6 +26,7 @@ use rustket_core::{ServerId, sync};
 use rustket_ui::Mode;
 use rustket_ui::widget::{BannerKind, Toast};
 
+use crate::component;
 use crate::config_writer::ConfigWriter;
 use crate::deeplink::{self, Decision, PendingLogin};
 use crate::error::Failure;
@@ -80,7 +82,11 @@ pub struct Flags {
 pub enum Screen {
     Loading,
     AddServer(Box<AddServer>),
+    /// The active server: login or workspace.
     Server,
+    Settings(Box<crate::screens::settings::Settings>),
+    Account(ServerId, Box<crate::screens::account::Account>),
+    Directory(ServerId, Box<crate::screens::directory::Directory>),
 }
 
 pub enum Modal {
@@ -105,8 +111,9 @@ pub enum Modal {
         /// Paths writable by a shared group (registration needs confirmation).
         warnings: Vec<String>,
     },
-    Settings,
     ConfirmRemove(ServerId),
+    CreateRoom(ServerId, Box<crate::dialogs::create_room::CreateRoom>),
+    QuickSwitcher(ServerId, Box<crate::dialogs::quick_switcher::QuickSwitcher>),
 }
 
 pub struct App {
@@ -135,6 +142,9 @@ pub struct App {
     /// Token confirmations waiting for the single confirmation slot.
     confirm_queue: VecDeque<(ServerId, Credentials, Box<User>)>,
     save_stamp: u64,
+    pub desktop: crate::desktop::Desktop,
+    /// (unread rooms, mentions) over all servers, last given to `desktop`.
+    last_unread: (u64, u64),
 }
 
 fn notice_text(n: &SecretNotice) -> String {
@@ -264,6 +274,8 @@ impl App {
             stamp: 0,
             confirm_queue: VecDeque::new(),
             save_stamp: 0,
+            desktop: crate::desktop::Desktop::new(),
+            last_unread: (0, 0),
         };
         let wanted: Vec<(ServerId, String)> = app
             .config
@@ -516,7 +528,8 @@ impl App {
         let task = self.update_inner(message);
         let after = self.after_update();
         let confirm = self.show_next_confirmation();
-        Task::batch([task, after, confirm])
+        let unread = self.unread_hook();
+        Task::batch([task, after, confirm, unread])
     }
 
     /// Applies pending workspace changes to derived views and fetches wanted images.
@@ -689,12 +702,17 @@ impl App {
             Message::Rail(m) => match m {
                 rail::Message::Select(sid) => self.activate(sid),
                 rail::Message::Add => Task::done(Message::ShowAddServer),
-                rail::Message::Settings => {
-                    self.modals.push(Modal::Settings);
-                    Task::none()
-                }
+                rail::Message::Settings => self.navigate(component::Nav::Settings),
             },
             Message::Sidebar(sid, m) => self.on_sidebar(sid, m),
+            Message::Settings(m) => self.on_settings(m),
+            Message::Account(sid, m) => self.on_account(sid, m),
+            Message::Directory(sid, m) => self.on_directory(sid, m),
+            Message::CreateRoom(sid, m) => self.on_create_room(sid, m),
+            Message::QuickSwitcher(sid, m) => self.on_quick_switcher(sid, m),
+            Message::StatusMenu(sid, m) => self.on_status_menu(sid, m),
+            Message::Desktop(m) => self.on_desktop(m),
+            Message::OpenQuickSwitcher => self.navigate(component::Nav::QuickSwitcher),
             Message::SidebarResized(w) => {
                 self.ui_state.sidebar_width = w;
                 self.save_stamp += 1;
@@ -1196,17 +1214,11 @@ impl App {
                 }
                 self.save_config()
             }
-            sidebar::Out::Logout => self.logout(&sid, false),
-            sidebar::Out::LogoutEverywhere => self.logout(&sid, true),
-            sidebar::Out::RemoveServer => {
-                self.modals.push(Modal::ConfirmRemove(sid));
-                Task::none()
-            }
-            sidebar::Out::Settings => {
-                self.modals.push(Modal::Settings);
-                Task::none()
-            }
-            sidebar::Out::NotYet => self.toast(BannerKind::Info, t!("app.not_yet"), String::new()),
+            sidebar::Out::Status(m) => self.on_status_menu(sid, m),
+            sidebar::Out::Directory => self.navigate(component::Nav::Directory),
+            sidebar::Out::Create => self.navigate(component::Nav::CreateRoom(
+                crate::dialogs::create_room::Kind::Channel,
+            )),
         }
     }
 
@@ -1368,7 +1380,8 @@ impl App {
                 room::Effect::LoadOlder
                 | room::Effect::MarkRead
                 | room::Effect::OpenPanel(_)
-                | room::Effect::ClosePanel => Task::none(),
+                | room::Effect::ClosePanel
+                | room::Effect::Compose(_) => Task::none(),
             });
         }
         Task::batch(tasks)
@@ -1386,7 +1399,20 @@ impl App {
                 self.for_rooms(&sid, None, |rv, ctx| rv.on_reconnect(ctx))
             }
             ServerEvent::Event(ev) => match session::apply_event(&mut s.workspace, &ev) {
-                Followup::None | Followup::Notification => Task::none(),
+                Followup::None => Task::none(),
+                Followup::Notification(n) => {
+                    let name = s.name.clone();
+                    self.desktop
+                        .on_notification(
+                            &sid,
+                            &name,
+                            &n,
+                            &s.workspace,
+                            &self.config.ui,
+                            self.focused,
+                        )
+                        .map(Message::Desktop)
+                }
                 Followup::InitialLoad => self.initial_load(&sid),
                 Followup::Resync { reconnected } => {
                     let sync = self.resync(&sid);
@@ -1936,15 +1962,6 @@ impl App {
                 self.modals.pop();
                 self.remove_server(&sid)
             }
-            ModalMessage::SetTheme(t) => {
-                self.config.ui.theme = t;
-                self.save_config()
-            }
-            ModalMessage::SetLanguage(l) => {
-                self.config.ui.language = l;
-                crate::i18n::apply(l);
-                self.save_config()
-            }
         }
     }
 
@@ -2001,6 +2018,56 @@ impl App {
             },
         ));
         subs.push(window::close_requests().map(Message::CloseRequested));
+        // Ctrl+K: quick switcher.
+        subs.push(iced::keyboard::listen().filter_map(|ev| match ev {
+            iced::keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                physical_key,
+                ..
+            } if modifiers.command() && key.to_latin(physical_key) == Some('k') => {
+                Some(Message::OpenQuickSwitcher)
+            }
+            _ => None,
+        }));
+        subs.push(self.desktop.subscription().map(Message::Desktop));
+        match &self.screen {
+            Screen::Settings(c) => subs.push(c.subscription().map(Message::Settings)),
+            Screen::Account(sid, c) => subs.push(
+                c.subscription()
+                    .with(sid.clone())
+                    .map(|(sid, m)| Message::Account(sid, m)),
+            ),
+            Screen::Directory(sid, c) => subs.push(
+                c.subscription()
+                    .with(sid.clone())
+                    .map(|(sid, m)| Message::Directory(sid, m)),
+            ),
+            _ => {}
+        }
+        for m in &self.modals {
+            match m {
+                Modal::CreateRoom(sid, c) => subs.push(
+                    c.subscription()
+                        .with(sid.clone())
+                        .map(|(sid, m)| Message::CreateRoom(sid, m)),
+                ),
+                Modal::QuickSwitcher(sid, c) => subs.push(
+                    c.subscription()
+                        .with(sid.clone())
+                        .map(|(sid, m)| Message::QuickSwitcher(sid, m)),
+                ),
+                _ => {}
+            }
+        }
+        for s in self.servers.values() {
+            subs.push(
+                s.status_menu
+                    .subscription()
+                    .with(s.id.clone())
+                    .map(|(sid, m)| Message::StatusMenu(sid, m)),
+            );
+        }
         Subscription::batch(subs)
     }
 }

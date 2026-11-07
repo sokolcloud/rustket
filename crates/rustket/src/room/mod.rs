@@ -1,11 +1,12 @@
 //! The room area: one [`RoomView`] per open room, composed of four components
 //! with their own messages — [`header`], [`timeline`], [`composer`] and the
-//! right contextual [`panel`]. See `README.md` in this directory for the
+//! right contextual [`panel`]. See `crates/rustket/COMPONENTS.md` for the
 //! component contract.
 
 pub mod composer;
 pub mod header;
 pub mod panel;
+pub mod render;
 pub mod timeline;
 
 use std::sync::Arc;
@@ -133,6 +134,25 @@ pub enum Effect {
     /// Open a URL in the external browser (absolute http, https or mailto only;
     /// anything else is refused with a toast).
     OpenUrl(String),
+    /// Ask the composer to do something (edit, quote, react, …); routed to
+    /// `Composer::intent`.
+    Compose(ComposeIntent),
+}
+
+/// Requests other room components make to the composer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComposeIntent {
+    /// Edit message `mid`.
+    Edit(String),
+    /// Quote message `mid` in the next message.
+    Quote(String),
+    /// Insert `@username`.
+    Mention(String),
+    InsertText(String),
+    /// Open the emoji picker to react to message `mid`.
+    React(String),
+    /// Reply in thread `tmid` (also opens the thread panel).
+    ReplyInThread(String),
 }
 
 /// Result of a component `update`: a task producing the component's messages
@@ -391,6 +411,21 @@ impl RoomView {
                 Effect::LoadOlder => tasks.push(self.load_older(ctx).task),
                 Effect::MarkRead => tasks.push(self.mark_read(ctx)),
                 Effect::OpenPanel(kind) => self.panel.open(kind),
+                Effect::Compose(intent) => {
+                    if let ComposeIntent::ReplyInThread(tmid) = &intent
+                        && self.panel.kind() != Some(&panel::Kind::Thread(tmid.clone()))
+                    {
+                        self.panel.open(panel::Kind::Thread(tmid.clone()));
+                    }
+                    let a = self.composer.intent(intent, ctx).map(Message::Composer);
+                    tasks.push(a.task);
+                    // Effects of the composer itself (no recursion into intents).
+                    up.extend(
+                        a.effects
+                            .into_iter()
+                            .filter(|e| !matches!(e, Effect::Compose(_))),
+                    );
+                }
                 Effect::ClosePanel => self.panel.close(),
                 other => up.push(other),
             }

@@ -19,10 +19,9 @@ use rustket_core::typing::TypingLabel;
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY};
 use rustket_ui::widget::{
-    AvatarShape, MenuEntry, MenuItem, Placement, Presence, RoomListItemProps, avatar, ellipsis,
-    empty_state, icon_button, popover_menu, room_list_item, section_header,
+    Presence, RoomListItemProps, empty_state, icon_button, room_list_item, section_header,
 };
 
 use crate::format::{count_u32, short_time};
@@ -37,11 +36,8 @@ pub enum Message {
     ClearFilter,
     Toggle(SectionKind),
     Open(String),
-    Menu(bool),
-    Logout,
-    LogoutEverywhere,
-    RemoveServer,
-    Settings,
+    /// The status menu in the header (`workspace/status_menu.rs`).
+    Status(super::status_menu::Message),
     Directory,
     Create,
 }
@@ -52,13 +48,9 @@ pub enum Out {
     OpenRoom(String),
     /// Collapsed state of a section changed (`SectionKind::i18n_key`).
     ToggleSection(String),
-    Logout,
-    /// Log out and revoke the token on the server (also a personal access token).
-    LogoutEverywhere,
-    RemoveServer,
-    Settings,
-    /// Not implemented yet (directory, create room): show a toast.
-    NotYet,
+    Status(super::status_menu::Message),
+    Directory,
+    Create,
 }
 
 pub struct SidebarCtx<'a> {
@@ -76,7 +68,6 @@ pub struct SidebarCtx<'a> {
 pub struct Sidebar {
     pub filter: String,
     pub sections: Vec<Section>,
-    pub menu_open: bool,
     /// Revision of the inputs the sections were computed from.
     computed_for: Option<(String, u64, u64, u64, u64)>,
 }
@@ -104,27 +95,9 @@ impl Sidebar {
             }
             Message::Toggle(kind) => Out::ToggleSection(kind.i18n_key().to_owned()),
             Message::Open(rid) => Out::OpenRoom(rid),
-            Message::Menu(open) => {
-                self.menu_open = open;
-                Out::None
-            }
-            Message::Logout => {
-                self.menu_open = false;
-                Out::Logout
-            }
-            Message::LogoutEverywhere => {
-                self.menu_open = false;
-                Out::LogoutEverywhere
-            }
-            Message::RemoveServer => {
-                self.menu_open = false;
-                Out::RemoveServer
-            }
-            Message::Settings => {
-                self.menu_open = false;
-                Out::Settings
-            }
-            Message::Directory | Message::Create => Out::NotYet,
+            Message::Status(m) => Out::Status(m),
+            Message::Directory => Out::Directory,
+            Message::Create => Out::Create,
         }
     }
 
@@ -183,8 +156,13 @@ impl Sidebar {
         self.sections.iter().map(|s| s.items.len()).sum()
     }
 
-    pub fn view<'a>(&'a self, ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
-        let header = self.header(ctx);
+    /// `status`: the status menu (avatar trigger and popover) for the header.
+    pub fn view<'a>(
+        &'a self,
+        ctx: &SidebarCtx<'a>,
+        status: Element<'a, super::status_menu::Message>,
+    ) -> Element<'a, Message> {
+        let header = self.header(status);
         let search = container(
             row![
                 icon::sized(Icon::Search, 16.0).style(style::text_hint),
@@ -249,68 +227,11 @@ impl Sidebar {
         .into()
     }
 
-    fn header<'a>(&'a self, ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
-        let ws = ctx.workspace;
-        let username = ws.username().unwrap_or_default().to_owned();
-        let name = ws
-            .me()
-            .and_then(|m| m.name.clone())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| username.clone());
-        let src = ctx.images.avatar(
-            ctx.server_id,
-            ctx.server,
-            &Avatar::User {
-                username: username.clone(),
-            },
-            &name,
-        );
-        let me_avatar = avatar(src, 32.0, AvatarShape::Rounded)
-            .presence(Some(presence(ws.my_status())))
-            .ring_with(|t| t.surface_sidebar);
-        let trigger = iced::widget::button(
-            row![
-                me_avatar,
-                column![
-                    ellipsis(name).size(TEXT_BODY).font(FONT_SEMIBOLD),
-                    ellipsis(format!("@{username}")).size(TEXT_CAPTION).style(
-                        |theme: &iced::Theme| Some(rustket_ui::theme::tokens(theme).text_secondary)
-                    ),
-                ]
-                .width(Length::Fill),
-                icon::sized(Icon::ChevronDown, 14.0),
-            ]
-            .spacing(SPACE_2)
-            .align_y(Alignment::Center),
-        )
-        .padding([4, 6])
-        .width(Length::Fill)
-        .style(style::button_ghost)
-        .on_press(Message::Menu(!self.menu_open));
-        let entries = vec![
-            MenuEntry::Header(t!("sidebar.status_soon").into_owned()),
-            MenuEntry::Separator,
-            MenuItem::new(t!("sidebar.settings"), Message::Settings)
-                .icon(Icon::Settings)
-                .into(),
-            MenuItem::new(t!("sidebar.logout"), Message::Logout)
-                .icon(Icon::LogOut)
-                .into(),
-            MenuItem::new(t!("sidebar.logout_everywhere"), Message::LogoutEverywhere)
-                .icon(Icon::LogOut)
-                .into(),
-            MenuItem::new(t!("sidebar.remove_server"), Message::RemoveServer)
-                .icon(Icon::Trash2)
-                .danger(true)
-                .into(),
-        ];
-        let menu = popover_menu(
-            trigger,
-            &entries,
-            self.menu_open,
-            Message::Menu(false),
-            Placement::BelowStart,
-        );
+    fn header<'a>(
+        &'a self,
+        status: Element<'a, super::status_menu::Message>,
+    ) -> Element<'a, Message> {
+        let menu = status.map(Message::Status);
         container(
             row![
                 container(menu).width(Length::Fill),

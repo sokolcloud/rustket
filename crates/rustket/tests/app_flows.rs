@@ -465,7 +465,10 @@ async fn stale_results_of_an_old_session_are_dropped() {
     );
     let _ = app.update(m);
     let old_epoch = app.servers[&sid].generation;
-    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Logout));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
+    ));
     assert!(app.servers[&sid].login.is_some());
     // Late successful load while logged out: ignored.
     let _ = app.update(Message::InitialLoaded(
@@ -786,7 +789,8 @@ async fn confirmations_of_two_servers_do_not_stack() {
     assert!(signed_in(&app, &s2).is_none(), "not armed yet");
     // Covered by another dialog: disarmed, re-armed when uncovered.
     let _ = app.update(Message::ArmConfirm(stamp2));
-    let _ = app.update(Message::Rail(rustket::workspace::rail::Message::Settings));
+    let _ = app.update(Message::OpenQuickSwitcher);
+    assert!(top_stamp(&app).is_none(), "covered by the quick switcher");
     let _ = app.update(Message::CloseModal);
     let (_, stamp3, armed3) = top_stamp(&app).unwrap();
     assert!(!armed3);
@@ -832,7 +836,10 @@ async fn image_results_after_logout_are_dropped() {
     let (mut app, sid, _) = app_with(dir.path(), Some("A"), vec![]);
     let generation = app.images.generation(&sid);
     let url = format!("{SERVER}/avatar/bob?size=64");
-    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Logout));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
+    ));
     let mut late = fetched_png();
     let path = dir.path().join("cache/images/x/late.png");
     late.write = Some((path.clone(), vec![1, 2, 3]));
@@ -856,12 +863,15 @@ async fn unknown_token_kind_is_kept_local() {
     assert_eq!(app.config.server(&sid).and_then(|e| e.token_kind), None);
     // No session: a revoke would need a REST task; a local logout schedules
     // only the secret deletion and the login meta load.
-    let local = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Logout));
+    let local = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
+    ));
     let dir2 = tempfile::tempdir().unwrap();
     let (mut app2, sid2, _) = app_with(dir2.path(), Some("A"), vec![]);
     let everywhere = app2.update(Message::Sidebar(
         sid2.clone(),
-        sidebar::Message::LogoutEverywhere,
+        sidebar::Message::Status(rustket::workspace::status_menu::Message::LogoutEverywhere),
     ));
     assert_eq!(
         everywhere.units(),
@@ -890,4 +900,55 @@ async fn sidebar_width_is_saved() {
         rustket::ui_state::UiState::load(dir.path()).sidebar_width,
         345.0
     );
+}
+
+/// Component stubs are reachable: rail gear, status menu, sidebar buttons, Ctrl+K.
+#[tokio::test]
+async fn component_navigation() {
+    use rustket::app::Screen;
+    use rustket::workspace::{rail, status_menu};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid, _) = app_with(dir.path(), Some("A"), vec![]);
+    let _ = app.update(Message::Rail(rail::Message::Settings));
+    assert!(matches!(app.screen, Screen::Settings(_)));
+    let _ = app.update(Message::Settings(
+        rustket::screens::settings::Message::SetTheme(rustket_core::config::Theme::Dark),
+    ));
+    assert_eq!(app.config.ui.theme, rustket_core::config::Theme::Dark);
+    let _ = app.update(Message::Settings(
+        rustket::screens::settings::Message::Close,
+    ));
+    assert!(matches!(app.screen, Screen::Server));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Status(status_menu::Message::Account),
+    ));
+    assert!(matches!(app.screen, Screen::Account(..)));
+    let _ = app.update(Message::Account(
+        sid.clone(),
+        rustket::screens::account::Message::Close,
+    ));
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Directory));
+    assert!(matches!(app.screen, Screen::Directory(..)));
+    let _ = app.update(Message::Directory(
+        sid.clone(),
+        rustket::screens::directory::Message::Close,
+    ));
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Create));
+    assert!(matches!(app.modals.last(), Some(Modal::CreateRoom(..))));
+    let _ = app.update(Message::CreateRoom(
+        sid.clone(),
+        rustket::dialogs::create_room::Message::Close,
+    ));
+    assert!(app.modals.is_empty());
+    let _ = app.update(Message::OpenQuickSwitcher);
+    let _ = app.update(Message::OpenQuickSwitcher);
+    assert_eq!(app.modals.len(), 1);
+    let _ = app.update(Message::QuickSwitcher(
+        sid.clone(),
+        rustket::dialogs::quick_switcher::Message::Close,
+    ));
+    assert!(app.modals.is_empty());
+    // Views render without panicking.
+    let _ = app.view();
 }

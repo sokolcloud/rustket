@@ -199,7 +199,7 @@ fn backoff(attempt: u32) -> Duration {
 }
 
 /// What the app has to do after an event was applied.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Followup {
     None,
     /// `Ready`: run `sync::initial_load`.
@@ -219,8 +219,8 @@ pub enum Followup {
         username: Option<String>,
         rid: Option<String>,
     },
-    /// Show a desktop notification (Phase 8) — currently only logged.
-    Notification,
+    /// Hand the notification to `desktop::Desktop::on_notification`.
+    Notification(Box<rocketchat::session::DesktopNotification>),
 }
 
 fn change(kind: ChangeKind) -> Change {
@@ -400,7 +400,7 @@ pub fn apply_event(ws: &mut Workspace, ev: &SessionEvent) -> Followup {
             ws.apply_setting(change(*kind), (**setting).clone());
             Followup::None
         }
-        E::Notification(_) => Followup::Notification,
+        E::Notification(n) => Followup::Notification(n.clone()),
         // Not modelled in the workspace yet (later phases): user renames and
         // deletions, own-document diffs, UIKit, video conferences, E2E, banners.
         E::UserNameChanged { .. } | E::UserDeleted { .. } | E::UserData(_) => Followup::None,

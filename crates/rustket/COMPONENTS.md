@@ -1,0 +1,235 @@
+# Rustket components
+
+The app crate is split into components with their own state, `Message`,
+`update`, `view`, `subscription` and locale file. Several agents work on them
+in parallel, so ownership matters.
+
+## Ownership and rules
+
+| Owner | Modules | Locale files |
+|---|---|---|
+| timeline agent | `src/room/timeline.rs` (+ `room/timeline/…`), `src/room/render/` (shared message rendering) | `room_timeline.yml`, `room_render.yml` |
+| composer agent | `src/room/composer.rs` (+ `room/composer/…`) | `room_composer.yml` |
+| panel agent | `src/room/panel.rs` (+ `room/panel/…`), `src/room/header.rs` | `room_panel.yml`, `room_header.yml` |
+| desktop agent | `src/screens/settings.rs`, `src/desktop/` (notifications, tray, idle, sound, autostart), `src/workspace/status_menu.rs` | `settings.yml`, `desktop.yml`, `status_menu.yml` |
+| account agent | `src/screens/account.rs`, `src/screens/directory.rs`, `src/dialogs/create_room.rs`, `src/dialogs/quick_switcher.rs` | `account.yml`, `directory.yml`, `create_room.yml`, `quick_switcher.yml` |
+| shell (shared) | `src/app.rs`, `src/app/*.rs`, `src/message.rs`, `src/room/mod.rs`, `src/component.rs`, `src/session.rs`, `src/workspace/{mod,sidebar,rail}.rs`, `src/screens/{login,add_server,page}.rs` | `app.yml`, `sidebar.yml`, … |
+
+Rules:
+- Edit only your modules and your locale files. Submodules under your module
+  (`room/timeline/…`, `desktop/…`) are yours too.
+- If you must touch a shared file (`app.rs`, `app/components.rs`,
+  `message.rs`, `room/mod.rs`, `component.rs`), keep the change minimal and
+  additive: new enum variants and new match arms only, no reformatting or
+  renaming, so parallel branches merge cleanly.
+- Every user-visible string goes through `rust_i18n::t!` with a key from your
+  own file (`_version: 2`, flat dotted keys, `en` and `ru` for each key; the
+  i18n test fails on a missing translation or an undefined key).
+- No blocking work in `update`/`view`: use `Task`s; files and secrets in
+  `spawn_blocking`.
+- Tests: unit tests next to the code; app-level flows in `tests/app_flows.rs`
+  (drive `App::update`); the headless screenshot example `examples/snapshot.rs`
+  renders the real app against the dev server.
+
+## App-level components (`src/component.rs`)
+
+Screens (full page next to the rail), dialogs (modals) and the status menu
+follow one pattern:
+
+```rust
+pub struct X { /* state */ }
+#[derive(Debug, Clone)] pub enum Message { /* … */ }
+impl X {
+    pub fn new(..) -> Self;
+    pub fn update(&mut self, msg: Message, ctx: &mut component::Ctx<'_>) -> component::Action<Message>;
+    pub fn subscription(&self) -> Subscription<Message>;
+    pub fn view<'a>(&'a self, ctx: &component::ViewCtx<'a>) -> Element<'a, Message>;
+}
+```
+
+`screens/settings.rs` is not per server: it gets `SettingsCtx { config,
+ui_state }` in `update` and `SettingsView { config, handler_registered,
+secret_backend, … }` in `view`.
+
+- `component::Ctx`: `server_id`, `server`, `workspace: &mut Workspace`,
+  `session: Option<&SessionHandle>`, `images`, `config`; helpers `rest()`,
+  `rest_task(..)`, `session_task(..)` (results are `Res<T>`).
+- `component::ViewCtx`: the same read-only plus `connected`, `now`.
+- `component::Action { task, effects }` with `component::Effect`:
+
+| Effect | Meaning |
+|---|---|
+| `Toast(kind, title, body)` | transient notification |
+| `Navigate(Nav)` | `Settings`, `Account`, `Directory`, `CreateRoom(Kind)`, `QuickSwitcher`, `Workspace` |
+| `OpenRoom(rid)` | open a room of the component's server |
+| `OpenUrl(url)` | browser (absolute http/https/mailto only) |
+| `Close` | close this screen/dialog |
+| `SaveConfig` | persist `AppConfig`/`UiState` after changing them |
+| `Logout { everywhere }` | log out of the server (`everywhere`: revoke a PAT too) |
+| `RemoveServer` | remove the server (with confirmation) |
+| `RegisterUrlHandler` | the `rocketchat://` handler dialog |
+
+Wiring (already done in `app/components.rs`, `app/view.rs`): rail gear →
+settings; sidebar header avatar → status menu (`workspace/status_menu.rs`,
+which renders the trigger and its popover; its "My account" entry → account);
+sidebar header buttons → directory and create room; Ctrl+K → quick switcher.
+
+### Desktop (`src/desktop/`)
+
+`Desktop` is owned by the app. Hooks the app calls:
+- `on_notification(server_id, server_name, &DesktopNotification, &Workspace,
+  &UiPrefs, focused) -> Task<desktop::Message>` for every `{uid}/notification`
+  event (after it was applied);
+- `on_unread_changed(unread_rooms, mentions)` whenever the totals over all
+  servers change.
+
+`Desktop::update` returns `(Task, Vec<Request>)`; requests:
+`OpenRoom { server_id, rid }`, `ShowWindow`, `Quit`, `Idle(bool)`.
+
+## Room components
+
+The room area of the active server is one `RoomView` (`room/mod.rs`) per open
+room. It owns four components, each in its own module, with its own `Message`
+and its own locale file: `Header`, `Timeline`, `Composer`, `Panel` (right
+contextual panel).
+
+Do not change the signatures below; add variants to your own `Message`, fields
+to your own struct, and private helpers/submodules.
+
+### Room component interface
+
+```rust
+pub struct X { /* component state, per open room */ }
+
+#[derive(Debug, Clone)]
+pub enum Message { /* … */ }
+
+impl X {
+    pub fn new(rid: &str) -> Self;
+    pub fn update(&mut self, msg: Message, ctx: &mut UpdateCtx<'_>) -> Action<Message>;
+    /// Called after realtime events / syncs changed the workspace.
+    pub fn on_changes(&mut self, changes: &Changes, ctx: &mut UpdateCtx<'_>) -> Action<Message>;
+    pub fn subscription(&self) -> Subscription<Message>;
+    pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message>;
+}
+```
+
+Exception: `Panel::view` returns `Option<Element>` (`None` = closed), and
+`Panel` additionally has `open(Kind)`, `close()` and `kind()`, used by
+`RoomView` for `Effect::OpenPanel` / `Effect::ClosePanel`.
+
+Subscriptions are mapped with non-capturing functions only (iced requirement);
+`RoomView`/`App` add the server id and room id with `Subscription::with`.
+
+### Context
+
+`ViewCtx<'a>` (read-only, for `view`):
+- `server_id`, `server: &ServerUrl`, `rid`
+- `workspace: &Workspace` — rooms, subscriptions, timelines (`timeline(rid)`,
+  `thread(tmid)`), presence, typing (`typing_label`), settings, permissions
+  (`rustket_core::permissions::*`), emoji, drafts.
+- `images: &Images` — `images.avatar(server_id, server, &Avatar, name)` returns an
+  `AvatarSource` (initials until loaded); `images.get(server_id, url)` for any
+  other image (attachments). Request what you will show from `update` /
+  `on_changes` with `ctx.images.want(ImageRequest { .. })` so it is fetched
+  right away; misses hit in `view` are fetched right after the frame. Downloads
+  are size-limited; SVG is never decoded (SVG avatars show initials); raster
+  images are decoded with limits and downscaled (avatars to 128 px, others to
+  1600 px). Never block in `view`.
+- `prefs: &UiPrefs` (density, 24h clock, real names override …)
+- `connected` (realtime up), `panel: Option<&panel::Kind>`, `now: Instant`
+
+Room messages are tagged with the session epoch by the app: results of a
+previous session (after logout / re-login) never reach a component.
+
+`UpdateCtx<'a>` (for `update` / `on_changes`):
+- same identifiers, `workspace: &mut Workspace` (e.g. `add_pending`,
+  `set_draft`, `open_thread`, `begin_load_thread`/`finish_load_thread`),
+  `session: Option<&SessionHandle>`, `images`, `prefs`.
+- `ctx.rest()` → `Option<RestClient>` (authenticated).
+- `ctx.rest_task(|rest| async move { rest.send_message(&m).await }, Message::Sent)`
+  runs a REST call; the result is `Res<T> = Result<T, Failure>` (cloneable,
+  `Failure::user_text()` for a localised error, `failure.error()` for matching
+  `rocketchat::Error` variants such as `TwoFactorRequired`).
+- `ctx.session_task(|s| async move { s.session().set_user_activity(&rid, None, &["user-typing"]).await }, Message::Typed)`
+  runs a DDP call (`Session::call`, `set_user_activity`, `watch_room`, …).
+- Without a session both helpers resolve to an `Unauthorized` failure.
+
+### Effects (component → parents)
+
+Return them in `Action { task, effects }` (`Action::none()`,
+`Action::task(t)`, `Action::effect(e)`, `.with(e)`):
+
+| Effect | Handled by | Meaning |
+|---|---|---|
+| `Toast(BannerKind, title, body)` | App | transient notification (strings already translated) |
+| `OpenRoom(rid)` | App | switch to another room of the same server |
+| `LoadOlder` | RoomView | load the next older history page (`HistoryCursor`); the timeline sees the result through `on_changes` (`changes.timelines`) |
+| `MarkRead` | RoomView | `subscriptions.read` (deduplicated) |
+| `OpenPanel(Kind)` / `ClosePanel` | RoomView | right panel; opening the shown kind toggles it closed |
+| `OpenUrl(url)` | App | external browser; only absolute `http`, `https`, `mailto` URLs (others are refused) |
+
+What `RoomView` already does: `workspace.open_room` on open, keeps the
+`watch_room` guard (dropped with the view when the room is closed or removed),
+loads the first history page (and the next one automatically when a page held
+only hidden thread replies), re-subscribes the watch and reloads a missing or
+failed first page after a reconnect, reloads after `MessagesImported`, marks
+the room read on open and when new messages arrive while the window is focused. The app applies every realtime event to the
+`Workspace` before `on_changes` runs, so components never talk to the session
+stream directly.
+
+### i18n
+
+`rust-i18n` with one file per component in `crates/rustket/locales/`, format
+`_version: 2`, flat dotted keys with `en` and `ru` for every key:
+
+```yaml
+_version: 2
+room_composer.placeholder:
+  en: "Message"
+  ru: "Сообщение"
+```
+
+Use `rust_i18n::t!("room_composer.placeholder")` (`%{name}` placeholders:
+`t!("key", name = value)`). Every user-visible string goes through it. Keys
+computed by `rustket-core` (`room_list` previews, typing labels, section names,
+`PostBlock::i18n_key`) live in `preview.yml`, `typing.yml`, `sidebar.yml`;
+add missing ones to your own file under your own prefix if you need different
+wording. Locale changes are picked up by `build.rs` (`rerun-if-changed=locales`).
+
+### Testing
+
+- Unit-test component logic without iced (state + `update` with a
+  `Workspace` built in the test; `UpdateCtx { session: None, .. }`).
+- Visual check: `cargo run -p rustket --example snapshot -- <dir>` renders the
+  real app headlessly against the dev server (see the example's doc comment);
+  extend it with your component's state.
+
+### Panel kinds (`room/panel.rs`)
+
+`Kind::{Info, Members, Threads, Thread(tmid), Discussions, Pinned, Starred,
+Mentions, Files, Search, NotificationPrefs, RoomSettings, UserInfo(username),
+Invite, TeamChannels}`, opened with `Effect::OpenPanel(kind)` (opening the
+shown kind closes it).
+
+### Composer intents
+
+`Effect::Compose(ComposeIntent)` lets any room component ask the composer for
+something; `RoomView` routes it to `Composer::intent(intent, ctx)`:
+`Edit(mid)`, `Quote(mid)`, `Mention(username)`, `InsertText(text)`,
+`React(mid)` (emoji picker for a reaction), `ReplyInThread(tmid)` (also opens
+`Kind::Thread(tmid)`).
+
+### Shared message rendering (`room/render/`)
+
+Owned by the timeline agent; the panel (threads, pinned, search results …)
+renders message bodies through it:
+
+```rust
+pub fn message_body<'a>(msg: &'a Message, ctx: &ViewCtx<'a>) -> Element<'a, RenderMsg>;
+pub enum RenderMsg { OpenUrl(String), OpenRoom(String), OpenUser(String), ToggleSpoiler(String, usize), Copy(String) }
+```
+
+Callers map `RenderMsg` into their own `Message` and turn it into effects
+(`OpenUrl`, `OpenRoom`, `OpenPanel(UserInfo(..))`, …). New variants may be
+added by the timeline agent; callers should keep a catch-all arm.

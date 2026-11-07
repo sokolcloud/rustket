@@ -1,8 +1,12 @@
 //! Full-window screens shown before a workspace is available.
 
+pub mod account;
 pub mod add_server;
 pub mod cert;
+pub mod directory;
 pub mod login;
+pub mod page;
+pub mod settings;
 
 use iced::widget::{column, container, text};
 use iced::{Alignment, Element, Length};

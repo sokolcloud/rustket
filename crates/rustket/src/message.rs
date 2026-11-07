@@ -6,7 +6,6 @@ use std::sync::Arc;
 use rocketchat::Credentials;
 use rocketchat::models::User;
 use rustket_core::ServerId;
-use rustket_core::config::{Language, Theme};
 use rustket_core::secrets::{SecretBackend, SecretStore};
 use rustket_core::sync::{DeltaData, InitialData, RoomSync};
 
@@ -43,8 +42,6 @@ pub enum ModalMessage {
     AddOfferedServer,
     RegisterHandler,
     ConfirmRemove(ServerId),
-    SetTheme(Theme),
-    SetLanguage(Language),
     OpenRegisterHandler,
 }
 
@@ -59,6 +56,15 @@ pub enum Message {
     Login(ServerId, login::Message),
     Rail(rail::Message),
     Sidebar(ServerId, sidebar::Message),
+    Settings(crate::screens::settings::Message),
+    Account(ServerId, crate::screens::account::Message),
+    Directory(ServerId, crate::screens::directory::Message),
+    CreateRoom(ServerId, crate::dialogs::create_room::Message),
+    QuickSwitcher(ServerId, crate::dialogs::quick_switcher::Message),
+    StatusMenu(ServerId, crate::workspace::status_menu::Message),
+    Desktop(crate::desktop::Message),
+    /// Ctrl+K.
+    OpenQuickSwitcher,
     SidebarResized(f32),
     /// Room component message: server, session epoch, room id.
     Room(ServerId, u64, String, room::Message),

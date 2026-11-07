@@ -18,32 +18,43 @@ pub const WIDTH: f32 = 360.0;
 /// What the panel shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
-    RoomInfo,
+    Info,
     Members,
-    /// Thread of the given parent message id.
-    Thread(String),
     Threads,
+    /// Thread of the given parent message id (`tmid`).
+    Thread(String),
     Discussions,
-    Search,
     Pinned,
     Starred,
     Mentions,
     Files,
+    Search,
+    NotificationPrefs,
+    RoomSettings,
+    /// Profile of a user (username).
+    UserInfo(String),
+    Invite,
+    TeamChannels,
 }
 
 impl Kind {
     pub fn i18n_key(&self) -> &'static str {
         match self {
-            Kind::RoomInfo => "room_panel.room_info",
+            Kind::Info => "room_panel.room_info",
             Kind::Members => "room_panel.members",
-            Kind::Thread(_) => "room_panel.thread",
             Kind::Threads => "room_panel.threads",
+            Kind::Thread(_) => "room_panel.thread",
             Kind::Discussions => "room_panel.discussions",
-            Kind::Search => "room_panel.search",
             Kind::Pinned => "room_panel.pinned",
             Kind::Starred => "room_panel.starred",
             Kind::Mentions => "room_panel.mentions",
             Kind::Files => "room_panel.files",
+            Kind::Search => "room_panel.search",
+            Kind::NotificationPrefs => "room_panel.notification_prefs",
+            Kind::RoomSettings => "room_panel.room_settings",
+            Kind::UserInfo(_) => "room_panel.user_info",
+            Kind::Invite => "room_panel.invite",
+            Kind::TeamChannels => "room_panel.team_channels",
         }
     }
 }
@@ -118,7 +129,10 @@ impl Panel {
                 rustket_ui::widget::empty_state(
                     Icon::Info,
                     t!("room_panel.placeholder"),
-                    String::new()
+                    match kind {
+                        Kind::Thread(id) | Kind::UserInfo(id) => id.clone(),
+                        _ => String::new(),
+                    }
                 ),
             ]
             .into(),

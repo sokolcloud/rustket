@@ -10,7 +10,7 @@ use rustket_core::workspace::Changes;
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_3, SPACE_4};
 
-use super::{Action, UpdateCtx, ViewCtx};
+use super::{Action, ComposeIntent, UpdateCtx, ViewCtx};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -34,6 +34,26 @@ impl Composer {
         let _ = ctx;
         match msg {
             Message::Edited(s) => self.text = s,
+        }
+        Action::none()
+    }
+
+    /// A request from another room component (edit, quote, mention, react,
+    /// reply in thread). STUB: inserts text/mentions only.
+    pub fn intent(&mut self, intent: ComposeIntent, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        let _ = ctx;
+        match intent {
+            ComposeIntent::InsertText(t) => self.text.push_str(&t),
+            ComposeIntent::Mention(u) => {
+                if !self.text.is_empty() && !self.text.ends_with(' ') {
+                    self.text.push(' ');
+                }
+                self.text.push_str(&format!("@{u} "));
+            }
+            ComposeIntent::Edit(_)
+            | ComposeIntent::Quote(_)
+            | ComposeIntent::React(_)
+            | ComposeIntent::ReplyInThread(_) => {}
         }
         Action::none()
     }

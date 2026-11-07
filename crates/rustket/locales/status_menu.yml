@@ -1,0 +1,19 @@
+_version: 2
+status_menu.status_soon:
+  en: "Status: coming soon"
+  ru: "Статус: скоро"
+status_menu.account:
+  en: "My account"
+  ru: "Мой аккаунт"
+status_menu.settings:
+  en: "Settings"
+  ru: "Настройки"
+status_menu.logout:
+  en: "Log out"
+  ru: "Выйти"
+status_menu.logout_everywhere:
+  en: "Log out and revoke the token"
+  ru: "Выйти и отозвать токен"
+status_menu.remove_server:
+  en: "Remove workspace"
+  ru: "Удалить рабочее пространство"

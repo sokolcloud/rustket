@@ -2,6 +2,7 @@
 
 pub mod rail;
 pub mod sidebar;
+pub mod status_menu;
 
 use std::collections::HashMap;
 
@@ -30,6 +31,7 @@ pub struct ServerState {
     /// Shown instead of the workspace while logged out.
     pub login: Option<Login>,
     pub sidebar: sidebar::Sidebar,
+    pub status_menu: status_menu::StatusMenu,
     /// Open room views (currently only the active one is kept open).
     pub rooms: HashMap<String, RoomView>,
     pub active_room: Option<String>,
@@ -78,6 +80,7 @@ impl ServerState {
             workspace: Workspace::new(),
             login: None,
             sidebar: sidebar::Sidebar::default(),
+            status_menu: status_menu::StatusMenu::new(),
             rooms: HashMap::new(),
             active_room: None,
             syncing: false,

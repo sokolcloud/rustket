@@ -8,18 +8,6 @@ sidebar.no_rooms:
 sidebar.no_results:
   en: "Nothing found"
   ru: "Ничего не найдено"
-sidebar.status_soon:
-  en: "Status: coming soon"
-  ru: "Статус: скоро"
-sidebar.settings:
-  en: "Settings"
-  ru: "Настройки"
-sidebar.logout:
-  en: "Log out"
-  ru: "Выйти"
-sidebar.remove_server:
-  en: "Remove workspace"
-  ru: "Удалить рабочее пространство"
 sidebar.directory:
   en: "Directory"
   ru: "Каталог"
@@ -53,6 +41,3 @@ sidebar.conversations:
 sidebar.omnichannel:
   en: "Omnichannel"
   ru: "Омниканал"
-sidebar.logout_everywhere:
-  en: "Log out and revoke the token"
-  ru: "Выйти и отозвать токен"

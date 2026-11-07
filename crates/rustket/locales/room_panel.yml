@@ -35,3 +35,18 @@ room_panel.close:
 room_panel.placeholder:
   en: "Coming soon"
   ru: "Скоро"
+room_panel.notification_prefs:
+  en: "Notification preferences"
+  ru: "Настройки уведомлений"
+room_panel.room_settings:
+  en: "Room settings"
+  ru: "Настройки комнаты"
+room_panel.user_info:
+  en: "User info"
+  ru: "Сведения о пользователе"
+room_panel.invite:
+  en: "Invite users"
+  ru: "Пригласить пользователей"
+room_panel.team_channels:
+  en: "Team channels"
+  ru: "Каналы команды"
