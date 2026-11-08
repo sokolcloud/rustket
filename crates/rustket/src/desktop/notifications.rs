@@ -511,6 +511,13 @@ fn room_unread(ws: &Workspace, rid: &str) -> bool {
 }
 
 impl Notifications {
+    /// The notification backend (other components show their own
+    /// notifications through it; their signals come back as
+    /// [`Request::ForeignSignal`]).
+    pub fn backend(&self) -> Arc<dyn Notifier> {
+        Arc::clone(&self.backend)
+    }
+
     pub fn with_backend(backend: Arc<dyn Notifier>) -> Self {
         Self {
             backend,
@@ -710,6 +717,14 @@ impl Notifications {
                         },
                     };
                     return (Task::none(), vec![Request::ShowWindow, open], false);
+                }
+                if self.test_id != Some(id) {
+                    // Not ours (e.g. a call notification of `videoconf`).
+                    return (
+                        Task::none(),
+                        vec![Request::ForeignSignal(id, signal)],
+                        false,
+                    );
                 }
                 if self.test_id == Some(id) {
                     if activated {
@@ -963,9 +978,9 @@ mod tests {
             },
         );
         let signal = |id, signal| Message::Signal { id, signal };
-        // Another notification's signal, or an action we did not offer.
+        // Another component's notification: handed on; an action we did not offer.
         let (_, req, _) = n.update(signal(8, Signal::Action("default".into())));
-        assert!(req.is_empty());
+        assert!(matches!(req.as_slice(), [Request::ForeignSignal(8, _)]));
         let (_, req, _) = n.update(signal(7, Signal::Action("other".into())));
         assert!(req.is_empty() && n.len() == 1);
         let (_, req, _) = n.update(signal(7, Signal::Action("default".into())));

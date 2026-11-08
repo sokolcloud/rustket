@@ -1,0 +1,46 @@
+{
+  "rooms": [
+    {
+      "_id": "6aefd8abff2338a3f2a2fab6",
+      "fname": "tvt-child-1794103465onp",
+      "_updatedAt": "2026-11-08T02:04:27.979Z",
+      "name": "tvt-child-1794103465onp",
+      "t": "c",
+      "msgs": 0,
+      "usersCount": 1,
+      "u": {
+        "_id": "jbH7MnWLmH2khpgJ5",
+        "username": "tvt-own-1794103465onp",
+        "name": "Real tvt-own-1794103465onp"
+      },
+      "ts": "2026-11-08T02:04:27.926Z",
+      "ro": false,
+      "teamId": "6aefd8abff2338a3f2a2fab3",
+      "default": false,
+      "sysMes": true
+    },
+    {
+      "_id": "6aefd8acff2338a3f2a2fab9",
+      "fname": "tvt-loose-1794103465onp",
+      "_updatedAt": "2026-11-08T02:04:28.129Z",
+      "name": "tvt-loose-1794103465onp",
+      "t": "p",
+      "msgs": 0,
+      "usersCount": 1,
+      "u": {
+        "_id": "jbH7MnWLmH2khpgJ5",
+        "username": "tvt-own-1794103465onp",
+        "name": "Real tvt-own-1794103465onp"
+      },
+      "ts": "2026-11-08T02:04:28.022Z",
+      "ro": false,
+      "default": false,
+      "sysMes": true,
+      "teamId": "6aefd8abff2338a3f2a2fab3"
+    }
+  ],
+  "total": 2,
+  "count": 2,
+  "offset": 0,
+  "success": true
+}

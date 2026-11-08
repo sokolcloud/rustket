@@ -1,0 +1,35 @@
+{
+  "room": {
+    "_id": "6aefd8abff2338a3f2a2fab6",
+    "fname": "tvt-child-1794103465onp",
+    "_updatedAt": "2026-11-08T02:04:28.421Z",
+    "name": "tvt-child-1794103465onp",
+    "t": "c",
+    "msgs": 1,
+    "usersCount": 2,
+    "u": {
+      "_id": "jbH7MnWLmH2khpgJ5",
+      "username": "tvt-own-1794103465onp",
+      "name": "Real tvt-own-1794103465onp"
+    },
+    "ts": "2026-11-08T02:04:27.926Z",
+    "ro": false,
+    "teamId": "6aefd8abff2338a3f2a2fab3",
+    "default": false,
+    "sysMes": true,
+    "teamDefault": true
+  },
+  "team": {
+    "_id": "6aefd8abff2338a3f2a2fab3",
+    "name": "tvt-team-1794103465onp",
+    "type": 0,
+    "roomId": "6aefd8abff2338a3f2a2fab0"
+  },
+  "parent": {
+    "_id": "6aefd8abff2338a3f2a2fab0",
+    "fname": "tvt-team-1794103465onp",
+    "name": "tvt-team-1794103465onp",
+    "t": "c"
+  },
+  "success": true
+}

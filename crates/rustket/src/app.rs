@@ -149,6 +149,8 @@ pub struct App {
     pub desktop: crate::desktop::Desktop,
     /// (unread rooms, mentions) over all servers, last given to `desktop`.
     last_unread: (u64, u64),
+    /// Video calls: ringing, popups, call dialogs (`crate::videoconf`).
+    pub calls: crate::videoconf::Calls,
 }
 
 fn notice_text(n: &SecretNotice) -> String {
@@ -288,6 +290,7 @@ impl App {
             save_stamp: 0,
             desktop,
             last_unread: (0, 0),
+            calls: crate::videoconf::Calls::default(),
         };
         let wanted: Vec<(ServerId, String)> = app
             .config
@@ -704,6 +707,7 @@ impl App {
             .sum();
         self.images.set_working_set(working);
         tasks.push(self.fetch_images());
+        tasks.push(crate::videoconf::fetch_wanted(self));
         Task::batch(tasks)
     }
 
@@ -794,6 +798,7 @@ impl App {
             Message::QuickSwitcher(sid, m) => self.on_quick_switcher(sid, m),
             Message::StatusMenu(sid, m) => self.on_status_menu(sid, m),
             Message::Desktop(m) => self.on_desktop(m),
+            Message::Calls(m) => self.on_calls(m),
             Message::OpenQuickSwitcher => self.navigate(component::Nav::QuickSwitcher),
             Message::SidebarResized(w) => {
                 self.ui_state.sidebar_width = w;
@@ -1563,6 +1568,9 @@ impl App {
                 | room::Effect::ShowMessage(_)
                 | room::Effect::Compose(_) => Task::none(),
                 room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
+                room::Effect::Call(a) => {
+                    self.on_calls(crate::videoconf::Message::Action(sid.clone(), a))
+                }
                 room::Effect::StartDiscussion { pmid } => self.start_discussion(sid, rid, pmid),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
@@ -1634,7 +1642,36 @@ impl App {
         ))
     }
 
+    /// Video-call messages (`crate::videoconf`) and their effects.
+    fn on_calls(&mut self, m: crate::videoconf::Message) -> Task<Message> {
+        let (task, effects) = crate::videoconf::update(self, m);
+        self.call_effects(task, effects)
+    }
+
+    fn call_effects(
+        &mut self,
+        task: Task<Message>,
+        effects: Vec<(ServerId, component::Effect)>,
+    ) -> Task<Message> {
+        let mut tasks = vec![task];
+        for (sid, e) in effects {
+            tasks.push(self.component_effects(Some(&sid), components::Source::StatusMenu, vec![e]));
+        }
+        Task::batch(tasks)
+    }
+
     fn on_server_event(&mut self, sid: ServerId, ev: ServerEvent) -> Task<Message> {
+        let calls = match &ev {
+            ServerEvent::Event(e) => {
+                let (task, effects) = crate::videoconf::on_session_event(self, &sid, e);
+                self.call_effects(task, effects)
+            }
+            _ => Task::none(),
+        };
+        Task::batch([calls, self.on_server_event_inner(sid, ev)])
+    }
+
+    fn on_server_event_inner(&mut self, sid: ServerId, ev: ServerEvent) -> Task<Message> {
         let Some(s) = self.servers.get_mut(&sid) else {
             return Task::none();
         };
@@ -2368,6 +2405,7 @@ impl App {
             _ => None,
         }));
         subs.push(self.desktop.subscription().map(Message::Desktop));
+        subs.push(self.calls.subscription().map(Message::Calls));
         match &self.screen {
             Screen::Settings(c) => subs.push(c.subscription().map(Message::Settings)),
             Screen::Account(sid, c) => subs.push(

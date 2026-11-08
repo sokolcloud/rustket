@@ -13,6 +13,7 @@ in parallel, so ownership matters.
 | panel agent | `src/room/panel.rs` (+ `room/panel/…`), `src/room/header.rs` | `room_panel.yml`, `room_header.yml` |
 | desktop agent | `src/screens/settings.rs`, `src/desktop/` (notifications, tray, idle, sound, autostart), `src/workspace/status_menu.rs` | `settings.yml`, `desktop.yml`, `status_menu.yml` |
 | account agent | `src/screens/account.rs`, `src/screens/directory.rs`, `src/dialogs/create_room.rs`, `src/dialogs/quick_switcher.rs` | `account.yml`, `directory.yml`, `create_room.yml`, `quick_switcher.yml` |
+| teams agent | `src/teams/` (team info / channels / members / discussions panel bodies, leave / delete / convert / remove-member dialogs), `src/videoconf/` (call layer: header call button, `video_conf` blocks, popups, call dialogs, call notifications) | `teams.yml`, `videoconf.yml` |
 | shell (shared) | `src/app.rs`, `src/app/*.rs`, `src/message.rs`, `src/room/mod.rs`, `src/component.rs`, `src/session.rs`, `src/workspace/{mod,sidebar,rail}.rs`, `src/screens/{login,add_server,page}.rs` | `app.yml`, `sidebar.yml`, … |
 
 Rules:
@@ -186,6 +187,7 @@ Return them in `Action { task, effects }` (`Action::none()`,
 | `ShowMessage(msg)` | RoomView | a thread reply opens its thread; otherwise the timeline jumps to the message (loading older pages if needed) and highlights it |
 | `MarkUnread(mid)` | App | leaves the room (like the web client), then `subscriptions.unread`; toasts the result |
 | `StartDiscussion { pmid }` | App | the create dialog for a discussion of this room (`CreateRoom::discussion_in`, `from_message`) |
+| `Call(CallAction)` | App | video call: start (header), join / call back / info (`video_conf` block); routed to `crate::videoconf` |
 
 What `RoomView` already does: `workspace.open_room` on open, keeps the
 `watch_room` guard (dropped with the view when the room is closed or removed),
@@ -227,7 +229,8 @@ wording. Locale changes are picked up by `build.rs` (`rerun-if-changed=locales`)
 
 `Kind::{Info, Members, Threads, Thread(tmid), Discussions, Pinned, Starred,
 Mentions, Files, Search, NotificationPrefs, RoomSettings, UserInfo(username),
-Invite, TeamChannels}`, opened with `Effect::OpenPanel(kind)` (opening the
+Invite, TeamChannels, TeamMembers, TeamInfo}` (`Discussions`, `TeamChannels`,
+`TeamMembers` and `TeamInfo` are hosted by `crate::teams::TeamPanel`), opened with `Effect::OpenPanel(kind)` (opening the
 shown kind closes it).
 
 ### Composer intents

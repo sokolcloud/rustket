@@ -1,0 +1,39 @@
+{
+  "members": [
+    {
+      "user": {
+        "_id": "j4iiGT8BHLQd7QeKq",
+        "username": "tvt-mem-1794103465onp",
+        "name": "Real tvt-mem-1794103465onp",
+        "status": "offline",
+        "settings": {}
+      },
+      "createdBy": {
+        "_id": "jbH7MnWLmH2khpgJ5",
+        "username": "tvt-own-1794103465onp"
+      },
+      "createdAt": "2026-11-08T02:04:27.868Z"
+    },
+    {
+      "user": {
+        "_id": "jbH7MnWLmH2khpgJ5",
+        "username": "tvt-own-1794103465onp",
+        "name": "Real tvt-own-1794103465onp",
+        "status": "offline",
+        "settings": {}
+      },
+      "roles": [
+        "owner"
+      ],
+      "createdBy": {
+        "_id": "jbH7MnWLmH2khpgJ5",
+        "username": "tvt-own-1794103465onp"
+      },
+      "createdAt": "2026-11-08T02:04:27.868Z"
+    }
+  ],
+  "total": 2,
+  "count": 2,
+  "offset": 0,
+  "success": true
+}

@@ -1,0 +1,178 @@
+_version: 2
+videoconf.call:
+  en: "Video call"
+  ru: "Видеозвонок"
+videoconf.call_unavailable:
+  en: "Video call unavailable for this type of room"
+  ru: "Видеозвонок недоступен для этого типа комнаты"
+videoconf.no_provider_title:
+  en: "Conference call not available"
+  ru: "Конференц-связь недоступна"
+videoconf.no_provider_body:
+  en: "Conference call apps can be installed in the Rocket.Chat marketplace by a workspace admin."
+  ru: "Администратор рабочего пространства может установить приложения для конференц-связи из маркетплейса Rocket.Chat."
+videoconf.admin_no_provider_title:
+  en: "Conference call not enabled"
+  ru: "Конференц-связь не включена"
+videoconf.admin_no_provider_body:
+  en: "Conference call apps are available in the Rocket.Chat marketplace."
+  ru: "Приложения для конференц-связи доступны в маркетплейсе Rocket.Chat."
+videoconf.not_configured_title:
+  en: "Conference call not enabled"
+  ru: "Конференц-связь не включена"
+videoconf.not_configured_body:
+  en: "A workspace admin needs to enable the conference call feature first."
+  ru: "Сначала администратор рабочего пространства должен включить конференц-связь."
+videoconf.admin_not_configured_title:
+  en: "Conference call not enabled"
+  ru: "Конференц-связь не включена"
+videoconf.admin_not_configured_body:
+  en: "Configure conference calls in order to make it available on this workspace."
+  ru: "Настройте конференц-связь, чтобы она стала доступна в этом рабочем пространстве."
+videoconf.open_settings:
+  en: "Open settings"
+  ru: "Открыть настройки"
+videoconf.embedded_hint_title:
+  en: "The call opens in your browser"
+  ru: "Звонок открывается в браузере"
+videoconf.embedded_hint_body:
+  en: "Sign in to this workspace in the browser if it asks you to."
+  ru: "Если браузер попросит, войдите в это рабочее пространство."
+videoconf.join_failed:
+  en: "Could not join the call"
+  ru: "Не удалось присоединиться к звонку"
+videoconf.bad_url:
+  en: "The call link is not a secure web address."
+  ru: "Ссылка на звонок не является безопасным веб-адресом."
+videoconf.start_failed:
+  en: "Could not start the call"
+  ru: "Не удалось начать звонок"
+videoconf.notice_rejected:
+  en: "The call was declined"
+  ru: "Звонок отклонён"
+videoconf.notice_no_answer:
+  en: "No answer"
+  ru: "Нет ответа"
+videoconf.notice_accept_timeout:
+  en: "The caller did not confirm the call"
+  ru: "Звонящий не подтвердил звонок"
+videoconf.notice_busy:
+  en: "Another call is already ringing"
+  ru: "Уже идёт другой вызов"
+videoconf.incoming_title:
+  en: "Incoming call"
+  ru: "Входящий звонок"
+videoconf.incoming_from:
+  en: "Incoming call from %{name}"
+  ru: "Входящий звонок от %{name}"
+videoconf.incoming_body:
+  en: "You are being called"
+  ru: "Вам звонят"
+videoconf.outgoing_title:
+  en: "Calling…"
+  ru: "Вызов…"
+videoconf.open:
+  en: "Open"
+  ru: "Открыть"
+videoconf.accept:
+  en: "Accept"
+  ru: "Принять"
+videoconf.decline:
+  en: "Decline"
+  ru: "Отклонить"
+videoconf.hang_up:
+  en: "Cancel"
+  ru: "Отменить"
+videoconf.mute_dismiss:
+  en: "Mute and dismiss"
+  ru: "Заглушить и скрыть"
+videoconf.mic:
+  en: "Microphone"
+  ru: "Микрофон"
+videoconf.cam:
+  en: "Camera"
+  ru: "Камера"
+videoconf.joined_one:
+  en: "%{count} joined"
+  ru: "%{count} присоединился"
+videoconf.joined_few:
+  en: "%{count} joined"
+  ru: "%{count} присоединились"
+videoconf.joined_many:
+  en: "%{count} joined"
+  ru: "%{count} присоединились"
+videoconf.joined_more:
+  en: "+%{count} joined"
+  ru: "+%{count} присоединились"
+videoconf.loading:
+  en: "Loading call…"
+  ru: "Загрузка звонка…"
+videoconf.unavailable:
+  en: "Call details unavailable"
+  ru: "Сведения о звонке недоступны"
+videoconf.info:
+  en: "Call information"
+  ru: "Сведения о звонке"
+videoconf.discussion:
+  en: "Open discussion"
+  ru: "Открыть обсуждение"
+videoconf.calling:
+  en: "Calling"
+  ru: "Вызов"
+videoconf.waiting:
+  en: "Waiting for answer"
+  ru: "Ожидание ответа"
+videoconf.join:
+  en: "Join"
+  ru: "Присоединиться"
+videoconf.ongoing:
+  en: "Call ongoing"
+  ru: "Идёт звонок"
+videoconf.ended:
+  en: "Call ended"
+  ru: "Звонок завершён"
+videoconf.call_again:
+  en: "Call again"
+  ru: "Позвонить снова"
+videoconf.call_back:
+  en: "Call back"
+  ru: "Перезвонить"
+videoconf.not_answered:
+  en: "Call was not answered"
+  ru: "На звонок не ответили"
+videoconf.start_title:
+  en: "Start a call"
+  ru: "Начать звонок"
+videoconf.start_hint:
+  en: "The call opens in your default browser."
+  ru: "Звонок откроется в браузере по умолчанию."
+videoconf.start:
+  en: "Start call"
+  ru: "Начать звонок"
+videoconf.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+videoconf.close:
+  en: "Close"
+  ru: "Закрыть"
+videoconf.info_dialog_title:
+  en: "Meeting information"
+  ru: "Сведения о встрече"
+videoconf.info_title_label:
+  en: "Title"
+  ru: "Название"
+videoconf.info_status:
+  en: "Status"
+  ru: "Состояние"
+videoconf.info_provider:
+  en: "Provider"
+  ru: "Провайдер"
+videoconf.info_started_by:
+  en: "Started by"
+  ru: "Начал(а)"
+videoconf.info_participants:
+  en: "Participants"
+  ru: "Участники"
+videoconf.info_url:
+  en: "Meeting URL"
+  ru: "Адрес встречи"

@@ -1320,3 +1320,37 @@ system-message keys of §3 in `preview.yml` + `room_render.yml`; every key in en
   `rooms.membersOrderedByRole` for large teams.
 - Whether the server accepts `channels.convertToTeam` on a discussion was not exercised (the web
   hides it); Rustket hides it too.
+
+## 12. As implemented (teams & video-conference round, 2026-11-08)
+
+Deviations from §10, kept small for the parallel merge:
+
+- Protocol: `models/team.rs` (`Team`, `TeamType`, `TeamListItem`, `TeamMember`,
+  `TeamAutocompleteItem`, `TeamRoomOfUser`, `UserTeam`, `RoomParent`, `RoomInfoExtended` for
+  `rooms.info` with `team`/`parent`); `TeamInfo` is a type alias of `Team` (its `kind` is now a
+  `TeamType`). `rest/teams.rs` also holds the discussion lists (`chat_get_discussions`,
+  `rooms_get_discussions`), `users_list_teams` and `rooms_info_extended`; `Page { offset, count }`
+  is the shared paging argument. Provider error codes stay in `Error::Api { error }` (no
+  `errorType`); `rest::videoconf::provider_error(&Error)` matches them.
+- `SessionEvent::VideoConference(VideoConfSignal)`: a payload failing `VideoConfSignal::parse`
+  becomes `SessionEvent::Unknown` (dropped by every consumer) instead of a separate drop path.
+- Core: the team helpers **and** the team / call permission rules live in
+  `rustket-core/src/teams.rs` (`perms::*` ids, `can_*`, `video_call_button` → `CallButton`), not in
+  `permissions.rs`. `videoconf.rs` has `VideoConfStore` (block info cache with interior-mutable
+  "wanted" set, capabilities cache, license modules) kept in `Workspace::videoconf()`, and the
+  `CallManager`. The license modules are not fetched yet (`licenses.info`), so the Calls history
+  panel (§7.11) and the joinable list (§7.12) are not built.
+- UI: `crates/rustket/src/teams/` hosts the panel bodies of `Kind::{TeamInfo, TeamChannels,
+  TeamMembers, Discussions}` (one `Body::Team` variant in `room/panel.rs`); "Create new" is an
+  inline dialog in the channels panel (name + private), not the create-room dialog. Team members
+  use `teams.members` (roles, "added by") with role changes through the main room's
+  `channels|groups.add*/remove*` endpoints and adds through `channels|groups.invite`.
+  `crates/rustket/src/videoconf/` is the app-level call layer (`App::calls`): popups are drawn
+  bottom-right over everything, dialogs as a modal; desktop call notifications go through the
+  desktop backend (`Notifications::backend`) and their signals come back as
+  `desktop::Request::ForeignSignal`. Ringing sounds are one-shot freedesktop theme sounds
+  (`phone-incoming-call`, `phone-outgoing-calling`), not looped.
+- Not done: the "a discussion for this message already exists" warning (§6.2), the delete
+  confirmation text for `discussion-created` messages (§6.4), patching a stale `drid` in the
+  timeline (the Discussions panel drops it after `rooms.info` fails), conference-window mode
+  (§7.6, EE only), voice-call notices (§8, by design nothing is registered).

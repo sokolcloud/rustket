@@ -63,6 +63,8 @@ pub enum Message {
     QuickSwitcher(ServerId, crate::dialogs::quick_switcher::Message),
     StatusMenu(ServerId, crate::workspace::status_menu::Message),
     Desktop(crate::desktop::Message),
+    /// Video conferences (`crate::videoconf`).
+    Calls(crate::videoconf::Message),
     /// Ctrl+K.
     OpenQuickSwitcher,
     SidebarResized(f32),

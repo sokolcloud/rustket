@@ -54,6 +54,10 @@ pub enum Kind {
     UserInfo(String),
     Invite,
     TeamChannels,
+    /// Team members with team roles (`crate::teams::members`).
+    TeamMembers,
+    /// Team info and team actions (`crate::teams::info`).
+    TeamInfo,
 }
 
 impl Kind {
@@ -74,6 +78,8 @@ impl Kind {
             Kind::UserInfo(_) => "room_panel.user_info",
             Kind::Invite => "room_panel.invite",
             Kind::TeamChannels => "room_panel.team_channels",
+            Kind::TeamMembers => "teams.panel_members",
+            Kind::TeamInfo => "teams.panel_info",
         }
     }
 
@@ -85,6 +91,11 @@ impl Kind {
                 | (Kind::Info, Kind::RoomSettings | Kind::TeamChannels)
                 | (Kind::Threads, Kind::Thread(_))
                 | (Kind::Search, Kind::UserInfo(_))
+                | (
+                    Kind::TeamInfo,
+                    Kind::RoomSettings | Kind::TeamChannels | Kind::TeamMembers
+                )
+                | (Kind::TeamMembers, Kind::UserInfo(_))
         )
     }
 }
@@ -113,6 +124,7 @@ pub enum BodyMsg {
     Settings(settings::Msg),
     Invite(invite::Msg),
     Thread(thread::Msg),
+    Team(crate::teams::Msg),
 }
 
 /// State of the open panel.
@@ -127,10 +139,14 @@ enum Body {
     Settings(settings::Settings),
     Invite(invite::Invite),
     Thread(Box<thread::Thread>),
+    Team(Box<crate::teams::TeamPanel>),
 }
 
 impl Body {
     fn new(kind: &Kind, rid: &str) -> Self {
+        if let Some(b) = crate::teams::TeamPanel::new(kind) {
+            return Body::Team(Box::new(b));
+        }
         match kind {
             Kind::Info => Body::Info(info::Info::default()),
             Kind::UserInfo(u) => Body::User(user_info::UserInfo::new(u)),
@@ -153,6 +169,7 @@ impl Body {
             Kind::RoomSettings => Body::Settings(settings::Settings::default()),
             Kind::Invite => Body::Invite(invite::Invite::default()),
             Kind::Thread(tmid) => Body::Thread(Box::new(thread::Thread::new(rid, tmid))),
+            Kind::TeamMembers | Kind::TeamInfo => Body::Members(members::Members::default()),
         }
     }
 }
@@ -308,6 +325,13 @@ impl Panel {
                     Message::Body(g, BodyMsg::Info(d)),
                 )
             }),
+            Body::Team(b) => b.overlay(ctx).map(|(e, d)| {
+                (
+                    4,
+                    e.map(move |m| Message::Body(g, BodyMsg::Team(m))),
+                    Message::Body(g, BodyMsg::Team(d)),
+                )
+            }),
             _ => None,
         }
     }
@@ -461,6 +485,7 @@ impl Panel {
             Some(Body::Settings(b)) => wrap(g, b.activate(ctx), BodyMsg::Settings),
             Some(Body::Invite(b)) => wrap(g, b.activate(ctx), BodyMsg::Invite),
             Some(Body::Thread(b)) => wrap(g, b.activate(ctx), BodyMsg::Thread),
+            Some(Body::Team(b)) => wrap(g, b.activate(ctx), BodyMsg::Team),
             None => Action::none(),
         }
     }
@@ -494,6 +519,7 @@ impl Panel {
             (Some(Body::Thread(b)), BodyMsg::Thread(m)) => {
                 wrap(g, b.update(m, ctx), BodyMsg::Thread)
             }
+            (Some(Body::Team(b)), BodyMsg::Team(m)) => wrap(g, b.update(m, ctx), BodyMsg::Team),
             _ => Action::none(),
         }
     }
@@ -516,6 +542,7 @@ impl Panel {
             Some(Body::Rooms(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Rooms),
             Some(Body::Settings(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Settings),
             Some(Body::Thread(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Thread),
+            Some(Body::Team(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Team),
             _ => Action::none(),
         }
     }
@@ -570,6 +597,7 @@ impl Panel {
             Some(Body::Thread(b)) => b
                 .view(ctx)
                 .map(move |m| Message::Body(g, BodyMsg::Thread(m))),
+            Some(Body::Team(b)) => b.view(ctx).map(move |m| Message::Body(g, BodyMsg::Team(m))),
             None => common::loading(),
         };
         let mut head = row![].spacing(SPACE_2).align_y(Alignment::Center);

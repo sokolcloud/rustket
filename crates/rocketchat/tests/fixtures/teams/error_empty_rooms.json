@@ -1,0 +1,5 @@
+{
+  "success": false,
+  "errorType": "invalid-params",
+  "error": "must NOT have fewer than 1 items\n must have required property 'teamName'\n must match exactly one schema in oneOf"
+}

@@ -10,7 +10,9 @@ mod omnichannel;
 mod room;
 mod settings;
 mod subscription;
+mod team;
 mod user;
+mod videoconf;
 
 pub use apps::*;
 pub use message::*;
@@ -19,7 +21,9 @@ pub use omnichannel::*;
 pub use room::*;
 pub use settings::*;
 pub use subscription::*;
+pub use team::*;
 pub use user::*;
+pub use videoconf::*;
 
 use serde::{Deserialize, Serialize};
 

@@ -43,6 +43,12 @@ pub struct Room {
     pub team_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_main: Option<bool>,
+    /// Child room with auto-join: new team members are subscribed to it.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub team_default: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usernames: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,23 +237,4 @@ pub struct WaitingUser {
         deserialize_with = "lenient::opt"
     )]
     pub ts: Option<RcDate>,
-}
-
-/// `teams.info` → `teamInfo`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct TeamInfo {
-    #[serde(rename = "_id")]
-    pub id: String,
-    pub name: String,
-    /// 0 = public, 1 = private.
-    #[serde(rename = "type")]
-    pub kind: u8,
-    pub room_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_by: Option<UserRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<RcDate>,
-    #[serde(rename = "_updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<RcDate>,
 }

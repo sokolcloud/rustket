@@ -38,6 +38,8 @@ pub enum Message {
     OpenRoom(String),
     /// Menu: create a discussion in this room.
     CreateDiscussion,
+    /// The "Video call" button (`crate::videoconf`).
+    StartCall,
 }
 
 pub struct Header {
@@ -152,6 +154,9 @@ pub fn menu_entries(
             panel::Kind::RoomSettings,
         ));
     }
+    for (icon, key, kind) in crate::teams::header_menu(ws, rid) {
+        v.push(item(icon, key, kind));
+    }
     // Direct messages do not accept invites (`error-room-type-not-allowed`).
     let invitable = matches!(room_type, Some(RoomType::Channel | RoomType::Private));
     if invitable
@@ -251,7 +256,13 @@ pub fn layout_buttons(b: &Buttons, width: f32) -> (Vec<HeaderButton>, Vec<Header
         );
     }
     if b.members {
-        push(4, Icon::Users, "room_header.members", panel::Kind::Members);
+        // A team main room lists team members with team roles.
+        let kind = if b.team_channels {
+            panel::Kind::TeamMembers
+        } else {
+            panel::Kind::Members
+        };
+        push(4, Icon::Users, "room_header.members", kind);
     }
     push(5, Icon::Search, "room_header.search", panel::Kind::Search);
 
@@ -350,6 +361,9 @@ impl Header {
                 }
             }
             Message::OpenRoom(rid) => Action::effect(Effect::OpenRoom(rid)),
+            Message::StartCall => Action::effect(Effect::Call(
+                crate::videoconf::CallAction::Start(self.rid.clone()),
+            )),
         }
     }
 
@@ -498,6 +512,8 @@ impl Header {
                 .align_y(Alignment::Center)
                 .into(),
             )
+        } else if let Some((main, team)) = crate::teams::back_to_team(ws, &self.rid) {
+            Some(crate::teams::back_link(team, Message::OpenRoom(main)))
         } else if let Some(prid) = entry.and_then(|e| {
             e.room
                 .as_ref()
@@ -553,14 +569,9 @@ impl Header {
         // Buttons; the ones that do not fit go into the menu.
         let (inline, overflow, call) = layout_buttons(&buttons(ws, &self.rid), width);
         let mut actions = row![].spacing(SPACE_1).align_y(Alignment::Center);
-        if call {
-            actions = actions.push(icon_button_with(
-                Icon::Video,
-                None,
-                t!("room_header.call_soon").into_owned(),
-                false,
-                32.0,
-            ));
+        if call && let Some(b) = crate::videoconf::header_button(ws, &self.rid, Message::StartCall)
+        {
+            actions = actions.push(b);
         }
         for hb in inline {
             let active = ctx.panel == Some(&hb.kind);
@@ -845,7 +856,11 @@ mod tests {
         let kinds: Vec<_> = inline.iter().map(|b| b.kind.clone()).collect();
         assert_eq!(
             kinds,
-            vec![panel::Kind::Info, panel::Kind::Members, panel::Kind::Search]
+            vec![
+                panel::Kind::Info,
+                panel::Kind::TeamMembers,
+                panel::Kind::Search
+            ]
         );
         let kinds: Vec<_> = over.iter().map(|b| b.kind.clone()).collect();
         assert_eq!(

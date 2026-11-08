@@ -894,6 +894,37 @@ impl Session {
         .map(drop)
     }
 
+    /// Publishes a direct-call signal to `target_uid`
+    /// (`stream-notify-user ["{target}/video-conference", {action, params:{callId, uid: me, rid}}]`).
+    /// The server relays it only when both users can access `rid` and the call
+    /// is live (docs/teams-videoconf.md §7.5); a refused relay is not an error.
+    pub async fn notify_video_conference(
+        &self,
+        target_uid: &str,
+        action: crate::models::VideoConfAction,
+        call_id: &str,
+        rid: &str,
+    ) -> Result<()> {
+        if target_uid.is_empty() || target_uid.contains('/') {
+            return Err(Error::Protocol(format!("invalid user id {target_uid:?}")));
+        }
+        let signal = crate::models::VideoConfSignal {
+            action,
+            call_id: call_id.to_owned(),
+            uid: self.user_id().to_owned(),
+            rid: rid.to_owned(),
+        };
+        self.call(
+            "stream-notify-user",
+            vec![
+                json!(format!("{target_uid}/video-conference")),
+                signal.to_value(),
+            ],
+        )
+        .await
+        .map(drop)
+    }
+
     /// Closes the connection, then invalidates the token on the server. The event
     /// stream ends either way.
     pub async fn logout(&self) -> Result<()> {

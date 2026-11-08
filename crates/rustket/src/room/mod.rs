@@ -179,6 +179,8 @@ pub enum Effect {
     StartDiscussion {
         pmid: Option<String>,
     },
+    /// Video call actions (start, join, call back, info): `crate::videoconf`.
+    Call(crate::videoconf::CallAction),
 }
 
 /// Requests other room components make to the composer.

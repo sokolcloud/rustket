@@ -1,0 +1,352 @@
+_version: 2
+teams.panel_info:
+  en: "Team info"
+  ru: "Информация о команде"
+teams.panel_members:
+  en: "Teams Members"
+  ru: "Участники команды"
+teams.team:
+  en: "Team"
+  ru: "Команда"
+teams.public:
+  en: "Public"
+  ru: "Публичная"
+teams.private:
+  en: "Private"
+  ru: "Приватная"
+teams.topic:
+  en: "Topic"
+  ru: "Тема"
+teams.announcement:
+  en: "Announcement"
+  ru: "Объявление"
+teams.description:
+  en: "Description"
+  ru: "Описание"
+teams.created_by:
+  en: "Created by"
+  ru: "Создатель"
+teams.edit:
+  en: "Edit"
+  ru: "Редактировать"
+teams.channels:
+  en: "Team Channels"
+  ru: "Чаты команды"
+teams.members:
+  en: "Teams Members"
+  ru: "Участники команды"
+teams.leave:
+  en: "Leave team"
+  ru: "Покинуть команду"
+teams.convert:
+  en: "Convert to channel"
+  ru: "Преобразовать в канал"
+teams.delete:
+  en: "Delete"
+  ru: "Удалить"
+teams.not_a_team:
+  en: "This room is not a team"
+  ru: "Эта комната не является командой"
+teams.convert_to_team:
+  en: "Convert to team"
+  ru: "Преобразовать в команду"
+teams.convert_to_team_hint:
+  en: "All members of this room become team members. Other rooms can then be added to the team."
+  ru: "Все участники этой комнаты станут участниками команды. Затем в команду можно будет добавить другие комнаты."
+teams.converted_to_team:
+  en: "Converted to a team"
+  ru: "Преобразовано в команду"
+teams.converted_to_channel:
+  en: "Team converted to a channel"
+  ru: "Команда преобразована в канал"
+teams.left_team:
+  en: "You left the team"
+  ru: "Вы покинули команду"
+teams.team_deleted:
+  en: "The team was deleted"
+  ru: "Команда удалена"
+teams.member_removed:
+  en: "The user was removed from the team"
+  ru: "Пользователь удалён из команды"
+teams.members_added:
+  en: "Members added"
+  ru: "Участники добавлены"
+teams.in_team:
+  en: "in %{team}"
+  ru: "в команде %{team}"
+teams.back_to_team:
+  en: "Back to %{team} team"
+  ru: "Назад к команде %{team}"
+teams.leave_title:
+  en: "Leave %{team}"
+  ru: "Покинуть %{team}"
+teams.delete_title:
+  en: "Delete %{team}"
+  ru: "Удалить %{team}"
+teams.convert_title:
+  en: "Convert %{team} to a channel"
+  ru: "Преобразовать %{team} в канал"
+teams.remove_member_title:
+  en: "Remove %{user} from the team"
+  ru: "Удалить %{user} из команды"
+teams.leave_choose:
+  en: "Select the team rooms you also want to leave:"
+  ru: "Выберите комнаты команды, которые вы тоже хотите покинуть:"
+teams.delete_choose:
+  en: "Select the team rooms to delete as well. Rooms you do not select are kept as normal rooms."
+  ru: "Выберите комнаты команды, которые тоже нужно удалить. Невыбранные комнаты останутся обычными комнатами."
+teams.convert_choose:
+  en: "Select the team rooms to delete. Rooms you do not select are kept as normal rooms."
+  ru: "Выберите комнаты команды, которые нужно удалить. Невыбранные комнаты останутся обычными комнатами."
+teams.remove_member_choose:
+  en: "Select the team rooms the user should be removed from as well:"
+  ru: "Выберите комнаты команды, из которых пользователя тоже нужно удалить:"
+teams.locked_last_owner:
+  en: "(you are the last owner)"
+  ru: "(вы последний владелец)"
+teams.locked_cannot_delete:
+  en: "(no permission to delete)"
+  ru: "(нет прав на удаление)"
+teams.no_child_rooms:
+  en: "The team has no other rooms."
+  ru: "У команды нет других комнат."
+teams.select_all:
+  en: "Select all"
+  ru: "Выбрать все"
+teams.leave_confirm_none:
+  en: "You will leave %{team}. You stay in its other rooms."
+  ru: "Вы покинете команду %{team}. В остальных её комнатах вы останетесь."
+teams.leave_confirm:
+  en: "You will leave %{team} and %{count} of its rooms."
+  ru: "Вы покинете команду %{team} и её комнаты (%{count})."
+teams.delete_confirm_none:
+  en: "%{team} will be deleted. Its rooms are kept as normal rooms."
+  ru: "Команда %{team} будет удалена. Её комнаты останутся обычными комнатами."
+teams.delete_confirm:
+  en: "%{team} and %{count} of its rooms will be deleted. The other rooms are kept as normal rooms."
+  ru: "Команда %{team} и её комнаты (%{count}) будут удалены. Остальные комнаты останутся обычными."
+teams.convert_confirm_none:
+  en: "%{team} becomes a normal channel. Its rooms are kept."
+  ru: "Команда %{team} станет обычным каналом. Её комнаты сохранятся."
+teams.convert_confirm:
+  en: "%{team} becomes a normal channel and %{count} of its rooms will be deleted."
+  ru: "Команда %{team} станет обычным каналом, её комнаты (%{count}) будут удалены."
+teams.remove_member_confirm_none:
+  en: "%{user} will be removed from %{team}."
+  ru: "%{user} будет удалён(а) из команды %{team}."
+teams.remove_member_confirm:
+  en: "%{user} will be removed from %{team} and %{count} of its rooms."
+  ru: "%{user} будет удалён(а) из команды %{team} и её комнат (%{count})."
+teams.remove:
+  en: "Remove"
+  ru: "Удалить"
+teams.back:
+  en: "Back"
+  ru: "Назад"
+teams.next:
+  en: "Next"
+  ru: "Далее"
+teams.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+teams.more:
+  en: "More"
+  ru: "Ещё"
+teams.create_new:
+  en: "Create new"
+  ru: "Создать"
+teams.add_existing:
+  en: "Add existing"
+  ru: "Добавить существующую"
+teams.add_existing_hint:
+  en: "Rooms you own that are not in a team."
+  ru: "Комнаты, которыми вы владеете и которые не входят в команду."
+teams.no_available_rooms:
+  en: "No rooms available"
+  ru: "Нет доступных комнат"
+teams.search_rooms:
+  en: "Search rooms"
+  ru: "Поиск комнат"
+teams.filter_all:
+  en: "All"
+  ru: "Все"
+teams.filter_autojoin:
+  en: "Auto-join"
+  ru: "Автодобавление"
+teams.no_rooms:
+  en: "No rooms in this team"
+  ru: "В команде нет комнат"
+teams.members_count:
+  en: "%{count} members"
+  ru: "Участников: %{count}"
+teams.not_joined:
+  en: "not joined"
+  ru: "вы не участник"
+teams.autojoin:
+  en: "Auto-join"
+  ru: "Автодобавление"
+teams.autojoin_on:
+  en: "Turn on auto-join"
+  ru: "Включить автодобавление"
+teams.autojoin_off:
+  en: "Turn off auto-join"
+  ru: "Выключить автодобавление"
+teams.autojoin_updated:
+  en: "Auto-join updated: team members were added to the room"
+  ru: "Автодобавление обновлено: участники команды добавлены в комнату"
+teams.autojoin_limit:
+  en: "Auto-join updated; the team has more members than the server adds at once"
+  ru: "Автодобавление обновлено; в команде больше участников, чем сервер добавляет за раз"
+teams.remove_from_team:
+  en: "Remove from team"
+  ru: "Удалить из команды"
+teams.remove_room_confirm:
+  en: "Remove %{room} from the team? The room is kept as a normal room."
+  ru: "Удалить %{room} из команды? Комната останется обычной комнатой."
+teams.room_removed:
+  en: "Room removed from the team"
+  ru: "Комната удалена из команды"
+teams.delete_room:
+  en: "Delete room"
+  ru: "Удалить комнату"
+teams.delete_room_confirm:
+  en: "Delete %{room} and all of its messages? This cannot be undone."
+  ru: "Удалить %{room} и все её сообщения? Это нельзя отменить."
+teams.room_deleted:
+  en: "Room deleted"
+  ru: "Комната удалена"
+teams.rooms_added:
+  en: "Rooms added to the team"
+  ru: "Комнаты добавлены в команду"
+teams.room_name:
+  en: "Name"
+  ru: "Название"
+teams.private_room:
+  en: "Private"
+  ru: "Приватная"
+teams.create:
+  en: "Create"
+  ru: "Создать"
+teams.add:
+  en: "Add"
+  ru: "Добавить"
+teams.room_created:
+  en: "%{room} created"
+  ru: "%{room}: создана"
+teams.join:
+  en: "Join"
+  ru: "Вступить"
+teams.join_title:
+  en: "Join room"
+  ru: "Вступить в комнату"
+teams.join_confirm:
+  en: "You are not a member of %{room}. Join it?"
+  ru: "Вы не участник %{room}. Вступить?"
+teams.join_failed:
+  en: "Could not join"
+  ru: "Не удалось вступить"
+teams.add_members:
+  en: "Add members"
+  ru: "Добавить участников"
+teams.add_members_hint:
+  en: "Usernames, separated by commas or spaces."
+  ru: "Имена пользователей через запятую или пробел."
+teams.usernames:
+  en: "Users"
+  ru: "Пользователи"
+teams.search_members:
+  en: "Search members"
+  ru: "Поиск участников"
+teams.no_members:
+  en: "No members found"
+  ru: "Участники не найдены"
+teams.members_total:
+  en: "%{count} members"
+  ru: "Участников: %{count}"
+teams.added_by:
+  en: "added by @%{user}"
+  ru: "добавил(а) @%{user}"
+teams.view_profile:
+  en: "View profile"
+  ru: "Профиль"
+teams.set_owner:
+  en: "Set as owner"
+  ru: "Сделать владельцем"
+teams.unset_owner:
+  en: "Remove owner"
+  ru: "Снять права владельца"
+teams.set_moderator:
+  en: "Set as moderator"
+  ru: "Сделать модератором"
+teams.unset_moderator:
+  en: "Remove moderator"
+  ru: "Снять права модератора"
+teams.set_leader:
+  en: "Set as leader"
+  ru: "Сделать лидером"
+teams.unset_leader:
+  en: "Remove leader"
+  ru: "Снять статус лидера"
+teams.role_failed:
+  en: "Could not change the role"
+  ru: "Не удалось изменить роль"
+teams.search_discussions:
+  en: "Search discussions"
+  ru: "Поиск обсуждений"
+teams.no_discussions:
+  en: "No discussions"
+  ru: "Нет обсуждений"
+teams.discussion:
+  en: "Discussion"
+  ru: "Обсуждение"
+teams.discussion_empty:
+  en: "No messages yet"
+  ru: "Сообщений пока нет"
+teams.messages_count:
+  en: "%{count} messages"
+  ru: "Сообщений: %{count}"
+teams.discussion_deleted:
+  en: "Discussion deleted"
+  ru: "Обсуждение удалено"
+teams.err_team_missing:
+  en: "The team does not exist."
+  ru: "Команда не существует."
+teams.err_team_not_found:
+  en: "Team not found."
+  ru: "Команда не найдена."
+teams.err_name_exists:
+  en: "A room or team with this name already exists."
+  ru: "Комната или команда с таким названием уже существует."
+teams.err_creation:
+  en: "Could not create the team (check the name)."
+  ru: "Не удалось создать команду (проверьте название)."
+teams.err_room_on_team:
+  en: "This room already belongs to a team."
+  ru: "Эта комната уже входит в команду."
+teams.err_not_room_owner:
+  en: "You must be an owner of the room to move it."
+  ru: "Чтобы перенести комнату, нужно быть её владельцем."
+teams.err_room_not_in_team:
+  en: "The room is not part of this team."
+  ru: "Комната не входит в эту команду."
+teams.err_not_member_private:
+  en: "You are not a member of this private team."
+  ru: "Вы не участник этой приватной команды."
+teams.err_not_member:
+  en: "Not a team member."
+  ru: "Не участник команды."
+teams.err_last_owner:
+  en: "Set another owner before leaving."
+  ru: "Сначала назначьте другого владельца."
+teams.err_delete_team_instead:
+  en: "Delete the team instead."
+  ru: "Удалите команду целиком."
+teams.err_abac:
+  en: "Auto-join is not available for this room."
+  ru: "Автодобавление недоступно для этой комнаты."
+teams.err_not_allowed_rooms:
+  en: "You are not allowed to delete some of these rooms."
+  ru: "У вас нет прав на удаление некоторых из этих комнат."
+teams.err_unauthorized:
+  en: "You do not have permission to do this."
+  ru: "У вас нет прав на это действие."

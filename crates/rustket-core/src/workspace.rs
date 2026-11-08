@@ -246,6 +246,7 @@ pub struct Workspace {
     /// message (`{uid}/message`); see `uikit::trust` (docs/uikit.md §3.2).
     ephemeral: HashMap<String, HashSet<String>>,
     uikit: UiKitStore,
+    videoconf: crate::videoconf::VideoConfStore,
 }
 
 /// When a realtime event touched something.
@@ -1390,6 +1391,15 @@ impl Workspace {
 
     pub fn uikit_mut(&mut self) -> &mut UiKitStore {
         &mut self.uikit
+    }
+
+    /// Video-conference data (block info cache, capabilities, license).
+    pub fn videoconf(&self) -> &crate::videoconf::VideoConfStore {
+        &self.videoconf
+    }
+
+    pub fn videoconf_mut(&mut self) -> &mut crate::videoconf::VideoConfStore {
+        &mut self.videoconf
     }
 
     // --- timelines ----------------------------------------------------------------

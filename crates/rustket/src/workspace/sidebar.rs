@@ -262,7 +262,11 @@ impl Sidebar {
             Density::Extended => rustket_ui::widget::Density::Extended,
             Density::Condensed => rustket_ui::widget::Density::Condensed,
         };
-        p.subtitle = item.preview.as_ref().map(preview_text);
+        p.subtitle = item
+            .preview
+            .as_ref()
+            .map(preview_text)
+            .or_else(|| crate::teams::sidebar_caption(ctx.workspace, &item.rid));
         p.time = item
             .last_activity
             .map(|ts| short_time(ts, chrono::Local::now(), ctx.prefs.clock_24h));
@@ -302,7 +306,8 @@ pub fn room_icon(kind: RoomKind) -> Icon {
         RoomKind::Direct => Icon::AtSign,
         RoomKind::GroupDirect => Icon::Users,
         RoomKind::Discussion => Icon::MessagesSquare,
-        RoomKind::Team { .. } => Icon::Users,
+        RoomKind::Team { private: false } => Icon::Users,
+        RoomKind::Team { private: true } => Icon::UserLock,
         RoomKind::Omnichannel => Icon::MessageCircle,
     }
 }

@@ -391,8 +391,11 @@ pub enum SessionEvent {
     /// UIKit interaction from an app (`{uid}/uiInteraction`). Accept it only
     /// for a trigger id this client issued (docs/uikit.md §4.2).
     UiInteraction(Box<ServerInteraction>),
-    /// `{uid}/video-conference`: `{action, params: {callId, uid, rid}}`.
-    VideoConference(Value),
+    /// `{uid}/video-conference` after shape validation
+    /// ([`VideoConfSignal::parse`](crate::models::VideoConfSignal::parse));
+    /// malformed payloads become [`SessionEvent::Unknown`]. Still untrusted
+    /// (docs/teams-videoconf.md §7.5): confirm with `video-conference.info`.
+    VideoConference(crate::models::VideoConfSignal),
     /// Another member asks for the room's E2E key.
     E2EKeyRequest {
         rid: String,
@@ -562,7 +565,9 @@ fn decode_notify_user(kind: &str, args: &[Value]) -> Option<SessionEvent> {
         "uiInteraction" => {
             SessionEvent::UiInteraction(Box::new(ServerInteraction::from_value(first?.clone())))
         }
-        "video-conference" => SessionEvent::VideoConference(first?.clone()),
+        "video-conference" => {
+            SessionEvent::VideoConference(crate::models::VideoConfSignal::parse(first?)?)
+        }
         "e2ekeyRequest" => SessionEvent::E2EKeyRequest {
             rid: str_at(args, 0)?,
             key_id: str_at(args, 1).unwrap_or_default(),
