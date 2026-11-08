@@ -651,6 +651,10 @@ impl Panel {
             Some(Body::Thread(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Thread),
             Some(Body::Team(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Team),
             Some(Body::Omni(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Omni),
+            Some(Body::Messages(b)) => {
+                b.on_changes(ctx);
+                Action::none()
+            }
             _ => Action::none(),
         }
     }

@@ -22,7 +22,10 @@ use crate::error::Failure;
 /// Cheap, cloneable handle to a running session. The session closes when the
 /// app drops its last handle (logout, token change, server removal).
 #[derive(Clone)]
-pub struct SessionHandle(pub Arc<Session>);
+pub struct SessionHandle(pub Arc<Session>, LastDdpSession);
+
+/// The DDP session id of the last live connection.
+type LastDdpSession = Arc<std::sync::Mutex<Option<String>>>;
 
 impl SessionHandle {
     pub fn rest(&self) -> &RestClient {
@@ -31,6 +34,24 @@ impl SessionHandle {
 
     pub fn session(&self) -> &Session {
         &self.0
+    }
+
+    pub fn new(session: Arc<Session>) -> Self {
+        Self(session, LastDdpSession::default())
+    }
+
+    /// The DDP session id of the live connection, or of the last one while
+    /// reconnecting (what `force_logout` names when it targets one session;
+    /// the server may close the connection right after sending it).
+    pub fn ddp_session_id(&self) -> Option<String> {
+        let mut last = self
+            .1
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(id) = self.0.ddp_session_id() {
+            *last = Some(id);
+        }
+        last.clone()
     }
 }
 
@@ -163,7 +184,7 @@ fn run(spec: &SessionSpec) -> impl Stream<Item = Tagged> + use<> {
                 }
             }
         };
-        let handle = SessionHandle(Arc::new(session));
+        let handle = SessionHandle::new(Arc::new(session));
         if out
             .send((id.clone(), ServerEvent::Ready(handle)))
             .await
@@ -245,6 +266,18 @@ pub fn map_connection(s: &RcConn) -> ConnectionState {
 /// Applies one realtime event to the workspace and tells the caller which
 /// asynchronous follow-up (sync, logout handling) is needed.
 pub fn apply_event(ws: &mut Workspace, ev: &SessionEvent) -> Followup {
+    apply_event_for(ws, ev, None)
+}
+
+/// [`apply_event`] for the session whose DDP session id is `own_session`.
+/// `force_logout` is broadcast to every connection of the user: with a
+/// session id (`sessions/logout`, device management) it is for that session
+/// only; without one (`users.resetE2EKey`) it is for all of them.
+pub fn apply_event_for(
+    ws: &mut Workspace,
+    ev: &SessionEvent,
+    own_session: Option<&str>,
+) -> Followup {
     use SessionEvent as E;
     match ev {
         E::Connection(s) => {
@@ -271,7 +304,16 @@ pub fn apply_event(ws: &mut Workspace, ev: &SessionEvent) -> Followup {
             ws.apply_logged_out();
             Followup::LoggedOut(reason.clone())
         }
-        E::ForceLogout { .. } => {
+        E::ForceLogout { session_id } => {
+            if session_id
+                .as_deref()
+                .is_some_and(|id| Some(id) != own_session)
+            {
+                // Another device was logged out (the web only sets a flag); if
+                // that also revoked our token, the session reports it.
+                tracing::debug!("force_logout for another session ignored");
+                return Followup::None;
+            }
             ws.apply_logged_out();
             Followup::LoggedOut(String::from("force_logout"))
         }
@@ -1013,6 +1055,37 @@ mod tests {
             Followup::LoggedOut("force_logout".into())
         );
         assert_eq!(*ws.connection(), ConnectionState::LoggedOut);
+
+        // `sessions/logout` of another device reaches every connection of the
+        // user: only the named session is logged out.
+        let mut ws = ready();
+        let other = SessionEvent::ForceLogout {
+            session_id: Some("other-ddp-session".into()),
+        };
+        assert_eq!(
+            apply_event_for(&mut ws, &other, Some("my-ddp-session")),
+            Followup::None
+        );
+        assert_eq!(apply_event(&mut ws, &other), Followup::None);
+        assert_eq!(*ws.connection(), ConnectionState::Connected);
+        let mine = SessionEvent::ForceLogout {
+            session_id: Some("my-ddp-session".into()),
+        };
+        assert_eq!(
+            apply_event_for(&mut ws, &mine, Some("my-ddp-session")),
+            Followup::LoggedOut("force_logout".into())
+        );
+        assert_eq!(*ws.connection(), ConnectionState::LoggedOut);
+        // Without a session id (key reset): every session.
+        let mut ws = ready();
+        assert_eq!(
+            apply_event_for(
+                &mut ws,
+                &SessionEvent::ForceLogout { session_id: None },
+                Some("my-ddp-session")
+            ),
+            Followup::LoggedOut("force_logout".into())
+        );
 
         let mut ws = ready();
         let role = |kind: &str| {

@@ -177,8 +177,8 @@ e2e.msg_unsupported:
   en: "This message uses an encryption that cannot be decrypted."
   ru: "Сообщение зашифровано способом, который не поддерживается."
 e2e.msg_plaintext_edit:
-  en: "This message also contains unencrypted text"
-  ru: "Это сообщение содержит и незашифрованный текст"
+  en: "This message also contains unencrypted content"
+  ru: "Это сообщение содержит и незашифрованные данные"
 e2e.file_hash_mismatch:
   en: "The decrypted file does not match its checksum"
   ru: "Расшифрованный файл не совпадает с контрольной суммой"
@@ -317,3 +317,30 @@ e2e.err_internal:
 e2e.slash_unavailable:
   en: "Slash commands are unavailable in encrypted rooms: this text is sent as an encrypted message"
   ru: "Команды недоступны в зашифрованных комнатах: этот текст будет отправлен как зашифрованное сообщение"
+e2e.composer_settings_unknown:
+  en: "The server's encryption settings could not be loaded yet; sending to this encrypted room is paused"
+  ru: "Не удалось загрузить настройки шифрования сервера; отправка в эту зашифрованную комнату приостановлена"
+e2e.composer_room_unknown:
+  en: "This room's details have not loaded yet; sending is paused until it is known whether the room is encrypted"
+  ru: "Данные комнаты ещё не загружены; отправка приостановлена, пока неизвестно, зашифрована ли комната"
+e2e.edit_plaintext_refused:
+  en: "This message was sent unencrypted and cannot be edited in an encrypted room"
+  ru: "Это сообщение отправлено без шифрования, и его нельзя изменить в зашифрованной комнате"
+e2e.sign_out_warning_title:
+  en: "Save your E2E password first"
+  ru: "Сначала сохраните пароль E2E"
+e2e.sign_out_warning_body:
+  en: "You have not saved your end-to-end encryption password yet. It is deleted from this device when you sign out, and without it encrypted messages cannot be read after you sign in again."
+  ru: "Вы ещё не сохранили пароль сквозного шифрования. При выходе он будет удалён с этого устройства, а без него после повторного входа зашифрованные сообщения прочитать не получится."
+e2e.remove_warning_body:
+  en: "You have not saved your end-to-end encryption password yet. It is deleted from this device when you remove this server, and without it encrypted messages cannot be read after you add the server and sign in again."
+  ru: "Вы ещё не сохранили пароль сквозного шифрования. При удалении сервера он будет удалён с этого устройства, а без него после повторного добавления сервера и входа зашифрованные сообщения прочитать не получится."
+e2e.sign_out_warning_hint:
+  en: "Copy it to a safe place, such as a password manager, before you continue."
+  ru: "Прежде чем продолжить, скопируйте его в надёжное место, например в менеджер паролей."
+e2e.sign_out_anyway:
+  en: "Sign out anyway"
+  ru: "Всё равно выйти"
+e2e.remove_anyway:
+  en: "Remove anyway"
+  ru: "Всё равно удалить"

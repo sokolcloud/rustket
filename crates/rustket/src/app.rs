@@ -1327,11 +1327,12 @@ impl App {
     fn logged_out(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
         let mut e2e = Task::none();
         if let Some(s) = self.servers.get_mut(sid) {
-            // `force_logout` (e.g. an E2E key reset) also drops the E2E secrets.
-            if reason.as_deref() == Some("force_logout") {
-                let uid = self.config.server(sid).and_then(|e| e.user_id.clone());
-                e2e = crate::e2e::forget_secrets(s, self.secrets.as_ref(), uid.as_deref());
-            }
+            // Any rejected token also drops the cached E2E key (an unsaved
+            // generated passphrase is kept), as the web does on every logout:
+            // an E2E key reset closes the connections before its
+            // `force_logout` goes out, so it shows up as a failed resume.
+            let uid = self.config.server(sid).and_then(|e| e.user_id.clone());
+            e2e = crate::e2e::forget_keys(s, self.secrets.as_ref(), uid.as_deref());
             // The token was rejected: nothing can be sent with it any more.
             s.reset();
         }
@@ -1821,7 +1822,14 @@ impl App {
                 // Room views opened before the session existed: watch + history.
                 self.for_rooms(&sid, None, |rv, ctx| rv.on_reconnect(ctx))
             }
-            ServerEvent::Event(ev) => match session::apply_event(&mut s.workspace, &ev) {
+            ServerEvent::Event(ev) => match session::apply_event_for(
+                &mut s.workspace,
+                &ev,
+                s.session
+                    .as_ref()
+                    .and_then(session::SessionHandle::ddp_session_id)
+                    .as_deref(),
+            ) {
                 Followup::None => Task::none(),
                 Followup::Notification(n) => {
                     let n = crate::e2e::notify::prepare(&s.workspace, n);
@@ -2491,7 +2499,7 @@ impl App {
             }
             ModalMessage::ConfirmRemove(sid) => {
                 self.modals.pop();
-                self.remove_server(&sid)
+                self.sign_out(&sid, crate::e2e::SignOut::RemoveServer)
             }
         }
     }

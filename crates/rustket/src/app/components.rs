@@ -245,9 +245,33 @@ impl App {
                     );
                     Task::none()
                 }
+                e2e::Request::SignOut(e2e::SignOut::Logout { everywhere }) => {
+                    self.logout(&sid, everywhere)
+                }
+                e2e::Request::SignOut(e2e::SignOut::RemoveServer) => self.remove_server(&sid),
+                // The warning is a modal of the server screen.
+                e2e::Request::ShowModal => self.activate(sid.clone()),
             });
         }
         Task::batch(tasks)
+    }
+
+    /// Logout or server removal the user asked for: first warns (and shows
+    /// it again) when it would delete an unsaved generated E2E passphrase.
+    pub(super) fn sign_out(&mut self, sid: &ServerId, action: e2e::SignOut) -> Task<Message> {
+        let uid = self.config.server(sid).and_then(|e| e.user_id.clone());
+        if let Some(s) = self.servers.get_mut(sid) {
+            match e2e::check_sign_out(s, self.secrets.as_ref(), uid.as_deref(), action) {
+                e2e::SignOutCheck::Now => {}
+                // The warning is a modal of the server screen.
+                e2e::SignOutCheck::Warned => return self.activate(sid.clone()),
+                e2e::SignOutCheck::Pending(task) => return task,
+            }
+        }
+        match action {
+            e2e::SignOut::Logout { everywhere } => self.logout(sid, everywhere),
+            e2e::SignOut::RemoveServer => self.remove_server(sid),
+        }
     }
 
     /// A room component asked for the account E2E flow.
@@ -424,7 +448,9 @@ impl App {
                     crate::screens::add_server::Message::Submit,
                 ))
             }
-            Go::Logout { sid, everywhere } => self.logout(&sid, everywhere),
+            Go::Logout { sid, everywhere } => {
+                self.sign_out(&sid, e2e::SignOut::Logout { everywhere })
+            }
             Go::Discussion { sid, rid, pmid } => {
                 let a = self.activate(sid);
                 let nav = self.navigate(Nav::CreateDiscussion { rid, pmid });

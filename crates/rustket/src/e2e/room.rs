@@ -397,6 +397,8 @@ pub fn composer_block<'a, M: 'a>(ws: &Workspace, rid: &str) -> Option<Element<'a
         return None;
     }
     let key = match ws.e2e().map(|m| m.account_state()) {
+        _ if !outgoing::settings_loaded(ws) => "e2e.composer_settings_unknown",
+        _ if !outgoing::room_known(ws, rid) => "e2e.composer_room_unknown",
         Some(AccountE2eState::EnterPassword { .. }) => "e2e.composer_locked",
         Some(s) if s.is_ready() => "e2e.composer_waiting",
         _ => "e2e.composer_unavailable",
@@ -454,11 +456,16 @@ pub fn is_encrypted_message(m: &rocketchat::models::Message) -> bool {
 }
 
 /// Whether `m` can be edited as far as encryption goes: an encrypted message
-/// only when it is shown decrypted and the room key is ready. The error is
-/// the text for a toast.
+/// only when it is shown decrypted and the room key is ready; a plaintext
+/// message in an encrypted room only where unencrypted messages are allowed
+/// (it cannot be turned into an encrypted one). The error is the text for a
+/// toast.
 pub fn check_edit(ws: &Workspace, m: &rocketchat::models::Message) -> Result<(), String> {
     if m.t.as_deref() != Some("e2e") {
-        return Ok(());
+        return match outgoing::plain_edit_refusal(ws, &m.rid) {
+            Some(e) => Err(e),
+            None => Ok(()),
+        };
     }
     if !super::shown::is_decrypted(m) {
         return Err(t!("e2e.edit_unreadable").into_owned());
@@ -479,6 +486,9 @@ pub fn filter_actions(
 ) {
     use crate::room::timeline::Act;
     if m.t.as_deref() != Some("e2e") {
+        if check_edit(ws, m).is_err() {
+            acts.retain(|a| !matches!(a, Act::Edit));
+        }
         return;
     }
     let decrypted = super::shown::is_decrypted(m);

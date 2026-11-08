@@ -103,6 +103,15 @@ pub enum E2eEvent {
     },
 }
 
+/// Ids of the public settings [`E2eSettings`] reads.
+pub const E2E_SETTING_IDS: [&str; 5] = [
+    "E2E_Enable",
+    "E2E_Enable_Encrypt_Files",
+    "E2E_Enabled_Mentions",
+    "E2E_Allow_Unencrypted_Messages",
+    "UTF8_User_Names_Validation",
+];
+
 /// E2E-related public settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct E2eSettings {
@@ -131,6 +140,14 @@ impl Default for E2eSettings {
 }
 
 impl E2eSettings {
+    /// Whether the server's E2E settings are known: `E2E_Enable` is a public
+    /// setting on every supported server, so a settings map without it was not
+    /// loaded (e.g. `settings.public` failed). Encrypted rooms must fail closed
+    /// until then.
+    pub fn loaded(s: &crate::settings::Settings) -> bool {
+        s.get("E2E_Enable").is_some()
+    }
+
     pub fn from_settings(s: &crate::settings::Settings) -> Self {
         let d = Self::default();
         Self {
@@ -599,24 +616,23 @@ impl<A: E2eApi> E2eManager<A> {
         r
     }
 
-    async fn cached_private_key(&self) -> Option<UserPrivateKey> {
-        let cached = match self.inner.secrets.private_key().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "cannot read the cached E2E key");
-                None
-            }
-        }?;
-        blocking(move || UserPrivateKey::from_jwk_str(&cached).ok())
+    /// The cached private key: `Ok(None)` when there is none (or it does not
+    /// parse), `Err` when the secret store could not be read (nothing may be
+    /// deleted then).
+    async fn cached_private_key(&self) -> Result<Option<UserPrivateKey>, SecretError> {
+        let Some(cached) = self.inner.secrets.private_key().await? else {
+            return Ok(None);
+        };
+        Ok(blocking(move || UserPrivateKey::from_jwk_str(&cached).ok())
             .await
             .ok()
-            .flatten()
+            .flatten())
     }
 
     /// `E2E_Enable` off: load the cached key (if it still matches the server's
     /// public key) for decryption only. Nothing is created or uploaded.
     async fn start_read_only(&self, t: Token) -> Result<()> {
-        let Some(key) = self.cached_private_key().await else {
+        let Some(key) = self.cached_private_key().await? else {
             self.check(t)?;
             self.set_account_state(AccountE2eState::Disabled);
             return Ok(());
@@ -648,44 +664,78 @@ impl<A: E2eApi> E2eManager<A> {
     }
 
     async fn start_enabled(&self, t: Token) -> Result<()> {
-        let cached_key = self.cached_private_key().await;
+        // A secret store read error is not "no cached key": fail (retried
+        // later) and delete nothing (§7.1).
+        let cached_key = self.cached_private_key().await.inspect_err(|e| {
+            tracing::warn!(error = %e, "cannot read the cached E2E key");
+        })?;
         let server = self.inner.api.fetch_my_keys().await?;
         self.check(t)?;
-        let pending = self.inner.secrets.pending_passphrase().await.ok().flatten();
+        let pending = self.inner.secrets.pending_passphrase().await.inspect_err(
+            |e| tracing::warn!(error = %e, "cannot read the pending E2E passphrase"),
+        )?;
 
         if let (Some(server_pub), Some(envelope)) = (server.public_key, server.private_key) {
             let server_public = UserPublicKey::from_jwk_str(&server_pub).ok();
+            let stale_key = cached_key.is_some();
             let usable = cached_key.filter(|k| server_public.as_ref() == Some(&k.public_key()));
             self.check(t)?;
-            match usable {
-                Some(key) => {
+            if let Some(key) = usable {
+                {
+                    let mut acc = lock(&self.inner.account);
+                    acc.public_key = Some(key.public_key());
+                    acc.private_key = Some(Arc::new(key));
+                    acc.server_public = Some(server_pub);
+                    acc.server_envelope = Some(envelope);
+                    acc.pending_passphrase = pending.clone();
+                }
+                self.became_ready(t, pending.is_some()).await;
+                return Ok(());
+            }
+            // No usable cached key. A generated passphrase the user has not
+            // saved yet survives a forced logout: it unlocks the backup again.
+            if let Some(pw) = pending.clone() {
+                let restored = self
+                    .unlock_envelope(&envelope, server_public.as_ref(), &pw)
+                    .await?;
+                self.check(t)?;
+                if let Some((key, jwk)) = restored {
+                    if let Err(e) = self.inner.secrets.set_private_key(&jwk).await {
+                        tracing::warn!(error = %e, "cannot cache the E2E key");
+                    }
+                    self.check_after_secret_write(t).await?;
                     {
                         let mut acc = lock(&self.inner.account);
                         acc.public_key = Some(key.public_key());
                         acc.private_key = Some(Arc::new(key));
                         acc.server_public = Some(server_pub);
                         acc.server_envelope = Some(envelope);
-                        acc.pending_passphrase = pending.clone();
+                        acc.pending_passphrase = Some(pw);
                     }
-                    self.became_ready(t, pending.is_some()).await;
-                }
-                None => {
-                    // Keys were created or reset elsewhere: drop stale local secrets.
-                    if let Err(e) = self.inner.secrets.clear().await {
-                        tracing::warn!(error = %e, "cannot clear stale E2E secrets");
-                    }
-                    self.check(t)?;
-                    {
-                        let mut acc = lock(&self.inner.account);
-                        acc.public_key = None;
-                        acc.private_key = None;
-                        acc.server_public = Some(server_pub);
-                        acc.server_envelope = Some(envelope);
-                        acc.pending_passphrase = None;
-                    }
-                    self.set_account_state(AccountE2eState::EnterPassword { failed: false });
+                    self.became_ready(t, true).await;
+                    return Ok(());
                 }
             }
+            // Keys were created or reset elsewhere: drop the stale local
+            // secrets (only what was read and found not to match).
+            if stale_key && let Err(e) = self.inner.secrets.delete_private_key().await {
+                tracing::warn!(error = %e, "cannot delete the stale E2E key");
+            }
+            if pending.is_some()
+                && let Err(e) = self.inner.secrets.delete_pending_passphrase().await
+            {
+                tracing::warn!(error = %e, "cannot delete the stale E2E passphrase");
+            }
+            self.check(t)?;
+            {
+                let mut acc = lock(&self.inner.account);
+                acc.public_key = None;
+                acc.private_key = None;
+                acc.server_public = Some(server_pub);
+                acc.server_envelope = Some(envelope);
+                acc.pending_passphrase = None;
+            }
+            self.set_account_state(AccountE2eState::EnterPassword { failed: false });
             return Ok(());
         }
 
@@ -768,6 +818,32 @@ impl<A: E2eApi> E2eManager<A> {
         self.handshake_all().await;
         if self.inner.config.auto_distribution && self.alive(t) {
             self.start_distribution();
+        }
+    }
+
+    /// Decrypts the key backup `envelope` with `password`: `Ok(None)` when the
+    /// password is wrong or the key does not match `server_public`.
+    async fn unlock_envelope(
+        &self,
+        envelope: &str,
+        server_public: Option<&UserPublicKey>,
+        password: &str,
+    ) -> Result<Option<(UserPrivateKey, Zeroizing<String>)>> {
+        let (envelope, uid) = (envelope.to_owned(), self.inner.user_id.clone());
+        let pw = Zeroizing::new(password.to_owned());
+        let decrypted = blocking(move || -> Result<(UserPrivateKey, Zeroizing<String>)> {
+            let env = PrivateKeyEnvelope::parse(&envelope, &uid)?;
+            let jwk = env.decrypt(&pw)?;
+            let key = UserPrivateKey::from_jwk_str(&jwk).map_err(|_| E2eError::WrongPassword)?;
+            Ok((key, jwk))
+        })
+        .await?;
+        match decrypted {
+            Ok((key, jwk)) if server_public.is_none_or(|p| *p == key.public_key()) => {
+                Ok(Some((key, jwk)))
+            }
+            Ok(_) | Err(E2eManagerError::Crypto(_)) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -897,13 +973,26 @@ impl<A: E2eApi> E2eManager<A> {
         self.emit(E2eEvent::AccountState(AccountE2eState::Disabled));
     }
 
-    /// Explicit logout / `force_logout` / key reset: stop and delete the E2E
-    /// secrets of this account.
+    /// Explicit logout / key reset: stop and delete the E2E secrets of this
+    /// account (the cached key and a pending generated passphrase).
     pub async fn logout(&self) {
         self.inner.logouts.fetch_add(1, Ordering::SeqCst);
         self.stop();
         if let Err(e) = self.inner.secrets.clear().await {
             tracing::warn!(error = %e, "cannot delete E2E secrets");
+        }
+    }
+
+    /// A logout the user did not choose (`force_logout`, a rejected token):
+    /// stop and delete the cached key, but keep a generated passphrase the
+    /// user has not saved yet. It is the only copy; the next start unlocks the key backup with it and
+    /// asks the user to save it again (web: the stored `e2e.randomPassword`
+    /// survives logout).
+    pub async fn forced_logout(&self) {
+        self.inner.logouts.fetch_add(1, Ordering::SeqCst);
+        self.stop();
+        if let Err(e) = self.inner.secrets.delete_private_key().await {
+            tracing::warn!(error = %e, "cannot delete the cached E2E key");
         }
     }
 
@@ -915,8 +1004,10 @@ impl<A: E2eApi> E2eManager<A> {
         *write(&self.inner.settings) = settings;
     }
 
-    /// Applies a realtime event (rooms, subscriptions, settings, `force_logout`,
-    /// room key requests). Returns `true` if it was relevant.
+    /// Applies a realtime event (rooms, subscriptions, settings, room key
+    /// requests). Returns `true` if it was relevant. `force_logout` is not
+    /// handled here: it may name another session, which only the caller can
+    /// tell; it calls [`Self::forced_logout`] when the session was logged out.
     pub async fn handle_event(&self, ev: &SessionEvent) -> bool {
         match ev {
             SessionEvent::RoomChanged { kind, room } => {
@@ -937,10 +1028,6 @@ impl<A: E2eApi> E2eManager<A> {
             }
             SessionEvent::SettingChanged { setting, .. } => {
                 write(&self.inner.settings).apply(&setting.id, &setting.value)
-            }
-            SessionEvent::ForceLogout { .. } => {
-                self.logout().await;
-                true
             }
             other => match RoomE2eKeyRequest::from_event(other) {
                 Some(req) => {

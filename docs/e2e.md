@@ -693,8 +693,24 @@ Rustket mapping:
 
 - Persist the **decrypted private JWK** and the **pending generated passphrase** in the secret store
   (`rustket-core::secrets`, new keys `rustket-e2e:<server_id>:<user_id>:private_key` and
-  `…:pending_passphrase`); never in config or the cache DB. Delete both on explicit logout and on
-  `force_logout`/user key reset. The public key can be cached unencrypted.
+  `…:pending_passphrase`); never in config or the cache DB. Delete both on explicit logout and
+  server removal, but first warn (and show the passphrase again) while one is still unsaved; the
+  secret store decides (the manager does not hold the passphrase in every state, and none runs
+  offline), and when it cannot be read the passphrase is kept. Any logout the user did not choose
+  (rejected token, failed resume, a `force_logout` naming this DDP session or no session) deletes
+  the cached key and keeps an unsaved passphrase: the next start unlocks the key backup with it and
+  shows it again (web: `stopClient` removes the stored keys on every logout and keeps only
+  `e2e.randomPassword`). On 8.9 `users.resetE2EKey` and `sessions/logout` close the user's DDP
+  connections before the `force_logout` stream message goes out (`MeteorService` closes
+  synchronously, the streamer awaits `isEmitAllowed` first) [live], so in practice these arrive as
+  a failed resume.
+  A secret store read error is never treated as "no cached key" (nothing is deleted; the start
+  fails; it is retried only by the user's Retry, since each attempt may show the system unlock
+  prompt, while a failed `e2e.fetchMyKeys` is retried with backoff and on resync). The public key
+  can be cached unencrypted. A room entry without its room object (only the subscription is known)
+  counts as possibly encrypted and is blocked while E2E is on.
+- Until `E2E_Enable` is known (`settings.public` failed), encrypted rooms are blocked (text,
+  uploads, edits, slash commands); the E2E settings are fetched again with backoff.
 - Always reconcile with `e2e.fetchMyKeys`: if the server's `public_key` differs from the cached one
   (keys were reset on another device), drop the cached private key and go to `ENTER_PASSWORD`
   (or key creation if the server has none). The web does not do this (it trusts local storage).
@@ -874,7 +890,11 @@ the previous key under its old kid to the room's old keys immediately (the serve
   attachment re-encrypts those quote attachments and readers then get them twice (decrypted + rebuilt).
   Rustket: re-encrypt `{msg, attachments, files, file}` taken from the original *decrypted content*
   (never locally derived quote attachments), never fall back to `text`, and tolerate duplicate quote
-  attachments when reading.
+  attachments when reading. A plaintext message (sent before encryption was turned on) cannot be
+  edited into an encrypted one (`chat.update {content}` → "Only encrypted messages can have content
+  updated." [live]; the 8.9 web hits this): Rustket edits it with `text` only when
+  `E2E_Allow_Unencrypted_Messages` is on, otherwise it hides Edit and refuses before the edit text
+  is dropped.
 - If the room is encrypted but not `READY`, the web sends plaintext (server rejects unless
   unencrypted messages are allowed; the composer shows `E2EE_Composer_Unencrypted_Message` when
   they are allowed, `RC:apps/meteor/client/views/room/composer/messageBox/MessageBoxHint.tsx`).
@@ -925,6 +945,9 @@ Rustket deviations (hardening):
   be re-decrypted when a key arrives later and edits invalidate the cache.
 - Ignore the server's `e2e` field; decide by `t == 'e2e'` and content presence.
 - Parse markdown from the decrypted `msg` client-side; ignore any server `md` on e2e messages (§4).
+  Likewise ignore server `blocks` and `urls`, and keep server `attachments` only when the payload
+  has none and only `removed-file` placeholders of them (a content-less message, §11.13, keeps its
+  attachment); anything dropped marks the message as also carrying unencrypted content.
 - Treat decrypted attachment URLs (`title_link`, `image_url`, …) as server-relative paths only;
   refuse absolute URLs to other origins (the plaintext is controlled by any room member).
 
@@ -1102,8 +1125,9 @@ upstream; Rustket must provide its own.
 6. **Old keys missing after reset** for members who had no key before: show `E2E_indecipherable`
    for older messages; nothing else to do.
 7. **`oldRoomKeys` entries that fail to unwrap** (user key reset since): skip silently.
-8. **User key reset** (`users.resetE2EKey`) revokes tokens: expect 401 + `force_logout`; clear E2E
-   secrets; on next login create new keys and wait for room keys.
+8. **User key reset** (`users.resetE2EKey`) revokes tokens and closes the DDP connections (on 8.9
+   before `force_logout` can be delivered [live]): expect a failed resume / 401; clear the cached
+   key on every rejected token; on next login create new keys and wait for room keys.
 9. **Passphrase charset** (§3.3.4).
 10. **Unknown `alg` in a room JWK / unknown envelope algorithm** (`m.megolm.v1.aes-sha2`): show
     "cannot be decrypted", do not crash, do not retry in a loop.

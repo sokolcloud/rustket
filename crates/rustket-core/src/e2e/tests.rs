@@ -1028,10 +1028,15 @@ async fn events_update_settings_and_force_logout() {
     };
     assert!(m.handle_event(&ev).await);
     assert_eq!(m.room_state(RID), RoomE2eState::WaitingKeys);
+    // `force_logout` may be meant for another session: ignored here.
     assert!(
-        m.handle_event(&SessionEvent::ForceLogout { session_id: None })
-            .await
+        !m.handle_event(&SessionEvent::ForceLogout {
+            session_id: Some("other".into())
+        })
+        .await
     );
+    assert_eq!(m.room_state(RID), RoomE2eState::WaitingKeys);
+    m.forced_logout().await;
     assert_eq!(m.account_state(), AccountE2eState::Disabled);
     assert!(
         store
@@ -1457,4 +1462,129 @@ async fn key_requests_skip_rooms_without_key_and_are_debounced() {
     assert!(m.handle_event(&ev(RID)).await);
     assert!(m.handle_event(&ev(RID)).await);
     assert_eq!(api.st().waiting_calls, 1);
+}
+
+/// A store whose reads of keys containing `failing` fail while `fail` is set.
+struct FlakyStore {
+    inner: MemoryStore,
+    failing: &'static str,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl SecretStore for FlakyStore {
+    fn get(&self, key: &str) -> crate::secrets::Result<Option<String>> {
+        if key.contains(self.failing) && self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(SecretError::Timeout);
+        }
+        self.inner.get(key)
+    }
+    fn set(&self, key: &str, value: &str) -> crate::secrets::Result<()> {
+        self.inner.set(key, value)
+    }
+    fn delete(&self, key: &str) -> crate::secrets::Result<()> {
+        self.inner.delete(key)
+    }
+}
+
+#[tokio::test]
+async fn secret_store_read_errors_delete_nothing() {
+    let k = keys();
+    let server = ServerId("srv".into());
+    for failing in ["private_key", "pending_passphrase"] {
+        let api = MockApi::default();
+        api.st().my_keys = MyKeys {
+            public_key: Some(k.my_public.clone()),
+            private_key: Some(k.my_envelope.clone()),
+        };
+        let store = Arc::new(FlakyStore {
+            inner: MemoryStore::new(),
+            failing,
+            fail: true.into(),
+        });
+        store
+            .inner
+            .set(&private_key_secret(&server, ME), &k.my_private)
+            .unwrap();
+        store
+            .inner
+            .set(&pending_passphrase_secret(&server, ME), "unsaved words")
+            .unwrap();
+        let m = E2eManager::new(api.clone(), store.clone(), &server, ME, enabled(), config());
+        assert!(m.start().await.is_err(), "{failing}");
+        assert!(matches!(m.account_state(), AccountE2eState::Error(_)));
+        assert!(
+            store
+                .inner
+                .get(&private_key_secret(&server, ME))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .inner
+                .get(&pending_passphrase_secret(&server, ME))
+                .unwrap()
+                .is_some()
+        );
+        // The keyring answers again: the cached key and the passphrase are back.
+        store.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        m.start().await.unwrap();
+        assert_eq!(m.account_state(), AccountE2eState::SavePassword);
+        assert_eq!(
+            m.pending_passphrase().as_deref().map(String::as_str),
+            Some("unsaved words")
+        );
+    }
+}
+
+#[tokio::test]
+async fn forced_logout_keeps_an_unsaved_passphrase_that_unlocks_again() {
+    // First use: keys created, backup encrypted with a generated passphrase.
+    let api = MockApi::default();
+    let store = Arc::new(MemoryStore::new());
+    let m = manager(&api, &store);
+    m.start().await.unwrap();
+    assert_eq!(m.account_state(), AccountE2eState::SavePassword);
+    let passphrase = m.pending_passphrase().unwrap();
+    let (public, envelope, _) = api.st().uploaded[0].clone();
+    api.st().my_keys = MyKeys {
+        public_key: Some(public),
+        private_key: Some(envelope),
+    };
+    // `force_logout` (no chance to warn): the cached key goes, the
+    // passphrase stays.
+    m.forced_logout().await;
+    let server = ServerId("srv".into());
+    assert!(
+        store
+            .get(&private_key_secret(&server, ME))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get(&pending_passphrase_secret(&server, ME))
+            .unwrap()
+            .is_some()
+    );
+    // Next login: the backup is unlocked with it and the user is asked to
+    // save it again.
+    let m = manager(&api, &store);
+    m.start().await.unwrap();
+    assert_eq!(m.account_state(), AccountE2eState::SavePassword);
+    assert_eq!(m.pending_passphrase().unwrap(), passphrase);
+    assert!(
+        store
+            .get(&private_key_secret(&server, ME))
+            .unwrap()
+            .is_some()
+    );
+    // An explicit logout deletes both.
+    m.logout().await;
+    assert!(
+        store
+            .get(&pending_passphrase_secret(&server, ME))
+            .unwrap()
+            .is_none()
+    );
 }

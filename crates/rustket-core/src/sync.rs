@@ -219,7 +219,17 @@ pub async fn initial_load(rest: &RestClient) -> rocketchat::Result<InitialData> 
     }
     let mut warnings = Vec::new();
     let server_info = warn("info", info, &mut warnings);
-    let settings = warn("settings.public", settings, &mut warnings).unwrap_or_default();
+    let settings = match warn("settings.public", settings, &mut warnings) {
+        Some(s) => s,
+        // At least the E2E settings (one small request): until `E2E_Enable`
+        // is known, encrypted rooms stay blocked (fail closed) and the app
+        // keeps fetching them with backoff.
+        None => rest
+            .settings_public_by_ids(&crate::e2e::E2E_SETTING_IDS)
+            .await
+            .inspect_err(|e| tracing::debug!(error = %e, "E2E settings not available"))
+            .unwrap_or_default(),
+    };
     let permissions = warn("permissions.listAll", perms, &mut warnings)
         .map(|p| p.update)
         .unwrap_or_default();

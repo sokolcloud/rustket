@@ -88,6 +88,10 @@ impl E2eSecrets {
         self.set(&self.pending, passphrase).await
     }
 
+    pub async fn delete_private_key(&self) -> Result<(), SecretError> {
+        self.delete(&self.private_key).await
+    }
+
     pub async fn delete_pending_passphrase(&self) -> Result<(), SecretError> {
         self.delete(&self.pending).await
     }
