@@ -646,6 +646,7 @@ impl App {
             for rid in gone {
                 if let Some(rv) = s.rooms.remove(&rid) {
                     tasks.push(rv.close(&mut s.workspace, s.session.as_ref()).discard());
+                    crate::uikit::controller::room_closed(&mut s.workspace, &rid);
                 }
                 if s.active_room.as_deref() == Some(rid.as_str()) {
                     s.active_room = None;

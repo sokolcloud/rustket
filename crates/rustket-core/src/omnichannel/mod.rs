@@ -255,6 +255,11 @@ impl OmnichannelState {
                 u.reinit_queue = true;
             }
         }
+        // A load that failed earlier is tried again after a reconnect.
+        if matches!(ev, SessionEvent::Resync { .. }) && self.accessible {
+            u.refetch_routing |= self.routing.is_none();
+            u.refetch_license |= self.license.is_none();
+        }
         if let SessionEvent::SettingChanged { setting, .. } = ev
             && matches!(
                 setting.id.as_str(),
@@ -344,6 +349,27 @@ mod tests {
             enable_trigger_action: true,
             ..Default::default()
         }
+    }
+
+    /// A routing config / license load that failed is retried on Resync.
+    #[test]
+    fn resync_refetches_failed_loads() {
+        let ws = agent_ws(&["user", "livechat-agent"]);
+        let mut o = OmnichannelState::new();
+        let u = o.recompute_update(&ws);
+        assert!(u.refetch_routing && u.refetch_license);
+        // Both loads failed: nothing else asks for them again but a Resync.
+        assert!(!o.recompute_update(&ws).refetch_routing);
+        let resync = SessionEvent::Resync {
+            reason: ResyncReason::Reconnected,
+        };
+        let u = o.apply_event(&resync);
+        assert!(u.refetch_routing && u.refetch_license);
+        o.set_routing(Some(manual()));
+        o.set_license(Some(LicenseInfo::default()));
+        o.recompute(&ws);
+        let u = o.apply_event(&resync);
+        assert!(!u.refetch_routing && !u.refetch_license);
     }
 
     #[test]

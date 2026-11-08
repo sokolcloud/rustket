@@ -25,7 +25,7 @@ use rocketchat::session::SessionEvent;
 use rocketchat::{RestClient, ServerUrl};
 use rust_i18n::t;
 use rustket_core::ServerId;
-use rustket_core::videoconf::{CallCommand, CallManager, CallNotice};
+use rustket_core::videoconf::{CallCommand, CallManager, CallNotice, VerifyError};
 use rustket_ui::widget::BannerKind;
 
 use crate::app::App;
@@ -279,6 +279,20 @@ pub fn call_url(server: &ServerUrl, call_id: &str, url: &str) -> Option<String> 
     }
 }
 
+/// Only a definite client-error answer (no such call, invalid params) makes
+/// an incoming signal count as forged; anything else is retried.
+fn verify_error(e: &rocketchat::Error) -> VerifyError {
+    use rocketchat::Error as E;
+    match e {
+        E::Api { status, .. } | E::Status { status, .. }
+            if (400..500).contains(status) && !matches!(status, 401 | 408 | 429) =>
+        {
+            VerifyError::Refused
+        }
+        _ => VerifyError::Transient,
+    }
+}
+
 /// Handles a call message for the app.
 pub fn update(app: &mut App, msg: Message) -> Out {
     match msg {
@@ -300,11 +314,11 @@ pub fn update(app: &mut App, msg: Message) -> Out {
                     .videoconf_mut()
                     .finish(&call_id, Ok(info.clone()), now);
             }
-            let cmds =
-                app.calls
-                    .server(&sid)
-                    .mgr
-                    .on_verified(&call_id, r.as_ref().map_err(|_| ()), now);
+            let info = r.as_ref().map_err(|e| verify_error(e.error()));
+            if let Err(e) = &r {
+                tracing::debug!(error = %e, "video-conference.info for an incoming call failed");
+            }
+            let cmds = app.calls.server(&sid).mgr.on_verified(&call_id, info, now);
             run(app, &sid, cmds)
         }
         Message::Capabilities(sid, rid, r) => {
@@ -893,6 +907,34 @@ pub fn fetch_wanted(app: &mut App) -> Task<crate::message::Message> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn only_definite_refusals_dismiss_a_call() {
+        let api = |status| rocketchat::Error::Api {
+            status,
+            error: Some("invalid-params".into()),
+            error_type: None,
+            message: None,
+            details: None,
+        };
+        assert_eq!(verify_error(&api(400)), VerifyError::Refused);
+        assert_eq!(
+            verify_error(&rocketchat::Error::Status {
+                status: 404,
+                body: String::new()
+            }),
+            VerifyError::Refused
+        );
+        assert_eq!(verify_error(&api(500)), VerifyError::Transient);
+        assert_eq!(verify_error(&api(429)), VerifyError::Transient);
+        assert_eq!(
+            verify_error(&rocketchat::Error::RateLimited {
+                retry_after: None,
+                message: None
+            }),
+            VerifyError::Transient
+        );
+    }
 
     #[test]
     fn only_safe_call_urls_open() {

@@ -309,6 +309,20 @@ pub async fn teams_shots(
     );
     d.app.calls.inject_incoming(sid, &uid, &incoming);
     both(d, out, "teams-08-incoming-call");
+    // Still on top (and next to a toast) while a dialog is open.
+    d.app.toasts.push(rustket_ui::widget::Toast {
+        id: u64::MAX,
+        kind: rustket_ui::widget::BannerKind::Info,
+        title: "Message sent".into(),
+        body: "A toast next to the call card".into(),
+    });
+    d.send(Message::Sidebar(
+        sid.clone(),
+        rustket::workspace::sidebar::Message::Create,
+    ));
+    both(d, out, "teams-08b-incoming-call-over-dialog");
+    d.send(Message::CloseModal);
+    d.app.toasts.retain(|t| t.id != u64::MAX);
     d.send(Message::Calls(vc::Message::Mute(
         sid.clone(),
         "rk-snap-call-3".into(),

@@ -698,6 +698,16 @@ fn people_select(
     col.into()
 }
 
+/// Empty, or text that parses as a value of `kind`.
+fn typed_valid(text: &str, kind: Typed) -> bool {
+    text.trim().is_empty()
+        || match kind {
+            Typed::Date => parse_date(text).is_some(),
+            Typed::Month => true,
+            _ => parse_time(text).is_some(),
+        }
+}
+
 /// A text field that turns valid typed text into a value (date / time).
 #[allow(clippy::too_many_arguments)]
 fn typed_field(
@@ -728,11 +738,13 @@ fn typed_field(
         .size(TEXT_BODY)
         .padding([6, 10])
         .width(Length::Fill)
-        .style(if env.error(&a.action_id).is_some() {
-            style::text_input_error
-        } else {
-            style::text_input
-        });
+        .style(
+            if env.error(&a.action_id).is_some() || !typed_valid(&shown, kind) {
+                style::text_input_error
+            } else {
+                style::text_input
+            },
+        );
     let (ic, pkey, popup) = picker;
     let open = s.open.as_deref() == Some(pkey.as_str());
     let toggle = icon_button_with(

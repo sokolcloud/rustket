@@ -22,6 +22,9 @@ pub const CALL_ATTEMPT_LIMIT: u32 = 10;
 pub const CALL_TIMEOUT: Duration = Duration::from_millis(10_000);
 /// The callee waits this long for `confirmed` after accepting.
 pub const ACCEPT_TIMEOUT: Duration = Duration::from_millis(5_000);
+/// A joined outgoing call is forgotten after this long if the server's `end`
+/// (sent by its 40 s ringing timer) is missed.
+pub const JOINED_TTL: Duration = Duration::from_secs(45);
 /// Dismissed / refused call ids are ignored for this long (`CALL_TIMEOUT × 20`).
 pub const DISMISS_TTL: Duration = Duration::from_millis(200_000);
 /// At most one new incoming call per sender in this window.
@@ -351,8 +354,20 @@ pub struct Outgoing {
     pub rid: String,
     pub callee: String,
     pub attempts: u32,
+    /// Next `call` re-send while ringing; once joined, when the call is forgotten.
     next_ring: Instant,
     pub joined: bool,
+}
+
+/// Why `video-conference.info` could not confirm an incoming signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyError {
+    /// The server definitely refused (no such call, invalid params): the
+    /// signal is treated as forged.
+    Refused,
+    /// Network error, timeout, rate limit or 5xx: the caller's next `call`
+    /// retries.
+    Transient,
 }
 
 /// Why a call ended without being joined (shown to the user).
@@ -585,7 +600,7 @@ impl CallManager {
                         // Joined elsewhere: stop ringing here.
                         self.end_outgoing(&mut out);
                     } else if !o.joined {
-                        self.accepted(&mut out);
+                        self.accepted(now, &mut out);
                     }
                 }
             }
@@ -595,7 +610,7 @@ impl CallManager {
                     .as_ref()
                     .is_some_and(|o| o.call_id == s.call_id && o.callee == s.uid && !o.joined)
                 {
-                    self.accepted(&mut out);
+                    self.accepted(now, &mut out);
                 }
             }
             VideoConfAction::Rejected => {
@@ -627,11 +642,12 @@ impl CallManager {
     }
 
     /// The callee accepted our outgoing call: join and confirm.
-    fn accepted(&mut self, out: &mut Vec<CallCommand>) {
+    fn accepted(&mut self, now: Instant, out: &mut Vec<CallCommand>) {
         let Some(o) = self.outgoing.as_mut() else {
             return;
         };
         o.joined = true;
+        o.next_ring = now + JOINED_TTL;
         let (call_id, rid, callee) = (o.call_id.clone(), o.rid.clone(), o.callee.clone());
         out.push(CallCommand::HideOutgoing(call_id.clone()));
         out.push(CallCommand::StopDialer);
@@ -649,10 +665,14 @@ impl CallManager {
     pub fn on_verified(
         &mut self,
         call_id: &str,
-        info: Result<&VideoConference, ()>,
+        info: Result<&VideoConference, VerifyError>,
         now: Instant,
     ) -> Vec<CallCommand> {
         let mut out = Vec::new();
+        if matches!(info, Err(VerifyError::Transient)) {
+            self.drop_unverified(call_id);
+            return out;
+        }
         let me = self.me.clone();
         let Some(c) = self
             .incoming
@@ -840,6 +860,13 @@ impl CallManager {
     /// dismissed list.
     pub fn tick(&mut self, now: Instant) -> Vec<CallCommand> {
         let mut out = Vec::new();
+        if self
+            .outgoing
+            .as_ref()
+            .is_some_and(|o| o.joined && now >= o.next_ring)
+        {
+            self.outgoing = None;
+        }
         if let Some(o) = self.outgoing.as_mut()
             && !o.joined
             && now >= o.next_ring
@@ -859,6 +886,10 @@ impl CallManager {
                 });
             }
         }
+        // An unverified entry whose check is still pending is only forgotten:
+        // the caller's next `call` verifies it again.
+        self.incoming
+            .retain(|c| c.verified || c.accept_deadline.is_some() || now < c.deadline);
         let expired: Vec<(String, bool)> = self
             .incoming
             .iter()
@@ -1132,14 +1163,17 @@ mod tests {
             m.on_signal(sig(VideoConfAction::Call, "c2", "eve"), true, t0),
             vec![CallCommand::FetchInfo("c2".into())]
         );
-        m.on_verified("c2", Err(()), t0);
+        m.on_verified("c2", Err(VerifyError::Refused), t0);
         let t1 = t0 + SENDER_COOLDOWN;
         let mut ended = info("c4", "eve");
         ended.ended_at = rocketchat::RcDate::from_millis(1);
         m.on_signal(sig(VideoConfAction::Call, "c4", "eve"), true, t1);
         assert!(m.on_verified("c4", Ok(&ended), t1).is_empty());
         m.on_signal(sig(VideoConfAction::Call, "c5", "zed"), true, t1);
-        assert!(m.on_verified("c5", Err(()), t1).is_empty());
+        assert!(
+            m.on_verified("c5", Err(VerifyError::Refused), t1)
+                .is_empty()
+        );
         // `canceled` from someone other than the caller is ignored.
         let mut m = CallManager::new("me");
         m.on_signal(sig(VideoConfAction::Call, "c6", "bob"), true, t0);
@@ -1167,7 +1201,7 @@ mod tests {
         let out = m.on_signal(sig(VideoConfAction::Call, "fake2", "bob"), true, t1);
         assert_eq!(out, vec![CallCommand::FetchInfo("fake2".into())]);
         assert_eq!(m.incoming().count(), 1, "real call still shown");
-        let out = m.on_verified("fake2", Err(()), t1);
+        let out = m.on_verified("fake2", Err(VerifyError::Refused), t1);
         assert!(!has(&out, &CallCommand::HideIncoming("real".into())));
         // The real caller's refresh still works.
         m.on_signal(sig(VideoConfAction::Call, "real", "bob"), true, t1);
@@ -1201,6 +1235,72 @@ mod tests {
         );
     }
 
+    /// A transient verification failure or a slow check does not lose a
+    /// genuine call: the caller's next `call` is verified again.
+    #[test]
+    fn transient_verification_failure_retries() {
+        let t0 = Instant::now();
+        let mut m = CallManager::new("me");
+        m.on_signal(sig(VideoConfAction::Call, "c1", "bob"), true, t0);
+        assert!(
+            m.on_verified("c1", Err(VerifyError::Transient), t0)
+                .is_empty()
+        );
+        assert!(m.incoming_call("c1").is_none());
+        let t1 = t0 + CALL_INTERVAL;
+        assert_eq!(
+            m.on_signal(sig(VideoConfAction::Call, "c1", "bob"), true, t1),
+            vec![CallCommand::FetchInfo("c1".into())]
+        );
+        let out = m.on_verified("c1", Ok(&info("c1", "bob")), t1);
+        assert!(has(&out, &CallCommand::ShowIncoming("c1".into())));
+
+        // The check outlives CALL_TIMEOUT: forgotten, not dismissed.
+        let mut m = CallManager::new("me");
+        m.on_signal(sig(VideoConfAction::Call, "c2", "bob"), true, t0);
+        let t2 = t0 + CALL_TIMEOUT + Duration::from_secs(1);
+        assert!(m.tick(t2).is_empty());
+        assert!(m.incoming_call("c2").is_none());
+        assert_eq!(
+            m.on_signal(sig(VideoConfAction::Call, "c2", "bob"), true, t2),
+            vec![CallCommand::FetchInfo("c2".into())]
+        );
+        // The late answer of the first check is still accepted.
+        let out = m.on_verified("c2", Ok(&info("c2", "bob")), t2);
+        assert!(has(&out, &CallCommand::ShowIncoming("c2".into())));
+
+        // A definite refusal is still dismissed.
+        let mut m = CallManager::new("me");
+        m.on_signal(sig(VideoConfAction::Call, "c3", "bob"), true, t0);
+        m.on_verified("c3", Err(VerifyError::Refused), t0);
+        assert!(
+            m.on_signal(sig(VideoConfAction::Call, "c3", "bob"), true, t1)
+                .is_empty()
+        );
+    }
+
+    /// A joined outgoing call whose `end` was missed stops the ticker.
+    #[test]
+    fn joined_outgoing_expires() {
+        let t0 = Instant::now();
+        let mut m = CallManager::new("me");
+        m.on_started(
+            "R",
+            &StartInstructions::Direct {
+                call_id: "o1".into(),
+                callee_id: "bob".into(),
+                provider_name: "jitsi".into(),
+            },
+            t0,
+        );
+        m.on_signal(sig(VideoConfAction::Accepted, "o1", "bob"), true, t0);
+        assert!(m.outgoing().is_some_and(|o| o.joined));
+        assert!(m.tick(t0 + Duration::from_secs(30)).is_empty());
+        assert!(m.is_active());
+        assert!(m.tick(t0 + JOINED_TTL).is_empty());
+        assert!(!m.is_active());
+    }
+
     #[test]
     fn dismissed_list_is_bounded() {
         let t0 = Instant::now();
@@ -1208,7 +1308,7 @@ mod tests {
         for i in 0..(MAX_DISMISSED + 50) {
             let id = format!("c{i}");
             m.on_signal(sig(VideoConfAction::Call, &id, &format!("u{i}")), true, t0);
-            m.on_verified(&id, Err(()), t0);
+            m.on_verified(&id, Err(VerifyError::Refused), t0);
         }
         assert!(m.dismissed.len() <= MAX_DISMISSED);
     }

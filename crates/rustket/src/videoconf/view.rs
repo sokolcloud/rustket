@@ -1,7 +1,7 @@
 //! Call popups (incoming / outgoing, stacked bottom-right over everything) and
 //! the call dialogs (start, no provider, call information).
 
-use iced::widget::{Column, column, container, row, space, stack, text, toggler};
+use iced::widget::{Column, column, container, row, space, text, toggler};
 use iced::{Alignment, Element, Length};
 use rocketchat::models::VideoConfCapabilities;
 use rust_i18n::t;
@@ -11,8 +11,7 @@ use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_BODY, TEXT_CAPTION,
-    TEXT_SUBTITLE,
+    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SUBTITLE,
 };
 use rustket_ui::widget::{
     AvatarShape, avatar, danger_button, dialog, icon_button_with, modal, primary_button,
@@ -110,7 +109,7 @@ fn popup<'a>(
     );
     container(col)
         .padding(SPACE_4)
-        .width(Length::Fixed(320.0))
+        .width(Length::Fill)
         .style(style::container_popover)
         .into()
 }
@@ -145,7 +144,7 @@ fn room_avatar<'a>(
 }
 
 /// Incoming / outgoing popups of every server.
-fn popups(app: &App) -> Vec<Element<'_, AppMsg>> {
+pub fn popups(app: &App) -> Vec<Element<'_, AppMsg>> {
     let mut out = Vec::new();
     for (sid, s) in &app.servers {
         let Some(mgr) = app.calls.manager(sid) else {
@@ -355,7 +354,8 @@ fn dialog_view<'a>(app: &'a App, sid: &'a ServerId, d: &'a Dialog) -> Element<'a
     }
 }
 
-/// Wraps the app content with the call dialog (modal) and the popups.
+/// Wraps the app content with the call dialog (modal). The popups
+/// ([`popups`]) go into the app's corner column (`app::layered`).
 pub fn layer<'a>(app: &'a App, base: Element<'a, AppMsg>) -> Element<'a, AppMsg> {
     let (overlay, dismiss) = match &app.calls.dialog {
         Some((sid, d)) => (
@@ -364,18 +364,121 @@ pub fn layer<'a>(app: &'a App, base: Element<'a, AppMsg>) -> Element<'a, AppMsg>
         ),
         None => (None, None),
     };
-    let base = modal(base, overlay, dismiss);
-    let cards = popups(app);
-    let corner: Element<'a, AppMsg> = if cards.is_empty() {
-        space().into()
-    } else {
-        container(Column::with_children(cards).spacing(SPACE_2))
+    modal(base, overlay, dismiss)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use iced::widget::{button, container, text};
+    use iced::{Element, Length, Point, Size, mouse};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    use rustket_ui::widget::{BannerKind, Toast};
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Msg {
+        Under,
+        Dismiss,
+        Accept,
+        CloseToast,
+    }
+
+    const WINDOW: Size = Size::new(1280.0, 800.0);
+
+    /// The app's layer stack (`app::layered`) with a full-window button under
+    /// it, an optional app modal, one call card (a 120 px tall card whose
+    /// Accept button is inset by 30 px of padding) and the toasts.
+    fn view(dialog: bool, toasts: &[Toast]) -> Element<'_, Msg> {
+        let base = button(text("under"))
+            .on_press(Msg::Under)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(SPACE_5)
-            .align_right(Length::Fill)
-            .align_bottom(Length::Fill)
-            .into()
-    };
-    stack![base, corner].into()
+            .into();
+        let overlay = dialog.then(|| (String::from("d"), text("dialog").into()));
+        let card = container(
+            button(text("Accept"))
+                .on_press(Msg::Accept)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .padding(30)
+        .width(Length::Fill)
+        .height(Length::Fixed(120.0))
+        .into();
+        crate::app::layered(
+            base,
+            overlay,
+            dialog.then_some(Msg::Dismiss),
+            |c| rustket_ui::widget::modal(c, None, None),
+            vec![card],
+            toasts,
+            |_| Msg::CloseToast,
+        )
+    }
+
+    fn click(el: Element<'_, Msg>, at: Point) -> Vec<Msg> {
+        let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(14.0),
+        ));
+        let mut ui = UserInterface::build(el, WINDOW, Cache::default(), &mut renderer);
+        let cursor = mouse::Cursor::Available(at);
+        let events = [
+            iced::Event::Mouse(mouse::Event::CursorMoved { position: at }),
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ];
+        let mut out = Vec::new();
+        ui.update(
+            &events,
+            cursor,
+            &mut renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut out,
+        );
+        out
+    }
+
+    /// The call card sits in the bottom-right corner column, above every
+    /// modal and next to (not under) the toasts, and presses on it never
+    /// reach what is underneath.
+    #[test]
+    fn call_cards_are_above_modals_and_toasts_and_capture_clicks() {
+        let pad = rustket_ui::theme::SPACE_5;
+        let right = WINDOW.width - pad;
+        let bottom = WINDOW.height - pad;
+        let accept = Point::new(right - 100.0, bottom - 60.0);
+        let card_padding = Point::new(right - 10.0, bottom - 10.0);
+        let toast = [Toast {
+            id: 1,
+            kind: BannerKind::Info,
+            title: "t".into(),
+            body: String::new(),
+        }];
+        for dialog in [false, true] {
+            for list in [&[][..], &toast[..]] {
+                assert_eq!(
+                    click(view(dialog, list), accept),
+                    vec![Msg::Accept],
+                    "dialog {dialog}, toasts {}",
+                    list.len()
+                );
+                assert_eq!(
+                    click(view(dialog, list), card_padding),
+                    Vec::<Msg>::new(),
+                    "dialog {dialog}, toasts {}",
+                    list.len()
+                );
+            }
+        }
+        // Outside the cards the modal still blocks and dismisses.
+        assert_eq!(
+            click(view(true, &[]), Point::new(100.0, 100.0)),
+            vec![Msg::Dismiss]
+        );
+        assert_eq!(
+            click(view(false, &[]), Point::new(100.0, 100.0)),
+            vec![Msg::Under]
+        );
+    }
 }

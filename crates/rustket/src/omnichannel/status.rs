@@ -52,6 +52,19 @@ pub fn is_available_agent(ws: &Workspace) -> bool {
     availability(ws) == Some(AgentStatus::Available)
 }
 
+/// Stores the availability `livechat/agent.status` answered in `me`.
+fn apply_status(ws: &mut Workspace, status: AgentStatus) {
+    if status == AgentStatus::Unknown {
+        return;
+    }
+    if let Some(mut me) = ws.me().cloned()
+        && me.status_livechat != Some(status)
+    {
+        me.status_livechat = Some(status);
+        ws.apply_me(me);
+    }
+}
+
 pub fn update(msg: Msg, ctx: &mut Ctx<'_>) -> Action<Msg> {
     match msg {
         // Setting an explicit status is idempotent: retry once after a
@@ -68,12 +81,21 @@ pub fn update(msg: Msg, ctx: &mut Ctx<'_>) -> Action<Msg> {
             },
             move |r| Msg::Done(status, r),
         )),
-        Msg::Done(wanted, Ok(got)) if got != wanted => Action::effect(Effect::Toast(
-            BannerKind::Warning,
-            t!("omnichannel.availability_failed").into_owned(),
-            t!("omnichannel.availability_unchanged").into_owned(),
-        )),
-        Msg::Done(_, Ok(_)) => Action::none(),
+        Msg::Done(wanted, Ok(got)) => {
+            // The server's answer to the user's own request is the current
+            // availability: shown even when the `/me` re-read after its
+            // `userData` fails, or when nothing changed (no `userData` then).
+            apply_status(ctx.workspace, got);
+            if got != wanted {
+                Action::effect(Effect::Toast(
+                    BannerKind::Warning,
+                    t!("omnichannel.availability_failed").into_owned(),
+                    t!("omnichannel.availability_unchanged").into_owned(),
+                ))
+            } else {
+                Action::none()
+            }
+        }
         Msg::Done(_, Err(f)) => Action::effect(Effect::Toast(
             BannerKind::Error,
             t!("omnichannel.availability_failed").into_owned(),
@@ -213,6 +235,18 @@ mod tests {
         .unwrap();
         ws.apply_permission(Change::Inserted, p);
         ws
+    }
+
+    /// The `agent.status` answer is shown without waiting for `/me`.
+    #[test]
+    fn agent_status_answer_updates_the_toggle() {
+        let mut ws = agent_ws(&["user", "livechat-agent"], "not-available");
+        let g = ws.me_generation();
+        apply_status(&mut ws, AgentStatus::Available);
+        assert_eq!(availability(&ws), Some(AgentStatus::Available));
+        assert!(ws.me_generation() > g);
+        apply_status(&mut ws, AgentStatus::Unknown);
+        assert_eq!(availability(&ws), Some(AgentStatus::Available));
     }
 
     #[test]

@@ -71,12 +71,28 @@ pub enum Message {
     CustomFields(Res<Paginated<CustomFieldDef>>),
     Canned(Res<Vec<CannedResponse>>),
     Priorities(Res<Paginated<Priority>>),
+    /// Back-off of a failed load ended (session `Arc` address).
+    Retry(usize, Load),
     /// A room fetched for opening (queued chat preview, contact center).
     Opened(Box<Res<open::Opened>>),
     /// A closed chat whose view stays open, re-read after its subscription
     /// was removed (`closedAt`, `open: false`).
     Refreshed(Box<Res<open::Opened>>),
     ContactCenter(contact_center::Msg),
+}
+
+/// A session-wide load retried after a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Load {
+    Routing,
+    License,
+}
+
+/// Wait before retry number `attempt` (1-based) of a failed load: 5 s,
+/// doubling, at most 5 min.
+fn retry_delay(attempt: u32) -> std::time::Duration {
+    let secs = 5u64.saturating_mul(1 << attempt.saturating_sub(1).min(6));
+    std::time::Duration::from_secs(secs.min(300))
 }
 
 /// Omnichannel controller of one server.
@@ -90,6 +106,9 @@ pub struct Omni {
     routing_loading: bool,
     license_loading: bool,
     departments_loading: bool,
+    /// Failed attempts in a row (retry back-off).
+    routing_failures: u32,
+    license_failures: u32,
     /// After the departments arrived: start the queue snapshot / load canned responses.
     queue_after_departments: bool,
     canned_after_departments: bool,
@@ -219,6 +238,8 @@ impl Omni {
                 self.routing_loading = false;
                 self.license_loading = false;
                 self.departments_loading = false;
+                self.routing_failures = 0;
+                self.license_failures = 0;
             }
             return Task::none();
         };
@@ -238,6 +259,8 @@ impl Omni {
             self.routing_loading = false;
             self.license_loading = false;
             self.departments_loading = false;
+            self.routing_failures = 0;
+            self.license_failures = 0;
         }
         let rev = ws.revision(Dirty::ME | Dirty::SETTINGS | Dirty::PERMISSIONS | Dirty::ROLES);
         if self.rev != Some(rev) {
@@ -411,16 +434,30 @@ impl Omni {
             Message::Routing(r) => {
                 self.routing_loading = false;
                 match r {
-                    Ok(cfg) => self.state.set_routing(Some(cfg)),
-                    Err(e) => tracing::warn!(error = %e, "omnichannel routing config"),
+                    Ok(cfg) => {
+                        self.routing_failures = 0;
+                        self.state.set_routing(Some(cfg));
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "omnichannel routing config");
+                        self.routing_failures = self.routing_failures.saturating_add(1);
+                        tasks.push(self.retry(Load::Routing, self.routing_failures));
+                    }
                 }
                 follow = self.state.recompute_update(ws);
             }
             Message::License(r) => {
                 self.license_loading = false;
                 match r {
-                    Ok(l) => self.state.set_license(Some(l)),
-                    Err(e) => tracing::debug!(error = %e, "licenses.info"),
+                    Ok(l) => {
+                        self.license_failures = 0;
+                        self.state.set_license(Some(l));
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "licenses.info");
+                        self.license_failures = self.license_failures.saturating_add(1);
+                        tasks.push(self.retry(Load::License, self.license_failures));
+                    }
                 }
                 follow = self.state.recompute_update(ws);
                 follow.refetch_canned = true;
@@ -483,6 +520,14 @@ impl Omni {
                 Ok(p) => self.state.priorities = p.items,
                 Err(e) => tracing::debug!(error = %e, "priorities"),
             },
+            Message::Retry(session, load) => {
+                if self.session == Some(session) {
+                    match load {
+                        Load::Routing => follow.refetch_routing = self.state.routing.is_none(),
+                        Load::License => follow.refetch_license = self.state.license.is_none(),
+                    }
+                }
+            }
             Message::Opened(_) | Message::Refreshed(_) | Message::ContactCenter(_) => {}
         }
         if let Some(h) = h {
@@ -491,6 +536,18 @@ impl Omni {
         }
         self.publish(sid);
         Task::batch(tasks)
+    }
+
+    /// Tries `load` of the current session again after a back-off.
+    fn retry(&self, load: Load, attempt: u32) -> Task<Message> {
+        let Some(session) = self.session else {
+            return Task::none();
+        };
+        let delay = retry_delay(attempt);
+        // The timer is created when the task runs (inside the runtime).
+        Task::perform(async move { tokio::time::sleep(delay).await }, move |()| {
+            Message::Retry(session, load)
+        })
     }
 
     /// The Resync after a reconnect: watches that failed are tried again.
@@ -589,6 +646,38 @@ mod tests {
         assert_eq!(new_room_sound(&ws, true), None);
         let ws = ws_with(serde_json::json!({"newRoomNotification": "chime"}));
         assert_eq!(new_room_sound(&ws, true).as_deref(), Some("chime"));
+    }
+
+    #[test]
+    fn failed_loads_back_off() {
+        use std::time::Duration;
+        assert_eq!(retry_delay(1), Duration::from_secs(5));
+        assert_eq!(retry_delay(2), Duration::from_secs(10));
+        assert_eq!(retry_delay(4), Duration::from_secs(40));
+        assert_eq!(retry_delay(7), Duration::from_secs(300));
+        assert_eq!(retry_delay(u32::MAX), Duration::from_secs(300));
+    }
+
+    /// A failed routing load is retried for the same session only.
+    #[test]
+    fn routing_retry_refetches_until_loaded() {
+        let mut o = Omni {
+            session: Some(7),
+            ..Omni::default()
+        };
+        let ws = Workspace::new();
+        let sid = ServerId("s".into());
+        let _ = o.apply(Message::Retry(8, Load::Routing), &sid, &ws, None);
+        let _ = o.apply(
+            Message::Routing(Err(Failure::from(rocketchat::Error::Status {
+                status: 503,
+                body: String::new(),
+            }))),
+            &sid,
+            &ws,
+            None,
+        );
+        assert_eq!(o.routing_failures, 1);
     }
 
     #[test]

@@ -22,6 +22,14 @@ pub enum OriginKind {
     SlashCommand,
 }
 
+/// Which kind of view a view id names: modals and contextual bars may share
+/// an id, so interactions always say which one they mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ViewTarget {
+    Modal,
+    Bar,
+}
+
 /// Context of an interaction, used to place what the server answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Origin {
@@ -30,6 +38,8 @@ pub struct Origin {
     pub tmid: Option<String>,
     pub mid: Option<String>,
     pub view_id: Option<String>,
+    /// Whether `view_id` is the modal or a bar.
+    pub target: Option<ViewTarget>,
     /// The element that was used (for its loading state).
     pub action_id: Option<String>,
     /// Instance of the view `view_id` the interaction came from: view ids are
@@ -45,6 +55,7 @@ impl Origin {
             tmid: None,
             mid: None,
             view_id: None,
+            target: None,
             action_id: None,
             generation: None,
         }
@@ -68,6 +79,12 @@ impl Origin {
     pub fn view(mut self, view_id: &str) -> Self {
         self.view_id = Some(view_id.to_owned());
         self
+    }
+
+    /// A modal or bar `view_id`.
+    pub fn view_in(mut self, target: ViewTarget, view_id: &str) -> Self {
+        self.target = Some(target);
+        self.view(view_id)
     }
 
     pub fn generation(mut self, generation: u64) -> Self {

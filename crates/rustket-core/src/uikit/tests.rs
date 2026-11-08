@@ -38,7 +38,7 @@ fn with_modal(now: Instant) -> UiKitStore {
 }
 
 fn submit(s: &mut UiKitStore, now: Instant) -> String {
-    let (app, i) = s.view_submit("view-1", now).unwrap();
+    let (app, i) = s.view_submit(ViewTarget::Modal, "view-1", now).unwrap();
     assert_eq!(app, "app1");
     i.trigger_id().to_owned()
 }
@@ -77,10 +77,10 @@ fn modal_open_initial_state_and_submit_payload() {
         m.state.to_state_json(),
         json!({"b_q": {"question": "Lunch?"}})
     );
-    s.view_state_mut("view-1")
+    s.view_state_mut(ViewTarget::Modal, "view-1")
         .unwrap()
         .toggle("opts", Some("b_opts"), "anon");
-    let (_, i) = s.view_submit("view-1", now).unwrap();
+    let (_, i) = s.view_submit(ViewTarget::Modal, "view-1", now).unwrap();
     let v = serde_json::to_value(&i).unwrap();
     assert_eq!(
         v["payload"]["view"]["state"],
@@ -88,7 +88,7 @@ fn modal_open_initial_state_and_submit_payload() {
     );
     assert_eq!(v["payload"]["view"]["customField"]["kept"], true);
     // Double submit is blocked while the first is in flight.
-    assert!(s.view_submit("view-1", now).is_none());
+    assert!(s.view_submit(ViewTarget::Modal, "view-1", now).is_none());
     assert_eq!(s.busy(), 1);
 }
 
@@ -98,16 +98,21 @@ fn submit_answered_with_errors_keeps_the_modal() {
     let mut s = with_modal(now);
     let t = submit(&mut s, now);
     let ch = s.finish(&t, resp("synthetic_errors_object", &t), now);
-    assert_eq!(ch, vec![UiKitChange::ErrorsSet("view-1".into())]);
+    assert_eq!(
+        ch,
+        vec![UiKitChange::ErrorsSet(ViewTarget::Modal, "view-1".into())]
+    );
     let m = s.modal().unwrap();
     assert_eq!(m.errors["question"], "Question is required");
     assert!(!m.submitting);
     assert_eq!(s.busy(), 0);
     // A second submit is possible again; an update clears the errors and
     // keeps the values, adding the initial values of new fields.
-    s.view_state_mut("view-1")
-        .unwrap()
-        .set("question", Some("b_q"), json!("Dinner?"));
+    s.view_state_mut(ViewTarget::Modal, "view-1").unwrap().set(
+        "question",
+        Some("b_q"),
+        json!("Dinner?"),
+    );
     let t2 = submit(&mut s, now);
     let ch = s.finish(&t2, resp("synthetic_modal_update", &t2), now);
     assert_eq!(ch, vec![UiKitChange::ModalUpdated("view-1".into())]);
@@ -200,9 +205,11 @@ fn pushed_update_decides_before_the_http_answer() {
 fn modal_open_answer_reusing_the_submitted_id_is_not_closed() {
     let now = Instant::now();
     let mut s = with_modal(now);
-    s.view_state_mut("view-1")
-        .unwrap()
-        .set("question", Some("b_q"), json!("changed"));
+    s.view_state_mut(ViewTarget::Modal, "view-1").unwrap().set(
+        "question",
+        Some("b_q"),
+        json!("changed"),
+    );
     let t = submit(&mut s, now);
     let ch = s.finish(&t, resp("synthetic_modal_open", &t), now);
     assert_eq!(ch, vec![UiKitChange::ModalOpened("view-1".into())]);
@@ -229,7 +236,15 @@ fn triggers_gate_server_interactions() {
     assert_eq!(s.modal().unwrap().errors.len(), 1);
     // Expired trigger: 5 s after the HTTP call settled.
     let (_, i) = s
-        .view_block_action("view-1", None, "b_act", "add", Some(json!("add")), now)
+        .view_block_action(
+            ViewTarget::Modal,
+            "view-1",
+            None,
+            "b_act",
+            "add",
+            Some(json!("add")),
+            now,
+        )
         .unwrap();
     let t = i.trigger_id().to_owned();
     s.finish(
@@ -265,18 +280,28 @@ fn view_block_actions_and_close() {
     let now = Instant::now();
     let mut s = with_modal(now);
     let (app, i) = s
-        .view_block_action("view-1", None, "b_act", "add", Some(json!("add")), now)
+        .view_block_action(
+            ViewTarget::Modal,
+            "view-1",
+            None,
+            "b_act",
+            "add",
+            Some(json!("add")),
+            now,
+        )
         .unwrap();
     assert_eq!(app, "app1");
     let v = serde_json::to_value(&i).unwrap();
     assert_eq!(v["container"], json!({"type": "view", "id": "view-1"}));
     assert!(v.get("rid").is_none());
     assert!(
-        s.view_block_action("nope", None, "b", "a", None, now)
+        s.view_block_action(ViewTarget::Modal, "nope", None, "b", "a", None, now)
             .is_none()
     );
 
-    let (app, i, ch) = s.view_closed("view-1", true, now).unwrap();
+    let (app, i, ch) = s
+        .view_closed(ViewTarget::Modal, "view-1", true, now)
+        .unwrap();
     assert_eq!(app, "app1");
     assert_eq!(ch, UiKitChange::ModalClosed("view-1".into()));
     assert!(s.modal().is_none());
@@ -340,7 +365,7 @@ fn contextual_bars_open_in_the_origin_room() {
     assert_eq!(s.bar_for_room("r1").unwrap().id(), "bar-1");
     // Bar interactions carry the room.
     let (_, i) = s
-        .view_block_action("bar-1", None, "tabs", "t1", None, now)
+        .view_block_action(ViewTarget::Bar, "bar-1", None, "tabs", "t1", None, now)
         .unwrap();
     let v = serde_json::to_value(&i).unwrap();
     assert_eq!(v["rid"], "r1");
@@ -365,7 +390,7 @@ fn contextual_bars_open_in_the_origin_room() {
     assert_eq!(s.bar("bar-1").unwrap().rid, None);
     // Its interactions carry no room until the UI places it.
     let (_, i) = s
-        .view_block_action("bar-1", None, "tabs", "t1", None, now)
+        .view_block_action(ViewTarget::Bar, "bar-1", None, "tabs", "t1", None, now)
         .unwrap();
     assert!(serde_json::to_value(&i).unwrap().get("rid").is_none());
     assert_eq!(
@@ -376,7 +401,7 @@ fn contextual_bars_open_in_the_origin_room() {
         }]
     );
     assert!(s.place_bar("bar-1", "r3").is_empty());
-    let (_, i) = s.view_submit("bar-1", now).unwrap();
+    let (_, i) = s.view_submit(ViewTarget::Bar, "bar-1", now).unwrap();
     assert_eq!(serde_json::to_value(&i).unwrap()["rid"], "r2");
 }
 
@@ -464,9 +489,11 @@ fn stale_submit_answer_keeps_a_newer_modal_with_the_same_id() {
     let t = s.slash_command_trigger(Some("app1"), "r1", None, now);
     s.apply(si("synthetic_modal_open", &t), now);
     s.finish_command(&t, now);
-    s.view_state_mut("view-1")
-        .unwrap()
-        .set("question", Some("b_q"), json!("typing"));
+    s.view_state_mut(ViewTarget::Modal, "view-1").unwrap().set(
+        "question",
+        Some("b_q"),
+        json!("typing"),
+    );
     let ch = s.finish(
         &old,
         InteractionResult::Response(InteractionResponse::Ack),
@@ -538,7 +565,7 @@ fn views_without_app_ids_fall_back_to_the_trigger_app() {
     let t = s.slash_command_trigger(Some("poll-app"), "r1", None, now);
     s.apply(strip("synthetic_modal_open", &t), now);
     assert_eq!(s.modal().unwrap().app_id, "poll-app");
-    let (app, _) = s.view_submit("view-1", now).unwrap();
+    let (app, _) = s.view_submit(ViewTarget::Modal, "view-1", now).unwrap();
     assert_eq!(app, "poll-app");
     // No app anywhere (a built-in command never accepts pushes; a bare
     // registry trigger with an empty id stands in for that): not opened.
@@ -738,12 +765,18 @@ fn banners_from_rest_and_interactions() {
         (m.id(), m.app_id.as_str()),
         ("announcement-1", CLOUD_ANNOUNCEMENTS_APP)
     );
-    assert!(s.view_state_mut("announcement-1").is_some());
-    // A refetch while it is open keeps it pending instead of duplicating it.
-    assert!(s.set_banners(banners).is_empty());
-    assert_eq!(s.banners().len(), 2);
+    assert!(
+        s.view_state_mut(ViewTarget::Modal, "announcement-1")
+            .is_some()
+    );
+    // A refetch while it is open (the server lists it until its dismiss
+    // ran) neither duplicates it nor queues it again.
+    assert!(s.set_banners(banners.clone()).is_empty());
+    assert_eq!(s.banners().len(), 1);
     assert!(s.open_announcement_modal().is_none());
-    let (app, i) = s.view_submit("announcement-1", now).unwrap();
+    let (app, i) = s
+        .view_submit(ViewTarget::Modal, "announcement-1", now)
+        .unwrap();
     assert_eq!(app, CLOUD_ANNOUNCEMENTS_APP);
     let t = i.trigger_id().to_owned();
     s.finish(
@@ -752,11 +785,24 @@ fn banners_from_rest_and_interactions() {
         now,
     );
     assert!(s.modal().is_none());
+    // Closed: it does not come back, not even after another refetch.
+    assert!(s.open_announcement_modal().is_none());
+    assert!(s.set_banners(banners.clone()).is_empty());
+    assert!(s.modal().is_none());
+    // Once the server stopped listing it, a new listing shows it again.
+    let without: Vec<Banner> = banners
+        .iter()
+        .filter(|b| b.surface != rocketchat::models::BannerSurface::Modal)
+        .cloned()
+        .collect();
+    s.set_banners(without);
     assert_eq!(
-        s.open_announcement_modal(),
-        Some(UiKitChange::ModalOpened("announcement-1".into()))
+        s.set_banners(banners),
+        vec![UiKitChange::ModalOpened("announcement-1".into())]
     );
-    let (app, _, ch) = s.view_closed("announcement-1", true, now).unwrap();
+    let (app, _, ch) = s
+        .view_closed(ViewTarget::Modal, "announcement-1", true, now)
+        .unwrap();
     assert_eq!(app, CLOUD_ANNOUNCEMENTS_APP);
     assert_eq!(ch, UiKitChange::ModalClosed("announcement-1".into()));
 
@@ -968,4 +1014,55 @@ mod ephemeral {
         ws.uikit_mut().apply(si("synthetic_modal_open", &t), now);
         assert!(ws.uikit().modal().is_some());
     }
+}
+
+/// A modal and a contextual bar may share a view id: every interaction,
+/// value and `errors` answer reaches the surface it came from.
+#[test]
+fn modal_and_bar_with_the_same_view_id_stay_apart() {
+    let now = Instant::now();
+    let mut s = with_modal(now);
+    let t = s.begin(
+        Some("app1"),
+        Origin::new(OriginKind::ViewBlock).rid(Some("r1")),
+        now,
+    );
+    let mut v = fixture("uikit/synthetic_contextual_bar_open.json");
+    v["triggerId"] = json!(t);
+    v["view"]["id"] = json!("view-1");
+    s.apply(ServerInteraction::from_value(v), now);
+    assert!(s.bar("view-1").is_some() && s.modal().is_some());
+
+    s.view_state_mut(ViewTarget::Bar, "view-1").unwrap().set(
+        "question",
+        Some("b_q"),
+        json!("from the bar"),
+    );
+    assert_eq!(
+        s.modal().unwrap().state.get("question"),
+        Some(&json!("Lunch?"))
+    );
+    let (_, i) = s
+        .view_block_action(ViewTarget::Bar, "view-1", None, "b", "a", None, now)
+        .unwrap();
+    assert_eq!(serde_json::to_value(&i).unwrap()["rid"], "r1");
+
+    // The bar's submit is answered with `errors`: they go to the bar.
+    let (_, i) = s.view_submit(ViewTarget::Bar, "view-1", now).unwrap();
+    let t = i.trigger_id().to_owned();
+    let ch = s.finish(&t, resp("synthetic_errors_object", &t), now);
+    assert_eq!(
+        ch,
+        vec![UiKitChange::ErrorsSet(ViewTarget::Bar, "view-1".into())]
+    );
+    assert!(s.modal().unwrap().errors.is_empty());
+    assert_eq!(
+        s.bar("view-1").unwrap().errors["question"],
+        "Question is required"
+    );
+
+    // Closing the bar leaves the modal open.
+    let (_, _, ch) = s.view_closed(ViewTarget::Bar, "view-1", true, now).unwrap();
+    assert!(matches!(ch, UiKitChange::BarClosed { .. }));
+    assert!(s.modal().is_some());
 }

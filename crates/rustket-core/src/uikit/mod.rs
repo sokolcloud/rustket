@@ -25,7 +25,7 @@ use serde_json::Value;
 pub use buttons::{ButtonCategory, ButtonQuery, button_visible, visible_buttons};
 pub use i18n::AppTranslations;
 pub use scratch::{ActionRequest, Scratch, Suggestion, SurfaceKey};
-pub use trigger::{Origin, OriginKind, Trigger, TriggerRegistry};
+pub use trigger::{Origin, OriginKind, Trigger, TriggerRegistry, ViewTarget};
 pub use trust::{
     Permit, actions_allowed, element_permit, is_local_videoconf_action, is_openable_url,
     openable_url,
@@ -137,7 +137,7 @@ pub enum UiKitChange {
         rid: Option<String>,
         view_id: String,
     },
-    ErrorsSet(String),
+    ErrorsSet(ViewTarget, String),
     BannerOpened(String),
     BannerUpdated(String),
     BannerClosed(String),
@@ -223,6 +223,10 @@ pub struct UiKitStore {
     /// Bumped when action buttons or app translations change (message rows
     /// that show app entries key on it).
     revision: u64,
+    /// Banner ids of modal-surface announcements already opened as the modal
+    /// (the server lists them until its dismiss ran; a refetch must not
+    /// reopen them).
+    announced: HashSet<String>,
 }
 
 impl UiKitStore {
@@ -262,11 +266,15 @@ impl UiKitStore {
     }
 
     /// The state of the open modal or bar `view_id`.
-    pub fn view_state_mut(&mut self, view_id: &str) -> Option<&mut ViewState> {
-        if self.modal.as_ref().is_some_and(|m| m.id() == view_id) {
-            return self.modal.as_mut().map(|m| &mut m.state);
+    pub fn view_state_mut(&mut self, target: ViewTarget, view_id: &str) -> Option<&mut ViewState> {
+        match target {
+            ViewTarget::Modal => self
+                .modal
+                .as_mut()
+                .filter(|m| m.id() == view_id)
+                .map(|m| &mut m.state),
+            ViewTarget::Bar => self.bar_mut(view_id).map(|b| &mut b.state),
         }
-        self.bar_mut(view_id).map(|b| &mut b.state)
     }
 
     pub fn banners(&self) -> &[BannerEntry] {
@@ -383,8 +391,10 @@ impl UiKitStore {
 
     /// A block action inside the open modal or bar `view_id`. The element's
     /// `app_id` falls back to the view's; `None` when the view is not open.
+    #[allow(clippy::too_many_arguments)]
     pub fn view_block_action(
         &mut self,
+        target: ViewTarget,
         view_id: &str,
         app_id: Option<&str>,
         block_id: &str,
@@ -392,18 +402,22 @@ impl UiKitStore {
         value: Option<Value>,
         now: Instant,
     ) -> Option<(String, UserInteraction)> {
-        let (view_app, rid) = if let Some(m) = self.modal.as_ref().filter(|m| m.id() == view_id) {
-            (m.app_id.clone(), None)
-        } else {
-            let b = self.bar(view_id)?;
-            (b.app_id.clone(), b.rid.clone())
+        let (view_app, rid) = match target {
+            ViewTarget::Modal => {
+                let m = self.modal.as_ref().filter(|m| m.id() == view_id)?;
+                (m.app_id.clone(), None)
+            }
+            ViewTarget::Bar => {
+                let b = self.bar(view_id)?;
+                (b.app_id.clone(), b.rid.clone())
+            }
         };
         let app = app_id
             .filter(|a| !a.is_empty())
             .map_or(view_app, str::to_owned);
         let origin = Origin::new(OriginKind::ViewBlock)
             .rid(rid.as_deref())
-            .view(view_id)
+            .view_in(target, view_id)
             .action(action_id);
         let trigger_id = self.begin(Some(&app), origin, now);
         Some((
@@ -427,11 +441,13 @@ impl UiKitStore {
     /// open or a submit is already in flight.
     pub fn view_submit(
         &mut self,
+        target: ViewTarget,
         view_id: &str,
         now: Instant,
     ) -> Option<(String, UserInteraction)> {
-        let (app, raw, state, rid, generation) =
-            if let Some(m) = self.modal.as_mut().filter(|m| m.id() == view_id) {
+        let (app, raw, state, rid, generation) = match target {
+            ViewTarget::Modal => {
+                let m = self.modal.as_mut().filter(|m| m.id() == view_id)?;
                 if m.submitting {
                     return None;
                 }
@@ -443,7 +459,8 @@ impl UiKitStore {
                     None,
                     m.generation,
                 )
-            } else {
+            }
+            ViewTarget::Bar => {
                 let b = self.bar_mut(view_id)?;
                 if b.submitting {
                     return None;
@@ -456,10 +473,11 @@ impl UiKitStore {
                     b.rid.clone(),
                     b.generation,
                 )
-            };
+            }
+        };
         let origin = Origin::new(OriginKind::ViewSubmit)
             .rid(rid.as_deref())
-            .view(view_id)
+            .view_in(target, view_id)
             .generation(generation);
         let trigger_id = self.begin(Some(&app), origin, now);
         let i = UserInteraction::view_submit(&raw, state, view_id, &app, rid, trigger_id);
@@ -470,12 +488,16 @@ impl UiKitStore {
     /// `viewClosed` (`cleared`: X button, backdrop, Escape).
     pub fn view_closed(
         &mut self,
+        target: ViewTarget,
         view_id: &str,
         cleared: bool,
         now: Instant,
     ) -> Option<(String, UserInteraction, UiKitChange)> {
-        let (app, raw, state, rid, change) =
-            if self.modal.as_ref().is_some_and(|m| m.id() == view_id) {
+        let (app, raw, state, rid, change) = match target {
+            ViewTarget::Modal => {
+                if !self.modal.as_ref().is_some_and(|m| m.id() == view_id) {
+                    return None;
+                }
                 let m = self.modal.take()?;
                 (
                     m.app_id,
@@ -484,7 +506,8 @@ impl UiKitStore {
                     None,
                     UiKitChange::ModalClosed(view_id.to_owned()),
                 )
-            } else {
+            }
+            ViewTarget::Bar => {
                 let i = self.bars.iter().position(|b| b.id() == view_id)?;
                 let b = self.bars.remove(i);
                 let change = UiKitChange::BarClosed {
@@ -492,10 +515,11 @@ impl UiKitStore {
                     view_id: view_id.to_owned(),
                 };
                 (b.app_id, b.view.raw, b.state.to_state_json(), b.rid, change)
-            };
+            }
+        };
         let origin = Origin::new(OriginKind::ViewClosed)
             .rid(rid.as_deref())
-            .view(view_id);
+            .view_in(target, view_id);
         let trigger_id = self.begin(Some(&app), origin, now);
         let i = UserInteraction::view_closed(&raw, state, view_id, cleared, rid, trigger_id);
         Some((app, i, change))
@@ -782,17 +806,29 @@ impl UiKitStore {
             ServerInteraction::Errors {
                 view_id, errors, ..
             } => {
-                let target = if let Some(m) = self.modal.as_mut().filter(|m| m.id() == view_id) {
-                    Some(&mut m.errors)
+                // The view the trigger came from when it names this id;
+                // otherwise the modal, then a bar.
+                let from = (origin.view_id.as_deref() == Some(view_id.as_str()))
+                    .then_some(origin.target)
+                    .flatten();
+                let in_modal = match from {
+                    Some(t) => t == ViewTarget::Modal,
+                    None => self.modal.as_ref().is_some_and(|m| m.id() == view_id),
+                };
+                let target = if in_modal {
+                    self.modal
+                        .as_mut()
+                        .filter(|m| m.id() == view_id)
+                        .map(|m| (ViewTarget::Modal, &mut m.errors))
                 } else {
                     self.bars
                         .iter_mut()
                         .find(|b| b.id() == view_id)
-                        .map(|b| &mut b.errors)
+                        .map(|b| (ViewTarget::Bar, &mut b.errors))
                 };
-                if let Some(e) = target {
+                if let Some((t, e)) = target {
                     *e = errors;
-                    out.push(UiKitChange::ErrorsSet(view_id));
+                    out.push(UiKitChange::ErrorsSet(t, view_id));
                 }
             }
             ServerInteraction::BannerOpen { view, .. } => {
@@ -870,6 +906,39 @@ impl UiKitStore {
         out
     }
 
+    /// Moves bar `view_id`, opened for a room whose view has closed since,
+    /// to room `rid` (the one shown; the web opens it in the current room).
+    /// Replaces another bar of that room. Empty when the bar is unknown or
+    /// already there.
+    pub fn move_bar(&mut self, view_id: &str, rid: &str) -> Vec<UiKitChange> {
+        let mut out = Vec::new();
+        if !self
+            .bars
+            .iter()
+            .any(|b| b.id() == view_id && b.rid.as_deref() != Some(rid))
+        {
+            return out;
+        }
+        self.bars.retain(|b| {
+            let keep = b.id() == view_id || b.rid.as_deref() != Some(rid);
+            if !keep {
+                out.push(UiKitChange::BarClosed {
+                    rid: b.rid.clone(),
+                    view_id: b.id().to_owned(),
+                });
+            }
+            keep
+        });
+        if let Some(b) = self.bar_mut(view_id) {
+            b.rid = Some(rid.to_owned());
+        }
+        out.push(UiKitChange::BarOpened {
+            rid: Some(rid.to_owned()),
+            view_id: view_id.to_owned(),
+        });
+        out
+    }
+
     /// The room view `rid` closed: its app panels go away without `viewClosed`
     /// (reported as `BarClosed`).
     pub fn close_room_bars(&mut self, rid: &str) -> Vec<UiKitChange> {
@@ -895,8 +964,12 @@ impl UiKitStore {
     /// otherwise it waits for [`Self::open_announcement_modal`].
     pub fn set_banners(&mut self, banners: Vec<Banner>) -> Vec<UiKitChange> {
         self.banners.retain(|b| b.banner_id.is_none());
+        self.announced
+            .retain(|id| banners.iter().any(|b| &b.id == id));
         for b in banners {
-            if b.active == Some(false) {
+            if b.active == Some(false)
+                || (b.surface == BannerSurface::Modal && self.announced.contains(&b.id))
+            {
                 continue;
             }
             let mut raw = b.view.clone();
@@ -941,8 +1014,9 @@ impl UiKitStore {
 
     /// Opens the next pending modal-surface announcement as the store modal
     /// when no modal is open (call after a modal closes). The announcement
-    /// leaves the banner list; closing it sends `viewClosed` to its app, which
-    /// dismisses it server-side.
+    /// leaves the banner list for the session (later refetches skip it while
+    /// the server still lists it); closing it sends `viewClosed` to its app,
+    /// which dismisses it server-side.
     pub fn open_announcement_modal(&mut self) -> Option<UiKitChange> {
         if self.modal.is_some() {
             return None;
@@ -952,6 +1026,9 @@ impl UiKitStore {
             .iter()
             .position(|b| b.surface == BannerSurface::Modal && b.modal.is_some())?;
         let b = self.banners.remove(i);
+        if let Some(banner_id) = &b.banner_id {
+            self.announced.insert(banner_id.clone());
+        }
         let view = b.modal?;
         let id = view.id().to_owned();
         let g = self.next_generation();
