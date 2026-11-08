@@ -161,7 +161,9 @@ impl RestClient {
         field(v, "message")
     }
 
-    /// Replies of a thread (oldest first).
+    /// Replies of a thread (oldest first). Its offsets do not pair with
+    /// `rustket-core`'s `begin_load_thread`, which counts from the newest
+    /// reply: use [`Self::thread_messages_latest`] for that.
     pub async fn thread_messages(
         &self,
         tmid: &str,
@@ -179,6 +181,34 @@ impl RestClient {
             )
             .await?;
         paginated(v, "messages")
+    }
+
+    /// Replies of a thread, newest first (`offset` counts from the newest
+    /// reply), like the web client's thread view.
+    pub async fn thread_messages_latest(
+        &self,
+        tmid: &str,
+        offset: u64,
+        count: u64,
+    ) -> Result<Paginated<Message>> {
+        let v: Value = self
+            .get(
+                "chat.getThreadMessages",
+                &Query::new()
+                    .push("tmid", tmid)
+                    .push("offset", offset)
+                    .push("count", count)
+                    .push("sort", r#"{"ts":-1}"#),
+            )
+            .await?;
+        paginated(v, "messages")
+    }
+
+    /// Marks thread `tmid` read for the current user (the subscription's
+    /// `tunread` loses it).
+    pub async fn read_thread(&self, tmid: &str) -> Result<()> {
+        self.post_ok("chat.readThread", &json!({ "tmid": tmid }))
+            .await
     }
 
     /// Thread parents of a room; `kind` is `all`, `following` or `unread`.

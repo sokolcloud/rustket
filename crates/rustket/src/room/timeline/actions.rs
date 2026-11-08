@@ -127,9 +127,14 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
         // Like the web: any message; a reply follows its parent thread.
         let replies = match m.tmid.as_deref() {
             Some(tmid) => ws
-                .timeline(rid)
-                .and_then(|t| t.get(tmid))
-                .and_then(|p| p.message.replies.as_ref()),
+                .thread(tmid)
+                .and_then(|t| t.parent())
+                .or_else(|| {
+                    ws.timeline(rid)
+                        .and_then(|t| t.get(tmid))
+                        .map(|p| &p.message)
+                })
+                .and_then(|p| p.replies.as_ref()),
             None => m.replies.as_ref(),
         };
         let following = me.is_some_and(|id| replies.is_some_and(|r| r.iter().any(|u| u == id)));

@@ -14,7 +14,7 @@ pub mod upload;
 use std::sync::Arc;
 use std::time::Instant;
 
-use iced::widget::{column, container, row};
+use iced::widget::{column, container, opaque, row, stack};
 use iced::{Element, Length, Subscription, Task};
 use rocketchat::rest::HistoryCursor;
 use rocketchat::session::RoomWatch;
@@ -24,7 +24,7 @@ use rustket_core::timeline::PageTicket;
 use rustket_core::workspace::Changes;
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::style;
-use rustket_ui::widget::{BannerKind, vertical_divider};
+use rustket_ui::widget::{BannerKind, modal_keyed, vertical_divider};
 
 use crate::error::{Failure, Res};
 use crate::images::Images;
@@ -143,6 +143,9 @@ pub enum Effect {
     Compose(ComposeIntent),
     /// An emoji was used (picker): record it in the persisted recent list.
     RecentEmoji(String),
+    /// Show message (of this room): its thread for a reply, otherwise its
+    /// place in the timeline (search results, pinned, permalinks).
+    ShowMessage(Box<rocketchat::models::Message>),
 }
 
 /// Requests other room components make to the composer.
@@ -230,6 +233,8 @@ pub enum Message {
         Result<Vec<rocketchat::models::Message>, String>,
     ),
     MarkedRead(Res<()>),
+    /// The message of a permalink was fetched.
+    Focused(Res<Box<rocketchat::models::Message>>),
 }
 
 /// Everything shown for one open room.
@@ -279,9 +284,61 @@ impl RoomView {
     }
 
     /// Forgets the timeline; the room watch ends when `self` is dropped.
-    pub fn close(self, ws: &mut Workspace) {
+    pub fn close(mut self, ws: &mut Workspace) {
         self.composer.on_close(ws);
+        self.panel.close();
+        self.panel.retire(ws);
         ws.close_room(&self.rid);
+    }
+
+    /// Shows message `mid` (e.g. a permalink `?msg=`): fetched first unless
+    /// it is loaded, then its thread or its place in the timeline.
+    pub fn focus_message(&mut self, mid: &str, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        if let Some(m) = ctx
+            .workspace
+            .timeline(&self.rid)
+            .and_then(|t| t.get(mid))
+            .map(|i| i.message.clone())
+        {
+            let a = self.show_message(m, ctx);
+            return self.handle_effects(a, ctx);
+        }
+        let mid = mid.to_owned();
+        Action::task(ctx.rest_task(
+            move |rest| async move { rest.get_message(&mid).await.map(Box::new) },
+            Message::Focused,
+        ))
+    }
+
+    fn show_message(
+        &mut self,
+        m: rocketchat::models::Message,
+        ctx: &mut UpdateCtx<'_>,
+    ) -> Action<Message> {
+        if m.rid != self.rid {
+            return Action::none();
+        }
+        match m.tmid.clone() {
+            Some(tmid) => {
+                let kind = panel::Kind::Thread(tmid.clone());
+                if self.panel.kind() != Some(&kind) {
+                    self.panel.open(kind);
+                    self.panel.retire(ctx.workspace);
+                }
+                self.panel.focus_thread_reply(&m.id);
+                Action::none()
+            }
+            None => self
+                .timeline
+                .jump_to(&m.id, m.ts, ctx)
+                .map(Message::Timeline),
+        }
+    }
+
+    /// Marks the open thread read when it is at the bottom (the app calls it
+    /// while the window is focused and this room is shown).
+    pub fn mark_thread_read(&mut self, ctx: &UpdateCtx<'_>) -> Task<Message> {
+        self.panel.mark_thread_read(ctx).map(Message::Panel)
     }
 
     pub fn has_watch(&self) -> bool {
@@ -404,6 +461,14 @@ impl RoomView {
                 }
                 Action::none()
             }
+            Message::Focused(r) => match r {
+                Ok(m) => self.show_message(*m, ctx),
+                Err(e) => Action::effect(Effect::Toast(
+                    BannerKind::Warning,
+                    e.user_text(),
+                    String::new(),
+                )),
+            },
         };
         self.handle_effects(action, ctx)
     }
@@ -420,12 +485,34 @@ impl RoomView {
             match e {
                 Effect::LoadOlder => tasks.push(self.load_older(ctx).task),
                 Effect::MarkRead => tasks.push(self.mark_read(ctx)),
-                Effect::OpenPanel(kind) => self.panel.open(kind),
+                // The open thread stays open (its summary was clicked again);
+                // only header buttons toggle panels.
+                Effect::OpenPanel(panel::Kind::Thread(t))
+                    if self.panel.kind() == Some(&panel::Kind::Thread(t.clone())) => {}
+                Effect::OpenPanel(kind) => {
+                    self.panel.open(kind);
+                    self.panel.retire(ctx.workspace);
+                }
+                Effect::ShowMessage(m) => {
+                    // Its effects (e.g. `LoadOlder` to reach older history)
+                    // concern this room too.
+                    let a = self.show_message(*m, ctx);
+                    let a = self.handle_effects(a, ctx);
+                    tasks.push(a.task);
+                    up.extend(a.effects);
+                }
                 Effect::Compose(intent) => {
-                    if let ComposeIntent::ReplyInThread(tmid) = &intent
-                        && self.panel.kind() != Some(&panel::Kind::Thread(tmid.clone()))
-                    {
-                        self.panel.open(panel::Kind::Thread(tmid.clone()));
+                    if let ComposeIntent::ReplyInThread(tmid) = &intent {
+                        // The thread view owns the reply composer (focused
+                        // when the thread opens).
+                        let kind = panel::Kind::Thread(tmid.clone());
+                        if self.panel.kind() == Some(&kind) {
+                            tasks.push(self.panel.focus_thread_composer().map(Message::Panel));
+                        } else {
+                            self.panel.open(kind);
+                            self.panel.retire(ctx.workspace);
+                        }
+                        continue;
                     }
                     let a = self.composer.intent(intent, ctx).map(Message::Composer);
                     tasks.push(a.task);
@@ -436,7 +523,10 @@ impl RoomView {
                             .filter(|e| !matches!(e, Effect::Compose(_))),
                     );
                 }
-                Effect::ClosePanel => self.panel.close(),
+                Effect::ClosePanel => {
+                    self.panel.close();
+                    self.panel.retire(ctx.workspace);
+                }
                 other => up.push(other),
             }
         }
@@ -488,21 +578,190 @@ impl RoomView {
         .width(Length::Fill)
         .height(Length::Fill);
         let body: Element<'a, Message> = match self.panel.view(ctx) {
+            // The expanded thread covers the room column (up to a maximum
+            // width) instead of squeezing it, like the web.
+            Some(panel) if self.panel.expanded() => stack![
+                main,
+                container(
+                    container(opaque(
+                        row![
+                            vertical_divider(),
+                            container(panel.map(Message::Panel))
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .style(style::container_sidebar),
+                        ]
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                    ))
+                    .width(Length::Fill)
+                    .max_width(panel::thread::WIDTH_EXPANDED)
+                    .height(Length::Fill)
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced::Alignment::End),
+            ]
+            .into(),
             Some(panel) => row![
                 main,
                 vertical_divider(),
                 container(panel.map(Message::Panel))
-                    .width(Length::Fixed(panel::WIDTH))
+                    .width(Length::Fixed(self.panel.width()))
                     .height(Length::Fill)
                     .style(style::container_sidebar),
             ]
             .into(),
             None => main.into(),
         };
+        // Dialogs and the image lightbox of the timeline and the panel
+        // cover the whole room.
+        let overlay = self
+            .timeline
+            .overlay(ctx)
+            .map(|(k, e, d)| (k, e.map(Message::Timeline), Message::Timeline(d)))
+            .or_else(|| {
+                self.panel
+                    .overlay(ctx)
+                    .map(|(k, e, d)| (k + 10, e.map(Message::Panel), Message::Panel(d)))
+            });
+        let (overlay, dismiss) = match overlay {
+            Some((k, e, d)) => (Some((k, e)), Some(d)),
+            None => (None, None),
+        };
+        let body = modal_keyed(body, overlay, dismiss);
         container(body)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(style::container_room)
             .into()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use rocketchat::models::UserRef;
+    use rocketchat::models::{Message as RcMessage, Room, RoomType, Subscription as Sub, User};
+    use rocketchat::{RcDate, ServerUrl};
+    use rustket_core::sync::InitialData;
+
+    fn workspace() -> Workspace {
+        let mut ws = Workspace::new();
+        ws.apply_initial(InitialData {
+            me: User {
+                id: "me".into(),
+                username: Some("me".into()),
+                ..Default::default()
+            },
+            subscriptions: vec![Sub {
+                id: "s1".into(),
+                rid: "R1".into(),
+                name: "general".into(),
+                t: RoomType::Channel,
+                u: UserRef {
+                    id: "me".into(),
+                    username: Some("me".into()),
+                    name: None,
+                },
+                open: true,
+                ..Default::default()
+            }],
+            rooms: vec![Room {
+                id: "R1".into(),
+                t: RoomType::Channel,
+                name: Some("general".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        ws
+    }
+
+    fn message(id: &str, ms: i64) -> RcMessage {
+        RcMessage {
+            id: id.into(),
+            rid: "R1".into(),
+            ts: RcDate::from_millis(ms),
+            ..Default::default()
+        }
+    }
+
+    /// Review: a Pinned/Search result older than the loaded history asked
+    /// for an older page, but the request went up to the app (ignored).
+    #[test]
+    fn show_message_loads_older_history_itself() {
+        let mut ws = workspace();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        ctx.workspace.reset_room_timelines("R1");
+        let (c, t) = ctx.workspace.begin_load_older_ticket("R1").unwrap();
+        ctx.workspace
+            .finish_load_older_ticket("R1", t, c, Ok(vec![message("new", 2_000_000)]));
+        assert!(
+            ctx.workspace
+                .timeline("R1")
+                .unwrap()
+                .pagination
+                .has_more_before
+        );
+        let a = rv.handle_effects(
+            Action::effect(Effect::ShowMessage(Box::new(message("old", 1_000_000)))),
+            &mut ctx,
+        );
+        assert!(!a.effects.iter().any(|e| matches!(e, Effect::LoadOlder)));
+        // The page was requested here (it fails at once without a session).
+        assert!(
+            ctx.workspace
+                .timeline("R1")
+                .unwrap()
+                .pagination
+                .error
+                .is_some()
+        );
+    }
+
+    /// Review: clicking the summary of the open thread closed it.
+    #[test]
+    fn opening_the_open_thread_keeps_it() {
+        let mut ws = workspace();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        let open = || Action::effect(Effect::OpenPanel(panel::Kind::Thread("P".into())));
+        let _ = rv.handle_effects(open(), &mut ctx);
+        let g = rv.panel.generation();
+        let _ = rv.handle_effects(open(), &mut ctx);
+        assert_eq!(rv.panel.kind(), Some(&panel::Kind::Thread("P".into())));
+        assert_eq!(rv.panel.generation(), g, "the same view");
+        // Header buttons still toggle other panels.
+        let pinned = || Action::effect(Effect::OpenPanel(panel::Kind::Pinned));
+        let _ = rv.handle_effects(pinned(), &mut ctx);
+        let _ = rv.handle_effects(pinned(), &mut ctx);
+        assert_eq!(rv.panel.kind(), None);
     }
 }

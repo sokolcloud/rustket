@@ -73,8 +73,6 @@ pub enum TimelineKind {
 pub enum PageCursor {
     /// Room history via `loadHistory`.
     History(HistoryCursor),
-    /// Thread replies via `chat.getThreadMessages` (oldest first, offset-based).
-    Offset { offset: u64 },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -91,12 +89,12 @@ pub struct Pagination {
     /// `has_more_before` is still true, load the next page right away.
     pub last_page_added: usize,
     cursor: Option<PageCursor>,
-    /// Room timelines: `ts` (ms) of the oldest message of the loaded window,
-    /// `i64::MIN` once the start of the room is reached. `None` before the first page.
+    /// `ts` (ms) of the oldest message of the loaded window, `i64::MIN` once
+    /// the start of the room (thread) is reached. `None` before the first page.
     window_floor: Option<i64>,
-    /// Thread timelines: newest `ts` (ms) loaded through pages, to keep the
-    /// offset cursor in step when an already loaded reply is deleted.
-    page_frontier: Option<i64>,
+    /// Thread timelines: entries of loaded pages that could not be parsed
+    /// (they still occupy server positions).
+    dropped_total: u64,
     /// The outstanding page request.
     in_flight: Option<u64>,
     /// Messages deleted while the request was outstanding: dropped from its page.
@@ -217,12 +215,12 @@ impl Timeline {
         )
     }
 
-    /// Room timelines: whether a message that is not shown yet lies inside the
-    /// loaded window (always true before the first page).
+    /// Whether a message that is not shown yet lies inside the loaded window
+    /// (always true before the first page).
     fn in_window(&self, m: &Message) -> bool {
-        match (&self.kind, self.pagination.window_floor) {
-            (TimelineKind::Room, Some(floor)) => ts_ms(m) >= floor,
-            _ => true,
+        match self.pagination.window_floor {
+            Some(floor) => ts_ms(m) >= floor,
+            None => true,
         }
     }
 
@@ -296,19 +294,13 @@ impl Timeline {
         match self.index.remove(id) {
             Some(ts) => {
                 let removed = self.items.remove(&(ts, id.to_owned()));
-                // A reply inside the offset-paged prefix shifts every later
-                // server position down by one.
-                if let (Some(PageCursor::Offset { offset }), Some(frontier), Some(item)) = (
-                    self.pagination.cursor.as_mut(),
-                    self.pagination.page_frontier,
-                    removed.as_ref(),
-                ) && !item.is_pending()
-                    && ts <= frontier
+                // A loaded reply deleted while a thread page is outstanding
+                // moved the server positions of every older reply.
+                if matches!(self.kind, TimelineKind::Thread { .. })
+                    && self.pagination.in_flight.is_some()
+                    && removed.as_ref().is_some_and(|i| !i.is_pending())
                 {
-                    *offset = offset.saturating_sub(1);
-                    if self.pagination.in_flight.is_some() {
-                        self.pagination.shift_in_flight += 1;
-                    }
+                    self.pagination.shift_in_flight += 1;
                 }
                 self.bump();
                 true
@@ -599,7 +591,11 @@ impl Timeline {
         }
     }
 
-    /// Starts loading thread replies; returns the offset to request.
+    /// Starts loading thread replies (newest first, see
+    /// `RestClient::thread_messages_latest`); returns the offset to request.
+    /// Loaded replies are always the newest contiguous part of the thread, so
+    /// the offset is their count: replies arriving or deleted in realtime keep
+    /// it in step without bookkeeping.
     pub fn begin_load_thread(&mut self) -> Option<u64> {
         self.begin_load_thread_ticket().map(|(o, _)| o)
     }
@@ -609,16 +605,18 @@ impl Timeline {
         if self.pagination.loading_before || !self.pagination.has_more_before {
             return None;
         }
-        let offset = match &self.pagination.cursor {
-            Some(PageCursor::Offset { offset }) => *offset,
-            _ => 0,
+        let offset = if self.pagination.loaded {
+            self.items.values().filter(|i| !i.is_pending()).count() as u64
+                + self.pagination.dropped_total
+        } else {
+            0
         };
         let ticket = self.start_request();
         Some((offset, ticket))
     }
 
-    /// Completes [`Self::begin_load_thread`] with a `chat.getThreadMessages` page;
-    /// dropped when no request is outstanding.
+    /// Completes [`Self::begin_load_thread`] with a `chat.getThreadMessages`
+    /// page (newest first); dropped when no request is outstanding.
     pub fn finish_load_thread(&mut self, result: Result<Paginated<Message>, String>) -> bool {
         self.finish_thread(None, result)
     }
@@ -643,19 +641,35 @@ impl Timeline {
         let deleted = std::mem::take(&mut self.pagination.deleted_in_flight);
         let shift = std::mem::take(&mut self.pagination.shift_in_flight);
         match result {
+            // A loaded reply was deleted meanwhile: the page may have skipped
+            // the reply next to the loaded part. Ask again.
+            Ok(_) if shift > 0 => {
+                self.pagination.error = None;
+                self.pagination.last_page_added = 0;
+            }
             Ok(mut page) => {
                 self.pagination.error = None;
+                let first = !self.pagination.loaded;
                 let has_more = page.has_more() && page.raw_len > 0;
-                // Replies deleted inside the loaded prefix meanwhile moved every
-                // later position down; re-request the overlap (deduplicated).
-                let next = (page.offset + page.raw_len as u64).saturating_sub(shift);
+                let floor = if has_more {
+                    let oldest = page.items.iter().map(ts_ms).min();
+                    match (oldest, self.pagination.window_floor) {
+                        (Some(o), Some(f)) => o.min(f),
+                        (Some(o), None) => o,
+                        (None, f) => f.unwrap_or(i64::MIN),
+                    }
+                } else {
+                    i64::MIN
+                };
+                self.pagination.window_floor = Some(floor);
+                self.pagination.dropped_total += page.dropped as u64;
                 page.items.retain(|m| !deleted.contains(&m.id));
-                let newest = page.items.iter().map(ts_ms).max();
-                self.pagination.page_frontier = self.pagination.page_frontier.max(newest);
                 self.pagination.last_page_added = self.extend_counting(page.items);
+                if first {
+                    self.prune_below_window();
+                }
                 self.pagination.loaded = true;
                 self.pagination.has_more_before = has_more;
-                self.pagination.cursor = Some(PageCursor::Offset { offset: next });
             }
             Err(e) => self.pagination.error = Some(e),
         }
@@ -922,45 +936,74 @@ mod tests {
             m.tmid = Some("p".into());
             m
         };
+        let page = |items: Vec<Message>, offset: u64, total: u64| Paginated {
+            raw_len: items.len(),
+            count: items.len() as u64,
+            items,
+            offset,
+            total,
+            dropped: 0,
+        };
         let mut t = Timeline::new_thread("r", "p");
         assert_eq!(t.begin_load_thread(), Some(0));
-        t.finish_load_thread(Ok(Paginated {
-            items: vec![reply("r0", 1), reply("r1", 2), reply("r2", 3)],
-            count: 3,
-            offset: 0,
-            total: 6,
-            raw_len: 3,
-            dropped: 0,
-        }));
-        // A realtime reply beyond the loaded prefix does not move the offset.
-        t.upsert(reply("r9", 100));
-        assert!(t.remove("r9"));
-        // An already loaded reply shifts the server positions.
-        assert!(t.remove("r1"));
+        // Newest first: r5, r4, r3 of six replies.
+        t.finish_load_thread(Ok(page(
+            vec![reply("r5", 6), reply("r4", 5), reply("r3", 4)],
+            0,
+            6,
+        )));
+        assert!(t.pagination.has_more_before);
+        // Below the loaded window: an edit of an unloaded reply is ignored.
+        assert!(!t.upsert(reply("r1", 2)));
+        // A realtime reply and a deleted one keep the offset in step.
+        assert!(t.upsert(reply("r9", 100)));
+        assert!(t.remove("r4"));
+        assert_eq!(t.begin_load_thread(), Some(3));
+        // A loaded reply deleted while the page is outstanding: the page is
+        // dropped and asked again.
+        assert!(t.remove("r3"));
+        assert!(t.finish_load_thread(Ok(page(vec![reply("r1", 2)], 3, 5))));
+        assert!(!t.contains("r1"));
+        assert!(t.pagination.has_more_before);
         assert_eq!(t.begin_load_thread(), Some(2));
+        t.finish_load_thread(Ok(page(
+            vec![reply("r2", 3), reply("r1", 2), reply("r0", 1)],
+            2,
+            5,
+        )));
+        assert!(!t.pagination.has_more_before);
+        let ids: Vec<&str> = t.messages().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["r0", "r1", "r2", "r5", "r9"]);
+        // Everything is loaded: any old reply is inside the window again.
+        assert!(t.upsert(reply("late-edit", 0)));
+        assert_eq!(t.begin_load_thread(), None);
     }
 
     #[test]
     fn thread_pagination() {
         let mut t = Timeline::new_thread("r", "p");
+        // A reply that arrived before the first page: the page starts at 0.
+        let mut early = msg("r3", "r", 3, "u");
+        early.tmid = Some("p".into());
+        t.upsert(early.clone());
         assert_eq!(t.begin_load_thread(), Some(0));
-        let mut m = msg("r1", "r", 1, "u");
+        let mut m = msg("r2", "r", 2, "u");
         m.tmid = Some("p".into());
         t.finish_load_thread(Ok(Paginated {
-            items: vec![m],
-            count: 1,
+            items: vec![early, m],
+            count: 2,
             offset: 0,
             total: 3,
-            raw_len: 1,
+            raw_len: 2,
             dropped: 0,
         }));
         assert!(t.pagination.has_more_before);
-        assert_eq!(t.begin_load_thread(), Some(1));
+        assert_eq!(t.begin_load_thread(), Some(2));
         t.finish_load_thread(Ok(Paginated {
             items: vec![],
             count: 0,
-            offset: 1,
-            total: 1,
+            offset: 2,
+            total: 2,
             raw_len: 0,
             dropped: 0,
         }));

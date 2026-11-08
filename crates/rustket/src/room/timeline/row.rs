@@ -22,8 +22,8 @@ use rustket_ui::widget::{
     thread_summary, tooltip,
 };
 
-use super::Message;
 use super::actions::{self, Act};
+use super::interact::{self, Msg as Message, Source};
 use crate::images::Images;
 use crate::room::render::{self, RenderCtx, RenderState, emoji_element, emoji_piece, system};
 
@@ -31,7 +31,7 @@ type El = Element<'static, Message>;
 
 /// Borrowed view data a row needs.
 #[derive(Clone, Copy)]
-pub(super) struct Env<'a> {
+pub(crate) struct Env<'a> {
     pub server_id: &'a ServerId,
     pub server: &'a ServerUrl,
     pub ws: &'a Workspace,
@@ -39,6 +39,7 @@ pub(super) struct Env<'a> {
     pub render: &'a RenderState,
     pub prefs: &'a UiPrefs,
     pub rid: &'a str,
+    pub source: &'a Source,
 }
 
 impl<'a> Env<'a> {
@@ -58,13 +59,15 @@ impl<'a> Env<'a> {
 
 /// Per-row view state.
 #[derive(Debug, Clone, Copy, Hash, Default)]
-pub(super) struct RowFlags {
+pub(crate) struct RowFlags {
     pub sequential: bool,
     pub menu_open: bool,
     pub thread_unread: bool,
+    /// Jumped-to message (permalink, search result).
+    pub selected: bool,
 }
 
-pub(super) fn time_label(ts: Option<RcDate>, clock_24h: bool) -> String {
+pub(crate) fn time_label(ts: Option<RcDate>, clock_24h: bool) -> String {
     let Some(local) = ts.and_then(|d| Local.timestamp_millis_opt(d.timestamp_millis()).single())
     else {
         return String::new();
@@ -75,7 +78,7 @@ pub(super) fn time_label(ts: Option<RcDate>, clock_24h: bool) -> String {
 }
 
 /// "Today", "Yesterday" or the long date of `ts`.
-pub(super) fn day_label(ts: RcDate, now: DateTime<Local>) -> String {
+pub(crate) fn day_label(ts: RcDate, now: DateTime<Local>) -> String {
     let Some(local) = Local.timestamp_millis_opt(ts.timestamp_millis()).single() else {
         return String::new();
     };
@@ -96,10 +99,10 @@ pub(super) fn day_label(ts: RcDate, now: DateTime<Local>) -> String {
     }
 }
 
-pub(super) use render::plural;
+pub(crate) use render::plural;
 
 /// Display name of a message author (alias, real name or username).
-pub(super) fn author_name(m: &RcMessage, real_names: bool) -> String {
+pub(crate) fn author_name(m: &RcMessage, real_names: bool) -> String {
     let name = m
         .alias
         .as_deref()
@@ -118,7 +121,7 @@ pub(super) fn author_name(m: &RcMessage, real_names: bool) -> String {
 /// Which of the images row `m` shows are loaded (or answered with
 /// initials): rows rebuild when one of their own images arrives, not on
 /// every image load.
-pub(super) fn images_key(env: &Env<'_>, m: &RcMessage) -> u64 {
+pub(crate) fn images_key(env: &Env<'_>, m: &RcMessage) -> u64 {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut h = DefaultHasher::new();
     let mut probe = |url: &str| {
@@ -313,10 +316,14 @@ fn username_of(env: &Env<'_>, uid: &str) -> Option<String> {
     if env.ws.user_id() == Some(uid) {
         return env.ws.username().map(str::to_owned);
     }
-    env.ws
-        .timeline(env.rid)?
-        .messages()
-        .rev()
+    let thread = match env.source {
+        Source::Thread(tmid) => env.ws.thread(tmid),
+        Source::Room => None,
+    };
+    thread
+        .into_iter()
+        .chain(env.ws.timeline(env.rid))
+        .flat_map(|t| t.messages().rev())
         .find(|m| m.u.id == uid)
         .and_then(|m| m.u.username.clone())
 }
@@ -429,7 +436,7 @@ fn system_row(env: &Env<'_>, m: &RcMessage) -> El {
     let mut col =
         column![text(system::system_text(m, rc.use_real_names)).size(TEXT_SMALL)].spacing(SPACE_1);
     if kind == "message_pinned" || kind == "message_pinned_e2e" {
-        col = col.push(render::message_body_with(m, &rc).map(Message::Render));
+        col = col.push(render::message_body_with(m, &rc).map(Message::render));
     }
     if let Some(d) = discussion_part(env, m) {
         col = col.push(d);
@@ -442,7 +449,7 @@ fn system_row(env: &Env<'_>, m: &RcMessage) -> El {
 }
 
 /// Builds the row of `item`.
-pub(super) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: DateTime<Utc>) -> El {
+pub(crate) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: DateTime<Utc>) -> El {
     let m = &item.message;
     if m.is_system() {
         return system_row(env, m);
@@ -455,7 +462,7 @@ pub(super) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: Da
             .style(style::text_hint)
             .into()
     } else {
-        render::message_body_with(m, &rc).map(Message::Render)
+        render::message_body_with(m, &rc).map(Message::render)
     };
     let mut p = MessageRowProps::new(
         author_avatar(env, m, &name),
@@ -487,6 +494,7 @@ pub(super) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: Da
     p.pinned = m.pinned == Some(true);
     p.starred = env.ws.user_id().is_some_and(|id| m.is_starred_by(id));
     p.is_mention_highlight = mentions_me(env, m);
+    p.is_selected = flags.selected;
     p.edited_label = match (&m.edited_by, m.edited_at) {
         (Some(by), Some(at)) => t!(
             "room_timeline.edited_by",
@@ -500,10 +508,13 @@ pub(super) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: Da
     p.starred_label = t!("room_timeline.starred").into_owned();
     match &item.state {
         DeliveryState::Sent => {
-            let acts = actions::available(env.ws, m, now);
+            let acts = interact::available(env.ws, env.source, m, now);
             let can_react = acts.contains(&Act::React);
             p.reactions = reactions(env, m, can_react);
-            p.thread_summary = thread_part(env, m, flags.thread_unread);
+            // The thread view shows the replies below the parent instead.
+            if *env.source == Source::Room {
+                p.thread_summary = thread_part(env, m, flags.thread_unread);
+            }
             if let Some(d) = discussion_part(env, m) {
                 p.attachments.push(d);
             }
@@ -560,13 +571,18 @@ mod tests {
 
     #[test]
     fn plurals() {
-        assert_eq!(plural(1), "one");
-        assert_eq!(plural(21), "one");
-        assert_eq!(plural(11), "many");
-        assert_eq!(plural(3), "few");
-        assert_eq!(plural(13), "many");
-        assert_eq!(plural(25), "many");
-        assert_eq!(plural(0), "many");
+        use crate::room::render::plural_for;
+        assert_eq!(plural_for("ru", 1), "one");
+        assert_eq!(plural_for("ru", 21), "one");
+        assert_eq!(plural_for("ru", 11), "many");
+        assert_eq!(plural_for("ru", 3), "few");
+        assert_eq!(plural_for("ru", 13), "many");
+        assert_eq!(plural_for("ru", 25), "many");
+        assert_eq!(plural_for("ru", 0), "many");
+        // English: "21 replies".
+        assert_eq!(plural_for("en", 1), "one");
+        assert_eq!(plural_for("en", 21), "many");
+        assert_eq!(plural_for("en", 3), "many");
     }
 
     #[test]

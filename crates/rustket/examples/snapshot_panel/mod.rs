@@ -226,6 +226,8 @@ pub(super) async fn panel_shots(
         })
         .await;
     }
+    // The timeline shots left another room open.
+    open_room(d, sid, rid).await;
     d.settle(Duration::from_secs(1)).await;
 
     // Header and its menu.
@@ -292,7 +294,7 @@ pub(super) async fn panel_shots(
     d.settle(Duration::from_millis(200)).await;
     both(d, out, "p12b-notifications-chime");
 
-    // Thread placeholder of the first thread parent.
+    // Thread view of the first thread parent.
     let tmid = d.app.servers[sid].workspace.timeline(rid).and_then(|t| {
         t.messages()
             .find(|m| m.tcount.unwrap_or(0) > 1)

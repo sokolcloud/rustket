@@ -280,9 +280,18 @@ pub fn preview_image(u: &rocketchat::models::MessageUrl) -> Option<String> {
         .and_then(safe_url)
 }
 
-/// Plural category of `n` for keys with `_one`/`_few`/`_many` forms
-/// (Russian rules; English `few` texts equal `many`).
+/// Plural category of `n` in the current locale for keys with
+/// `_one`/`_few`/`_many` forms (English `few` texts equal `many`).
 pub fn plural(n: u64) -> &'static str {
+    plural_for(&rust_i18n::locale(), n)
+}
+
+/// [`plural`] for `locale`: Russian rules for `ru`, otherwise English
+/// (`one` only for 1).
+pub fn plural_for(locale: &str, n: u64) -> &'static str {
+    if !locale.starts_with("ru") {
+        return if n == 1 { "one" } else { "many" };
+    }
     let (m10, m100) = (n % 10, n % 100);
     if m10 == 1 && m100 != 11 {
         "one"

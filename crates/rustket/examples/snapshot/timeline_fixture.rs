@@ -252,9 +252,38 @@ pub async fn setup(
     }
     // Thread with replies.
     let parent = text(other, &rid, "Thread: which date works for the retro?").await;
-    for (c, t) in [(user, "Thursday works for me"), (other, "Thursday it is")] {
-        post(c, &rid, json!({"text": t, "tmid": parent})).await;
+    let mut replies = Vec::new();
+    for (c, t) in [
+        (user, "Thursday works for me"),
+        (user, "Afternoon, after the **standup**"),
+        (other, "Thursday it is. Agenda draft below :point_down:"),
+    ] {
+        replies.push(post(c, &rid, json!({"text": t, "tmid": parent})).await);
     }
+    for (c, e) in [(other, ":thumbsup:"), (user, ":tada:")] {
+        c.post_ok("chat.react", &json!({"messageId": replies[0], "emoji": e}))
+            .await
+            .expect("react");
+    }
+    let mut img = UploadRequest::new("retro-board.png", "image/png", png_bytes(360, 200));
+    img.description = Some("Last retro's board".into());
+    img.tmid = Some(parent.clone());
+    other.upload_file(&rid, img).await.expect("thread image");
+    let mut agenda = UploadRequest::new(
+        "retro-agenda.md",
+        "text/markdown",
+        "# Retro\n\n- what went well\n- what to improve\n"
+            .as_bytes()
+            .to_vec(),
+    );
+    agenda.tmid = Some(parent.clone());
+    user.upload_file(&rid, agenda).await.expect("thread file");
+    user.send_message(
+        &rocketchat::models::OutgoingMessage::new(&rid, "Also sharing it in the channel")
+            .in_thread(&parent, true),
+    )
+    .await
+    .expect("tshow reply");
     // Discussion.
     let disc = other
         .rooms_create_discussion(&rid, "Retro agenda", Some("Let's collect topics"), &[])
@@ -274,6 +303,20 @@ pub async fn setup(
         .post("chat.pinMessage", &json!({"messageId": first}))
         .await
         .expect("pin");
+    // Rich pinned messages for the Pinned panel: markdown and the image.
+    let history = admin
+        .load_history(&rid, None, 100, None)
+        .await
+        .expect("history");
+    for m in &history.messages {
+        let is_image = m.file.as_ref().is_some_and(|f| f.name == "gradient.png");
+        if m.msg.starts_with("# Release 2.4") || m.msg.starts_with("Spoiler:") || is_image {
+            let _: Value = admin
+                .post("chat.pinMessage", &json!({"messageId": m.id}))
+                .await
+                .expect("pin rich");
+        }
+    }
     user.post_ok("chat.starMessage", &json!({"messageId": reacted}))
         .await
         .expect("star");
@@ -372,16 +415,25 @@ pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId) {
         d,
         sid,
         &rid,
-        room::timeline::Message::Render(RenderMsg::OpenImage(room::render::ImageRef {
-            mid: image.0.clone(),
-            url,
-            title: image.1.title.clone().unwrap_or_default(),
-            mime: image.1.image_type.clone(),
-        })),
+        room::timeline::Message::Item(room::timeline::ItemMsg::render(RenderMsg::OpenImage(
+            room::render::ImageRef {
+                mid: image.0.clone(),
+                url,
+                title: image.1.title.clone().unwrap_or_default(),
+                mime: image.1.image_type.clone(),
+            },
+        ))),
     );
     d.send(m);
     shoot_loaded(d, out, "13-lightbox", super::SIZE).await;
-    let m = timeline_msg(d, sid, &rid, room::timeline::Message::CloseDialog);
+    let m = timeline_msg(
+        d,
+        sid,
+        &rid,
+        room::timeline::Message::Item(room::timeline::ItemMsg::View(
+            room::timeline::ViewerMsg::CloseImage,
+        )),
+    );
     d.send(m);
 
     // Report dialog on a peer message.
@@ -400,21 +452,31 @@ pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId) {
         d,
         sid,
         &rid,
-        room::timeline::Message::Act(target, room::timeline::Act::Report),
+        room::timeline::Message::Item(room::timeline::ItemMsg::Act(
+            target,
+            room::timeline::Act::Report,
+        )),
     );
     d.send(m);
     let m = timeline_msg(
         d,
         sid,
         &rid,
-        room::timeline::Message::ReportText("Spam link".into()),
+        room::timeline::Message::Item(room::timeline::ItemMsg::ReportText("Spam link".into())),
     );
     d.send(m);
     d.app.config.ui.theme = rustket_core::config::Theme::Dark;
     d.shoot(out, "14-report-dialog-dark");
-    let m = timeline_msg(d, sid, &rid, room::timeline::Message::CloseDialog);
+    let m = timeline_msg(
+        d,
+        sid,
+        &rid,
+        room::timeline::Message::Item(room::timeline::ItemMsg::CloseDialog),
+    );
     d.send(m);
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
+
+    thread_and_pins(d, out, sid, &rid).await;
 
     // A failed and a pending outgoing message.
     {
@@ -446,4 +508,98 @@ pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId) {
         s.workspace.discard_pending(&rid, None, "rk-failed-1");
         s.workspace.discard_pending(&rid, None, "rk-pending-1");
     }
+}
+
+fn panel_msg(d: &Driver, sid: &ServerId, rid: &str, m: room::panel::Message) -> Message {
+    let epoch = d.app.servers[sid].generation;
+    Message::Room(sid.clone(), epoch, rid.to_owned(), room::Message::Panel(m))
+}
+
+async fn open_panel(d: &mut Driver, sid: &ServerId, rid: &str, kind: room::panel::Kind) {
+    let epoch = d.app.servers[sid].generation;
+    d.send(Message::Room(
+        sid.clone(),
+        epoch,
+        rid.to_owned(),
+        room::Message::Header(room::header::Message::TogglePanel(kind)),
+    ));
+    d.settle(Duration::from_millis(2000)).await;
+}
+
+/// The thread view (replies with reactions, an image, a file, the composer
+/// with "Also send to channel") and the Pinned panel with rich messages.
+async fn thread_and_pins(d: &mut Driver, out: &Path, sid: &ServerId, rid: &str) {
+    let tmid = d.app.servers[sid]
+        .workspace
+        .timeline(rid)
+        .and_then(|t| {
+            t.messages()
+                .find(|m| m.msg.starts_with("Thread: which date"))
+                .map(|m| m.id.clone())
+        })
+        .expect("thread parent");
+    open_panel(d, sid, rid, room::panel::Kind::Thread(tmid.clone())).await;
+    let (s, t) = (sid.clone(), tmid.clone());
+    d.pump_until("thread loaded", Duration::from_secs(20), move |a| {
+        a.servers[&s]
+            .workspace
+            .thread(&t)
+            .is_some_and(|t| t.pagination.loaded && t.parent().is_some())
+    })
+    .await;
+    let size = iced::Size::new(1280.0, 1000.0);
+    d.app.config.ui.theme = rustket_core::config::Theme::Light;
+    shoot_loaded(d, out, "16-thread-light", size).await;
+    d.app.config.ui.theme = rustket_core::config::Theme::Dark;
+    shoot_loaded(d, out, "17-thread-dark", size).await;
+    d.app.config.ui.theme = rustket_core::config::Theme::Light;
+    // Expanded, with the "Also send to channel" box checked.
+    let g = d.app.servers[sid].rooms[rid].panel.generation();
+    for m in [
+        room::panel::thread::Msg::ToggleExpand,
+        room::panel::thread::Msg::AlsoSend(true),
+    ] {
+        let m = panel_msg(
+            d,
+            sid,
+            rid,
+            room::panel::Message::Body(g, room::panel::BodyMsg::Thread(m)),
+        );
+        d.send(m);
+    }
+    d.settle(Duration::from_millis(500)).await;
+    shoot_loaded(d, out, "18-thread-expanded-also-send", size).await;
+
+    open_panel(d, sid, rid, room::panel::Kind::Pinned).await;
+    d.app.config.ui.theme = rustket_core::config::Theme::Light;
+    shoot_loaded(d, out, "19-pinned-light", size).await;
+    d.app.config.ui.theme = rustket_core::config::Theme::Dark;
+    shoot_loaded(d, out, "20-pinned-dark", size).await;
+    d.app.config.ui.theme = rustket_core::config::Theme::Light;
+    // Clicking the oldest pinned message: highlighted and scrolled to.
+    let first = d.app.servers[sid]
+        .workspace
+        .timeline(rid)
+        .and_then(|t| {
+            t.messages()
+                .find(|m| m.msg.starts_with("Morning! Posting"))
+                .map(|m| m.id.clone())
+        })
+        .expect("first message");
+    let g = d.app.servers[sid].rooms[rid].panel.generation();
+    let m = panel_msg(
+        d,
+        sid,
+        rid,
+        room::panel::Message::Body(
+            g,
+            room::panel::BodyMsg::Messages(room::panel::messages::Msg::Show(first)),
+        ),
+    );
+    d.send(m);
+    d.settle(Duration::from_millis(800)).await;
+    shoot_loaded(d, out, "21-jump-to-pinned", size).await;
+    let m = panel_msg(d, sid, rid, room::panel::Message::Close);
+    d.send(m);
+    d.settle(Duration::from_millis(300)).await;
 }

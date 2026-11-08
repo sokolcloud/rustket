@@ -313,6 +313,8 @@ pub struct Composer {
     join_code: String,
     /// Message waiting for the delete confirmation (emptied edit).
     confirm_delete: Option<String>,
+    /// Thread composer: replies are also sent to the channel (`tshow`).
+    tshow: bool,
 }
 
 impl Composer {
@@ -346,7 +348,14 @@ impl Composer {
             joining: false,
             join_code: String::new(),
             confirm_delete: None,
+            tshow: false,
         }
+    }
+
+    /// Thread composer: send replies to the channel too ("Also send to
+    /// channel", `tshow`).
+    pub fn set_tshow(&mut self, on: bool) {
+        self.tshow = on;
     }
 
     pub fn text(&self) -> String {
@@ -1244,7 +1253,7 @@ impl Composer {
     fn send_text(&mut self, text: String, ctx: &mut UpdateCtx<'_>) -> Task<Message> {
         let m = ctx
             .workspace
-            .new_local_message(&self.rid, &text, self.tmid.as_deref(), false);
+            .new_local_message(&self.rid, &text, self.tmid.as_deref(), self.tshow);
         ctx.workspace.add_pending(m.clone());
         send_task(ctx, m)
     }

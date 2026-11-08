@@ -230,3 +230,6 @@ room_timeline.not_a_member:
 room_timeline.history_first_failed:
   en: "Couldn't load messages"
   ru: "Не удалось загрузить сообщения"
+room_timeline.jump_not_loaded:
+  en: "Couldn't find the message in the history"
+  ru: "Не удалось найти сообщение в истории"

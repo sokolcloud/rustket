@@ -209,6 +209,17 @@ pub fn is_openable_url(url: &str) -> bool {
     })
 }
 
+/// Room of a link segment: a room id, or a room name / display name.
+fn find_room(ws: &rustket_core::Workspace, name: &str) -> Option<String> {
+    if ws.room(name).is_some() {
+        return Some(name.to_owned());
+    }
+    ws.rooms()
+        .values()
+        .find(|e| e.name() == name || e.fname() == Some(name))
+        .map(|e| e.rid().to_owned())
+}
+
 fn sync_backoff(attempt: u32) -> Duration {
     Duration::from_secs(2u64.saturating_pow(attempt.clamp(1, 6)).min(60))
 }
@@ -432,6 +443,28 @@ impl App {
         )
     }
 
+    /// A URL clicked in a room: permalinks to messages of a room of this
+    /// server the user has open in the app, everything else (other rooms,
+    /// e.g. public channel previews) in the browser.
+    fn open_room_url(&mut self, sid: &ServerId, url: String) -> Task<Message> {
+        let Some(s) = self.servers.get(sid) else {
+            return self.open_url(url);
+        };
+        let mut bases = vec![s.url.join("")];
+        if let Some(site) = s.workspace.settings().str("Site_Url") {
+            bases.push(site.trim().to_owned());
+        }
+        let target = deeplink::permalink_path(&url, &bases).and_then(|path| {
+            let (_, name) = deeplink::room_name_from_path(&path)?;
+            let rid = find_room(&s.workspace, &deeplink::percent_decode(name))?;
+            Some((rid, path))
+        });
+        match target {
+            Some((rid, path)) => self.open_room_link(sid, Some(rid), Some(path)),
+            None => self.open_url(url),
+        }
+    }
+
     fn server_urls(&self) -> Vec<ServerUrl> {
         self.servers.values().map(|s| s.url.clone()).collect()
     }
@@ -614,6 +647,14 @@ impl App {
                         .is_some_and(|sub| sub.unread > 0 || sub.alert)
                 {
                     action.task = Task::batch([action.task, rv.mark_read(&ctx)]);
+                }
+                // ... and its open thread (`tunread`) when new replies arrive.
+                if is_active_server
+                    && focused
+                    && active_room.as_deref() == Some(rid.as_str())
+                    && changes.rooms.contains(rid)
+                {
+                    action.task = Task::batch([action.task, rv.mark_thread_read(&ctx)]);
                 }
                 tasks.push(Self::room_task(&sid, epoch, rid, action.task));
                 for e in action.effects {
@@ -1345,9 +1386,6 @@ impl App {
         let Some(rv) = s.rooms.get_mut(&rid) else {
             return Task::none();
         };
-        if !unread {
-            return Task::none();
-        }
         let ctx = UpdateCtx {
             server_id: &s.id,
             server: &s.url,
@@ -1357,8 +1395,13 @@ impl App {
             images: &self.images,
             prefs: &self.config.ui,
         };
-        let t = rv.mark_read(&ctx);
-        Self::room_task(&sid, epoch, &rid, t)
+        let thread = rv.mark_thread_read(&ctx);
+        let t = if unread {
+            rv.mark_read(&ctx)
+        } else {
+            Task::none()
+        };
+        Self::room_task(&sid, epoch, &rid, Task::batch([t, thread]))
     }
 
     fn on_room(
@@ -1454,12 +1497,13 @@ impl App {
                 room::Effect::CloseRoom => self.close_room_view(sid, rid),
                 room::Effect::Toast(kind, title, body) => self.toast(kind, title, body),
                 room::Effect::OpenRoom(rid) => self.open_room(sid, &rid),
-                room::Effect::OpenUrl(url) => self.open_url(url),
+                room::Effect::OpenUrl(url) => self.open_room_url(sid, url),
                 // Handled by RoomView.
                 room::Effect::LoadOlder
                 | room::Effect::MarkRead
                 | room::Effect::OpenPanel(_)
                 | room::Effect::ClosePanel
+                | room::Effect::ShowMessage(_)
                 | room::Effect::Compose(_) => Task::none(),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
@@ -1916,20 +1960,48 @@ impl App {
         }
         let target = rid.filter(|r| s.workspace.room(r).is_some()).or_else(|| {
             let (_, name) = deeplink::room_name_from_path(path.as_deref()?)?;
-            s.workspace
-                .rooms()
-                .values()
-                .find(|e| e.name() == name || e.fname() == Some(name))
-                .map(|e| e.rid().to_owned())
+            find_room(&s.workspace, &deeplink::percent_decode(name))
         });
         match target {
-            Some(rid) => self.open_room(sid, &rid),
+            Some(rid) => {
+                let open = self.open_room(sid, &rid);
+                let focus = match path.as_deref().and_then(deeplink::message_id_from_path) {
+                    Some(mid) => self.focus_message(sid, &rid, &mid),
+                    None => Task::none(),
+                };
+                Task::batch([open, focus])
+            }
             None => self.toast(
                 BannerKind::Warning,
                 t!("deeplink.room_not_found"),
                 String::new(),
             ),
         }
+    }
+
+    /// Shows message `mid` in the open view of `rid` (permalinks).
+    fn focus_message(&mut self, sid: &ServerId, rid: &str, mid: &str) -> Task<Message> {
+        let Some(s) = self.servers.get_mut(sid) else {
+            return Task::none();
+        };
+        let epoch = s.generation;
+        let Some(rv) = s.rooms.get_mut(rid) else {
+            return Task::none();
+        };
+        let mut ctx = UpdateCtx {
+            server_id: &s.id,
+            server: &s.url,
+            rid,
+            workspace: &mut s.workspace,
+            session: s.session.as_ref(),
+            images: &self.images,
+            prefs: &self.config.ui,
+        };
+        let action = rv.focus_message(mid, &mut ctx);
+        Task::batch([
+            Self::room_task(sid, epoch, rid, action.task),
+            self.handle_effects(sid, rid, action.effects),
+        ])
     }
 
     fn complete_login(&mut self, sid: &ServerId, req: LoginRequest) -> Task<Message> {
