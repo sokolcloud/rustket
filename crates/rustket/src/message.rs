@@ -76,6 +76,15 @@ pub enum Message {
     RetrySync(ServerId, u64),
     /// A queued room link was not resolved in time.
     RoomLinkExpired(ServerId, u64),
+    /// The room of a link the workspace did not have (a channel the user
+    /// has not joined opens as a preview): message to show, URL to open in
+    /// the browser if it cannot be resolved, and the fetched room.
+    RoomLinkResolved(
+        ServerId,
+        Option<String>,
+        Option<String>,
+        Box<Res<crate::screens::directory::open::Opened>>,
+    ),
     /// Enables the confirm button of the token confirmation shown with this stamp.
     ArmConfirm(u64),
     /// Debounced config save (sidebar resize) with this stamp.
@@ -91,6 +100,8 @@ pub enum Message {
     TokenStored(ServerId, Result<(), String>),
     RetryConnection(ServerId),
     LoggedOut(ServerId, Result<(), String>),
+    /// `subscriptions.unread` finished (the room was left before).
+    MarkedUnread(ServerId, Res<()>),
     /// Current handler, whether it is Rustket, and the executable check
     /// (warnings to confirm, or why registration is refused).
     HandlerQueried(Option<String>, bool, Result<Vec<String>, String>),

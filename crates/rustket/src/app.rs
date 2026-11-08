@@ -29,11 +29,12 @@ use rustket_ui::widget::{BannerKind, Toast};
 use crate::component;
 use crate::config_writer::ConfigWriter;
 use crate::deeplink::{self, Decision, PendingLogin};
-use crate::error::Failure;
+use crate::error::{Failure, Res};
 use crate::images::{self, Images};
 use crate::message::{Message, ModalMessage, SecretsReady};
 use crate::room::{self, RoomView, UpdateCtx};
 use crate::screens::add_server::{self, AddServer};
+use crate::screens::directory::open;
 use crate::screens::login::{self, Login};
 use crate::session::{self, Followup, ServerEvent};
 use crate::single_instance::{self, ListenerSlot};
@@ -200,6 +201,7 @@ fn open_secrets(mode: SecretsMode, wanted: Vec<(ServerId, String)>) -> SecretsRe
     }
 }
 
+/// Room of a link segment: a room id, or a room name / display name.
 /// `true` for absolute `http`, `https` and `mailto` URLs.
 pub fn is_openable_url(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|u| match u.scheme() {
@@ -209,7 +211,6 @@ pub fn is_openable_url(url: &str) -> bool {
     })
 }
 
-/// Room of a link segment: a room id, or a room name / display name.
 fn find_room(ws: &rustket_core::Workspace, name: &str) -> Option<String> {
     if ws.room(name).is_some() {
         return Some(name.to_owned());
@@ -443,9 +444,10 @@ impl App {
         )
     }
 
-    /// A URL clicked in a room: permalinks to messages of a room of this
-    /// server the user has open in the app, everything else (other rooms,
-    /// e.g. public channel previews) in the browser.
+    /// A URL clicked in a room: permalinks to messages of this server open
+    /// in the app (a channel the user has not joined as a preview, like the
+    /// directory does), everything else in the browser, as does a permalink
+    /// whose room the server does not show.
     fn open_room_url(&mut self, sid: &ServerId, url: String) -> Task<Message> {
         let Some(s) = self.servers.get(sid) else {
             return self.open_url(url);
@@ -454,15 +456,46 @@ impl App {
         if let Some(site) = s.workspace.settings().str("Site_Url") {
             bases.push(site.trim().to_owned());
         }
-        let target = deeplink::permalink_path(&url, &bases).and_then(|path| {
-            let (_, name) = deeplink::room_name_from_path(&path)?;
-            let rid = find_room(&s.workspace, &deeplink::percent_decode(name))?;
-            Some((rid, path))
-        });
-        match target {
-            Some((rid, path)) => self.open_room_link(sid, Some(rid), Some(path)),
-            None => self.open_url(url),
+        let Some(path) = deeplink::permalink_path(&url, &bases) else {
+            return self.open_url(url);
+        };
+        let local = deeplink::room_name_from_path(&path)
+            .and_then(|(_, name)| find_room(&s.workspace, &deeplink::percent_decode(name)));
+        match local {
+            Some(rid) => self.open_room_link(sid, Some(rid), Some(path)),
+            None => match self.resolve_room_link(sid, &path, Some(url.clone())) {
+                Some(task) => task,
+                None => self.open_url(url),
+            },
         }
+    }
+
+    /// Fetches the room of link `path` that the workspace does not have (by
+    /// name; a channel or private group the server lets the user see) to
+    /// open it as a preview. `None` when the path names no such room or the
+    /// session is down.
+    fn resolve_room_link(
+        &self,
+        sid: &ServerId,
+        path: &str,
+        fallback: Option<String>,
+    ) -> Option<Task<Message>> {
+        let (kind, name) = deeplink::room_name_from_path(path)?;
+        if !matches!(kind, "channel" | "group") {
+            return None;
+        }
+        let rest = self.servers.get(sid)?.session.as_ref()?.rest().clone();
+        let target = open::Target::Name(deeplink::percent_decode(name));
+        let mid = deeplink::message_id_from_path(path);
+        let sid = sid.clone();
+        Some(Task::perform(open::resolve(rest, target), move |r| {
+            Message::RoomLinkResolved(
+                sid.clone(),
+                mid.clone(),
+                fallback.clone(),
+                Box::new(r.map_err(Failure::from)),
+            )
+        }))
     }
 
     fn server_urls(&self) -> Vec<ServerUrl> {
@@ -611,7 +644,7 @@ impl App {
                 .collect();
             for rid in gone {
                 if let Some(rv) = s.rooms.remove(&rid) {
-                    rv.close(&mut s.workspace);
+                    tasks.push(rv.close(&mut s.workspace, s.session.as_ref()).discard());
                 }
                 if s.active_room.as_deref() == Some(rid.as_str()) {
                     s.active_room = None;
@@ -636,15 +669,13 @@ impl App {
                     prefs: &self.config.ui,
                 };
                 let mut action = rv.on_changes(&changes, &mut ctx);
-                // Mark the focused room read when new messages arrive.
+                // Mark the focused room read when new messages arrive (not
+                // when it was marked unread elsewhere).
                 if is_active_server
                     && focused
                     && active_room.as_deref() == Some(rid.as_str())
-                    && changes.rooms.contains(rid)
-                    && ctx
-                        .workspace
-                        .subscription(rid)
-                        .is_some_and(|sub| sub.unread > 0 || sub.alert)
+                    && (changes.rooms.contains(rid) || changes.timelines.contains(rid))
+                    && rv.wants_auto_read(ctx.workspace)
                 {
                     action.task = Task::batch([action.task, rv.mark_read(&ctx)]);
                 }
@@ -803,6 +834,9 @@ impl App {
                 }
                 Task::none()
             }
+            Message::RoomLinkResolved(sid, mid, fallback, r) => {
+                self.room_link_resolved(&sid, mid, fallback, *r)
+            }
             Message::RoomLinkExpired(sid, stamp) => {
                 let expired = self
                     .servers
@@ -955,6 +989,17 @@ impl App {
                     Err(_) => Task::none(),
                 }
             }
+            Message::MarkedUnread(sid, r) => match r {
+                Ok(()) => self.toast(BannerKind::Success, t!("app.marked_unread"), String::new()),
+                Err(e) => {
+                    tracing::warn!(server = %sid, error = %e, "subscriptions.unread failed");
+                    self.toast(
+                        BannerKind::Error,
+                        t!("app.mark_unread_failed"),
+                        e.user_text(),
+                    )
+                }
+            },
             Message::Modal(m) => self.on_modal(m),
             Message::CloseModal => {
                 if let Some(Modal::ConfirmToken { server_id, .. }) = self.modals.pop() {
@@ -1020,13 +1065,22 @@ impl App {
         if !self.servers.contains_key(&sid) {
             return Task::none();
         }
+        // The rooms of the server left behind stay open but hidden.
+        let mut tasks = Vec::new();
+        if let Some(prev) = self.active.clone().filter(|p| *p != sid)
+            && let Some(s) = self.servers.get_mut(&prev)
+        {
+            for rv in s.rooms.values_mut() {
+                tasks.push(rv.hide(s.session.as_ref()).discard());
+            }
+        }
         self.active = Some(sid.clone());
         self.screen = Screen::Server;
         if self.config.active_server.as_ref() != Some(&sid) {
             self.config.active_server = Some(sid);
-            return self.save_config();
+            tasks.push(self.save_config());
         }
-        Task::none()
+        Task::batch(tasks)
     }
 
     fn on_add_server(&mut self, m: add_server::Message) -> Task<Message> {
@@ -1131,6 +1185,7 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
+        // A fresh login: no session of the old one is left to tell.
         s.reset();
         s.login = None;
         s.restoring = false;
@@ -1183,6 +1238,7 @@ impl App {
     /// The server rejected the token: drop it and show the login screen.
     fn logged_out(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
         if let Some(s) = self.servers.get_mut(sid) {
+            // The token was rejected: nothing can be sent with it any more.
             s.reset();
         }
         let delete = self.delete_token(sid);
@@ -1207,9 +1263,17 @@ impl App {
         let (url, tls) = (s.url.clone(), s.tls.clone());
         let kind = self.config.server(sid).and_then(|e| e.token_kind);
         let revoke = everywhere || kind == Some(TokenKind::Login);
-        if let Some(s) = self.servers.get_mut(sid) {
-            s.reset();
-        }
+        // Stop-typing calls of the open rooms; not chained before the
+        // logout, which must not wait for a DDP call while the socket is down
+        // (the server drops the activity with the connection anyway).
+        let typing = match self.servers.get_mut(sid) {
+            Some(s) => {
+                let t = s.close_rooms().discard();
+                s.reset();
+                t
+            }
+            None => Task::none(),
+        };
         let call = match (revoke, handle, credentials) {
             (true, Some(h), _) => {
                 let sid = sid.clone();
@@ -1247,7 +1311,7 @@ impl App {
         };
         let delete = self.delete_token(sid);
         let purge = self.purge_images(sid);
-        Task::batch([call, delete, purge, self.show_login(sid, None)])
+        Task::batch([typing, call, delete, purge, self.show_login(sid, None)])
     }
 
     fn remove_server(&mut self, sid: &ServerId) -> Task<Message> {
@@ -1339,9 +1403,10 @@ impl App {
             .filter(|r| r.as_str() != rid)
             .cloned()
             .collect();
+        let mut closed = Vec::new();
         for r in old {
             if let Some(rv) = s.rooms.remove(&r) {
-                rv.close(&mut s.workspace);
+                closed.push(rv.close(&mut s.workspace, s.session.as_ref()).discard());
             }
         }
         s.active_room = Some(rid.to_owned());
@@ -1361,11 +1426,12 @@ impl App {
         if let Some(e) = self.config.server_mut(sid) {
             e.last_room = Some(rid.to_owned());
         }
-        Task::batch([
+        closed.extend([
             task,
             self.handle_effects(sid, rid, action.effects),
             self.save_config(),
-        ])
+        ]);
+        Task::batch(closed)
     }
 
     fn mark_active_room_read(&mut self) -> Task<Message> {
@@ -1378,14 +1444,13 @@ impl App {
         let Some(rid) = s.active_room.clone() else {
             return Task::none();
         };
-        let unread = s
-            .workspace
-            .subscription(&rid)
-            .is_some_and(|sub| sub.unread > 0 || sub.alert);
         let epoch = s.generation;
         let Some(rv) = s.rooms.get_mut(&rid) else {
             return Task::none();
         };
+        // The room read mark only when wanted (an unread mark made by the
+        // user stays); the open thread is checked on its own (`tunread`).
+        let unread = rv.wants_auto_read(&s.workspace);
         let ctx = UpdateCtx {
             server_id: &s.id,
             server: &s.url,
@@ -1470,9 +1535,10 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
-        if let Some(rv) = s.rooms.remove(rid) {
-            rv.close(&mut s.workspace);
-        }
+        let typing = match s.rooms.remove(rid) {
+            Some(rv) => rv.close(&mut s.workspace, s.session.as_ref()).discard(),
+            None => Task::none(),
+        };
         if s.active_room.as_deref() == Some(rid) {
             s.active_room = None;
         }
@@ -1480,9 +1546,9 @@ impl App {
             && e.last_room.as_deref() == Some(rid)
         {
             e.last_room = None;
-            return self.save_config();
+            return Task::batch([typing, self.save_config()]);
         }
-        Task::none()
+        typing
     }
 
     fn handle_effects(
@@ -1505,6 +1571,8 @@ impl App {
                 | room::Effect::ClosePanel
                 | room::Effect::ShowMessage(_)
                 | room::Effect::Compose(_) => Task::none(),
+                room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
+                room::Effect::StartDiscussion { pmid } => self.start_discussion(sid, rid, pmid),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
                     crate::room::emoji_picker::set_recent(&self.config.recent_emoji);
@@ -1513,6 +1581,47 @@ impl App {
             });
         }
         Task::batch(tasks)
+    }
+
+    /// "Mark unread": leaves the room first (like the web client), so the
+    /// automatic read mark of the open room cannot undo it, then calls
+    /// `subscriptions.unread`.
+    fn mark_unread(&mut self, sid: &ServerId, rid: &str, mid: String) -> Task<Message> {
+        let close = self.close_room_view(sid, rid);
+        let Some(rest) = self
+            .servers
+            .get(sid)
+            .and_then(|s| s.session.as_ref())
+            .map(|h| h.rest().clone())
+        else {
+            return close;
+        };
+        let (sid, rid) = (sid.clone(), rid.to_owned());
+        let call = Task::perform(
+            async move {
+                rest.subscriptions_unread(&rid, Some(&mid))
+                    .await
+                    .map_err(Failure::from)
+            },
+            move |r| Message::MarkedUnread(sid.clone(), r),
+        );
+        Task::batch([close, call])
+    }
+
+    /// The "create discussion" dialog with `rid` as the parent room
+    /// (optionally from message `pmid`).
+    fn start_discussion(
+        &mut self,
+        sid: &ServerId,
+        rid: &str,
+        pmid: Option<String>,
+    ) -> Task<Message> {
+        let a = self.activate(sid.clone());
+        let nav = self.navigate(component::Nav::CreateDiscussion {
+            rid: rid.to_owned(),
+            pmid,
+        });
+        Task::batch([a, nav])
     }
 
     /// Hands a dropped file to the composer of the active room.
@@ -1964,18 +2073,59 @@ impl App {
         });
         match target {
             Some(rid) => {
-                let open = self.open_room(sid, &rid);
-                let focus = match path.as_deref().and_then(deeplink::message_id_from_path) {
-                    Some(mid) => self.focus_message(sid, &rid, &mid),
-                    None => Task::none(),
-                };
-                Task::batch([open, focus])
+                let mid = path.as_deref().and_then(deeplink::message_id_from_path);
+                self.open_room_at(sid, &rid, mid.as_deref())
             }
-            None => self.toast(
-                BannerKind::Warning,
-                t!("deeplink.room_not_found"),
-                String::new(),
-            ),
+            None => match path
+                .as_deref()
+                .and_then(|p| self.resolve_room_link(sid, p, None))
+            {
+                Some(task) => task,
+                None => self.toast(
+                    BannerKind::Warning,
+                    t!("deeplink.room_not_found"),
+                    String::new(),
+                ),
+            },
+        }
+    }
+
+    /// Opens room `rid` and shows message `mid` in it, if given.
+    fn open_room_at(&mut self, sid: &ServerId, rid: &str, mid: Option<&str>) -> Task<Message> {
+        let open = self.open_room(sid, rid);
+        let focus = match mid {
+            Some(mid) => self.focus_message(sid, rid, mid),
+            None => Task::none(),
+        };
+        Task::batch([open, focus])
+    }
+
+    /// The room of a link was fetched: put it into the workspace (a preview
+    /// when not joined) and open it.
+    fn room_link_resolved(
+        &mut self,
+        sid: &ServerId,
+        mid: Option<String>,
+        fallback: Option<String>,
+        r: Res<open::Opened>,
+    ) -> Task<Message> {
+        match (r, self.servers.get_mut(sid)) {
+            (Ok(o), Some(s)) => {
+                let rid = open::apply(&mut s.workspace, o);
+                self.open_room_at(sid, &rid, mid.as_deref())
+            }
+            (Ok(_), None) => Task::none(),
+            (Err(e), _) => {
+                tracing::debug!(server = %sid, error = %e, "room of a link not resolved");
+                match fallback {
+                    Some(url) => self.open_url(url),
+                    None => self.toast(
+                        BannerKind::Warning,
+                        t!("deeplink.room_not_found"),
+                        String::new(),
+                    ),
+                }
+            }
         }
     }
 

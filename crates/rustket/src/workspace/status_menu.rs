@@ -25,7 +25,7 @@ use crate::error::Res;
 use crate::workspace::sidebar::presence;
 
 /// Most recent custom status texts kept.
-pub const MAX_RECENT: usize = 5;
+pub const MAX_RECENT: usize = rustket_core::config::MAX_RECENT_STATUS_TEXTS;
 /// Longest status text the server accepts.
 pub const MAX_TEXT: usize = 120;
 pub const TEXT_INPUT_ID: &str = "status-menu-text";
@@ -56,7 +56,9 @@ pub struct StatusMenu {
     pub open: bool,
     /// Custom status text being edited.
     pub text: String,
-    /// Recently used status texts, most recent first.
+    /// Recently used status texts, most recent first (a copy of
+    /// `AppConfig::recent_status_texts`, which is persisted through
+    /// `Effect::RecentStatusTexts`).
     pub recent: Vec<String>,
     /// A `users.setStatus` call is running.
     pub busy: bool,
@@ -169,6 +171,15 @@ impl StatusMenu {
     }
 
     pub fn update(&mut self, msg: Message, ctx: &mut Ctx<'_>) -> Action<Message> {
+        self.recent = ctx.config.recent_status_texts.clone();
+        let action = self.update_inner(msg, ctx);
+        if self.recent != ctx.config.recent_status_texts {
+            return action.with(Effect::RecentStatusTexts(self.recent.clone()));
+        }
+        action
+    }
+
+    fn update_inner(&mut self, msg: Message, ctx: &mut Ctx<'_>) -> Action<Message> {
         match msg {
             Message::Toggle(open) => {
                 self.open = open;
@@ -548,6 +559,8 @@ mod tests {
         assert_eq!(m.recent, ["Lunch"]);
         let a = m.update(Message::Settings, &mut fx.ctx());
         assert!(!m.open);
+        // The recent list lives in the config (persisted by the app).
+        assert!(m.recent.is_empty());
         assert!(matches!(
             a.effects.as_slice(),
             [Effect::Navigate(Nav::Settings)]
@@ -556,6 +569,31 @@ mod tests {
         assert!(matches!(
             a.effects.as_slice(),
             [Effect::Logout { everywhere: true }]
+        ));
+    }
+
+    #[test]
+    fn recent_texts_are_persisted_through_the_config() {
+        let mut fx = Fx::new();
+        fx.config.recent_status_texts = vec!["Old".into()];
+        let mut m = StatusMenu::new();
+        let a = m.update(Message::Toggle(true), &mut fx.ctx());
+        let saved = a.effects.iter().find_map(|e| match e {
+            Effect::RecentStatusTexts(v) => Some(v.clone()),
+            _ => None,
+        });
+        assert_eq!(saved.unwrap(), ["Lunch", "Old"]);
+        // The app stores them; the next open starts from the config.
+        fx.config.recent_status_texts = vec!["Lunch".into(), "Old".into()];
+        let mut m = StatusMenu::new();
+        let a = m.update(Message::Toggle(true), &mut fx.ctx());
+        assert!(a.effects.is_empty());
+        assert_eq!(m.recent, ["Lunch", "Old"]);
+        m.text = "Away for a bit".into();
+        let a = m.update(Message::SubmitText, &mut fx.ctx());
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::RecentStatusTexts(v)] if v[0] == "Away for a bit" && v.len() == 3
         ));
     }
 
@@ -620,7 +658,12 @@ mod tests {
         let mut m = StatusMenu::new();
         m.text = "Back".into();
         let a = m.update(Message::SubmitText, &mut fx.ctx());
-        assert!(m.busy && a.effects.is_empty());
+        // Only the recent list is persisted; no toast or navigation.
+        assert!(m.busy);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::RecentStatusTexts(v)] if v == &["Back"]
+        ));
         m.update(
             Message::StatusSet(None, Some("Back".into()), Ok(())),
             &mut fx.ctx(),

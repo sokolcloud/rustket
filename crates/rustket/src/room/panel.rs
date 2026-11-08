@@ -29,6 +29,7 @@ use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_4, TEXT_SUBTITLE};
 use rustket_ui::widget::{divider, ellipsis, icon_button};
 
 use super::{Action, Effect, UpdateCtx, ViewCtx};
+use crate::session::SessionHandle;
 
 /// Width of the panel.
 pub const WIDTH: f32 = 360.0;
@@ -95,6 +96,8 @@ pub enum Message {
     /// First load of the panel with generation `u64`.
     Activate(u64),
     Body(u64, BodyMsg),
+    /// "+" in the Discussions panel header.
+    CreateDiscussion,
 }
 
 /// Messages of the panel bodies.
@@ -201,14 +204,18 @@ impl Panel {
     }
 
     /// Lets replaced/closed bodies release workspace state (thread
-    /// timelines, drafts). Runs before every panel update; the room view
+    /// timelines, drafts) and stop their typing indicator (the task only
+    /// carries that call). Runs around every panel update; the room view
     /// also calls it after opening or closing the panel.
-    pub fn retire(&mut self, ws: &mut Workspace) {
+    pub fn retire(&mut self, ws: &mut Workspace, session: Option<&SessionHandle>) -> Task<Message> {
+        let mut tasks = Vec::new();
         for body in self.retired.drain(..) {
             if let Body::Thread(mut t) = body {
+                tasks.push(t.leave(session).discard());
                 t.on_close(ws);
             }
         }
+        Task::batch(tasks)
     }
 
     fn drop_body(&mut self, body: Option<Body>) {
@@ -367,6 +374,26 @@ impl Panel {
         }
     }
 
+    /// The room view is closing (room switch, logout, …): closes the panel;
+    /// a thread view stores its draft and stops its typing indicator. The
+    /// task only carries the stop-typing call.
+    pub fn leave(&mut self, ws: &mut Workspace, session: Option<&SessionHandle>) -> Task<Message> {
+        self.close();
+        self.retire(ws, session)
+    }
+
+    /// The room stays open but is not shown (another server became active):
+    /// the open thread stops its typing indicator.
+    pub fn hide(&mut self, session: Option<&SessionHandle>) -> Task<Message> {
+        let g = self.generation;
+        match &mut self.body {
+            Some(Body::Thread(t)) => t
+                .leave(session)
+                .map(move |m| Message::Body(g, BodyMsg::Thread(m))),
+            _ => Task::none(),
+        }
+    }
+
     pub fn close(&mut self) {
         self.open = None;
         self.back = None;
@@ -378,9 +405,18 @@ impl Panel {
     }
 
     pub fn update(&mut self, msg: Message, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
-        self.retire(ctx.workspace);
+        let before = self.retire(ctx.workspace, ctx.session);
+        let mut a = self.update_inner(msg, ctx);
+        // Back to a stashed panel retires the thread it leaves.
+        let after = self.retire(ctx.workspace, ctx.session);
+        a.task = Task::batch([before, a.task, after]);
+        a
+    }
+
+    fn update_inner(&mut self, msg: Message, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
         match msg {
             Message::Close => Action::effect(Effect::ClosePanel),
+            Message::CreateDiscussion => Action::effect(Effect::StartDiscussion { pmid: None }),
             Message::Back => match self.back.clone() {
                 Some(kind) if self.restore(&kind) => Action::none(),
                 Some(kind) => Action::effect(Effect::OpenPanel(kind)),
@@ -463,7 +499,13 @@ impl Panel {
     }
 
     pub fn on_changes(&mut self, changes: &Changes, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
-        self.retire(ctx.workspace);
+        let retired = self.retire(ctx.workspace, ctx.session);
+        let mut a = self.body_changes(changes, ctx);
+        a.task = Task::batch([retired, a.task]);
+        a
+    }
+
+    fn body_changes(&mut self, changes: &Changes, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
         let g = self.generation;
         if self.pending.is_some() {
             return Action::none();
@@ -552,6 +594,16 @@ impl Panel {
             for b in t.header_actions(ctx) {
                 head = head.push(b.map(move |m| Message::Body(g, BodyMsg::Thread(m))));
             }
+        }
+        if *kind == Kind::Discussions
+            && ctx.workspace.subscription(ctx.rid).is_some()
+            && rustket_core::permissions::can_create_discussion(ctx.workspace, Some(ctx.rid))
+        {
+            head = head.push(icon_button(
+                Icon::Plus,
+                Some(Message::CreateDiscussion),
+                t!("room_panel.create_discussion"),
+            ));
         }
         head = head.push(icon_button(
             Icon::X,

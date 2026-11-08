@@ -290,7 +290,7 @@ fn send_goes_through_the_outbox_and_retry() {
         env.ws.pending_messages("R1")[0].state,
         DeliveryState::Failed { .. }
     ));
-    let _ = c.update(Message::Retry(id.clone()), &mut env.ctx());
+    let _ = c.intent(ComposeIntent::Retry(id.clone()), &mut env.ctx());
     assert_eq!(
         env.ws.pending_messages("R1")[0].state,
         DeliveryState::Sending
@@ -322,7 +322,7 @@ fn discard_removes_a_failed_message_and_blank_text_is_not_sent() {
     type_text(&mut c, &mut env, "x");
     let _ = c.update(Message::Send, &mut env.ctx());
     let id = env.ws.pending_messages("R1")[0].message.id.clone();
-    let _ = c.update(Message::Discard(id), &mut env.ctx());
+    let _ = c.intent(ComposeIntent::Discard(id), &mut env.ctx());
     assert!(env.ws.pending_messages("R1").is_empty());
 }
 
@@ -856,4 +856,16 @@ fn join_code_rooms_need_a_code() {
     let _ = c.update(Message::JoinCode("1234".into()), &mut ctx);
     let a = c.update(Message::Join, &mut ctx);
     assert!(names(&outputs(a.task)).contains(&"Joined".to_owned()));
+}
+
+#[test]
+fn leaving_stops_typing_once() {
+    let mut env = Env::new("t-leave");
+    let mut c = Composer::for_thread("R1", "T1");
+    type_text(&mut c, &mut env, "hel");
+    assert!(c.typing.is_active());
+    // Without a session nothing can be sent, but the indicator is over.
+    let _ = c.leave(None);
+    assert!(!c.typing.is_active());
+    assert_eq!(c.leave(None).units(), 0);
 }

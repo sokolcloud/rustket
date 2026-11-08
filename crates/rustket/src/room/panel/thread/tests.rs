@@ -325,15 +325,34 @@ fn failed_reply_retry_in_the_thread() {
     echo.temp = None;
     echo.updated_at = echo.ts;
     let _ = t.update(
-        Msg::Item(ItemMsg::Resent(
-            id.clone(),
-            Some("P".into()),
-            Ok(Box::new(echo)),
-        )),
+        Msg::Composer(composer::Message::Sent(id.clone(), Ok(Box::new(echo)))),
         &mut env.ctx(),
     );
     assert_eq!(state(&env.ws), Some(DeliveryState::Sent));
     assert!(env.ws.pending_messages("R1").is_empty());
+}
+
+#[test]
+fn failed_reply_is_handled_by_the_thread_composer_only() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let mut m = env.ws.new_local_message("R1", "oops", Some("P"), false);
+    m.ts = RcDate::from_millis(T0 + 5);
+    let id = m.id.clone();
+    env.ws.add_pending(m);
+    env.ws.mark_pending_failed("R1", Some("P"), &id, "boom");
+    // Another thread's composer leaves it alone.
+    let mut other = Composer::for_thread("R1", "Q");
+    let _ = other.intent(ComposeIntent::Discard(id.clone()), &mut env.ctx());
+    let _ = other.intent(ComposeIntent::Retry(id.clone()), &mut env.ctx());
+    assert_eq!(env.ws.pending_messages("R1").len(), 1);
+    // The row action reaches this thread's composer, never the room's.
+    let a = t.update(Msg::Item(ItemMsg::Discard(id.clone())), &mut env.ctx());
+    assert!(a.effects.iter().all(|e| !matches!(e, Effect::Compose(_))));
+    assert!(env.ws.pending_messages("R1").is_empty());
+    assert!(env.ws.thread("P").unwrap().get(&id).is_none());
 }
 
 #[test]
@@ -365,6 +384,7 @@ fn row_actions_route_to_the_thread_composer() {
         chrono::Utc::now(),
     );
     assert!(!acts.contains(&Act::ReplyInThread));
+    assert!(!acts.contains(&Act::StartDiscussion));
     assert!(acts.contains(&Act::Quote));
 }
 
@@ -380,7 +400,7 @@ fn closing_the_panel_releases_the_thread() {
     assert_eq!(p.thread_tmid(), Some("P"));
     assert_eq!(p.width(), WIDTH);
     p.close();
-    p.retire(&mut env.ws);
+    let _ = p.retire(&mut env.ws, None);
     assert!(env.ws.thread("P").is_none());
     // Back from a thread to the threads list releases it too.
     p.open(Kind::Threads);
@@ -391,7 +411,7 @@ fn closing_the_panel_releases_the_thread() {
     let _ = p.update(super::super::Message::Activate(g), &mut env.ctx());
     assert!(env.ws.thread("P").is_some());
     let _ = p.update(super::super::Message::Back, &mut env.ctx());
-    p.retire(&mut env.ws);
+    let _ = p.retire(&mut env.ws, None);
     assert_eq!(p.kind(), Some(&Kind::Threads));
     assert!(env.ws.thread("P").is_none());
 }
@@ -534,7 +554,7 @@ fn unactivated_thread_keeps_the_draft() {
     let mut p = Panel::new("R1");
     p.open(Kind::Thread("P".into()));
     p.close();
-    p.retire(&mut env.ws);
+    let _ = p.retire(&mut env.ws, None);
     assert_eq!(env.ws.draft("R1", Some("P")), Some("my unsent reply"));
 }
 

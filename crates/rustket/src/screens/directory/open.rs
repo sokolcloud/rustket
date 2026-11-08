@@ -15,6 +15,8 @@ use crate::error::Res;
 pub enum Target {
     /// A room by id (joined or not).
     Room(String),
+    /// A room by name (permalinks), joined or not.
+    Name(String),
     /// Join a public room, then open it.
     Join(String),
     /// A direct message with a user (created if needed).
@@ -45,6 +47,11 @@ pub fn local_dm(ws: &Workspace, username: &str) -> Option<String> {
 pub fn local(ws: &Workspace, target: &Target) -> Option<String> {
     let rid = match target {
         Target::Room(rid) => ws.room(rid).map(|_| rid.clone()),
+        Target::Name(name) => ws
+            .rooms()
+            .values()
+            .find(|e| e.name() == name || e.fname() == Some(name.as_str()))
+            .map(|e| e.rid().to_owned()),
         Target::Join(rid) => ws.subscription(rid).map(|_| rid.clone()),
         Target::User(u) => local_dm(ws, u),
         Target::Users(_) => None,
@@ -68,6 +75,10 @@ async fn fetch(rest: &RestClient, rid: &str) -> Result<Opened> {
 pub async fn resolve(rest: RestClient, target: Target) -> Result<Opened> {
     match target {
         Target::Room(rid) => fetch(&rest, &rid).await,
+        Target::Name(name) => {
+            let room = rest.rooms_info_by_name(&name).await?;
+            fetch(&rest, &room.id).await
+        }
         Target::Join(rid) => {
             rest.rooms_join(&rid, None).await?;
             fetch(&rest, &rid).await

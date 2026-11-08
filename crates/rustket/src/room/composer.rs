@@ -29,8 +29,8 @@ use rustket_ui::theme::{
     FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, Placement, TooltipPosition, danger_button, ghost_button, icon_button_with, modal,
-    popover, primary_button, secondary_button, tooltip,
+    BannerKind, Placement, TooltipPosition, danger_button, icon_button_with, modal, popover,
+    primary_button, secondary_button, tooltip,
 };
 use rustket_ui::{Icon, icon, style};
 
@@ -40,6 +40,13 @@ use super::emoji_picker::{self, EmojiPicker};
 use super::upload::{self, Uploads};
 use super::{Action, ComposeIntent, Effect, UpdateCtx, ViewCtx};
 use crate::error::Res;
+use crate::session::SessionHandle;
+
+/// A pending message with its delivery state.
+type PendingItem = (
+    rocketchat::models::Message,
+    rustket_core::timeline::DeliveryState,
+);
 
 /// Delay before a changed text is stored as the draft.
 const DRAFT_DELAY: Duration = Duration::from_millis(800);
@@ -240,8 +247,6 @@ pub enum Message {
     Sent(String, Res<Box<rocketchat::models::Message>>),
     Updated(Res<Box<rocketchat::models::Message>>),
     CommandRan(Res<serde_json::Value>),
-    Retry(String),
-    Discard(String),
     Typed(Res<()>),
     TypingTick,
     DraftTick(u64),
@@ -259,6 +264,8 @@ pub enum Message {
     Join,
     JoinCode(String),
     Joined(Res<()>),
+    /// The subscription fetched right after joining.
+    JoinedSub(Res<Box<rocketchat::models::Subscription>>),
     /// Enter on an emptied edit: confirm before deleting the message.
     DeleteConfirmed,
     DeleteCancelled,
@@ -416,6 +423,29 @@ impl Composer {
             None => self.content.text(),
         };
         ws.set_draft(&self.rid, self.tmid.as_deref(), &text);
+    }
+
+    /// The room (or thread) is going away: stop the typing indicator right
+    /// away instead of leaving it to the server's expiry.
+    pub fn leave(&mut self, session: Option<&SessionHandle>) -> Task<Message> {
+        let Some(TypingAction::Stop) = self.typing.on_leave() else {
+            return Task::none();
+        };
+        let Some(session) = session.cloned() else {
+            return Task::none();
+        };
+        let rid = self.rid.clone();
+        let tmid = self.tmid.clone();
+        Task::perform(
+            async move {
+                session
+                    .session()
+                    .set_user_activity(&rid, tmid.as_deref(), &[])
+                    .await
+                    .map_err(crate::error::Failure::from)
+            },
+            Message::Typed,
+        )
     }
 
     /// Applies send results that arrived while the room was closed; a message
@@ -688,13 +718,6 @@ impl Composer {
                     e.user_text(),
                 )),
             },
-            Message::Retry(id) => self.retry(&id, ctx),
-            Message::Discard(id) => {
-                let tmid = self.pending_tmid(ctx.workspace, &id);
-                ctx.workspace
-                    .discard_pending(&self.rid, tmid.as_deref(), &id);
-                Action::none()
-            }
             Message::Typed(r) => {
                 if let Err(e) = r {
                     tracing::debug!(error = %e, "user-activity failed");
@@ -827,7 +850,14 @@ impl Composer {
                 match r {
                     Ok(_) => {
                         self.join_code.clear();
-                        Action::task(self.focus())
+                        // The sidebar entry and the normal composer need the
+                        // subscription; do not wait for the stream.
+                        let rid = self.rid.clone();
+                        let sub = ctx.rest_task(
+                            move |rest| async move { rest.subscriptions_get_one(&rid).await },
+                            |r| Message::JoinedSub(r.map(Box::new)),
+                        );
+                        Action::task(Task::batch([sub, self.focus()]))
                     }
                     Err(e) => Action::effect(Effect::Toast(
                         BannerKind::Error,
@@ -835,6 +865,15 @@ impl Composer {
                         e.user_text(),
                     )),
                 }
+            }
+            Message::JoinedSub(r) => {
+                match r {
+                    Ok(sub) => ctx
+                        .workspace
+                        .apply_subscription(rustket_core::Change::Updated, *sub),
+                    Err(e) => tracing::debug!(error = %e, "subscription after join"),
+                }
+                Action::none()
             }
             Message::DeleteConfirmed => {
                 let Some(mid) = self.confirm_delete.take() else {
@@ -911,6 +950,9 @@ impl Composer {
             }
             // The thread panel owns its own composer (`Composer::for_thread`).
             ComposeIntent::ReplyInThread(_) => Action::none(),
+            // Any pending message of the room (thread replies included).
+            ComposeIntent::Retry(mid) => self.retry(&mid, ctx),
+            ComposeIntent::Discard(mid) => self.discard(&mid, ctx),
         }
     }
 
@@ -1258,13 +1300,20 @@ impl Composer {
         send_task(ctx, m)
     }
 
-    fn retry(&mut self, id: &str, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
-        let Some(m) = ctx
-            .workspace
-            .pending_messages(&self.rid)
+    /// Pending message `id` this composer owns: the thread composer only
+    /// replies of its thread, the room composer any message of the room (a
+    /// thread reply shown in the room while its thread is closed).
+    fn owned_pending(&self, ws: &Workspace, id: &str) -> Option<PendingItem> {
+        ws.pending_messages(&self.rid)
             .into_iter()
             .find(|i| i.message.id == id)
-            .map(|i| i.message.clone())
+            .filter(|i| self.tmid.is_none() || i.message.tmid == self.tmid)
+            .map(|i| (i.message.clone(), i.state.clone()))
+    }
+
+    fn retry(&mut self, id: &str, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        let Some((m, rustket_core::timeline::DeliveryState::Failed { .. })) =
+            self.owned_pending(ctx.workspace, id)
         else {
             return Action::none();
         };
@@ -1279,6 +1328,15 @@ impl Composer {
             .find(|i| i.message.id == id)
             .and_then(|i| i.message.tmid.clone())
             .or_else(|| self.tmid.clone())
+    }
+
+    /// Drops a pending (failed) message (see [`Self::owned_pending`]).
+    fn discard(&mut self, id: &str, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        if let Some((m, _)) = self.owned_pending(ctx.workspace, id) {
+            ctx.workspace
+                .discard_pending(&self.rid, m.tmid.as_deref(), id);
+        }
+        Action::none()
     }
 
     fn permalink(&self, ws: &Workspace, server: &str, mid: &str) -> String {
@@ -1310,9 +1368,6 @@ impl Composer {
                     .size(TEXT_CAPTION)
                     .style(style::text_secondary),
             );
-        }
-        if let Some(failed) = self.failed_view(ctx) {
-            col = col.push(failed);
         }
         if let Some(t) = self.uploads.transfers_view() {
             col = col.push(t.map(Message::Upload));
@@ -1504,43 +1559,14 @@ impl Composer {
         container(bar).padding([SPACE_1, SPACE_2]).into()
     }
 
-    fn failed_view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, Message>> {
-        let failed: Vec<(String, String)> = ctx
-            .workspace
-            .pending_messages(&self.rid)
-            .into_iter()
-            .filter(|i| i.message.tmid == self.tmid)
-            .filter_map(|i| match &i.state {
-                rustket_core::timeline::DeliveryState::Failed { error } => {
-                    Some((i.message.id.clone(), error.clone()))
-                }
-                _ => None,
-            })
-            .collect();
-        if failed.is_empty() {
-            return None;
-        }
-        let rows = failed.into_iter().take(3).map(|(id, error)| {
-            row![
-                icon(Icon::TriangleAlert)
-                    .size(14.0)
-                    .style(style::text_danger),
-                label(t!("room_composer.failed", error = error))
-                    .size(TEXT_CAPTION)
-                    .style(style::text_danger)
-                    .width(Length::Fill),
-                ghost_button(t!("room_composer.retry"), Some(Message::Retry(id.clone()))),
-                ghost_button(t!("room_composer.discard"), Some(Message::Discard(id))),
-            ]
-            .spacing(SPACE_2)
-            .align_y(Alignment::Center)
-            .into()
-        });
-        Some(column(rows).spacing(SPACE_1).into())
-    }
-
     fn notice_view<'a>(&'a self, block: PostBlock, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
+        let channel = ctx
+            .workspace
+            .room(&self.rid)
+            .is_some_and(|e| e.room_type() == RoomType::Channel);
         let text = match block {
+            // A previewed channel: the Join bar.
+            PostBlock::NotSubscribed if channel => t!("room_composer.preview_notice"),
             PostBlock::NotSubscribed => t!("room_composer.block.not_subscribed"),
             PostBlock::Archived => t!("room_composer.block.archived"),
             PostBlock::Muted => t!("room_composer.block.muted"),
@@ -1559,11 +1585,7 @@ impl Composer {
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
-        let joinable = block == PostBlock::NotSubscribed
-            && ctx
-                .workspace
-                .room(&self.rid)
-                .is_some_and(|e| e.room_type() == RoomType::Channel);
+        let joinable = block == PostBlock::NotSubscribed && channel;
         if joinable {
             r = r.push(space().width(Length::Fill));
             let with_code = needs_join_code(ctx.workspace, &self.rid);

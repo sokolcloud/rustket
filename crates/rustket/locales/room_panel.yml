@@ -620,3 +620,6 @@ room_panel.file_downloading:
 room_panel.file_open:
   en: "Open"
   ru: "Открыть"
+room_panel.create_discussion:
+  en: "Create discussion"
+  ru: "Создать обсуждение"

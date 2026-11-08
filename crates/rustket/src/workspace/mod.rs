@@ -103,17 +103,26 @@ impl ServerState {
         })
     }
 
+    /// Closes every room view; the returned task stops their typing
+    /// indicators (sent through the current session; results are not needed).
+    pub fn close_rooms(&mut self) -> iced::Task<crate::room::Message> {
+        let rooms: Vec<_> = self.rooms.drain().collect();
+        let mut tasks = Vec::new();
+        for (_, rv) in rooms {
+            tasks.push(rv.close(&mut self.workspace, self.session.as_ref()));
+        }
+        self.active_room = None;
+        iced::Task::batch(tasks)
+    }
+
     /// Drops the session, room views and workspace state (logout). Bumps the
-    /// generation so late results of the old session are discarded.
+    /// generation so late results of the old session are discarded. Call
+    /// [`Self::close_rooms`] first to stop the typing indicators.
     pub fn reset(&mut self) {
         self.generation += 1;
         self.credentials = None;
+        let _ = self.close_rooms();
         self.session = None;
-        let rooms: Vec<_> = self.rooms.drain().collect();
-        for (_, rv) in rooms {
-            rv.close(&mut self.workspace);
-        }
-        self.active_room = None;
         self.workspace = Workspace::new();
         self.sidebar = sidebar::Sidebar::default();
         self.syncing = false;

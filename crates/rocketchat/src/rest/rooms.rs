@@ -79,6 +79,15 @@ impl RestClient {
         field(v, "room")
     }
 
+    /// `GET rooms.info?roomName=` (a room the user may not have joined,
+    /// e.g. the public channel of a permalink).
+    pub async fn rooms_info_by_name(&self, name: &str) -> Result<Room> {
+        let v: Value = self
+            .get("rooms.info", &Query::new().push("roomName", name))
+            .await?;
+        field(v, "room")
+    }
+
     /// Mark a room (and its threads) as read.
     pub async fn subscriptions_read(&self, rid: &str) -> Result<()> {
         self.post_ok(
@@ -225,11 +234,58 @@ impl RestClient {
         reply: Option<&str>,
         users: &[&str],
     ) -> Result<Room> {
-        let mut body = json!({ "prid": prid, "t_name": name, "users": users });
-        if let Some(r) = reply {
-            body["reply"] = Value::String(r.into());
-        }
+        self.rooms_create_discussion_from(prid, None, name, reply, users)
+            .await
+    }
+
+    /// `rooms.createDiscussion` started from message `pmid` of the parent.
+    pub async fn rooms_create_discussion_from(
+        &self,
+        prid: &str,
+        pmid: Option<&str>,
+        name: &str,
+        reply: Option<&str>,
+        users: &[&str],
+    ) -> Result<Room> {
+        let body = create_discussion_body(prid, pmid, name, reply, users);
         let v: Value = self.post("rooms.createDiscussion", &body).await?;
         field(v, "discussion")
+    }
+}
+
+/// Body of `rooms.createDiscussion`.
+fn create_discussion_body(
+    prid: &str,
+    pmid: Option<&str>,
+    name: &str,
+    reply: Option<&str>,
+    users: &[&str],
+) -> Value {
+    let mut body = json!({ "prid": prid, "t_name": name, "users": users });
+    if let Some(r) = reply {
+        body["reply"] = Value::String(r.into());
+    }
+    if let Some(m) = pmid {
+        body["pmid"] = Value::String(m.into());
+    }
+    body
+}
+
+#[cfg(test)]
+mod discussion_tests {
+    use super::*;
+
+    #[test]
+    fn discussion_body_carries_the_parent_message() {
+        let b = create_discussion_body("R", Some("M"), "topic", None, &["bob"]);
+        assert_eq!(
+            b,
+            json!({"prid": "R", "pmid": "M", "t_name": "topic", "users": ["bob"]})
+        );
+        let b = create_discussion_body("R", None, "t", Some("hi"), &[]);
+        assert_eq!(
+            b,
+            json!({"prid": "R", "t_name": "t", "users": [], "reply": "hi"})
+        );
     }
 }

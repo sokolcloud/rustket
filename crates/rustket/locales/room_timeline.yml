@@ -134,9 +134,6 @@ room_timeline.act_delete:
 room_timeline.action_failed:
   en: "%{action} failed"
   ru: "Не удалось: %{action}"
-room_timeline.marked_unread:
-  en: "Marked as unread"
-  ru: "Отмечено непрочитанным"
 room_timeline.copied:
   en: "Copied to clipboard"
   ru: "Скопировано в буфер обмена"
@@ -233,3 +230,6 @@ room_timeline.history_first_failed:
 room_timeline.jump_not_loaded:
   en: "Couldn't find the message in the history"
   ru: "Не удалось найти сообщение в истории"
+room_timeline.act_start_discussion:
+  en: "Start a discussion"
+  ru: "Начать обсуждение"

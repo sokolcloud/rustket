@@ -3,11 +3,13 @@
 //! of failed sends, delete/report dialogs and the body [`Viewer`].
 //!
 //! Composer requests (`Effect::Compose`) are returned to the owner, which
-//! routes them to its composer (the room's or the thread's).
+//! routes them to its composer (the room's or the thread's); failed sends
+//! are retried and dropped by that composer's outbox
+//! (`ComposeIntent::Retry`/`Discard`), the only send path.
 
 use chrono::Utc;
 use iced::Element;
-use rocketchat::models::{Message as RcMessage, OutgoingMessage};
+use rocketchat::models::Message as RcMessage;
 use rust_i18n::t;
 use rustket_core::Workspace;
 use rustket_core::timeline::{DeliveryState, TimelineItem};
@@ -44,7 +46,6 @@ pub enum Msg {
     OpenUser(String),
     Retry(String),
     Discard(String),
-    Resent(String, Option<String>, Res<Box<RcMessage>>),
     ActionDone(Act, Res<()>),
     CloseDialog,
     ConfirmDelete,
@@ -176,32 +177,10 @@ impl Interactions {
                 }
             }
             Msg::OpenUser(u) => Action::effect(Effect::OpenPanel(Kind::UserInfo(u))),
-            Msg::Retry(mid) => self.retry(&mid, ctx),
-            Msg::Discard(mid) => {
-                let tmid = self.item(ctx, &mid).and_then(|i| i.message.tmid);
-                ctx.workspace
-                    .discard_pending(ctx.rid, tmid.as_deref(), &mid);
-                Action::none()
-            }
-            Msg::Resent(mid, tmid, r) => {
-                match r {
-                    Ok(m) => ctx.workspace.apply_message(*m),
-                    Err(e) => ctx.workspace.mark_pending_failed(
-                        ctx.rid,
-                        tmid.as_deref(),
-                        &mid,
-                        &e.user_text(),
-                    ),
-                }
-                Action::none()
-            }
+            Msg::Retry(mid) => Action::effect(Effect::Compose(ComposeIntent::Retry(mid))),
+            Msg::Discard(mid) => Action::effect(Effect::Compose(ComposeIntent::Discard(mid))),
             Msg::ActionDone(act, r) => match r {
-                Ok(()) => match act {
-                    Act::MarkUnread => {
-                        Action::effect(toast_ok(t!("room_timeline.marked_unread").into_owned()))
-                    }
-                    _ => Action::none(),
-                },
+                Ok(()) => Action::none(),
                 Err(e) => Action::effect(toast_error(
                     t!("room_timeline.action_failed", action = act.label()).into_owned(),
                     e.user_text(),
@@ -283,32 +262,6 @@ impl Interactions {
         }
     }
 
-    fn retry(&mut self, mid: &str, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
-        let Some(item) = self.item(ctx, mid) else {
-            return Action::none();
-        };
-        if !matches!(item.state, DeliveryState::Failed { .. }) {
-            return Action::none();
-        }
-        let m = &item.message;
-        let out = OutgoingMessage {
-            id: Some(m.id.clone()),
-            rid: m.rid.clone(),
-            msg: m.msg.clone(),
-            tmid: m.tmid.clone(),
-            tshow: m.tshow.filter(|t| *t),
-            ..Default::default()
-        };
-        let tmid = m.tmid.clone();
-        ctx.workspace
-            .mark_pending_sending(ctx.rid, tmid.as_deref(), mid);
-        let mid = mid.to_owned();
-        Action::task(ctx.rest_task(
-            move |rest| async move { rest.send_message(&out).await.map(Box::new) },
-            move |r| Msg::Resent(mid, tmid, r),
-        ))
-    }
-
     fn act(&mut self, mid: &str, act: Act, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
         let Some(item) = self.item(ctx, mid) else {
             return Action::none();
@@ -329,7 +282,6 @@ impl Interactions {
         let rest_act = |ctx: &UpdateCtx<'_>, act: Act| {
             let mid = mid.clone();
             let thread = thread.clone();
-            let rid = ctx.rid.to_owned();
             Action::task(ctx.rest_task(
                 move |rest| async move {
                     match act {
@@ -339,7 +291,6 @@ impl Interactions {
                         Act::Unstar => rest.unstar_message(&mid).await,
                         Act::Follow => rest.follow_message(&thread).await,
                         Act::Unfollow => rest.unfollow_message(&thread).await,
-                        Act::MarkUnread => rest.subscriptions_unread(&rid, Some(&mid)).await,
                         _ => Ok(()),
                     }
                 },
@@ -353,6 +304,9 @@ impl Interactions {
             }
             Act::Quote => Action::effect(Effect::Compose(ComposeIntent::Quote(mid))),
             Act::Edit => Action::effect(Effect::Compose(ComposeIntent::Edit(mid))),
+            // The app leaves the room first, like the web client.
+            Act::MarkUnread => Action::effect(Effect::MarkUnread(mid)),
+            Act::StartDiscussion => Action::effect(Effect::StartDiscussion { pmid: Some(mid) }),
             Act::CopyText => Action::task(iced::clipboard::write(render::plain_text(&m)))
                 .with(toast_ok(t!("room_timeline.copied").into_owned())),
             Act::CopyLink => Action::task(iced::clipboard::write(actions::permalink(
@@ -373,19 +327,16 @@ impl Interactions {
                 });
                 Action::task(iced::widget::operation::focus(dialogs::REPORT_INPUT_ID))
             }
-            Act::Pin
-            | Act::Unpin
-            | Act::Star
-            | Act::Unstar
-            | Act::Follow
-            | Act::Unfollow
-            | Act::MarkUnread => rest_act(ctx, act),
+            Act::Pin | Act::Unpin | Act::Star | Act::Unstar | Act::Follow | Act::Unfollow => {
+                rest_act(ctx, act)
+            }
         }
     }
 }
 
 /// Actions on `m` in a list of `source`: the thread view does not offer
-/// "reply in thread" (its composer is right there).
+/// "reply in thread" (its composer is right there) nor "start a discussion"
+/// (the web client's `threads` context does not have it).
 pub fn available(
     ws: &Workspace,
     source: &Source,
@@ -394,7 +345,7 @@ pub fn available(
 ) -> Vec<Act> {
     let mut acts = actions::available(ws, m, now);
     if matches!(source, Source::Thread(_)) {
-        acts.retain(|a| *a != Act::ReplyInThread);
+        acts.retain(|a| !matches!(a, Act::ReplyInThread | Act::StartDiscussion));
     }
     acts
 }
@@ -440,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_reply_retry_and_discard() {
+    fn retry_and_discard_go_to_the_composer() {
         let images = crate::images::Images::new(None);
         let prefs = rustket_core::config::UiPrefs::default();
         let sid = rustket_core::ServerId("s".into());
@@ -461,29 +412,17 @@ mod tests {
             prefs: &prefs,
         };
         let mut i = Interactions::new(Source::Thread("p".into()));
-        let _ = i.update(Msg::Retry("local".into()), &mut ctx);
-        let state = |ws: &Workspace| {
-            ws.thread("p")
-                .unwrap()
-                .get("local")
-                .map(|i| i.state.clone())
-        };
-        assert_eq!(state(ctx.workspace), Some(DeliveryState::Sending));
-        // The send failed again (no session here).
-        let failure = crate::error::Failure::from(rocketchat::Error::Unauthorized {
-            message: None,
-            code: None,
-        });
-        let _ = i.update(
-            Msg::Resent("local".into(), Some("p".into()), Err(failure)),
-            &mut ctx,
-        );
+        let a = i.update(Msg::Retry("local".into()), &mut ctx);
         assert!(matches!(
-            state(ctx.workspace),
-            Some(DeliveryState::Failed { .. })
+            a.effects.as_slice(),
+            [Effect::Compose(ComposeIntent::Retry(m))] if m == "local"
         ));
-        let _ = i.update(Msg::Discard("local".into()), &mut ctx);
-        assert_eq!(state(ctx.workspace), None);
-        assert!(ctx.workspace.pending_messages("r").is_empty());
+        let a = i.update(Msg::Discard("local".into()), &mut ctx);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::Compose(ComposeIntent::Discard(m))] if m == "local"
+        ));
+        // Nothing changed here: the composer's outbox owns the message.
+        assert_eq!(ctx.workspace.pending_messages("r").len(), 1);
     }
 }

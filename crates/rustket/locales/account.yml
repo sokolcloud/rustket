@@ -512,3 +512,36 @@ account.err_rate_limited:
 account.err_rate_limited_soon:
   en: "The server allows one profile change per minute. Try again shortly."
   ru: "Сервер разрешает менять профиль раз в минуту. Повторите чуть позже."
+account.sec_sessions:
+  en: "Active sessions"
+  ru: "Активные сеансы"
+account.sessions_help:
+  en: "Devices and browsers signed in to your account."
+  ru: "Устройства и браузеры, в которых выполнен вход в вашу учётную запись."
+account.sessions_loading:
+  en: "Loading sessions…"
+  ru: "Загрузка сеансов…"
+account.sessions_unavailable:
+  en: "Session management is not available on this server (it requires an Enterprise license)."
+  ru: "Управление сеансами недоступно на этом сервере (требуется лицензия Enterprise)."
+account.sessions_retry:
+  en: "Try again"
+  ru: "Повторить"
+account.sessions_empty:
+  en: "No active sessions"
+  ru: "Нет активных сеансов"
+account.session_login_at:
+  en: "Signed in %{at}"
+  ru: "Вход %{at}"
+account.session_current:
+  en: "This device"
+  ru: "Это устройство"
+account.session_logout:
+  en: "Log out"
+  ru: "Выйти"
+account.session_logout_confirm:
+  en: "Log out this session"
+  ru: "Завершить сеанс"
+account.session_logged_out:
+  en: "The session was logged out"
+  ru: "Сеанс завершён"

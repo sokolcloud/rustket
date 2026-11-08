@@ -24,6 +24,7 @@ pub enum Act {
     Star,
     Unstar,
     MarkUnread,
+    StartDiscussion,
     Follow,
     Unfollow,
     Report,
@@ -44,6 +45,7 @@ impl Act {
             Act::Star => Icon::Star,
             Act::Unstar => Icon::StarOff,
             Act::MarkUnread => Icon::MailOpen,
+            Act::StartDiscussion => Icon::MessagesSquare,
             Act::Follow => Icon::Bell,
             Act::Unfollow => Icon::BellOff,
             Act::Report => Icon::Flag,
@@ -64,6 +66,7 @@ impl Act {
             Act::Star => "room_timeline.act_star",
             Act::Unstar => "room_timeline.act_unstar",
             Act::MarkUnread => "room_timeline.act_mark_unread",
+            Act::StartDiscussion => "room_timeline.act_start_discussion",
             Act::Follow => "room_timeline.act_follow",
             Act::Unfollow => "room_timeline.act_unfollow",
             Act::Report => "room_timeline.act_report",
@@ -122,6 +125,11 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
         .is_some_and(|e| e.room_type() == RoomType::Livechat);
     if subscribed && !own && !omnichannel {
         v.push(Act::MarkUnread);
+    }
+    // The web client's "Start a discussion" (prefills the parent room and
+    // the message); not offered on thread replies, as in the web.
+    if m.tmid.is_none() && perm::can_start_discussion_from(ws, m) {
+        v.push(Act::StartDiscussion);
     }
     if ws.settings().threads_enabled() && !omnichannel {
         // Like the web: any message; a reply follows its parent thread.
@@ -417,6 +425,21 @@ mod tests {
         assert!(!acts.contains(&Act::MarkUnread));
         assert!(!acts.contains(&Act::Report));
         assert!(!acts.contains(&Act::Follow));
+    }
+
+    #[test]
+    fn start_discussion_not_on_thread_replies() {
+        use serde_json::json;
+        let w = ws(
+            &[("start-discussion", &["user"])],
+            &[("Discussion_enabled", json!(true))],
+            RoomType::Channel,
+        );
+        let own = msg("a", "me");
+        assert!(available(&w, &own, now()).contains(&Act::StartDiscussion));
+        let mut reply = own.clone();
+        reply.tmid = Some("p".into());
+        assert!(!available(&w, &reply, now()).contains(&Act::StartDiscussion));
     }
 
     #[test]

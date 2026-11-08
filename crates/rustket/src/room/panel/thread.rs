@@ -31,6 +31,7 @@ use crate::room::render;
 use crate::room::timeline::interact::{self, Interactions, Msg as ItemMsg, Source};
 use crate::room::timeline::{Act, SELECTED_FOR, list, row as trow, row_id};
 use crate::room::{Action, ComposeIntent, Effect, UpdateCtx, ViewCtx};
+use crate::session::SessionHandle;
 
 /// Width of the thread panel, and the maximum width when expanded (drawn
 /// over the room column, like the web's `max-width: 855px`).
@@ -185,6 +186,12 @@ impl Thread {
             task: Task::batch(tasks),
             effects,
         }
+    }
+
+    /// Stops the typing indicator of the thread composer (the view goes
+    /// away or is no longer shown).
+    pub fn leave(&mut self, session: Option<&SessionHandle>) -> Task<Msg> {
+        self.composer.leave(session).map(Msg::Composer)
     }
 
     /// The view goes away: keep the draft, forget the thread timeline. A
