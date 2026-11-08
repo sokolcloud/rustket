@@ -887,10 +887,10 @@ mod glue;
 
 #[path = "snapshot/admin.rs"]
 mod admin_shots;
-#[path = "snapshot/teams.rs"]
-mod teams;
 #[path = "snapshot/omni.rs"]
 mod omni;
+#[path = "snapshot/teams.rs"]
+mod teams;
 #[path = "snapshot/timeline_fixture.rs"]
 mod timeline_fixture;
 #[path = "snapshot/uikit.rs"]
