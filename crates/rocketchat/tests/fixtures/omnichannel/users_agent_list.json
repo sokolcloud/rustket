@@ -1,0 +1,25 @@
+{
+  "count": 1,
+  "offset": 0,
+  "success": true,
+  "total": 1,
+  "users": [
+    {
+      "_id": "ufKsmnbWJrX2vfR3i",
+      "departments": [
+        "6aefb685ff2338a3f2a2f259"
+      ],
+      "emails": [
+        {
+          "address": "omnicap-a-1794094719964@example.com",
+          "verified": true
+        }
+      ],
+      "livechat": null,
+      "name": "Omni Cap 1794094719964",
+      "status": "online",
+      "statusLivechat": "available",
+      "username": "omnicap-a-1794094719964"
+    }
+  ]
+}

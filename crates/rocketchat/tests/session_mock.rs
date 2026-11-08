@@ -351,6 +351,7 @@ async fn subscribes_every_stream_with_exact_params() {
                     "calendar",
                     "banners",
                     "webdav",
+                    "departmentAgentData",
                 ]
                 .iter()
                 .map(|e| {
@@ -374,6 +375,7 @@ async fn subscribes_every_stream_with_exact_params() {
                     "deleteCustomUserStatus",
                     "banner-changed",
                     "new-banner",
+                    "omnichannel.priority-changed",
                 ]
                 .iter()
                 .map(|e| {

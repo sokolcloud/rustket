@@ -1,0 +1,60 @@
+{
+  "count": 1,
+  "inquiries": [
+    {
+      "_id": "6aefb684ff2338a3f2a2f253",
+      "_updatedAt": "2026-11-07T23:38:48.168Z",
+      "department": "6aefb685ff2338a3f2a2f259",
+      "estimatedWaitingTimeQueue": 9999999,
+      "lastMessage": {
+        "_id": "6aefb688ff2338a3f2a2f25b",
+        "_updatedAt": "2026-11-07T23:38:48.090Z",
+        "groupable": false,
+        "msg": "",
+        "rid": "CS2PFviwDBkDoQDWP",
+        "t": "livechat_transfer_history",
+        "transferData": {
+          "comment": "to queue",
+          "nextDepartment": {
+            "_id": "6aefb685ff2338a3f2a2f259",
+            "name": "omnicap-dept-1794094719964"
+          },
+          "scope": "department",
+          "transferredBy": {
+            "_id": "6aef49d4f7fd7082521174fb",
+            "name": "Admin",
+            "userType": "user",
+            "username": "admin"
+          },
+          "ts": "2026-11-07T23:38:48.090Z"
+        },
+        "ts": "2026-11-07T23:38:48.090Z",
+        "u": {
+          "_id": "6aef49d4f7fd7082521174fb",
+          "name": null,
+          "username": "admin"
+        }
+      },
+      "message": "",
+      "name": "Omnicap Visitor 1794094719964",
+      "priorityWeight": 99,
+      "queuedAt": "2026-11-07T23:38:48.168Z",
+      "rid": "CS2PFviwDBkDoQDWP",
+      "source": {
+        "type": "api"
+      },
+      "status": "queued",
+      "t": "l",
+      "ts": "2026-11-07T23:38:44.337Z",
+      "v": {
+        "_id": "6aefb684ff2338a3f2a2f251",
+        "status": "online",
+        "token": "omnicap-vt-1794094719964",
+        "username": "guest-8"
+      }
+    }
+  ],
+  "offset": 0,
+  "success": true,
+  "total": 1
+}

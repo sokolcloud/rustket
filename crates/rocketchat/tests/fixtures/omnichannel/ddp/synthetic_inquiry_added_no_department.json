@@ -1,0 +1,39 @@
+{
+  "collection": "stream-livechat-inquiry-queue-observer",
+  "fields": {
+    "args": [
+      {
+        "_id": "inq-pub",
+        "_updatedAt": {
+          "$date": 1794094700000
+        },
+        "estimatedWaitingTimeQueue": 9999999,
+        "message": "hi",
+        "name": "Public Visitor",
+        "priorityWeight": 99,
+        "queuedAt": {
+          "$date": 1794094700000
+        },
+        "rid": "rid-pub",
+        "source": {
+          "type": "widget"
+        },
+        "status": "queued",
+        "t": "l",
+        "ts": {
+          "$date": 1794094700000
+        },
+        "type": "added",
+        "v": {
+          "_id": "vis-pub",
+          "status": "online",
+          "token": "tok",
+          "username": "guest-9"
+        }
+      }
+    ],
+    "eventName": "public"
+  },
+  "id": "id",
+  "msg": "changed"
+}

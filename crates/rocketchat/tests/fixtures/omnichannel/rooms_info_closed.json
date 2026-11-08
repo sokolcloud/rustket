@@ -1,0 +1,96 @@
+{
+  "room": {
+    "_enforceSingleRoom": true,
+    "_id": "CS2PFviwDBkDoQDWP",
+    "_updatedAt": "2026-11-07T23:38:54.086Z",
+    "cl": false,
+    "closedAt": "2026-11-07T23:38:54.043Z",
+    "closedBy": {
+      "_id": "ufKsmnbWJrX2vfR3i",
+      "username": "omnicap-a-1794094719964"
+    },
+    "closer": "user",
+    "contactId": "6aefb684ff2338a3f2a2f252",
+    "departmentId": "6aefb685ff2338a3f2a2f259",
+    "estimatedWaitingTimeQueue": 9999999,
+    "fname": "Omnicap Visitor 1794094719964",
+    "lastMessage": {
+      "_id": "6aefb68eff2338a3f2a2f262",
+      "_updatedAt": "2026-11-07T23:38:54.060Z",
+      "groupable": false,
+      "msg": "Resolved",
+      "rid": "CS2PFviwDBkDoQDWP",
+      "t": "livechat-close",
+      "transcriptRequested": false,
+      "ts": "2026-11-07T23:38:54.060Z",
+      "u": {
+        "_id": "ufKsmnbWJrX2vfR3i",
+        "name": null,
+        "username": "omnicap-a-1794094719964"
+      }
+    },
+    "lm": "2026-11-07T23:38:54.060Z",
+    "metrics": {
+      "chatDuration": 9.715,
+      "reaction": {
+        "fd": "2026-11-07T23:38:52.886Z",
+        "ft": 2.935,
+        "tt": 2.935
+      },
+      "response": {
+        "avg": 8.47,
+        "fd": "2026-11-07T23:38:52.886Z",
+        "ft": 8.47,
+        "total": 1,
+        "tt": 8.47
+      },
+      "servedBy": {
+        "lr": "2026-11-07T23:38:52.851Z"
+      },
+      "serviceTimeDuration": 4.092,
+      "v": {
+        "lq": "2026-11-07T23:38:44.416Z"
+      },
+      "visitorInactivity": 1
+    },
+    "msgs": 14,
+    "priorityWeight": 99,
+    "queuedAt": "2026-11-07T23:38:48.133Z",
+    "responseBy": {
+      "_id": "ufKsmnbWJrX2vfR3i",
+      "firstResponseTs": "2026-11-07T23:38:52.851Z",
+      "lastMessageTs": "2026-11-07T23:38:52.851Z",
+      "username": "omnicap-a-1794094719964"
+    },
+    "servedBy": {
+      "_id": "ufKsmnbWJrX2vfR3i",
+      "ts": "2026-11-07T23:38:49.951Z",
+      "username": "omnicap-a-1794094719964"
+    },
+    "source": {
+      "type": "api"
+    },
+    "t": "l",
+    "tags": [
+      "closing",
+      "alpha",
+      "beta",
+      "dept-tag"
+    ],
+    "topic": "Omnicap topic",
+    "ts": "2026-11-07T23:38:44.328Z",
+    "usersCount": 1,
+    "v": {
+      "_id": "6aefb684ff2338a3f2a2f251",
+      "activity": [
+        "2026-11"
+      ],
+      "lastMessageTs": "2026-11-07T23:38:52.798Z",
+      "status": "offline",
+      "token": "omnicap-vt-1794094719964",
+      "username": "guest-8"
+    },
+    "verified": false
+  },
+  "success": true
+}

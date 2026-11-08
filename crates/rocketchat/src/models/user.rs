@@ -92,6 +92,18 @@ pub struct User {
     /// Public E2E key (`e2e.getUsersOfRoomWithoutKey` etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub e2e: Option<Value>,
+    /// Omnichannel agent availability (`me` of a `livechat-agent`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::lenient::opt"
+    )]
+    pub status_livechat: Option<super::AgentStatus>,
+    /// The availability was last changed by the server (logout, business hours).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::lenient::opt"
+    )]
+    pub livechat_status_system_modified: Option<bool>,
 }
 
 /// The logged-in user (`/api/v1/me`).

@@ -1,0 +1,60 @@
+{
+  "count": 1,
+  "history": [
+    {
+      "_id": "CS2PFviwDBkDoQDWP",
+      "closedAt": "2026-11-07T23:38:54.043Z",
+      "closedBy": {
+        "_id": "ufKsmnbWJrX2vfR3i",
+        "username": "omnicap-a-1794094719964"
+      },
+      "closer": "user",
+      "fname": "Omnicap Visitor 1794094719964",
+      "lastMessage": {
+        "_id": "6aefb68eff2338a3f2a2f262",
+        "_updatedAt": "2026-11-07T23:38:54.060Z",
+        "groupable": false,
+        "msg": "Resolved",
+        "rid": "CS2PFviwDBkDoQDWP",
+        "t": "livechat-close",
+        "transcriptRequested": false,
+        "ts": "2026-11-07T23:38:54.060Z",
+        "u": {
+          "_id": "ufKsmnbWJrX2vfR3i",
+          "name": null,
+          "username": "omnicap-a-1794094719964"
+        }
+      },
+      "msgs": 14,
+      "servedBy": {
+        "_id": "ufKsmnbWJrX2vfR3i",
+        "ts": "2026-11-07T23:38:49.951Z",
+        "username": "omnicap-a-1794094719964"
+      },
+      "source": {
+        "type": "api"
+      },
+      "tags": [
+        "closing",
+        "alpha",
+        "beta",
+        "dept-tag"
+      ],
+      "ts": "2026-11-07T23:38:44.328Z",
+      "v": {
+        "_id": "6aefb684ff2338a3f2a2f251",
+        "activity": [
+          "2026-11"
+        ],
+        "lastMessageTs": "2026-11-07T23:38:52.798Z",
+        "status": "offline",
+        "token": "omnicap-vt-1794094719964",
+        "username": "guest-8"
+      },
+      "verified": false
+    }
+  ],
+  "offset": 0,
+  "success": true,
+  "total": 1
+}

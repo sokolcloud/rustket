@@ -1,0 +1,49 @@
+{
+  "collection": "stream-room-messages",
+  "fields": {
+    "args": [
+      {
+        "_id": "6aefb688ff2338a3f2a2f25b",
+        "_updatedAt": {
+          "$date": 1794094728090
+        },
+        "groupable": false,
+        "msg": "",
+        "rid": "CS2PFviwDBkDoQDWP",
+        "t": "livechat_transfer_history",
+        "transferData": {
+          "comment": "to queue",
+          "nextDepartment": {
+            "_id": "6aefb685ff2338a3f2a2f259",
+            "name": "omnicap-dept-1794094719964"
+          },
+          "scope": "department",
+          "transferredBy": {
+            "_id": "6aef49d4f7fd7082521174fb",
+            "name": "Admin",
+            "userType": "user",
+            "username": "admin"
+          },
+          "ts": {
+            "$date": 1794094728090
+          }
+        },
+        "ts": {
+          "$date": 1794094728090
+        },
+        "u": {
+          "_id": "6aef49d4f7fd7082521174fb",
+          "name": null,
+          "username": "admin"
+        }
+      },
+      {
+        "roomParticipant": true,
+        "roomType": "l"
+      }
+    ],
+    "eventName": "__my_messages__"
+  },
+  "id": "id",
+  "msg": "changed"
+}

@@ -1,0 +1,27 @@
+{
+  "collection": "stream-notify-user",
+  "fields": {
+    "args": [
+      {
+        "payload": {
+          "_id": "",
+          "message": {
+            "msg": ""
+          },
+          "name": "New chat in queue",
+          "sender": {
+            "_id": "6aefb684ff2338a3f2a2f251",
+            "name": "Omnicap Visitor",
+            "username": "guest-8"
+          },
+          "type": "l"
+        },
+        "text": "Omnicap Visitor started a new conversation",
+        "title": "[Omnichannel] New chat in queue"
+      }
+    ],
+    "eventName": "ufKsmnbWJrX2vfR3i/notification"
+  },
+  "id": "id",
+  "msg": "changed"
+}

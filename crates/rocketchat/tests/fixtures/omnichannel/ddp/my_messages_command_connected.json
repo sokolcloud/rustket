@@ -1,0 +1,32 @@
+{
+  "collection": "stream-room-messages",
+  "fields": {
+    "args": [
+      {
+        "_id": "6aefb684ff2338a3f2a2f256",
+        "_updatedAt": {
+          "$date": 1794094724393
+        },
+        "groupable": false,
+        "msg": "connected",
+        "rid": "CS2PFviwDBkDoQDWP",
+        "t": "command",
+        "ts": {
+          "$date": 1794094724393
+        },
+        "u": {
+          "_id": "ufKsmnbWJrX2vfR3i",
+          "name": "Omni Cap 1794094719964",
+          "username": "omnicap-a-1794094719964"
+        }
+      },
+      {
+        "roomParticipant": true,
+        "roomType": "l"
+      }
+    ],
+    "eventName": "__my_messages__"
+  },
+  "id": "id",
+  "msg": "changed"
+}

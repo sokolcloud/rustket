@@ -4,6 +4,7 @@ pub mod lenient;
 pub mod md;
 mod message;
 mod misc;
+mod omnichannel;
 mod room;
 mod settings;
 mod subscription;
@@ -11,6 +12,7 @@ mod user;
 
 pub use message::*;
 pub use misc::*;
+pub use omnichannel::*;
 pub use room::*;
 pub use settings::*;
 pub use subscription::*;

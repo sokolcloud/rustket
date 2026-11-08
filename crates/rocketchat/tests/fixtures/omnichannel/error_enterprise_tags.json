@@ -1,0 +1,5 @@
+{
+  "error": "This is an enterprise feature [error-action-not-allowed]",
+  "errorType": "error-action-not-allowed",
+  "success": false
+}

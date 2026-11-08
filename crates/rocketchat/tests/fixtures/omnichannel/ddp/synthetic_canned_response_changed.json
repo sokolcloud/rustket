@@ -1,0 +1,36 @@
+{
+  "collection": "stream-canned-responses",
+  "fields": {
+    "args": [
+      {
+        "_createdAt": {
+          "$date": 1794094724337
+        },
+        "_id": "cr1",
+        "_updatedAt": {
+          "$date": 1794094724337
+        },
+        "createdBy": {
+          "_id": "m1",
+          "username": "manager"
+        },
+        "departmentId": "d1",
+        "scope": "department",
+        "shortcut": "thanks",
+        "tags": [
+          "t"
+        ],
+        "text": "Thank you, {{contact.name}}!",
+        "type": "changed"
+      },
+      {
+        "agentsId": [
+          "ufKsmnbWJrX2vfR3i"
+        ]
+      }
+    ],
+    "eventName": "canned-responses"
+  },
+  "id": "id",
+  "msg": "changed"
+}

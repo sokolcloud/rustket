@@ -20,6 +20,7 @@
 //! (or use [`RECOMMENDED_LOG_FILTER`]).
 
 mod events;
+mod omnichannel;
 mod pump;
 mod supervisor;
 
@@ -42,6 +43,10 @@ pub use events::{
     TimeRange, decode_event, status_from_code, streams,
 };
 pub use meteor_ddp::{BackoffConfig, DataKind, DataMessage, HeartbeatConfig};
+pub use omnichannel::{
+    OmnichannelEvent, StreamWatch, canned_responses_subscription, decode_omnichannel,
+    inquiry_queue_subscriptions, room_data_subscription,
+};
 
 use self::pump::Ctl;
 use self::supervisor::{Registry, RetryPolicy, StreamSpec, StreamStatus};
@@ -74,6 +79,7 @@ pub const NOTIFY_USER_EVENTS: &[&str] = &[
     "calendar",
     "banners",
     "webdav",
+    "departmentAgentData",
 ];
 
 /// `stream-notify-logged` events. `private-settings-changed` is refused with
@@ -92,6 +98,7 @@ pub const NOTIFY_LOGGED_EVENTS: &[&str] = &[
     "deleteCustomUserStatus",
     "banner-changed",
     "new-banner",
+    "omnichannel.priority-changed",
 ];
 
 /// `stream-notify-all` events.

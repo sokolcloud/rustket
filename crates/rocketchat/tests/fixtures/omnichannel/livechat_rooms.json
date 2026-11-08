@@ -1,0 +1,101 @@
+{
+  "count": 1,
+  "offset": 0,
+  "rooms": [
+    {
+      "_enforceSingleRoom": true,
+      "_id": "CS2PFviwDBkDoQDWP",
+      "_updatedAt": "2026-11-07T23:38:52.903Z",
+      "cl": false,
+      "contactId": "6aefb684ff2338a3f2a2f252",
+      "department": {
+        "_id": "6aefb685ff2338a3f2a2f259",
+        "name": "omnicap-dept-1794094719964"
+      },
+      "departmentId": "6aefb685ff2338a3f2a2f259",
+      "estimatedWaitingTimeQueue": 9999999,
+      "fname": "Omnicap Visitor 1794094719964",
+      "lastMessage": {
+        "_id": "gbgQhPY8WfumczbE9",
+        "_updatedAt": "2026-11-07T23:38:52.865Z",
+        "channels": [],
+        "md": [
+          {
+            "type": "PARAGRAPH",
+            "value": [
+              {
+                "type": "PLAIN_TEXT",
+                "value": "Agent reply"
+              }
+            ]
+          }
+        ],
+        "mentions": [],
+        "msg": "Agent reply",
+        "rid": "CS2PFviwDBkDoQDWP",
+        "ts": "2026-11-07T23:38:52.851Z",
+        "u": {
+          "_id": "ufKsmnbWJrX2vfR3i",
+          "name": "Omni Cap 1794094719964",
+          "username": "omnicap-a-1794094719964"
+        },
+        "urls": []
+      },
+      "lm": "2026-11-07T23:38:52.851Z",
+      "metrics": {
+        "reaction": {
+          "fd": "2026-11-07T23:38:52.886Z",
+          "ft": 2.935,
+          "tt": 2.935
+        },
+        "response": {
+          "avg": 8.47,
+          "fd": "2026-11-07T23:38:52.886Z",
+          "ft": 8.47,
+          "total": 1,
+          "tt": 8.47
+        },
+        "servedBy": {
+          "lr": "2026-11-07T23:38:52.851Z"
+        },
+        "v": {
+          "lq": "2026-11-07T23:38:44.416Z"
+        }
+      },
+      "msgs": 12,
+      "open": true,
+      "priorityWeight": 99,
+      "queuedAt": "2026-11-07T23:38:48.133Z",
+      "responseBy": {
+        "_id": "ufKsmnbWJrX2vfR3i",
+        "firstResponseTs": "2026-11-07T23:38:52.851Z",
+        "lastMessageTs": "2026-11-07T23:38:52.851Z",
+        "username": "omnicap-a-1794094719964"
+      },
+      "servedBy": {
+        "_id": "ufKsmnbWJrX2vfR3i",
+        "ts": "2026-11-07T23:38:49.951Z",
+        "username": "omnicap-a-1794094719964"
+      },
+      "source": {
+        "type": "api"
+      },
+      "t": "l",
+      "ts": "2026-11-07T23:38:44.328Z",
+      "usersCount": 2,
+      "v": {
+        "_id": "6aefb684ff2338a3f2a2f251",
+        "activity": [
+          "2026-11"
+        ],
+        "lastMessageTs": "2026-11-07T23:38:52.798Z",
+        "status": "online",
+        "token": "omnicap-vt-1794094719964",
+        "username": "guest-8"
+      },
+      "verified": false
+    }
+  ],
+  "success": true,
+  "total": 1
+}

@@ -114,6 +114,18 @@ pub struct Subscription {
         deserialize_with = "lenient::opt"
     )]
     pub updated_at: Option<RcDate>,
+    /// Omnichannel: the visitor (`t: l` subscriptions of the serving agent).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub v: Option<super::VisitorRef>,
+    /// Omnichannel: the room's department id.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub department: Option<String>,
 }
 
 impl Subscription {
