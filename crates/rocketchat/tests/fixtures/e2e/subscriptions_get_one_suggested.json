@@ -1,0 +1,23 @@
+{
+  "subscription": {
+    "E2ESuggestedKey": "a6900eb9-185e-4159-a37f-573353245ffekVcywzt7X6EecLZOnWiwbcqGTWB263Ifp8uIyseTwYQVOO2YZjAT+DZbGDfvjdXyOYAWN+F6NbQegGWS3zWH3o5Q2KHzrAzAdQ25Bh5hz/P8y7yAhzW/Cph4cZkA7R55y0sReZtHiIjP4THGZhQ2X+DmGBiwNhKru/uF1lIyDginftCnew10YdDCDU2kBgQNEl1Cx59LLgl6ljm1QlUhG2zoPgrvQ3JsrAIwQroBqxMhBOcXTIfwkNoaG4a8SxoVH5mLGT93SFZdfrQI/K7YWEYpq1U5UhDVJRsvaxleSaXEbrAbgRPzi6Ut97Dd9XYiH24BfgUjmlQSKAVccdjxRQ==",
+    "_id": "6aefbdcfff2338a3f2a2f382",
+    "_updatedAt": "2026-11-08T00:09:52.483Z",
+    "alert": false,
+    "fname": "e2e-live-1794096591055-ccfj",
+    "groupMentions": 0,
+    "name": "e2e-live-1794096591055-ccfj",
+    "open": true,
+    "rid": "6aefbdcfff2338a3f2a2f380",
+    "t": "p",
+    "ts": "2026-11-08T00:09:51.062Z",
+    "u": {
+      "_id": "ebGaj7x9sYuAAaKZC",
+      "name": "Name e2e-b-1794096582384-azxr",
+      "username": "e2e-b-1794096582384-azxr"
+    },
+    "unread": 0,
+    "userMentions": 0
+  },
+  "success": true
+}

@@ -1,0 +1,32 @@
+{
+  "message": {
+    "_id": "6aefbdd1ff2338a3f2a2f385",
+    "_updatedAt": "2026-11-08T00:09:53.052Z",
+    "attachments": [
+      {
+        "attachments": [],
+        "author_icon": "/avatar/e2e-a-1794096581039-7c7m",
+        "author_name": "e2e-a-1794096581039-7c7m",
+        "content": {
+          "algorithm": "rc.v2.aes-sha2",
+          "ciphertext": "YKYRXWroxBpRTM96X5fW/Tm23zYTBIZKJ6orc+sHdQ0=",
+          "iv": "jbAyI7ApYVrpl6I/",
+          "kid": "a6900eb9-185e-4159-a37f-573353245ffe"
+        },
+        "text": "",
+        "ts": "2026-11-08T00:09:52.674Z"
+      }
+    ],
+    "groupable": false,
+    "msg": "",
+    "rid": "6aefbdcfff2338a3f2a2f380",
+    "t": "message_pinned_e2e",
+    "ts": "2026-11-08T00:09:53.052Z",
+    "u": {
+      "_id": "seG64pz2QCta2uGQ9",
+      "name": "Name e2e-a-1794096581039-7c7m",
+      "username": "e2e-a-1794096581039-7c7m"
+    }
+  },
+  "success": true
+}

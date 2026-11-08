@@ -84,6 +84,18 @@ pub struct Subscription {
     pub e2e_key: Option<String>,
     #[serde(rename = "E2ESuggestedKey", skip_serializing_if = "Option::is_none")]
     pub e2e_suggested_key: Option<String>,
+    /// Previous room keys wrapped for this user, newest first (≤ 10).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt_vec"
+    )]
+    pub old_room_keys: Option<Vec<OldRoomKey>>,
+    /// Old keys offered with `E2ESuggestedKey` (only in unprojected documents).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt_vec"
+    )]
+    pub suggested_old_room_keys: Option<Vec<OldRoomKey>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,4 +139,20 @@ impl Subscription {
     pub fn has_unread_threads(&self) -> bool {
         self.tunread.as_ref().is_some_and(|t| !t.is_empty())
     }
+}
+
+/// Entry of `oldRoomKeys` / `suggestedOldRoomKeys`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OldRoomKey {
+    #[serde(rename = "e2eKeyId")]
+    pub e2e_key_id: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub ts: Option<RcDate>,
+    /// The old room key wrapped for this user (`kid + base64`).
+    #[serde(rename = "E2EKey")]
+    pub e2e_key: String,
 }

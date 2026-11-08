@@ -4,6 +4,7 @@
 //! next to related ones using [`RestClient::get`], [`RestClient::post`] and friends.
 
 mod auth;
+mod e2e;
 mod files;
 mod messages;
 mod misc;
@@ -14,6 +15,10 @@ pub use auth::LoginRequest;
 pub use auth::{LdapLogin, LoginResult};
 /// Byte buffer type of `UploadSource` (re-exported so callers need no `bytes` dependency).
 pub use bytes::Bytes;
+pub use e2e::{
+    ENCRYPTED_UPLOAD_MIME, EncryptedMediaConfirm, MyKeys, SetKeyIdOutcome, SuggestedKey,
+    SuggestedOldKey, UserPublicKeyEntry,
+};
 pub use files::{Download, ProgressFn, UploadRequest, UploadSource};
 pub use messages::{HistoryCursor, HistoryOptions};
 pub use rooms::{CreateRoom, RoomMembersOptions};

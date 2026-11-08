@@ -1361,6 +1361,33 @@ session               NOTIFY_ROOM_EVENTS += "e2e.keyRequest" → a new variant, 
                       emits (§6); do not reuse that name for the room event.
 ```
 
+**As implemented (2026-11-08)** — deviations from the sketch above, all to stay source-compatible
+with `crates/rustket` (which matches `SessionEvent` exhaustively and calls the existing upload API):
+
+- REST methods are named `RestClient::e2e_*` (`e2e_fetch_my_keys`, `e2e_set_user_keys`,
+  `e2e_request_subscription_keys`, `e2e_set_room_key_id`, `e2e_update_group_key`,
+  `e2e_users_of_room_without_key`, `e2e_accept_suggested_group_key`,
+  `e2e_reject_suggested_group_key`, `e2e_users_waiting_for_group_key`,
+  `e2e_provide_users_suggested_group_keys`, `e2e_reset_room_key`, `e2e_reset_own_key`,
+  `e2e_set_room_encrypted`, `e2e_send_message`, `e2e_update_message`).
+- Uploads: `upload_media`/`confirm_media` keep their signatures; new
+  `upload_media_with_fields` (extra multipart text parts), `e2e_upload_media` (hashed name,
+  `application/octet-stream`, `content` part) and `e2e_confirm_media(EncryptedMediaConfirm)`
+  (`t: 'e2e'`, `msg: ''`, `content`, `fileContent`, optional `tmid`; never `description`/`fileName`).
+- Models: `Message.content`, `MessageAttachment.encryption`/`hashes` stay `Value`; typed access
+  via `Message::encrypted_content()`, `MessageAttachment::e2e_encryption()`/`e2e_sha256()`.
+  Added `MessageAttachment.content` (the encrypted content inside `message_pinned_e2e`
+  attachments, otherwise dropped by the tolerant parser), `Subscription.suggested_old_room_keys`.
+  There is no `rooms.files` model yet: `E2eManager::decrypt_file_metadata(rid, &content)` takes the
+  raw `content` value.
+- `{rid}/e2e.keyRequest` is subscribed by `watch_room` but no `SessionEvent` variant was added
+  (it would break exhaustive matches downstream): it arrives as `SessionEvent::Unknown` and is
+  decoded with `rocketchat::e2e::RoomE2eKeyRequest::from_event`.
+- Core: the decrypt cache is keyed by `(rid, message id, _updatedAt)`; instead of
+  `Decrypted{rid, ids}` the manager emits `E2eEvent::KeysChanged { rid, pending }` (ids that came
+  back `Pending` before) and the UI re-runs `decrypt_message`. The REST calls the manager needs are
+  behind the `E2eApi` trait (implemented by `RestClient`) for the state machine tests.
+
 All functions that do RSA keygen/decrypt or PBKDF2 are synchronous and documented as blocking.
 
 ### 14.3 `crates/rustket-core` — state and orchestration
@@ -1422,8 +1449,17 @@ commands, decrypt-on-download for attachments with hash verification. Strings in
   `resetRoomKey` tests must not retry within 10 s after an access-denied call (lock leak, §5.5).
 - **Live, needs `E2E_Enable = true`** (`fetchUsersWaitingForGroupKey`, `provideUsersSuggestedGroupKeys`,
   the distribution loop, `rooms.saveRoomSettings {encrypted}`, server rejection of plaintext):
-  skip unless an env flag such as `RUSTKET_TEST_E2E_ENABLED=1` says the server has E2E on. Tests
-  must not flip the global setting on the shared dev server.
+  implemented as `crates/rustket-core/tests/e2e_live.rs::e2e_full_flow_with_e2e_enabled`, which runs
+  only with `RUSTKET_TEST_E2E=1` (plus `RUSTKET_TEST_SERVER`). It is the one test allowed to flip the
+  global setting: it reads `E2E_Enable`, sets it with `POST settings/E2E_Enable` as admin
+  (`x-2fa-method: password`, `x-2fa-code: sha256(adminpass)`), and restores the previous value in
+  its cleanup and again from a drop guard. Run once on 2026-11-08 (~25 s with E2E on): queue
+  distribution to a late joiner, plaintext rejected (`error-not-allowed`), encrypted upload, room
+  key reset with old keys, all passed; `E2E_Enable` was `false` afterwards.
+- **WebCrypto interop** (done once, fixture `crates/rocketchat/tests/fixtures/e2e/webcrypto_interop.json`):
+  Node 24 WebCrypto imported a Rustket-generated RSA key pair with the browser import rules
+  (`extractable`, `RSA-OAEP`/`SHA-256`, `key_ops`), unwrapped a Rustket-wrapped room key, and wrapped
+  a room key, encrypted a message and a v2 key backup that Rustket decrypts.
 - **Interop (manual, once)**: with E2E enabled on a disposable server, exchange messages and files
   between Rustket and the 8.9 web client in both directions, including a room key reset and a
   passphrase change on each side.

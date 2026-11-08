@@ -411,6 +411,7 @@ async fn subscribes_every_stream_with_exact_params() {
         "messagesRead",
         "videoconf",
         "messagesImported",
+        "e2e.keyRequest",
     ]
     .iter()
     .map(|e| serde_json::to_string(&stream_params(&format!("{RID}/{e}"))).unwrap())
@@ -885,7 +886,7 @@ async fn watch_room_offline_subscribes_when_back() {
     let t0 = tokio::time::Instant::now();
     let watch = session.watch_room(RID).await.unwrap();
     assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
-    assert_eq!(watch.missing().len(), 6);
+    assert_eq!(watch.missing().len(), room_subscriptions(RID, false).len());
     // Offline for several subscribe timeouts: nothing is reported as degraded.
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(session.degraded_streams().is_empty());
