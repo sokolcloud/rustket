@@ -2026,3 +2026,63 @@ fn dropped_files_go_to_the_shown_composer() {
             .is_upload_dialog_open()
     );
 }
+
+/// A failed thread upload of a closed room view is reported even when the
+/// reopened room view has another panel open (generations are never reused
+/// across room views).
+#[tokio::test]
+async fn orphan_thread_upload_of_a_reopened_room_is_reported() {
+    use rustket::room::composer::Message as Cm;
+    use rustket::room::panel::{BodyMsg, Kind, Message as Pm, thread};
+    use rustket::room::upload::Message as Um;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Thread("p1".into()))),
+    ));
+    let g_old = app.servers[&sid].rooms["r1"].panel.generation();
+    // Room switch and back: a new RoomView for r1.
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r1".into()),
+    ));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Members)),
+    ));
+    let g_new = app.servers[&sid].rooms["r1"].panel.generation();
+    assert_ne!(g_old, g_new, "generation reused across room views");
+    let before = app.toasts.len();
+    let failed = Err(Failure::from(rocketchat::Error::Unauthorized {
+        message: None,
+        code: None,
+    }));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Body(
+            g_old,
+            BodyMsg::Thread(thread::Msg::Composer(Cm::Upload(Um::Done(
+                9,
+                "clip.mp4".into(),
+                failed,
+            )))),
+        )),
+    ));
+    assert_eq!(
+        app.toasts.len(),
+        before + 1,
+        "failed upload of the old thread not reported"
+    );
+}

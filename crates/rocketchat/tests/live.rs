@@ -472,7 +472,7 @@ async fn message_lifecycle() {
 
     a.unpin_message(&sent.id).await.unwrap();
     a.unstar_message(&sent.id).await.unwrap();
-    b.subscriptions_read(&room.id, true).await.unwrap();
+    b.subscriptions_read(&room.id).await.unwrap();
     a.delete_message(&room.id, &reply.id).await.unwrap();
     let sync = a.chat_sync_messages(&room.id, start).await.unwrap();
     assert!(sync.deleted.iter().any(|d| d.id == reply.id));
@@ -502,7 +502,7 @@ async fn read_mark_keeps_unread_threads_unless_asked() {
         .send_message(&OutgoingMessage::new(&room.id, "parent"))
         .await
         .unwrap();
-    a.subscriptions_read(&room.id, false).await.unwrap();
+    a.subscriptions_read_with(&room.id, false).await.unwrap();
     b.send_message(&OutgoingMessage::new(&room.id, "reply").in_thread(&parent.id, false))
         .await
         .unwrap();
@@ -515,10 +515,10 @@ async fn read_mark_keeps_unread_threads_unless_asked() {
         sub = a.subscriptions_get_one(&room.id).await.unwrap();
     }
     assert!(sub.alert && sub.has_unread_threads(), "{sub:?}");
-    a.subscriptions_read(&room.id, false).await.unwrap();
+    a.subscriptions_read_with(&room.id, false).await.unwrap();
     let sub = a.subscriptions_get_one(&room.id).await.unwrap();
     assert!(sub.alert && sub.has_unread_threads(), "{sub:?}");
-    a.subscriptions_read(&room.id, true).await.unwrap();
+    a.subscriptions_read(&room.id).await.unwrap();
     let sub = a.subscriptions_get_one(&room.id).await.unwrap();
     assert!(!sub.alert && !sub.has_unread_threads(), "{sub:?}");
     a.rooms_delete(&room.id).await.unwrap();

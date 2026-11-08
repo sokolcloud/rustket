@@ -97,10 +97,11 @@ impl Timeline {
         }
     }
 
+    /// Whether a read mark would clear anything (unread threads stay).
     fn unread(ctx: &UpdateCtx<'_>) -> bool {
         ctx.workspace
             .subscription(ctx.rid)
-            .is_some_and(|s| s.unread > 0 || s.alert)
+            .is_some_and(super::mark_clears)
     }
 
     fn snap_to_bottom(&self) -> Task<Message> {

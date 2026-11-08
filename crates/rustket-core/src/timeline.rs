@@ -126,6 +126,8 @@ pub struct Timeline {
     version: u64,
     id: u64,
     next_request: u64,
+    /// Number of [`Self::reset`] calls.
+    resets: u64,
 }
 
 impl Timeline {
@@ -153,7 +155,14 @@ impl Timeline {
             version: 0,
             id: NEXT_TIMELINE_ID.fetch_add(1, Ordering::Relaxed),
             next_request: 0,
+            resets: 0,
         }
+    }
+
+    /// Changes when the timeline is replaced (reset, or a new timeline for
+    /// the same room): history loaded under another epoch is a reload.
+    pub fn epoch(&self) -> (u64, u64) {
+        (self.id, self.resets)
     }
 
     pub fn rid(&self) -> &str {
@@ -449,6 +458,7 @@ impl Timeline {
             ..Default::default()
         };
         self.last_updated_at = None;
+        self.resets += 1;
         self.bump();
     }
 
@@ -765,6 +775,17 @@ mod tests {
     use crate::test_util::{fixture, msg, ts};
     use chrono::FixedOffset;
     use rocketchat::models::History;
+
+    #[test]
+    fn epoch_changes_on_reset_and_per_timeline() {
+        let mut t = Timeline::new_room("r");
+        let e = t.epoch();
+        t.upsert(msg("a", "r", 1000, "u"));
+        assert_eq!(t.epoch(), e);
+        t.reset();
+        assert_ne!(t.epoch(), e);
+        assert_ne!(Timeline::new_room("r").epoch(), t.epoch());
+    }
 
     #[test]
     fn ordering_and_dedup() {

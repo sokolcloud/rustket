@@ -27,6 +27,7 @@ use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_4, TEXT_SUBTITLE};
 use rustket_ui::widget::{divider, ellipsis, icon_button};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{Action, Effect, UpdateCtx, ViewCtx};
 use crate::session::SessionHandle;
@@ -210,8 +211,6 @@ pub struct Panel {
     back: Option<Kind>,
     body: Option<Body>,
     generation: u64,
-    /// Last generation handed out (generations are never reused).
-    counter: u64,
     /// Generation waiting for its activation.
     pending: Option<u64>,
     stash: Option<Stash>,
@@ -223,6 +222,11 @@ pub struct Panel {
     /// The room is on screen (a thread reads itself only then).
     visible: bool,
 }
+
+/// Panel generations are unique across all panels of the process, so a
+/// result of a panel that is gone (room view closed and reopened) never
+/// matches a body opened later.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn wrap<M: Send + 'static>(generation: u64, a: Action<M>, f: fn(M) -> BodyMsg) -> Action<Message> {
     a.map(move |m| Message::Body(generation, f(m)))
@@ -236,7 +240,6 @@ impl Panel {
             back: None,
             body: None,
             generation: 0,
-            counter: 0,
             pending: None,
             stash: None,
             retired: Vec::new(),
@@ -443,8 +446,7 @@ impl Panel {
         }
         self.body = Some(body);
         self.open = Some(kind);
-        self.counter += 1;
-        self.generation = self.counter;
+        self.generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
         self.pending = Some(self.generation);
     }
 
@@ -540,9 +542,8 @@ impl Panel {
                 self.activate(ctx)
             }
             Message::Body(g, m) => {
-                // A closed panel keeps its generation: its results are orphans.
-                if g == self.generation && self.body.is_some() {
-                    let a = Self::update_body(self.body.as_mut(), g, m, ctx);
+                if g == self.generation {
+                    let a = Self::update_body(self.body.as_mut(), g, m, &self.rid, ctx);
                     if let Some(Body::Thread(t)) = &self.body {
                         self.thread_expanded = t.expanded();
                     }
@@ -551,21 +552,9 @@ impl Panel {
                 // Results for the stashed panel keep it up to date.
                 match self.stash.as_mut() {
                     Some(st) if st.generation == g => {
-                        Self::update_body(Some(&mut st.body), g, m, ctx)
+                        Self::update_body(Some(&mut st.body), g, m, &self.rid, ctx)
                     }
-                    // Sends and uploads of a thread view that is gone still
-                    // settle (failed reply, upload result).
-                    _ => match m {
-                        BodyMsg::Thread(thread::Msg::Composer(c)) => {
-                            Action::effects(crate::room::composer::orphan_result(
-                                c,
-                                ctx.server_id,
-                                &self.rid,
-                                ctx.workspace,
-                            ))
-                        }
-                        _ => Action::none(),
-                    },
+                    _ => Self::update_body(None, g, m, &self.rid, ctx),
                 }
             }
         }
@@ -594,6 +583,7 @@ impl Panel {
         body: Option<&mut Body>,
         g: u64,
         m: BodyMsg,
+        rid: &str,
         ctx: &mut UpdateCtx<'_>,
     ) -> Action<Message> {
         match (body, m) {
@@ -621,6 +611,11 @@ impl Panel {
             }
             (Some(Body::Team(b)), BodyMsg::Team(m)) => wrap(g, b.update(m, ctx), BodyMsg::Team),
             (Some(Body::Omni(b)), BodyMsg::Omni(m)) => wrap(g, b.update(m, ctx), BodyMsg::Omni),
+            // Sends and uploads of a thread view that is gone (closed panel,
+            // closed room view) still settle: failed reply, upload result.
+            (_, BodyMsg::Thread(thread::Msg::Composer(c))) => Action::effects(
+                crate::room::composer::orphan_result(c, ctx.server_id, rid, ctx.workspace),
+            ),
             _ => Action::none(),
         }
     }

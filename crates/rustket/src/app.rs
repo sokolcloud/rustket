@@ -1092,6 +1092,12 @@ impl App {
     }
 
     fn activate(&mut self, sid: ServerId) -> Task<Message> {
+        self.activate_for(sid, true)
+    }
+
+    /// Shows server `sid`; `open_last` is false when the caller opens a
+    /// specific room right after, so its last room is not opened first.
+    pub(crate) fn activate_for(&mut self, sid: ServerId, open_last: bool) -> Task<Message> {
         if !self.servers.contains_key(&sid) {
             return Task::none();
         }
@@ -1107,7 +1113,8 @@ impl App {
         self.active = Some(sid.clone());
         self.screen = Screen::Server;
         // Its last room, not opened while the server was in the background.
-        if let Some(s) = self.servers.get(&sid)
+        if open_last
+            && let Some(s) = self.servers.get(&sid)
             && s.active_room.is_none()
             && s.pending_room.is_none()
             && let Some(rid) = self
@@ -2097,7 +2104,7 @@ impl App {
                 rid,
                 path,
             } => {
-                let a = self.activate(server_id.clone());
+                let a = self.activate_for(server_id.clone(), false);
                 Task::batch([a, self.open_room_link(&server_id, rid, path)])
             }
             Decision::OpenInvite { server_id, .. } => {

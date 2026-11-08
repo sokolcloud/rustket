@@ -131,7 +131,7 @@ pub fn transfers(server: &str, rid: &str, tmid: Option<&str>) -> Vec<Transfer> {
 }
 
 /// Adds a running upload. Its handle is not aborted when the composer goes
-/// away: only Cancel stops an upload.
+/// away: only Cancel and [`cancel_server`] stop an upload.
 fn register(
     server: &str,
     rid: &str,
@@ -156,6 +156,18 @@ fn set_progress(id: u64, sent: u64, total: u64) {
         r.transfer.sent = sent;
         r.transfer.total = total;
     }
+}
+
+/// Aborts every running upload of `server` (sign-out, server removed): an
+/// upload must not keep posting with the credentials of a session that is
+/// gone, and its result would be discarded anyway.
+pub fn cancel_server(server: &str) {
+    running().retain(|_, r| {
+        if r.server == server {
+            r.handle.abort();
+        }
+        r.server != server
+    });
 }
 
 /// Removes a finished or cancelled upload; its file name.
@@ -873,6 +885,9 @@ mod tests {
         );
         drop(composer);
         assert!(!watch.is_aborted(), "the room switch does not cancel it");
+        // Another server's sign-out leaves it alone.
+        cancel_server("srv-outlive-other");
+        assert!(!watch.is_aborted());
         set_progress(id, 150, 300);
         let shown = transfers("srv-outlive", "R1", None);
         assert_eq!(shown.len(), 1);
@@ -937,6 +952,37 @@ mod tests {
         let _ = Uploads::default().update(Message::Cancel(id), &mut ctx, None);
         assert!(watch.is_aborted());
         assert!(transfers("srv-outlive", "R1", None).is_empty());
+    }
+
+    /// Review: running uploads kept streaming (and posting) after sign-out
+    /// or server removal; the session reset now aborts them.
+    #[test]
+    fn sign_out_aborts_the_servers_uploads() {
+        let mut watches = Vec::new();
+        for (server, rid) in [
+            ("srv-signout", "R1"),
+            ("srv-signout", "R2"),
+            ("srv-keep", "R1"),
+        ] {
+            let (_task, handle) =
+                Task::<Message>::future(futures::future::pending::<Message>()).abortable();
+            watches.push(handle.clone());
+            let id = NEXT_TRANSFER.fetch_add(1, Ordering::Relaxed);
+            let transfer = Transfer {
+                id,
+                name: "f".into(),
+                sent: 0,
+                total: 1,
+            };
+            register(server, rid, None, transfer, handle);
+        }
+        cancel_server("srv-signout");
+        assert!(watches[0].is_aborted() && watches[1].is_aborted());
+        assert!(!watches[2].is_aborted());
+        assert!(transfers("srv-signout", "R1", None).is_empty());
+        assert_eq!(transfers("srv-keep", "R1", None).len(), 1);
+        cancel_server("srv-keep");
+        assert!(watches[2].is_aborted());
     }
 
     #[test]

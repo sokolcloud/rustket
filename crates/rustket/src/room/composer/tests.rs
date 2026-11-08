@@ -797,6 +797,20 @@ fn up_right_after_sending_does_not_edit_an_older_message() {
     assert_eq!(c.editing_mid(), Some(pending.id.as_str()));
 }
 
+/// Review: a failed (never delivered) own message blocked Up for good.
+#[test]
+fn up_skips_a_failed_message() {
+    let mut env = Env::new("t-up-failed");
+    env.ws.apply_message(msg("OLD", "me", "older message"));
+    let mut c = Composer::new("R1");
+    type_text(&mut c, &mut env, "helo wrld");
+    let _ = c.update(Message::Send, &mut env.ctx());
+    let pending = env.ws.pending_messages("R1")[0].message.clone();
+    env.ws.mark_pending_failed("R1", None, &pending.id, "boom");
+    let _ = c.update(Message::EditLast, &mut env.ctx());
+    assert_eq!(c.editing_mid(), Some("OLD"));
+}
+
 #[test]
 fn up_skips_thread_replies_in_the_room_composer() {
     let mut env = Env::new("t-up-tshow");

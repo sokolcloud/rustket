@@ -557,8 +557,6 @@ impl Thread {
         Task::batch([self.load_page(ctx), self.snap_to_bottom()])
     }
 
-    /// Scrolls to the focused reply once it is loaded and highlights it for
-    /// a moment (like the room timeline).
     /// The reply to reveal is not loaded yet: requests the next older page,
     /// or forgets it when the whole thread is loaded (a reply that is not
     /// there must not jump the view later).
@@ -580,6 +578,8 @@ impl Thread {
         }
     }
 
+    /// Scrolls to the focused reply once it is loaded and highlights it for
+    /// a moment (like the room timeline).
     fn reveal_focus(&mut self, ctx: &UpdateCtx<'_>) -> Task<Msg> {
         let Some(mid) = self.focus.clone() else {
             return Task::none();

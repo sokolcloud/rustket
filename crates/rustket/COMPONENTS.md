@@ -268,14 +268,15 @@ its thread is closed included).
   the app sets `RoomView::set_visible` after every update (window focused,
   server active, `Screen::Server`, no contact center or app dialog, the
   server's active room); the timeline must be at the bottom, not under the
-  E2E cover or an expanded thread. Opening a room marks it once it is
-  readable; becoming readable again catches up. The open thread reads
+  E2E cover or an expanded thread. Opening an unread room marks it once
+  it is readable; becoming readable again catches up; a failed mark is
+  retried on the next readable transition or subscription change. The open thread reads
   itself only while visible (`Thread::set_visible`).
 - Uploads live in a registry (`room::upload`) and outlive room and thread
   views; results for a view that is gone go through `room::orphan_result`
   / `composer::orphan_result` (failed upload: toast; failed thread reply:
-  marked failed).
-
+  marked failed). Signing out (`ServerState::reset`) aborts the server's
+  running uploads (`upload::cancel_server`).
 - `ServerState::close_rooms` closes the room views and returns their
   stop-typing task; `ServerState::reset` (unchanged signature) drops them
   silently.

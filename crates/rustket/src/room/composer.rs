@@ -1930,16 +1930,23 @@ fn last_editable<'a>(
         None => ws.timeline(rid)?,
     };
     let now = chrono::Utc::now();
+    use rustket_core::timeline::DeliveryState;
     timeline
-        .messages()
+        .iter()
         .rev()
-        .filter(|m| m.u.id == me)
+        // A failed message (never delivered) cannot be edited and does not
+        // block the older ones.
+        .filter(|i| !matches!(i.state, DeliveryState::Failed { .. }))
+        .filter(|i| i.message.u.id == me)
         // The room composer edits room messages, not thread replies shown in the channel.
-        .filter(|m| tmid.is_some() || m.tmid.is_none())
+        .filter(|i| tmid.is_some() || i.message.tmid.is_none())
         // A message still being sent stops the search: the user means the
         // one just sent, not an older one (editable once delivered).
-        .find(|m| m.temp == Some(true) || permissions::can_edit_message(ws, m, now))
-        .filter(|m| m.temp != Some(true))
+        .find(|i| {
+            i.state == DeliveryState::Sending || permissions::can_edit_message(ws, &i.message, now)
+        })
+        .filter(|i| i.state != DeliveryState::Sending)
+        .map(|i| &i.message)
         // An encrypted message that cannot be edited stops the search (an
         // older message is not what the user meant).
         .filter(|m| crate::e2e::room::check_edit(ws, m).is_ok())
