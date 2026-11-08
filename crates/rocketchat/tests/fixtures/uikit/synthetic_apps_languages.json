@@ -1,0 +1,17 @@
+{
+  "apps": [
+    {
+      "id": "c33fa1a6-68a7-491e-bf49-9d7b99671c48",
+      "languages": {
+        "en": {
+          "create_poll": "Create poll",
+          "room_polls": "Polls"
+        },
+        "pt-BR": {
+          "create_poll": "Criar enquete"
+        }
+      }
+    }
+  ],
+  "success": true
+}

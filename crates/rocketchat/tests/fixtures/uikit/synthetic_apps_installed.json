@@ -1,0 +1,52 @@
+{
+  "apps": [
+    {
+      "id": "c33fa1a6-68a7-491e-bf49-9d7b99671c48",
+      "name": "Poll",
+      "nameSlug": "poll",
+      "version": "3.4.1",
+      "description": "Create polls",
+      "requiredApiVersion": "^1.19.0",
+      "author": {
+        "name": "Rocket.Chat",
+        "homepage": "https://rocket.chat",
+        "support": "https://rocket.chat/support"
+      },
+      "classFile": "PollApp.js",
+      "iconFile": "icon.png",
+      "implements": [
+        "IPostMessageSent"
+      ],
+      "permissions": [
+        {
+          "name": "ui.interact"
+        },
+        {
+          "name": "slashcommand"
+        }
+      ],
+      "status": "manually_enabled",
+      "languages": {
+        "en": {
+          "create_poll": "Create poll"
+        }
+      },
+      "private": false,
+      "migrated": true,
+      "clusterStatus": [
+        {
+          "instanceId": "i1",
+          "status": "manually_enabled"
+        }
+      ]
+    },
+    {
+      "id": "b",
+      "name": "Broken",
+      "status": "compiler_error_disabled",
+      "author": "not an object",
+      "implements": "nope"
+    }
+  ],
+  "success": true
+}

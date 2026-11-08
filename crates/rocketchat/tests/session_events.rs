@@ -398,7 +398,7 @@ fn notify_user_misc() {
     );
     assert!(matches!(
         decode("synthetic_ui_interaction"),
-        SessionEvent::UiInteraction(v) if v["type"] == "modal.open"
+        SessionEvent::UiInteraction(v) if v.type_name() == "modal.open" && v.trigger_id() == "tr1"
     ));
     assert!(matches!(
         decode("synthetic_video_conference"),

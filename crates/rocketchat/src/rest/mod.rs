@@ -3,6 +3,7 @@
 //! Endpoint groups live in submodules as `impl RestClient` blocks; add new endpoints
 //! next to related ones using [`RestClient::get`], [`RestClient::post`] and friends.
 
+mod apps;
 mod auth;
 mod files;
 mod messages;
@@ -10,6 +11,7 @@ mod misc;
 mod rooms;
 mod users;
 
+pub use apps::UI_INTERACTION_TIMEOUT;
 pub use auth::LoginRequest;
 pub use auth::{LdapLogin, LoginResult};
 /// Byte buffer type of `UploadSource` (re-exported so callers need no `bytes` dependency).

@@ -1,0 +1,380 @@
+[
+  {
+    "type": "section",
+    "appId": "fake-app-id",
+    "blockId": "blk_section",
+    "text": {
+      "type": "mrkdwn",
+      "text": "*Bold* section with `code` and :smile:"
+    },
+    "fields": [
+      {
+        "type": "plain_text",
+        "text": "Field A"
+      },
+      {
+        "type": "mrkdwn",
+        "text": "_Field B_"
+      }
+    ],
+    "accessory": {
+      "type": "overflow",
+      "actionId": "ovf",
+      "options": [
+        {
+          "text": {
+            "type": "plain_text",
+            "text": "One"
+          },
+          "value": "1"
+        },
+        {
+          "text": {
+            "type": "plain_text",
+            "text": "Two"
+          },
+          "value": "2",
+          "url": "https://example.com"
+        }
+      ]
+    }
+  },
+  {
+    "type": "divider",
+    "blockId": "blk_div"
+  },
+  {
+    "type": "image",
+    "blockId": "blk_img",
+    "imageUrl": "http://localhost:3000/images/logo/logo.svg",
+    "altText": "logo",
+    "title": {
+      "type": "plain_text",
+      "text": "Image title"
+    }
+  },
+  {
+    "type": "context",
+    "blockId": "blk_ctx",
+    "elements": [
+      {
+        "type": "image",
+        "imageUrl": "http://localhost:3000/avatar/admin",
+        "altText": "a"
+      },
+      {
+        "type": "mrkdwn",
+        "text": "context *md*"
+      },
+      {
+        "type": "plain_text",
+        "text": "ctx plain"
+      }
+    ]
+  },
+  {
+    "type": "actions",
+    "appId": "fake-app-id",
+    "blockId": "blk_actions",
+    "elements": [
+      {
+        "type": "button",
+        "actionId": "btn_primary",
+        "text": {
+          "type": "plain_text",
+          "text": "Primary"
+        },
+        "style": "primary",
+        "value": "v1",
+        "confirm": {
+          "title": {
+            "type": "plain_text",
+            "text": "Sure?"
+          },
+          "text": {
+            "type": "plain_text",
+            "text": "Really"
+          },
+          "confirm": {
+            "type": "plain_text",
+            "text": "Yes"
+          },
+          "deny": {
+            "type": "plain_text",
+            "text": "No"
+          },
+          "style": "danger"
+        }
+      },
+      {
+        "type": "button",
+        "actionId": "btn_url",
+        "text": {
+          "type": "plain_text",
+          "text": "Link"
+        },
+        "url": "https://rocket.chat"
+      },
+      {
+        "type": "static_select",
+        "actionId": "sel",
+        "placeholder": {
+          "type": "plain_text",
+          "text": "Pick"
+        },
+        "options": [
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "A"
+            },
+            "value": "a"
+          },
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "B"
+            },
+            "value": "b"
+          }
+        ],
+        "initialValue": "b"
+      },
+      {
+        "type": "multi_static_select",
+        "actionId": "msel",
+        "placeholder": {
+          "type": "plain_text",
+          "text": "Pick many"
+        },
+        "options": [
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "A"
+            },
+            "value": "a"
+          },
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "B"
+            },
+            "value": "b"
+          }
+        ]
+      },
+      {
+        "type": "datepicker",
+        "actionId": "date",
+        "initialDate": "2026-11-08"
+      },
+      {
+        "type": "time_picker",
+        "actionId": "time",
+        "initialTime": "13:45"
+      },
+      {
+        "type": "linear_scale",
+        "actionId": "scale",
+        "minValue": 1,
+        "maxValue": 5,
+        "initialValue": 3,
+        "preLabel": {
+          "type": "plain_text",
+          "text": "Low"
+        },
+        "postLabel": {
+          "type": "plain_text",
+          "text": "High"
+        }
+      },
+      {
+        "type": "checkbox",
+        "actionId": "chk",
+        "options": [
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "C1"
+            },
+            "value": "c1"
+          },
+          {
+            "text": {
+              "type": "mrkdwn",
+              "text": "*C2*"
+            },
+            "value": "c2"
+          }
+        ],
+        "initialOptions": [
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "C1"
+            },
+            "value": "c1"
+          }
+        ]
+      },
+      {
+        "type": "radio_button",
+        "actionId": "rad",
+        "options": [
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "R1"
+            },
+            "value": "r1"
+          },
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "R2"
+            },
+            "value": "r2"
+          }
+        ]
+      },
+      {
+        "type": "toggle_switch",
+        "actionId": "tgl",
+        "options": [
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "T1"
+            },
+            "value": "t1"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "type": "callout",
+    "blockId": "blk_callout",
+    "variant": "warning",
+    "title": {
+      "type": "plain_text",
+      "text": "Heads up"
+    },
+    "text": {
+      "type": "mrkdwn",
+      "text": "callout *text*"
+    }
+  },
+  {
+    "type": "preview",
+    "blockId": "blk_preview",
+    "title": [
+      {
+        "type": "plain_text",
+        "text": "Preview title"
+      }
+    ],
+    "description": [
+      {
+        "type": "plain_text",
+        "text": "desc"
+      }
+    ],
+    "thumb": {
+      "url": "http://localhost:3000/avatar/admin"
+    },
+    "footer": {
+      "type": "context",
+      "elements": [
+        {
+          "type": "plain_text",
+          "text": "footer"
+        }
+      ]
+    }
+  },
+  {
+    "type": "conditional",
+    "blockId": "blk_cond",
+    "when": {
+      "engine": [
+        "livechat"
+      ]
+    },
+    "render": [
+      {
+        "type": "section",
+        "text": {
+          "type": "plain_text",
+          "text": "livechat only"
+        }
+      }
+    ]
+  },
+  {
+    "type": "conditional",
+    "blockId": "blk_cond2",
+    "when": {
+      "engine": [
+        "rocket.chat"
+      ]
+    },
+    "render": [
+      {
+        "type": "section",
+        "text": {
+          "type": "plain_text",
+          "text": "rocket.chat only"
+        }
+      }
+    ]
+  },
+  {
+    "type": "info_card",
+    "blockId": "blk_info",
+    "rows": [
+      {
+        "background": "default",
+        "elements": [
+          {
+            "type": "icon",
+            "icon": "phone",
+            "variant": "default",
+            "framed": true
+          },
+          {
+            "type": "plain_text",
+            "text": "Call ended"
+          }
+        ],
+        "action": {
+          "type": "icon_button",
+          "actionId": "ib",
+          "icon": {
+            "type": "icon",
+            "icon": "info",
+            "variant": "default"
+          },
+          "label": "Info"
+        }
+      }
+    ]
+  },
+  {
+    "type": "input",
+    "blockId": "blk_input",
+    "label": {
+      "type": "plain_text",
+      "text": "Input in a message"
+    },
+    "element": {
+      "type": "plain_text_input",
+      "actionId": "pti"
+    }
+  },
+  {
+    "type": "unknown_future_block",
+    "blockId": "blk_unknown"
+  }
+]

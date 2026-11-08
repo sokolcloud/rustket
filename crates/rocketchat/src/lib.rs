@@ -11,6 +11,7 @@ pub mod rest;
 pub mod server_url;
 pub mod session;
 pub mod tls;
+pub mod uikit;
 
 pub use date::RcDate;
 pub use error::{Error, MethodError, Result, TwoFactorChallenge, TwoFactorMethod};

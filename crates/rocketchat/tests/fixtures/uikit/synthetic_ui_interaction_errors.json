@@ -1,0 +1,19 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "eventName": "uid1/uiInteraction",
+    "args": [
+      {
+        "type": "errors",
+        "triggerId": "tr2",
+        "appId": "app1",
+        "viewId": "view-1",
+        "errors": {
+          "question": "required"
+        }
+      }
+    ]
+  }
+}

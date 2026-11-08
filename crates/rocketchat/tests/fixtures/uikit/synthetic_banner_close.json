@@ -1,0 +1,6 @@
+{
+  "type": "banner.close",
+  "triggerId": "TRIGGER",
+  "appId": "banner-core",
+  "viewId": "banner-1"
+}

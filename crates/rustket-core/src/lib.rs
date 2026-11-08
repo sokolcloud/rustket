@@ -18,6 +18,7 @@ pub mod settings;
 pub mod sync;
 pub mod timeline;
 pub mod typing;
+pub mod uikit;
 pub mod workspace;
 
 pub use config::{AppConfig, ServerId};

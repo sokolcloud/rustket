@@ -478,7 +478,10 @@ The existing (private) `RestClient::send_value` treats `success:false` as an err
 body to `{}`, and the typed endpoint methods build URLs with `ServerUrl::api` (`/api/v1`). UIKit
 needs its own call (`ServerUrl::api_root("apps/ui.interaction/{appId}")`) that
 returns the raw JSON for any 2xx (an `errors` response is `success:false` with HTTP 200) and maps
-non-2xx bodies `{error}` / HTML to `Error::Status`.
+non-2xx bodies through `Error::from_response`: `{error}` bodies become `Error::Api { status, error }`
+(e.g. 500 "Cannot read properties of undefined (reading 'call')"), the HTML 413 becomes
+`Error::Status`, 401 `Error::Unauthorized`; the client-side 5 s limit fails with `Error::Timeout`
+(implemented as `RestClient::ui_interaction`, `crates/rocketchat/src/rest/apps.rs`).
 
 ### 4.2 `triggerId`
 
@@ -1160,11 +1163,29 @@ impl RestClient {
 }
 ```
 
-`app_id` goes into the URL path: percent-encode it and reject `/`, `?`, `#` (it comes from
-untrusted blocks). Session: `{uid}/message` already yields `SessionEvent::EphemeralMessage`;
-decode `uiInteraction` into `SessionEvent::UiInteraction(Box<ServerInteraction>)` and add
-`SessionEvent::Apps(AppsStreamEvent)` for `stream-apps` `apps` (key + args; unknown keys kept).
+`app_id` goes into the URL path: percent-encode it and reject `/`, `?`, `#`, `\`, `.`, `..` (it
+comes from untrusted blocks). Session: `{uid}/message` already yields
+`SessionEvent::EphemeralMessage`; `uiInteraction` is decoded into
+`SessionEvent::UiInteraction(Box<ServerInteraction>)`. The session now also subscribes
+`stream-apps` `apps` (optional stream, not in `REQUIRED_STREAMS`). Implementation note: a
+dedicated `SessionEvent::Apps` variant was **not** added yet, because `crates/rustket`'s
+dispatcher matches `SessionEvent` exhaustively and the library round could not touch it; apps
+events arrive as `SessionEvent::Unknown { collection: "stream-apps", event_name: "apps", args }`
+and are decoded with `AppsStreamEvent::from_session_event` (key + args; unknown keys kept as
+`AppsStreamEvent::Unknown`). Adding the variant later is a one-line change in
+`session/events.rs` plus a dispatcher arm.
 Never log interaction bodies at info level (they can contain user input).
+
+As implemented: the `view` of every `ServerInteraction` variant is boxed
+(`Box<RawView<ModalView>>` …, the enum would otherwise be ~1.8 KB); `Element::MultiStaticSelect`,
+`Checkbox` and `ToggleSwitch` keep `initial: Option<Vec<String>>` (`None` = no initial options,
+absent from `state`; toggling starts from `[]`); helpers `Element::{initial_value, inherited,
+allowed_in(Slot)}`, `LayoutBlock::inherited_elements`, `resolve_conditionals`,
+`Surface::{allows, renderable}` (§2.5 allow-lists), `UserInteraction::{view_submit, view_closed,
+banner_closed}` (the §5.3 compact-form fallback lives in `view_submit`), `Message::{uikit_blocks,
+has_blocks}`. Decoding caps: 50 top-level blocks, 25 elements per block/row, 500 options; the size
+guard reuses the `md` limits. Banners: `RestClient::{banners, dismiss_banner}`, model
+`models::Banner`.
 
 ### 10.2 `crates/rustket-core` (state)
 
@@ -1207,8 +1228,32 @@ impl ViewState {
 ```
 
 `UiKitStore::apply(ServerInteraction, now) -> Vec<UiKitChange>` implements §4.6 without iced;
-`UiKitStore::close_decision(trigger, http_ok)` implements the RN rule. Everything is plain data
+`close_decision(kind, handled, HttpOutcome)` implements the RN rule. Everything is plain data
 and unit-testable from JSON fixtures.
+
+As implemented (`crates/rustket-core/src/uikit/`): `ViewState` uses a `BTreeMap` (order is
+irrelevant for the JSON object). `UiKitStore` lives in the `Workspace` (`uikit()` /
+`uikit_mut()`) and builds every interaction itself, registering the trigger and counting `busy`:
+`message_block_action(msg, is_ephemeral, in_video_conf_block, app_id, block_id, action_id, value,
+now)` (returns `None` when the §3.2 trust rule forbids it), `view_block_action`, `view_submit`
+(`None` while a submit is in flight), `view_closed` (closes locally at once), `action_button`,
+`banner_block_action` / `banner_closed` (the banner goes away at once), `slash_command_trigger` +
+`finish_command`. The UI sends the returned `(app_id, UserInteraction)` with
+`RestClient::ui_interaction` and passes the result (`InteractionResult::from(result)`) to
+`finish(trigger_id, result, now)`, which applies a body interaction, toasts timeouts/errors and
+runs the close decision; pushes go to `apply`. Changes are reported as `UiKitChange`
+(`ModalOpened`, `BarOpened { rid, view_id }`, `ErrorsSet`, `Toast(UiKitToast)`, …).
+`contextual_bar.open` replaces any bar with the same id or in the same room. `set_banners`
+(REST banners, `cloud-announcements-core` default app id and dictionary),
+`apply_apps_event(&AppsStreamEvent) -> AppsFollowup` (what to refetch), `close_room_bars(rid)`.
+
+The per-message ephemeral flag (§3.2) is kept by the workspace:
+`Workspace::apply_ephemeral_message(msg)` upserts like `apply_message` and flags the message while
+that version is the one shown; `Workspace::is_ephemeral(rid, mid)` reads it. The flag is dropped
+when the same `_id` arrives through `apply_message`, a room sync, a history or thread page, a
+deletion, or when the room timeline is closed or reset. The session dispatcher in
+`crates/rustket/src/session.rs` must call `apply_ephemeral_message` for
+`SessionEvent::EphemeralMessage` (it still calls `apply_message`, which loses the origin).
 
 ### 10.3 `crates/rustket` (iced)
 
@@ -1293,10 +1338,13 @@ Rendering approach:
   id), button filters, i18n plural/interpolation, payload size
   fallback, trust rule (forged `private`/`t:'videoconf'` persisted message stays disabled; a
   persisted message reusing an ephemeral `_id` drops the ephemeral flag).
-- Live test (`crates/rocketchat/tests/live.rs`): create a channel, mention a non-member with
-  admin, wait for the ephemeral blocks on `{uid}/message`, post `dismiss` to `mention-core`,
-  expect `{}` and a replacement with the same `_id`; error mapping for an unknown app id;
-  `action_buttons()` decodes `[]`; delete the channel.
+- Live test (`crates/rocketchat/tests/uikit_live.rs`, its own file to keep `live.rs` free of
+  merge conflicts): create a channel, mention a non-member with a throwaway user, wait for the
+  ephemeral blocks on `{uid}/message`, post `dismiss` to `mention-core`, expect `{}` and a
+  replacement with the same `_id`; error mapping for an unknown app id and for `videoconf-core`
+  `actionButton`; `action_buttons()`, apps count/languages/installed/logs and banners decode;
+  delete the channel and users. Passed against the dev server on 2026-11-08. Fixtures are in
+  `crates/rocketchat/tests/fixtures/uikit/` (live bodies, `synthetic_*` from source).
 
 Block set used for the alice message (one of each renderable kind):
 

@@ -1,0 +1,6 @@
+{
+  "type": "modal.close",
+  "triggerId": "TRIGGER",
+  "appId": "cloud-announcements-core",
+  "viewId": "announcement-1"
+}

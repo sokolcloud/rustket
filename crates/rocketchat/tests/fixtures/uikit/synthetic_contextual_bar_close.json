@@ -1,0 +1,9 @@
+{
+  "type": "contextual_bar.close",
+  "triggerId": "TRIGGER",
+  "appId": "app1",
+  "view": {
+    "id": "bar-1",
+    "appId": "app1"
+  }
+}

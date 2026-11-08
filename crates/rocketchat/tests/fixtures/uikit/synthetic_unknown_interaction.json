@@ -1,0 +1,5 @@
+{
+  "type": "toast.show",
+  "triggerId": "TRIGGER",
+  "appId": "app1"
+}

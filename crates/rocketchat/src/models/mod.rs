@@ -1,5 +1,6 @@
 //! Tolerant serde models of Rocket.Chat payloads.
 
+mod apps;
 pub mod lenient;
 pub mod md;
 mod message;
@@ -9,6 +10,7 @@ mod settings;
 mod subscription;
 mod user;
 
+pub use apps::*;
 pub use message::*;
 pub use misc::*;
 pub use room::*;

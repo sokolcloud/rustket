@@ -394,6 +394,7 @@ async fn subscribes_every_stream_with_exact_params() {
                 }),
             )
             .chain(["stream-roles|[\"roles\",{\"args\":[],\"useCollection\":false}]".to_owned()])
+            .chain(["stream-apps|[\"apps\",{\"args\":[],\"useCollection\":false}]".to_owned()])
             .collect();
     assert_eq!(subs, golden);
     assert_eq!(global_subscriptions(UID).len(), golden.len());

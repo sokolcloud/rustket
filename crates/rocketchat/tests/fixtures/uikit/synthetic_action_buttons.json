@@ -1,0 +1,48 @@
+[
+  {
+    "appId": "c33fa1a6-68a7-491e-bf49-9d7b99671c48",
+    "actionId": "create-poll",
+    "context": "messageBoxAction",
+    "labelI18n": "create_poll"
+  },
+  {
+    "appId": "c33fa1a6-68a7-491e-bf49-9d7b99671c48",
+    "actionId": "room-polls",
+    "context": "roomAction",
+    "labelI18n": "room_polls",
+    "variant": "danger",
+    "when": {
+      "roomTypes": [
+        "public_channel",
+        "private_channel"
+      ],
+      "hasOnePermission": [
+        "create-c"
+      ],
+      "hasOneRole": [
+        "owner",
+        "moderator"
+      ]
+    }
+  },
+  {
+    "appId": "ai-app",
+    "actionId": "summarize",
+    "context": "messageAction",
+    "labelI18n": "summarize",
+    "category": "ai",
+    "when": {
+      "messageActionContext": [
+        "message",
+        "threads"
+      ]
+    }
+  },
+  {
+    "appId": "x",
+    "actionId": "future",
+    "context": "someFutureContext",
+    "labelI18n": "f"
+  },
+  "garbage"
+]

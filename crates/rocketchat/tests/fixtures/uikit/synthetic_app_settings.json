@@ -1,0 +1,43 @@
+{
+  "settings": {
+    "api_key": {
+      "id": "api_key",
+      "type": "password",
+      "packageValue": "",
+      "value": "secret",
+      "required": true,
+      "public": false,
+      "i18nLabel": "api_key_label",
+      "i18nDescription": "api_key_desc",
+      "createdAt": "2026-01-01T00:00:00.000Z"
+    },
+    "mode": {
+      "id": "mode",
+      "type": "select",
+      "packageValue": "a",
+      "required": false,
+      "public": true,
+      "i18nLabel": "mode_label",
+      "values": [
+        {
+          "key": "a",
+          "i18nLabel": "mode_a"
+        },
+        {
+          "key": "b",
+          "i18nLabel": "mode_b"
+        }
+      ]
+    },
+    "enabled": {
+      "id": "enabled",
+      "type": "boolean",
+      "packageValue": true,
+      "value": false,
+      "required": false,
+      "public": false,
+      "i18nLabel": "enabled_label"
+    }
+  },
+  "success": true
+}

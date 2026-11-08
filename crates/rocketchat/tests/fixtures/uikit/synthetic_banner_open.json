@@ -1,0 +1,20 @@
+{
+  "type": "banner.open",
+  "triggerId": "TRIGGER",
+  "appId": "banner-core",
+  "viewId": "banner-1",
+  "variant": "warning",
+  "icon": "info",
+  "title": "Maintenance tonight",
+  "inline": false,
+  "blocks": [
+    {
+      "type": "section",
+      "blockId": "b1",
+      "text": {
+        "type": "mrkdwn",
+        "text": "From *22:00* UTC"
+      }
+    }
+  ]
+}
