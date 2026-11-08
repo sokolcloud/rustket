@@ -231,5 +231,5 @@ room_timeline.history_first_failed:
   en: "Couldn't load messages"
   ru: "Не удалось загрузить сообщения"
 room_timeline.jump_not_loaded:
-  en: "The message is too far back in the history"
-  ru: "Сообщение слишком далеко в истории"
+  en: "Couldn't find the message in the history"
+  ru: "Не удалось найти сообщение в истории"

@@ -155,7 +155,8 @@ previous session (after logout / re-login) never reach a component.
 
 `UpdateCtx<'a>` (for `update` / `on_changes`):
 - same identifiers, `workspace: &mut Workspace` (e.g. `add_pending`,
-  `set_draft`, `open_thread`, `begin_load_thread`/`finish_load_thread`),
+  `set_draft`, `open_thread`, `begin_load_thread`/`finish_load_thread` —
+  newest-first offsets, paired with `RestClient::thread_messages_latest`),
   `session: Option<&SessionHandle>`, `images`, `prefs`.
 - `ctx.rest()` → `Option<RestClient>` (authenticated).
 - `ctx.rest_task(|rest| async move { rest.send_message(&m).await }, Message::Sent)`
@@ -271,6 +272,8 @@ Message lists share more than the body renderer (`room/timeline/`):
   routed by the owner to its composer.
 - `list::{plan, row, Common}`, `row::{Env, RowFlags}`: grouping, day and
   unread separators and the `lazy` rows, used by the timeline and the thread.
+- `list::Follow`: built window, bottom following and the frozen view while
+  scrolled up (new messages wait below "jump to latest"), shared likewise.
 - Dialogs and the lightbox are drawn by `RoomView` over the whole room
   (`Timeline::overlay`, `Panel::overlay`).
 
@@ -279,4 +282,8 @@ The thread view (`room/panel/thread.rs`) owns `Composer::for_thread` with
 (`RestClient::thread_messages_latest`), and marks the thread read
 (`chat.readThread`) on open and, while focused at the bottom, when replies
 arrive (`RoomView::mark_thread_read`, called by the app). Panel bodies that
-hold workspace state are released through `Panel::retire`.
+hold workspace state are released through `Panel::retire`. The thread
+reloads itself when its timeline is reset (resync, history import). Expanded,
+it is drawn over the room column (max 855 px, like the web) and later threads
+of the session open expanded too. `Effect::OpenPanel(Kind::Thread(t))` for
+the open thread keeps it open (only header buttons toggle panels).

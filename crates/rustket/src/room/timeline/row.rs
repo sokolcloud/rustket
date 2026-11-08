@@ -571,13 +571,18 @@ mod tests {
 
     #[test]
     fn plurals() {
-        assert_eq!(plural(1), "one");
-        assert_eq!(plural(21), "one");
-        assert_eq!(plural(11), "many");
-        assert_eq!(plural(3), "few");
-        assert_eq!(plural(13), "many");
-        assert_eq!(plural(25), "many");
-        assert_eq!(plural(0), "many");
+        use crate::room::render::plural_for;
+        assert_eq!(plural_for("ru", 1), "one");
+        assert_eq!(plural_for("ru", 21), "one");
+        assert_eq!(plural_for("ru", 11), "many");
+        assert_eq!(plural_for("ru", 3), "few");
+        assert_eq!(plural_for("ru", 13), "many");
+        assert_eq!(plural_for("ru", 25), "many");
+        assert_eq!(plural_for("ru", 0), "many");
+        // English: "21 replies".
+        assert_eq!(plural_for("en", 1), "one");
+        assert_eq!(plural_for("en", 21), "many");
+        assert_eq!(plural_for("en", 3), "many");
     }
 
     #[test]

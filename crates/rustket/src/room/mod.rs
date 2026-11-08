@@ -14,7 +14,7 @@ pub mod upload;
 use std::sync::Arc;
 use std::time::Instant;
 
-use iced::widget::{column, container, row};
+use iced::widget::{column, container, opaque, row, stack};
 use iced::{Element, Length, Subscription, Task};
 use rocketchat::rest::HistoryCursor;
 use rocketchat::session::RoomWatch;
@@ -485,12 +485,19 @@ impl RoomView {
             match e {
                 Effect::LoadOlder => tasks.push(self.load_older(ctx).task),
                 Effect::MarkRead => tasks.push(self.mark_read(ctx)),
+                // The open thread stays open (its summary was clicked again);
+                // only header buttons toggle panels.
+                Effect::OpenPanel(panel::Kind::Thread(t))
+                    if self.panel.kind() == Some(&panel::Kind::Thread(t.clone())) => {}
                 Effect::OpenPanel(kind) => {
                     self.panel.open(kind);
                     self.panel.retire(ctx.workspace);
                 }
                 Effect::ShowMessage(m) => {
+                    // Its effects (e.g. `LoadOlder` to reach older history)
+                    // concern this room too.
                     let a = self.show_message(*m, ctx);
+                    let a = self.handle_effects(a, ctx);
                     tasks.push(a.task);
                     up.extend(a.effects);
                 }
@@ -571,6 +578,31 @@ impl RoomView {
         .width(Length::Fill)
         .height(Length::Fill);
         let body: Element<'a, Message> = match self.panel.view(ctx) {
+            // The expanded thread covers the room column (up to a maximum
+            // width) instead of squeezing it, like the web.
+            Some(panel) if self.panel.expanded() => stack![
+                main,
+                container(
+                    container(opaque(
+                        row![
+                            vertical_divider(),
+                            container(panel.map(Message::Panel))
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .style(style::container_sidebar),
+                        ]
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                    ))
+                    .width(Length::Fill)
+                    .max_width(panel::thread::WIDTH_EXPANDED)
+                    .height(Length::Fill)
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced::Alignment::End),
+            ]
+            .into(),
             Some(panel) => row![
                 main,
                 vertical_divider(),
@@ -603,5 +635,133 @@ impl RoomView {
             .height(Length::Fill)
             .style(style::container_room)
             .into()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use rocketchat::models::UserRef;
+    use rocketchat::models::{Message as RcMessage, Room, RoomType, Subscription as Sub, User};
+    use rocketchat::{RcDate, ServerUrl};
+    use rustket_core::sync::InitialData;
+
+    fn workspace() -> Workspace {
+        let mut ws = Workspace::new();
+        ws.apply_initial(InitialData {
+            me: User {
+                id: "me".into(),
+                username: Some("me".into()),
+                ..Default::default()
+            },
+            subscriptions: vec![Sub {
+                id: "s1".into(),
+                rid: "R1".into(),
+                name: "general".into(),
+                t: RoomType::Channel,
+                u: UserRef {
+                    id: "me".into(),
+                    username: Some("me".into()),
+                    name: None,
+                },
+                open: true,
+                ..Default::default()
+            }],
+            rooms: vec![Room {
+                id: "R1".into(),
+                t: RoomType::Channel,
+                name: Some("general".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        ws
+    }
+
+    fn message(id: &str, ms: i64) -> RcMessage {
+        RcMessage {
+            id: id.into(),
+            rid: "R1".into(),
+            ts: RcDate::from_millis(ms),
+            ..Default::default()
+        }
+    }
+
+    /// Review: a Pinned/Search result older than the loaded history asked
+    /// for an older page, but the request went up to the app (ignored).
+    #[test]
+    fn show_message_loads_older_history_itself() {
+        let mut ws = workspace();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        ctx.workspace.reset_room_timelines("R1");
+        let (c, t) = ctx.workspace.begin_load_older_ticket("R1").unwrap();
+        ctx.workspace
+            .finish_load_older_ticket("R1", t, c, Ok(vec![message("new", 2_000_000)]));
+        assert!(
+            ctx.workspace
+                .timeline("R1")
+                .unwrap()
+                .pagination
+                .has_more_before
+        );
+        let a = rv.handle_effects(
+            Action::effect(Effect::ShowMessage(Box::new(message("old", 1_000_000)))),
+            &mut ctx,
+        );
+        assert!(!a.effects.iter().any(|e| matches!(e, Effect::LoadOlder)));
+        // The page was requested here (it fails at once without a session).
+        assert!(
+            ctx.workspace
+                .timeline("R1")
+                .unwrap()
+                .pagination
+                .error
+                .is_some()
+        );
+    }
+
+    /// Review: clicking the summary of the open thread closed it.
+    #[test]
+    fn opening_the_open_thread_keeps_it() {
+        let mut ws = workspace();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        let open = || Action::effect(Effect::OpenPanel(panel::Kind::Thread("P".into())));
+        let _ = rv.handle_effects(open(), &mut ctx);
+        let g = rv.panel.generation();
+        let _ = rv.handle_effects(open(), &mut ctx);
+        assert_eq!(rv.panel.kind(), Some(&panel::Kind::Thread("P".into())));
+        assert_eq!(rv.panel.generation(), g, "the same view");
+        // Header buttons still toggle other panels.
+        let pinned = || Action::effect(Effect::OpenPanel(panel::Kind::Pinned));
+        let _ = rv.handle_effects(pinned(), &mut ctx);
+        let _ = rv.handle_effects(pinned(), &mut ctx);
+        assert_eq!(rv.panel.kind(), None);
     }
 }

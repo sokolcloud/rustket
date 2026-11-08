@@ -392,12 +392,6 @@ room_panel.no_files:
 room_panel.download:
   en: "Download"
   ru: "Скачать"
-room_panel.downloaded:
-  en: "File saved"
-  ru: "Файл сохранён"
-room_panel.download_failed:
-  en: "Download failed"
-  ru: "Не удалось скачать"
 room_panel.not_member:
   en: "You are not a member of this room"
   ru: "Вы не участник этой комнаты"
@@ -617,6 +611,9 @@ room_panel.thread_failed:
 room_panel.thread_older:
   en: "Show older replies"
   ru: "Показать более ранние ответы"
+room_panel.thread_new_replies:
+  en: "New replies: %{count}"
+  ru: "Новых ответов: %{count}"
 room_panel.file_downloading:
   en: "Downloading %{received} of %{total}"
   ru: "Загружено %{received} из %{total}"

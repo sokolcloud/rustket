@@ -23,12 +23,11 @@ use std::time::Duration;
 use chrono::Local;
 use iced::widget::scrollable::{RelativeOffset, Viewport};
 use iced::widget::{
-    button, column, container, keyed_column, row as hrow, scrollable, sensor, space, stack, text,
+    button, column, container, keyed_column, row as hrow, scrollable, sensor, space, text,
 };
 use iced::{Alignment, Element, Length, Padding, Subscription, Task};
 use rocketchat::RcDate;
 use rust_i18n::t;
-use rustket_core::timeline::DeliveryState;
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
@@ -42,17 +41,10 @@ pub use actions::{Act, available as available_actions, channel_url, permalink};
 pub use interact::{Interactions, Msg as ItemMsg, Source};
 pub use viewer::{Viewer, ViewerMsg};
 
-/// Rows built initially and added per step when scrolling up.
-const WINDOW: usize = 60;
-const WINDOW_STEP: usize = 40;
-/// Distance from the top (px) that loads more.
-const TOP_THRESHOLD: f32 = 400.0;
-/// Distance from the bottom (px) that still counts as "at the bottom".
-const BOTTOM_THRESHOLD: f32 = 24.0;
 /// History pages loaded at most while looking for a jump target.
 const SEEK_PAGES: u32 = 20;
 /// How long a jumped-to message stays highlighted.
-const SELECTED_FOR: Duration = Duration::from_secs(4);
+pub(crate) const SELECTED_FOR: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -80,25 +72,13 @@ struct Seek {
 pub struct Timeline {
     rid: String,
     items: Interactions,
-    /// Newest messages built as rows.
-    window: usize,
-    at_bottom: bool,
-    /// While scrolled up: the newest message shown (`ts` ms, id); newer ones
-    /// wait below the "jump to latest" button so the view does not move.
-    frozen: Option<(i64, String)>,
-    /// Newest item seen by `on_changes` (grows the window instead of
-    /// shifting it when messages arrive at the bottom).
-    newest: Option<(i64, String)>,
+    /// Built window, bottom following and the frozen view while scrolled up.
+    follow: list::Follow,
     scroll_id: iced::widget::Id,
     /// Jumped-to message and the stamp of its highlight.
     selected: Option<(String, u64)>,
     stamp: u64,
     seek: Option<Seek>,
-}
-
-fn item_key_owned(item: &rustket_core::timeline::TimelineItem) -> (i64, String) {
-    let (ts, id) = list::item_key(item);
-    (ts, id.to_owned())
 }
 
 /// Id of the container around a jumped-to row.
@@ -111,10 +91,7 @@ impl Timeline {
         Self {
             rid: rid.to_owned(),
             items: Interactions::new(Source::Room),
-            window: WINDOW,
-            at_bottom: true,
-            frozen: None,
-            newest: None,
+            follow: list::Follow::default(),
             scroll_id: iced::widget::Id::unique(),
             selected: None,
             stamp: 0,
@@ -143,9 +120,7 @@ impl Timeline {
             Message::LoadOlder => Action::effect(Effect::LoadOlder),
             Message::Scrolled(vp) => self.scrolled(vp, ctx),
             Message::JumpToLatest => {
-                self.frozen = None;
-                self.at_bottom = true;
-                self.window = WINDOW;
+                self.follow.follow_bottom();
                 // A click: the window is focused and this room is visible.
                 let mut a = Action::task(self.snap_to_bottom());
                 if Self::unread(ctx) {
@@ -246,21 +221,10 @@ impl Timeline {
         let Some(tl) = ctx.workspace.timeline(ctx.rid) else {
             return Action::none();
         };
-        let Some(target) = tl.get(mid).map(item_key_owned) else {
+        // Rows down from the target, kept still while the user looks at it.
+        if !self.follow.hold_at(tl, mid) {
             return Action::none();
-        };
-        // Rows newer than the target, plus some context above it.
-        let newer = tl
-            .iter()
-            .rev()
-            .take_while(|i| list::item_key(i) > (target.0, target.1.as_str()))
-            .count();
-        self.window = self.window.max(newer + WINDOW_STEP);
-        // Keep the view still while the user looks at the message.
-        if self.frozen.is_none() {
-            self.frozen = tl.iter().next_back().map(item_key_owned);
         }
-        self.at_bottom = false;
         self.stamp += 1;
         let stamp = self.stamp;
         self.selected = Some((mid.to_owned(), stamp));
@@ -277,28 +241,14 @@ impl Timeline {
     }
 
     fn scrolled(&mut self, vp: Viewport, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
-        let from_bottom = vp.absolute_offset().y;
-        let from_top = vp.absolute_offset_reversed().y;
-        let was_bottom = self.at_bottom;
-        self.at_bottom = from_bottom <= BOTTOM_THRESHOLD;
+        let s = self.follow.scrolled(&vp, ctx.workspace.timeline(ctx.rid));
         let mut action = Action::none();
-        if self.at_bottom && !was_bottom {
-            // Back at the bottom: show what arrived meanwhile.
-            self.frozen = None;
-            self.window = WINDOW;
-            // Scrolling happens in the visible room of a focused window.
-            if Self::unread(ctx) {
-                action = action.with(Effect::MarkRead);
-            }
-        } else if !self.at_bottom && self.frozen.is_none() {
-            self.frozen = ctx
-                .workspace
-                .timeline(ctx.rid)
-                .and_then(|t| t.iter().next_back())
-                .map(item_key_owned);
+        // Back at the bottom; scrolling happens in the visible room of a
+        // focused window.
+        if s.back_at_bottom && Self::unread(ctx) {
+            action = action.with(Effect::MarkRead);
         }
-        let short = vp.content_bounds().height <= vp.bounds().height + 1.0;
-        if from_top < TOP_THRESHOLD || short {
+        if s.near_top {
             let more = self.reach_top(ctx);
             action.task = more.task;
             action.effects.extend(more.effects);
@@ -311,8 +261,7 @@ impl Timeline {
         let Some(tl) = ctx.workspace.timeline(ctx.rid) else {
             return Action::none();
         };
-        if tl.len() > self.window {
-            self.window += WINDOW_STEP;
+        if !self.follow.grow(tl) {
             return Action::none();
         }
         let p = &tl.pagination;
@@ -332,32 +281,8 @@ impl Timeline {
         };
         // Forget state of deleted messages.
         self.items.prune(|mid| tl.contains(mid));
-        // New messages at the bottom grow the window rather than shifting
-        // every row; it is trimmed back once in a while.
-        let newest = tl.iter().next_back().map(item_key_owned);
-        if let (Some(prev), Some(_)) = (&self.newest, &newest)
-            && self.at_bottom
-            && self.frozen.is_none()
-        {
-            let added = tl
-                .iter()
-                .rev()
-                .take_while(|i| list::item_key(i) > (prev.0, prev.1.as_str()))
-                .count();
-            self.window += added;
-            if self.window > WINDOW + WINDOW_STEP {
-                self.window = WINDOW;
-            }
-        }
-        self.newest = newest;
         // An own message being sent while scrolled up: jump down to it.
-        let own_pending = tl
-            .iter()
-            .next_back()
-            .is_some_and(|i| i.state == DeliveryState::Sending);
-        if self.frozen.is_some() && own_pending {
-            self.frozen = None;
-            self.at_bottom = true;
+        if self.follow.on_changes(tl) {
             self.seek = None;
             return Action::task(self.snap_to_bottom());
         }
@@ -406,8 +331,8 @@ impl Timeline {
         let plan = list::plan(
             tl,
             list::visible_in(ws, &self.rid),
-            self.frozen.as_ref().map(|(ts, id)| (*ts, id.as_str())),
-            self.window,
+            self.follow.frozen(),
+            self.follow.window,
             me,
             ws.settings().grouping_period_secs(),
             &Local,
@@ -435,8 +360,8 @@ impl Timeline {
         col = col.push(
             list::TOP_KEY,
             sensor(top)
-                .key((tl.len(), self.window, tl.pagination.loading_before))
-                .anticipate(TOP_THRESHOLD)
+                .key((tl.len(), self.follow.window, tl.pagination.loading_before))
+                .anticipate(list::TOP_THRESHOLD)
                 .on_show(|_| Message::ReachedTop),
         );
         let selected = self.selected();
@@ -464,7 +389,7 @@ impl Timeline {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(style::scrollable);
-        if self.at_bottom && new_below == 0 {
+        if self.follow.at_bottom && new_below == 0 {
             return list.into();
         }
         let label = if new_below > 0 {
@@ -472,27 +397,7 @@ impl Timeline {
         } else {
             t!("room_timeline.jump_to_latest").into_owned()
         };
-        let jump = button(
-            hrow![
-                icon::sized(Icon::ArrowDown, 14.0),
-                text(label).size(TEXT_SMALL)
-            ]
-            .spacing(SPACE_2)
-            .align_y(Alignment::Center),
-        )
-        .padding([6, 12])
-        .style(style::button_primary)
-        .on_press(Message::JumpToLatest);
-        stack![
-            list,
-            container(jump)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_x(Alignment::End)
-                .align_y(Alignment::End)
-                .padding(SPACE_4)
-        ]
-        .into()
+        list::with_jump_button(list.into(), label, Message::JumpToLatest)
     }
 }
 

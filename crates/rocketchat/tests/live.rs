@@ -426,6 +426,26 @@ async fn message_lifecycle() {
     assert_eq!(thread.items.len(), 1);
     let latest = a.thread_messages_latest(&sent.id, 0, 50).await.unwrap();
     assert_eq!(latest.items[0].id, reply.id);
+    // Newest first, paged by offset.
+    let mut later = Vec::new();
+    for text in ["reply 2", "reply 3"] {
+        let m = b
+            .send_message(&OutgoingMessage::new(&room.id, text).in_thread(&sent.id, false))
+            .await
+            .unwrap();
+        later.push(m.id);
+    }
+    let ids = |p: rocketchat::models::Paginated<rocketchat::models::Message>| {
+        p.items.into_iter().map(|m| m.id).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(a.thread_messages_latest(&sent.id, 0, 2).await.unwrap()),
+        [later[1].clone(), later[0].clone()]
+    );
+    assert_eq!(
+        ids(a.thread_messages_latest(&sent.id, 2, 2).await.unwrap()),
+        std::slice::from_ref(&reply.id)
+    );
     // The parent's author follows the thread: the reply is unread for them
     // until `chat.readThread`.
     let tunread = |s: rocketchat::models::Subscription| s.tunread.unwrap_or_default();

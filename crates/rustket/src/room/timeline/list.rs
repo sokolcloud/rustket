@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 
 use chrono::{DateTime, Datelike, Local, Utc};
 use iced::advanced::widget::operation::{Operation, Outcome};
+use iced::widget::scrollable::Viewport;
 use iced::widget::{column, lazy};
 use iced::{Element, Length, Rectangle, Task, Vector};
 use rocketchat::models::Message as RcMessage;
@@ -391,10 +392,210 @@ pub(crate) fn reveal<M: Send + 'static>(
     })
 }
 
+/// Rows built initially and added per step when scrolling up.
+pub(crate) const WINDOW: usize = 60;
+pub(crate) const WINDOW_STEP: usize = 40;
+/// Distance from the top (px) that builds more rows or loads a page.
+pub(crate) const TOP_THRESHOLD: f32 = 400.0;
+/// Distance from the bottom (px) that still counts as "at the bottom".
+pub(crate) const BOTTOM_THRESHOLD: f32 = 24.0;
+
+fn newest_key(tl: &CoreTimeline) -> Option<(i64, String)> {
+    tl.iter().next_back().map(|i| {
+        let (ts, id) = item_key(i);
+        (ts, id.to_owned())
+    })
+}
+
+/// Scroll state of a bottom-anchored message list (room timeline, thread):
+/// how many of the newest rows are built, whether the view follows the
+/// bottom, and while scrolled up the newest row shown, so arriving messages
+/// wait below a "jump to latest" button instead of moving what is read.
+#[derive(Debug)]
+pub(crate) struct Follow {
+    pub window: usize,
+    pub at_bottom: bool,
+    frozen: Option<(i64, String)>,
+    /// Newest item seen by [`Follow::on_changes`] (grows the window instead
+    /// of shifting it when messages arrive at the bottom).
+    newest: Option<(i64, String)>,
+}
+
+/// What a scroll event means for the list owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Scrolled {
+    /// The view just came back to the bottom.
+    pub back_at_bottom: bool,
+    /// Near the top, or nothing scrolls yet: build or load more.
+    pub near_top: bool,
+}
+
+impl Default for Follow {
+    fn default() -> Self {
+        Self {
+            window: WINDOW,
+            at_bottom: true,
+            frozen: None,
+            newest: None,
+        }
+    }
+}
+
+impl Follow {
+    /// The frozen newest row, for [`plan`].
+    pub fn frozen(&self) -> Option<(i64, &str)> {
+        self.frozen.as_ref().map(|(ts, id)| (*ts, id.as_str()))
+    }
+
+    /// Follow the bottom again (jump to latest, own message sent, reload).
+    pub fn follow_bottom(&mut self) {
+        self.frozen = None;
+        self.at_bottom = true;
+        self.window = WINDOW;
+    }
+
+    pub fn scrolled(&mut self, vp: &Viewport, tl: Option<&CoreTimeline>) -> Scrolled {
+        let from_bottom = vp.absolute_offset().y;
+        let from_top = vp.absolute_offset_reversed().y;
+        let was = self.at_bottom;
+        self.at_bottom = from_bottom <= BOTTOM_THRESHOLD;
+        let back_at_bottom = self.at_bottom && !was;
+        if back_at_bottom {
+            // Show what arrived meanwhile.
+            self.frozen = None;
+            self.window = WINDOW;
+        } else if !self.at_bottom && self.frozen.is_none() {
+            self.frozen = tl.and_then(newest_key);
+        }
+        let short = vp.content_bounds().height <= vp.bounds().height + 1.0;
+        Scrolled {
+            back_at_bottom,
+            near_top: from_top < TOP_THRESHOLD || short,
+        }
+    }
+
+    /// Near the top: builds more of the loaded rows when there are some;
+    /// `true` when an older page is due instead.
+    pub fn grow(&mut self, tl: &CoreTimeline) -> bool {
+        if tl.len() > self.window {
+            self.window += WINDOW_STEP;
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Builds rows down from `mid` (with context above it) and holds the
+    /// view still while the user looks at it; `false` when not loaded.
+    pub fn hold_at(&mut self, tl: &CoreTimeline, mid: &str) -> bool {
+        let Some(target) = tl.get(mid).map(item_key) else {
+            return false;
+        };
+        let newer = tl.iter().rev().take_while(|i| item_key(i) > target).count();
+        self.window = self.window.max(newer + WINDOW_STEP);
+        if self.frozen.is_none() {
+            self.frozen = newest_key(tl);
+        }
+        self.at_bottom = false;
+        true
+    }
+
+    /// After the timeline changed. `true` when an own message is being
+    /// sent while the view was frozen: it follows the bottom again and the
+    /// owner snaps down.
+    pub fn on_changes(&mut self, tl: &CoreTimeline) -> bool {
+        let newest = newest_key(tl);
+        if let (Some(prev), Some(_)) = (&self.newest, &newest)
+            && self.at_bottom
+            && self.frozen.is_none()
+        {
+            let added = tl
+                .iter()
+                .rev()
+                .take_while(|i| item_key(i) > (prev.0, prev.1.as_str()))
+                .count();
+            self.window += added;
+            // Trimmed back once in a while.
+            if self.window > WINDOW + WINDOW_STEP {
+                self.window = WINDOW;
+            }
+        }
+        self.newest = newest;
+        let own_pending = tl
+            .iter()
+            .next_back()
+            .is_some_and(|i| i.state == DeliveryState::Sending);
+        if self.frozen.is_some() && own_pending {
+            self.follow_bottom();
+            return true;
+        }
+        false
+    }
+}
+
+/// `list` with the "jump to latest" button (with the count of what waits
+/// below when `new_below` is set) over its bottom right corner.
+pub(crate) fn with_jump_button<'a, M: Clone + 'a>(
+    list: Element<'a, M>,
+    label: String,
+    on_press: M,
+) -> Element<'a, M> {
+    use iced::widget::{button, container, row as hrow, stack, text};
+    use rustket_ui::icon::{self, Icon};
+    use rustket_ui::style;
+    use rustket_ui::theme::{SPACE_2, SPACE_4, TEXT_SMALL};
+    let jump = button(
+        hrow![
+            icon::sized(Icon::ArrowDown, 14.0),
+            text(label).size(TEXT_SMALL)
+        ]
+        .spacing(SPACE_2)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([6, 12])
+    .style(style::button_primary)
+    .on_press(on_press);
+    stack![
+        list,
+        container(jump)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::Alignment::End)
+            .align_y(iced::Alignment::End)
+            .padding(SPACE_4)
+    ]
+    .into()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follow_freezes_grows_and_holds() {
+        let mut tl = timeline();
+        let mut f = Follow::default();
+        assert!(!f.on_changes(&tl));
+        // Arrivals at the bottom grow the window instead of shifting it.
+        tl.extend([m("f", "bob", T0 + 6_000, None)]);
+        assert!(!f.on_changes(&tl));
+        assert_eq!(f.window, WINDOW + 1);
+        // Holding at a message freezes the view at the newest one.
+        assert!(f.hold_at(&tl, "c"));
+        assert!(!f.at_bottom);
+        assert_eq!(f.frozen(), Some((T0 + 6_000, "f")));
+        assert!(!f.hold_at(&tl, "missing"));
+        // An own message being sent unfreezes.
+        tl.insert_pending(m("g", "me", T0 + 7_000, None));
+        assert!(f.on_changes(&tl));
+        assert!(f.at_bottom && f.frozen().is_none());
+        // More loaded rows than built: grow first, then ask for a page.
+        f.window = 2;
+        assert!(!f.grow(&tl));
+        assert_eq!(f.window, 2 + WINDOW_STEP);
+        assert!(f.grow(&tl));
+    }
 
     #[test]
     fn centring() {

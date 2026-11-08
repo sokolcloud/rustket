@@ -515,6 +515,14 @@ async fn thread_pagination_survives_deleted_replies() {
             .await
             .map_err(|e| e.to_string());
         ws.finish_load_thread(&parent.id, p);
+        // The first page is the newest replies (the server honours `sort`).
+        let first: Vec<String> = ws
+            .thread(&parent.id)
+            .unwrap()
+            .messages()
+            .map(|m| m.msg.clone())
+            .collect();
+        assert_eq!(first, ["r3", "r4", "r5"]);
         ra.delete_message(&room.id, &replies[4]).await.unwrap();
         ws.apply_message_deleted(&room.id, &replies[4]);
         while let Some(off) = ws.begin_load_thread(&parent.id) {

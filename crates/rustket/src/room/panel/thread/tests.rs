@@ -408,12 +408,179 @@ fn mark_read_needs_unread_and_bottom() {
     sub.tunread = Some(vec!["P".into()]);
     env.ws
         .apply_subscription(rustket_core::workspace::Change::Updated, sub);
-    t.at_bottom = false;
+    t.follow.at_bottom = false;
     let _ = t.mark_read(&env.ctx());
     assert!(!t.reading, "scrolled up");
-    t.at_bottom = true;
+    t.follow.at_bottom = true;
     let _ = t.mark_read(&env.ctx());
     assert!(t.reading);
     let _ = t.update(Msg::MarkedRead(Ok(())), &mut env.ctx());
     assert!(!t.reading);
+}
+
+#[test]
+fn reply_arriving_during_read_is_read_again() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let mut sub = env.ws.subscription("R1").unwrap().clone();
+    sub.tunread = Some(vec!["P".into()]);
+    env.ws
+        .apply_subscription(rustket_core::workspace::Change::Updated, sub);
+    let _ = t.mark_read(&env.ctx());
+    assert!(t.reading);
+    // Unread again while the request is in flight: skipped, then retried.
+    let _ = t.mark_read(&env.ctx());
+    assert!(t.read_again);
+    let _ = t.update(Msg::MarkedRead(Ok(())), &mut env.ctx());
+    assert!(t.reading, "read again after the request in flight");
+    assert!(!t.read_again);
+}
+
+/// Review: a reset of the room's timelines (resync, history import) left
+/// the open thread empty for good.
+#[test]
+fn reset_reloads_the_open_thread() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(2));
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let first = t.ticket.unwrap();
+    let _ = t.update(
+        Msg::Page(
+            first,
+            Ok(page(vec![message("r1", "bob", T0 + 3, Some("P"))], 0, 2)),
+        ),
+        &mut env.ctx(),
+    );
+    assert!(env.ws.thread("P").unwrap().pagination.loaded);
+    t.follow.at_bottom = false;
+    env.ws.take_changes();
+    env.ws.reset_room_timelines("R1");
+    let changes = env.ws.take_changes();
+    let _ = t.on_changes(&changes, &mut env.ctx());
+    let p = &env.ws.thread("P").unwrap().pagination;
+    assert!(p.loading_before, "the newest replies are requested again");
+    assert!(t.follow.at_bottom);
+    let again = t.ticket.unwrap();
+    assert_ne!(again, first);
+    // A first page dropped because a reply was deleted in flight: again.
+    env.ws.apply_message_deleted("R1", "r1");
+    let _ = t.update(
+        Msg::Page(
+            again,
+            Ok(page(vec![message("r2", "bob", T0 + 4, Some("P"))], 0, 2)),
+        ),
+        &mut env.ctx(),
+    );
+    let tl = env.ws.thread("P").unwrap();
+    assert!(tl.pagination.loaded || tl.pagination.loading_before);
+}
+
+/// Review: the focused reply was revealed again with every older page and
+/// stayed highlighted forever.
+#[tokio::test]
+async fn focused_reply_is_revealed_once() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(3));
+    let mut t = Thread::new("R1", "P");
+    t.set_focus(Some("r2".into()));
+    let _ = t.activate(&mut env.ctx());
+    let first = t.ticket.unwrap();
+    let _ = t.update(
+        Msg::Page(
+            first,
+            Ok(page(
+                vec![
+                    message("r3", "bob", T0 + 4, Some("P")),
+                    message("r2", "bob", T0 + 3, Some("P")),
+                ],
+                0,
+                4,
+            )),
+        ),
+        &mut env.ctx(),
+    );
+    assert!(!t.follow.at_bottom);
+    assert!(t.focus.is_none(), "taken once revealed");
+    let stamp = t.selected.as_ref().map(|(m, s)| {
+        assert_eq!(m, "r2");
+        *s
+    });
+    // Back at the bottom; an older page does not move the view again.
+    t.follow.at_bottom = true;
+    let _ = t.update(Msg::ReachedTop, &mut env.ctx());
+    let second = t.ticket.unwrap();
+    let _ = t.update(
+        Msg::Page(
+            second,
+            Ok(page(vec![message("r1", "bob", T0 + 2, Some("P"))], 2, 4)),
+        ),
+        &mut env.ctx(),
+    );
+    assert!(t.follow.at_bottom);
+    // The highlight ends.
+    let _ = t.update(Msg::Unselect(stamp.unwrap()), &mut env.ctx());
+    assert!(t.selected.is_none());
+}
+
+/// Review: closing a thread that never activated wiped its saved draft.
+#[test]
+fn unactivated_thread_keeps_the_draft() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    env.ws.set_draft("R1", Some("P"), "my unsent reply");
+    let mut p = Panel::new("R1");
+    p.open(Kind::Thread("P".into()));
+    p.close();
+    p.retire(&mut env.ws);
+    assert_eq!(env.ws.draft("R1", Some("P")), Some("my unsent reply"));
+}
+
+#[test]
+fn scrolled_up_thread_freezes_and_jumps_back() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let first = t.ticket.unwrap();
+    let _ = t.update(
+        Msg::Page(
+            first,
+            Ok(page(vec![message("r1", "bob", T0 + 3, Some("P"))], 0, 1)),
+        ),
+        &mut env.ctx(),
+    );
+    let _ = t.on_changes(&env.ws.take_changes(), &mut env.ctx());
+    // Scrolled up: a new reply waits below the view.
+    t.follow.at_bottom = false;
+    t.follow
+        .hold_at(env.ws.thread("P").unwrap(), "r1")
+        .then_some(())
+        .unwrap();
+    env.ws
+        .apply_message(message("r2", "bob", T0 + 9, Some("P")));
+    let _ = t.on_changes(&env.ws.take_changes(), &mut env.ctx());
+    assert_eq!(t.follow.frozen(), Some((T0 + 3, "r1")));
+    let _ = t.update(Msg::JumpToLatest, &mut env.ctx());
+    assert!(t.follow.at_bottom && t.follow.frozen().is_none());
+}
+
+#[test]
+fn expanded_state_carries_over_to_the_next_thread() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    let mut p = Panel::new("R1");
+    p.open(Kind::Thread("P".into()));
+    let g = p.generation();
+    let _ = p.update(super::super::Message::Activate(g), &mut env.ctx());
+    assert!(!p.expanded());
+    let _ = p.update(
+        super::super::Message::Body(g, super::super::BodyMsg::Thread(Msg::ToggleExpand)),
+        &mut env.ctx(),
+    );
+    assert!(p.expanded());
+    p.open(Kind::Thread("Q".into()));
+    assert!(p.expanded());
 }

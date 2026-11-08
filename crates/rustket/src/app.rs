@@ -209,6 +209,17 @@ pub fn is_openable_url(url: &str) -> bool {
     })
 }
 
+/// Room of a link segment: a room id, or a room name / display name.
+fn find_room(ws: &rustket_core::Workspace, name: &str) -> Option<String> {
+    if ws.room(name).is_some() {
+        return Some(name.to_owned());
+    }
+    ws.rooms()
+        .values()
+        .find(|e| e.name() == name || e.fname() == Some(name))
+        .map(|e| e.rid().to_owned())
+}
+
 fn sync_backoff(attempt: u32) -> Duration {
     Duration::from_secs(2u64.saturating_pow(attempt.clamp(1, 6)).min(60))
 }
@@ -432,25 +443,24 @@ impl App {
         )
     }
 
-    /// A URL clicked in a room: permalinks to messages of this server open
-    /// in the app, everything else in the browser.
+    /// A URL clicked in a room: permalinks to messages of a room of this
+    /// server the user has open in the app, everything else (other rooms,
+    /// e.g. public channel previews) in the browser.
     fn open_room_url(&mut self, sid: &ServerId, url: String) -> Task<Message> {
-        let bases: Vec<String> = self
-            .servers
-            .get(sid)
-            .map(|s| {
-                let mut b = vec![s.url.join("")];
-                if let Some(site) = s.workspace.settings().str("Site_Url") {
-                    b.push(site.trim().to_owned());
-                }
-                b
-            })
-            .unwrap_or_default();
-        match deeplink::permalink_path(&url, &bases) {
-            Some(path) => {
-                let rid = deeplink::room_name_from_path(&path).map(|(_, r)| r.to_owned());
-                self.open_room_link(sid, rid, Some(path))
-            }
+        let Some(s) = self.servers.get(sid) else {
+            return self.open_url(url);
+        };
+        let mut bases = vec![s.url.join("")];
+        if let Some(site) = s.workspace.settings().str("Site_Url") {
+            bases.push(site.trim().to_owned());
+        }
+        let target = deeplink::permalink_path(&url, &bases).and_then(|path| {
+            let (_, name) = deeplink::room_name_from_path(&path)?;
+            let rid = find_room(&s.workspace, &deeplink::percent_decode(name))?;
+            Some((rid, path))
+        });
+        match target {
+            Some((rid, path)) => self.open_room_link(sid, Some(rid), Some(path)),
             None => self.open_url(url),
         }
     }
@@ -1950,11 +1960,7 @@ impl App {
         }
         let target = rid.filter(|r| s.workspace.room(r).is_some()).or_else(|| {
             let (_, name) = deeplink::room_name_from_path(path.as_deref()?)?;
-            s.workspace
-                .rooms()
-                .values()
-                .find(|e| e.name() == name || e.fname() == Some(name))
-                .map(|e| e.rid().to_owned())
+            find_room(&s.workspace, &deeplink::percent_decode(name))
         });
         match target {
             Some(rid) => {

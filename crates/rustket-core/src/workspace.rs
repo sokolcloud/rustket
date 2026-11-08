@@ -1490,6 +1490,9 @@ impl Workspace {
     }
 
     /// Starts a thread page request; pass the ticket to [`Self::finish_load_thread_ticket`].
+    /// The offset counts from the newest reply: request it with
+    /// `RestClient::thread_messages_latest` (not the oldest-first
+    /// `thread_messages`).
     pub fn begin_load_thread_ticket(&mut self, tmid: &str) -> Option<(u64, PageTicket)> {
         let o = self.threads.get_mut(tmid)?.begin_load_thread_ticket();
         if o.is_some() {

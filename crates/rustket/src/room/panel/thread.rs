@@ -29,16 +29,13 @@ use crate::error::Res;
 use crate::room::composer::{self, Composer};
 use crate::room::render;
 use crate::room::timeline::interact::{self, Interactions, Msg as ItemMsg, Source};
-use crate::room::timeline::{Act, list, row as trow, row_id};
+use crate::room::timeline::{Act, SELECTED_FOR, list, row as trow, row_id};
 use crate::room::{Action, ComposeIntent, Effect, UpdateCtx, ViewCtx};
 
-/// Width of the thread panel, and when expanded.
+/// Width of the thread panel, and the maximum width when expanded (drawn
+/// over the room column, like the web's `max-width: 855px`).
 pub const WIDTH: f32 = 440.0;
-pub const WIDTH_EXPANDED: f32 = 680.0;
-/// Distance from the top (px) that loads older replies.
-const TOP_THRESHOLD: f32 = 300.0;
-/// Distance from the bottom (px) that still counts as "at the bottom".
-const BOTTOM_THRESHOLD: f32 = 24.0;
+pub const WIDTH_EXPANDED: f32 = 855.0;
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -56,6 +53,9 @@ pub enum Msg {
     ToggleExpand,
     MarkedRead(Res<()>),
     Reveal(String),
+    /// The highlight with this stamp ends.
+    Unselect(u64),
+    JumpToLatest,
 }
 
 pub struct Thread {
@@ -71,12 +71,19 @@ pub struct Thread {
     /// The default of `tshow` was applied (needs the parent's `tcount`).
     tshow_set: bool,
     scroll_id: iced::widget::Id,
-    at_bottom: bool,
+    /// Built window, bottom following and the frozen view while scrolled up.
+    follow: list::Follow,
     expanded: bool,
     follow_busy: bool,
     reading: bool,
-    /// Reply to scroll to and highlight (notification, search result).
+    /// Unread replies arrived while `chat.readThread` was in flight.
+    read_again: bool,
+    /// Reply to scroll to and highlight once loaded (notification, search
+    /// result); taken when the reveal is scheduled.
     focus: Option<String>,
+    /// The revealed reply and the stamp of its highlight.
+    selected: Option<(String, u64)>,
+    stamp: u64,
     /// `open_thread` ran: `close_thread` is due when the view goes away.
     opened: bool,
     /// The last page request.
@@ -120,11 +127,14 @@ impl Thread {
             tshow: false,
             tshow_set: false,
             scroll_id: iced::widget::Id::unique(),
-            at_bottom: true,
+            follow: list::Follow::default(),
             expanded: false,
             follow_busy: false,
             reading: false,
+            read_again: false,
             focus: None,
+            selected: None,
+            stamp: 0,
             opened: false,
             ticket: None,
         }
@@ -136,6 +146,15 @@ impl Thread {
 
     pub fn width(&self) -> f32 {
         if self.expanded { WIDTH_EXPANDED } else { WIDTH }
+    }
+
+    /// Expanded: drawn over the room column (like the web).
+    pub fn expanded(&self) -> bool {
+        self.expanded
+    }
+
+    pub fn set_expanded(&mut self, on: bool) {
+        self.expanded = on;
     }
 
     pub fn tshow(&self) -> bool {
@@ -168,10 +187,12 @@ impl Thread {
         }
     }
 
-    /// The view goes away: keep the draft, forget the thread timeline.
+    /// The view goes away: keep the draft, forget the thread timeline. A
+    /// view that never activated leaves both alone (its composer never
+    /// loaded the draft).
     pub fn on_close(&mut self, ws: &mut Workspace) {
-        self.composer.on_close(ws);
         if self.opened {
+            self.composer.on_close(ws);
             ws.close_thread(&self.tmid);
             self.opened = false;
         }
@@ -230,7 +251,12 @@ impl Thread {
     /// `chat.readThread` when the thread has unread replies and the view is
     /// at the bottom (the caller knows the window is focused).
     pub fn mark_read(&mut self, ctx: &UpdateCtx<'_>) -> Task<Msg> {
-        if self.reading || !self.at_bottom || !self.thread_unread(ctx.workspace, ctx.rid) {
+        if !self.follow.at_bottom || !self.thread_unread(ctx.workspace, ctx.rid) {
+            return Task::none();
+        }
+        if self.reading {
+            // Checked again when the request in flight ends.
+            self.read_again = true;
             return Task::none();
         }
         self.reading = true;
@@ -311,7 +337,7 @@ impl Thread {
                 }
                 let mut a = Self::with_composer(a);
                 if self.pending_count(ctx.workspace) > before {
-                    self.at_bottom = true;
+                    self.follow.follow_bottom();
                     a.task = Task::batch([a.task, self.snap_to_bottom()]);
                 }
                 a
@@ -344,6 +370,10 @@ impl Thread {
                     ctx.workspace
                         .finish_load_thread_ticket(&self.tmid, ticket, r.clone());
                 let mut tasks = Vec::new();
+                let loaded = ctx
+                    .workspace
+                    .thread(&self.tmid)
+                    .is_some_and(|t| t.pagination.loaded);
                 if applied && r.is_ok() {
                     // A dropped page (a loaded reply was deleted meanwhile):
                     // ask again.
@@ -353,11 +383,14 @@ impl Thread {
                     if again {
                         tasks.push(self.load_page(ctx));
                     }
-                    if first {
+                    if first && loaded {
                         // Opening the thread reads it (like the web).
                         tasks.push(self.mark_read(ctx));
                     }
                 }
+                // The first page was dropped, or this one was stale after a
+                // reset: (re)load the newest replies.
+                tasks.push(self.ensure_loaded(ctx));
                 tasks.push(self.reveal_focus(ctx));
                 Action::task(Task::batch(tasks))
             }
@@ -371,18 +404,20 @@ impl Thread {
             }
             Msg::ReachedTop => Action::task(self.reach_top(ctx)),
             Msg::Scrolled(vp) => {
-                let from_bottom = vp.absolute_offset().y;
-                let from_top = vp.absolute_offset_reversed().y;
-                let was = self.at_bottom;
-                self.at_bottom = from_bottom <= BOTTOM_THRESHOLD;
+                let s = self.follow.scrolled(&vp, ctx.workspace.thread(&self.tmid));
                 let mut tasks = Vec::new();
-                if self.at_bottom && !was {
+                if s.back_at_bottom {
                     tasks.push(self.mark_read(ctx));
                 }
-                if from_top < TOP_THRESHOLD {
+                if s.near_top {
                     tasks.push(self.reach_top(ctx));
                 }
                 Action::task(Task::batch(tasks))
+            }
+            Msg::JumpToLatest => {
+                self.follow.follow_bottom();
+                // A click: the window is focused and the thread visible.
+                Action::task(Task::batch([self.snap_to_bottom(), self.mark_read(ctx)]))
             }
             Msg::AlsoSend(on) => {
                 self.tshow = on;
@@ -427,10 +462,21 @@ impl Thread {
                 if let Err(e) = r {
                     tracing::debug!(tmid = %self.tmid, error = %e, "chat.readThread failed");
                 }
+                // A reply that arrived meanwhile may have marked it unread
+                // again (still gated by unread and bottom).
+                if std::mem::take(&mut self.read_again) {
+                    return Action::task(self.mark_read(ctx));
+                }
                 Action::none()
             }
             Msg::Reveal(mid) => {
                 Action::task(list::reveal(self.scroll_id.clone(), row_id(&mid), true))
+            }
+            Msg::Unselect(stamp) => {
+                if self.selected.as_ref().is_some_and(|(_, s)| *s == stamp) {
+                    self.selected = None;
+                }
+                Action::none()
             }
         }
     }
@@ -442,34 +488,66 @@ impl Thread {
         )
     }
 
+    /// Near the top: builds more of the loaded replies, else requests the
+    /// next older page.
     fn reach_top(&mut self, ctx: &mut UpdateCtx<'_>) -> Task<Msg> {
-        let ready = ctx.workspace.thread(&self.tmid).is_some_and(|t| {
-            let p = &t.pagination;
-            p.loaded && p.has_more_before && !p.loading_before && p.error.is_none()
-        });
-        if ready {
+        let Some(t) = ctx.workspace.thread(&self.tmid) else {
+            return Task::none();
+        };
+        if !self.follow.grow(t) {
+            return Task::none();
+        }
+        let p = &t.pagination;
+        if p.loaded && p.has_more_before && !p.loading_before && p.error.is_none() {
             self.load_page(ctx)
         } else {
             Task::none()
         }
     }
 
-    /// Scrolls to the focused reply once it is loaded.
+    /// The thread timeline was reset (resync, history import) or its first
+    /// page was dropped: load the newest replies again, following the
+    /// bottom.
+    fn ensure_loaded(&mut self, ctx: &mut UpdateCtx<'_>) -> Task<Msg> {
+        if !self.opened {
+            return Task::none();
+        }
+        let idle = ctx.workspace.thread(&self.tmid).is_some_and(|t| {
+            let p = &t.pagination;
+            !p.loaded && !p.loading_before && p.error.is_none()
+        });
+        if !idle {
+            return Task::none();
+        }
+        self.follow.follow_bottom();
+        Task::batch([self.load_page(ctx), self.snap_to_bottom()])
+    }
+
+    /// Scrolls to the focused reply once it is loaded and highlights it for
+    /// a moment (like the room timeline).
     fn reveal_focus(&mut self, ctx: &UpdateCtx<'_>) -> Task<Msg> {
         let Some(mid) = self.focus.clone() else {
             return Task::none();
         };
-        if !ctx
-            .workspace
-            .thread(&self.tmid)
-            .is_some_and(|t| t.contains(&mid))
-        {
+        let Some(t) = ctx.workspace.thread(&self.tmid) else {
+            return Task::none();
+        };
+        if !self.follow.hold_at(t, &mid) {
             return Task::none();
         }
-        self.at_bottom = false;
-        Task::perform(tokio::time::sleep(Duration::from_millis(60)), move |_| {
-            Msg::Reveal(mid.clone())
-        })
+        self.focus = None;
+        self.stamp += 1;
+        let stamp = self.stamp;
+        self.selected = Some((mid.clone(), stamp));
+        Task::batch([
+            // After the frame that builds the row.
+            Task::perform(tokio::time::sleep(Duration::from_millis(60)), move |_| {
+                Msg::Reveal(mid.clone())
+            }),
+            Task::perform(tokio::time::sleep(SELECTED_FOR), move |_| {
+                Msg::Unselect(stamp)
+            }),
+        ])
     }
 
     pub fn on_changes(&mut self, changes: &Changes, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
@@ -481,18 +559,22 @@ impl Thread {
         if changes.threads.contains(&self.tmid) || changes.timelines.contains(ctx.rid) {
             let had_parent = self.parent.is_some();
             self.refresh_parent(ctx.workspace);
+            let mut snap = false;
             if let Some(t) = ctx.workspace.thread(&self.tmid) {
                 let parent = self.tmid.clone();
                 self.items.prune(|mid| mid == parent || t.contains(mid));
+                // An own reply being sent while scrolled up: jump down.
+                snap = self.follow.on_changes(t);
             }
             // The parent was deleted: the web closes the thread.
             if had_parent && self.parent.is_none() && ctx.workspace.thread(&self.tmid).is_some() {
                 effects.push(Effect::ClosePanel);
             }
             // New replies while at the bottom: keep following them.
-            if self.at_bottom {
+            if snap || self.follow.at_bottom {
                 tasks.push(self.snap_to_bottom());
             }
+            tasks.push(self.ensure_loaded(ctx));
         }
         Action {
             task: Task::batch(tasks),
@@ -589,11 +671,12 @@ impl Thread {
         let common_ = list::Common::new(ctx, ctx.rid);
         let me = ws.user_id().unwrap_or_default();
         let menu = self.items.menu.as_deref();
+        let selected = self.selected.as_ref().map(|(m, _)| m.as_str());
         let flags = |m: &RcMessage, sequential: bool| trow::RowFlags {
             sequential,
             menu_open: menu == Some(m.id.as_str()),
             thread_unread: false,
-            selected: self.focus.as_deref() == Some(m.id.as_str()),
+            selected: selected == Some(m.id.as_str()),
         };
         let mut col = keyed_column::<u64, Msg, _, _>([])
             .width(Length::Fill)
@@ -618,21 +701,22 @@ impl Thread {
         col = col.push(
             list::TOP_KEY,
             sensor(self.replies_head(tl, count))
-                .key((tl.len(), tl.pagination.loading_before))
-                .anticipate(TOP_THRESHOLD)
+                .key((tl.len(), self.follow.window, tl.pagination.loading_before))
+                .anticipate(list::TOP_THRESHOLD)
                 .on_show(|_| Msg::ReachedTop),
         );
         let mut plan = list::plan(
             tl,
             list::visible_in(ws, ctx.rid),
-            None,
-            usize::MAX - 1,
+            self.follow.frozen(),
+            self.follow.window,
             me,
             ws.settings().grouping_period_secs(),
             &Local,
         );
         // The parent's day separator covers replies of the same day.
-        if let Some(first) = plan.rows.first_mut() {
+        let more_above = plan.more_above;
+        if let Some(first) = plan.rows.first_mut().filter(|_| !more_above) {
             first.new_day = first.item.message.ts.is_some()
                 && rustket_core::timeline::is_new_day(
                     Some(&parent.message),
@@ -658,6 +742,17 @@ impl Thread {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(style::scrollable);
+        let new_below = plan.new_below;
+        let list: Element<'a, Msg> = if self.follow.at_bottom && new_below == 0 {
+            list.into()
+        } else {
+            let label = if new_below > 0 {
+                t!("room_panel.thread_new_replies", count = new_below).into_owned()
+            } else {
+                t!("room_timeline.jump_to_latest").into_owned()
+            };
+            list::with_jump_button(list.into(), label, Msg::JumpToLatest)
+        };
         let mut bottom = column![].spacing(0);
         if rustket_core::permissions::post_block(ws, ctx.rid).is_none() {
             bottom = bottom.push(

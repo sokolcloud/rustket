@@ -276,6 +276,16 @@ pub fn room_name_from_path(path: &str) -> Option<(&str, &str)> {
     (!name.is_empty()).then_some((kind, name))
 }
 
+/// Percent-decodes a path segment (`%D0%BA` → `к`); invalid UTF-8 is
+/// replaced, `+` and `&` stay as they are.
+pub fn percent_decode(segment: &str) -> String {
+    let query = format!("x={}", segment.replace('+', "%2B").replace('&', "%26"));
+    url::form_urlencoded::parse(query.as_bytes())
+        .next()
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or_default()
+}
+
 /// The `msg` query parameter of a room path (`group/x?msg=abc`): the
 /// message a permalink points at.
 pub fn message_id_from_path(path: &str) -> Option<String> {
@@ -485,6 +495,14 @@ mod tests {
         );
         assert_eq!(room_name_from_path("direct/bob"), Some(("direct", "bob")));
         assert_eq!(room_name_from_path("nothing"), None);
+    }
+
+    #[test]
+    fn percent_decoding() {
+        assert_eq!(percent_decode("dev"), "dev");
+        assert_eq!(percent_decode("%D0%BA%D0%BE%D1%82"), "кот");
+        assert_eq!(percent_decode("a+b%20c"), "a+b c");
+        assert_eq!(percent_decode("a&b=c"), "a&b=c");
     }
 
     #[test]

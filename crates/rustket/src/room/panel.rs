@@ -176,6 +176,8 @@ pub struct Panel {
     /// Bodies replaced or closed since the last [`Panel::retire`] (a thread
     /// keeps its draft and closes its workspace timeline there).
     retired: Vec<Body>,
+    /// The thread view was expanded last (new threads open the same way).
+    thread_expanded: bool,
 }
 
 fn wrap<M: Send + 'static>(generation: u64, a: Action<M>, f: fn(M) -> BodyMsg) -> Action<Message> {
@@ -194,6 +196,7 @@ impl Panel {
             pending: None,
             stash: None,
             retired: Vec::new(),
+            thread_expanded: false,
         }
     }
 
@@ -220,6 +223,11 @@ impl Panel {
             Some(Body::Thread(t)) => t.width(),
             _ => WIDTH,
         }
+    }
+
+    /// The open panel is an expanded thread (drawn over the room column).
+    pub fn expanded(&self) -> bool {
+        matches!(&self.body, Some(Body::Thread(t)) if t.expanded())
     }
 
     /// The open thread, if the panel shows one.
@@ -332,7 +340,11 @@ impl Panel {
                 None
             }
         };
-        self.body = Some(Body::new(&kind, &self.rid));
+        let mut body = Body::new(&kind, &self.rid);
+        if let Body::Thread(t) = &mut body {
+            t.set_expanded(self.thread_expanded);
+        }
+        self.body = Some(body);
         self.open = Some(kind);
         self.counter += 1;
         self.generation = self.counter;
@@ -383,7 +395,11 @@ impl Panel {
             }
             Message::Body(g, m) => {
                 if g == self.generation {
-                    return Self::update_body(self.body.as_mut(), g, m, ctx);
+                    let a = Self::update_body(self.body.as_mut(), g, m, ctx);
+                    if let Some(Body::Thread(t)) = &self.body {
+                        self.thread_expanded = t.expanded();
+                    }
+                    return a;
                 }
                 // Results for the stashed panel keep it up to date.
                 match self.stash.as_mut() {

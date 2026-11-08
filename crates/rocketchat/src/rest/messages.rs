@@ -161,7 +161,9 @@ impl RestClient {
         field(v, "message")
     }
 
-    /// Replies of a thread (oldest first).
+    /// Replies of a thread (oldest first). Its offsets do not pair with
+    /// `rustket-core`'s `begin_load_thread`, which counts from the newest
+    /// reply: use [`Self::thread_messages_latest`] for that.
     pub async fn thread_messages(
         &self,
         tmid: &str,
