@@ -4,7 +4,7 @@
 //! enum is matched exhaustively by consumers): they arrive as
 //! [`SessionEvent::Unknown`] and [`SessionEvent::omnichannel`] turns them into an
 //! [`OmnichannelEvent`]. Agent availability arrives through
-//! [`SessionEvent::UserData`] (see [`SessionEvent::agent_status`]).
+//! [`SessionEvent::MeChanged`] (see [`SessionEvent::agent_status`]).
 
 use std::sync::Arc;
 
@@ -61,11 +61,12 @@ pub enum OmnichannelEvent {
 }
 
 impl SessionEvent {
-    /// The agent availability of a `UserData` event, if it changed (lenient:
-    /// `"available "` with a trailing space is available).
+    /// The agent availability of the user re-read from `/me`
+    /// ([`SessionEvent::MeChanged`]; no `statusLivechat` is not available).
+    /// The raw `userData` is never trusted (other members can forge it).
     pub fn agent_status(&self) -> Option<AgentStatus> {
         match self {
-            Self::UserData(v) => AgentStatus::from_user_data(v),
+            Self::MeChanged(me) => Some(me.status_livechat.unwrap_or(AgentStatus::NotAvailable)),
             _ => None,
         }
     }

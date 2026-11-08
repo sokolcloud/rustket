@@ -248,7 +248,15 @@ test cannot trigger without changing global server state).
 - `{rid}/messagesImported`: args `[null]` after an import into the room; the web client clears
   and reloads the room history (imported messages never go through `__my_messages__`).
 - `userData` diffs can contain `services.*` (hashed login tokens, 2FA data); the session strips
-  them. `roles-change` `u.name` is the acting user's name, not the target's.
+  them.
+- **`userData` is untrusted**: `stream-notify-room-users` relays `{rid}/userData` from any member
+  of `rid` verbatim to every other member's `{uid}/userData` (`notifications.module.ts`
+  `streamRoomUsers.allowWrite`; verified live, docs/teams-videoconf.md §7.5), so a co-member can
+  send `{"type":"updated","id":<victim>,"diff":{"name":"SPOOF"}}`. The session never delivers
+  `SessionEvent::UserData` nor copies its fields: each one is a hint that schedules a
+  `GET /api/v1/me` (debounced 250 ms, at most one per 2 s, bursts coalesced); a user that differs
+  from the cached one is sent as `SessionEvent::MeChanged`. `stream-notify-logged`
+  (`Users:NameChanged`) is server-only (`allowWrite('none')`). `roles-change` `u.name` is the acting user's name, not the target's.
 - `{rid}/messagesRead` was not sent by `subscriptions.read` on the dev server (read receipts off).
 - **Typing**: the web client calls the DDP method `stream-notify-room` with params
   `["{rid}/user-activity", username, ["user-typing"], {}]` (extras `{tmid}` in a thread). The
@@ -256,7 +264,7 @@ test cannot trigger without changing global server state).
   current `name` when the public setting `UI_Use_Real_Name` is on, else the current `username`;
   otherwise it drops the publish silently. The result is `null` either way. The session reads
   `UI_Use_Real_Name` at start, tracks `public-settings-changed`, and keeps its user current from
-  `userData` / `Users:NameChanged`.
+  `/me` re-reads after `userData` hints and from `Users:NameChanged`.
   Stop: same call with `[]`. Receivers get args `[username, activities, extras]`. The web client
   debounces by 500 ms, renews every 5 s and expires remote activities after 15 s. Other
   activities: `user-recording`, `user-uploading`, `user-playing`. The legacy

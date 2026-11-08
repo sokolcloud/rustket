@@ -294,7 +294,9 @@ Consequences for a desktop client:
 - Web: navbar button titled "Turn on/off answer chats", icon `message` / `message-disabled`,
   calls `agent.status {}` (`useOmnichannelLivechatToggle.ts`). Rustket: a toggle in the status
   menu (`workspace/status_menu.rs`) plus an indicator in the sidebar header; source of truth is
-  `me.statusLivechat` updated from `userData`, never the local click.
+  `me.statusLivechat` updated from `userData`, never the local click. Rustket never applies the
+  `userData` payload itself (forgeable by any co-member, docs/protocol.md): the session re-reads
+  `/me` and sends `SessionEvent::MeChanged`.
 
 ### 3.4 Automatic availability changes
 

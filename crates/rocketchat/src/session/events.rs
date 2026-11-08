@@ -399,8 +399,16 @@ pub enum SessionEvent {
         key_id: String,
     },
     /// Changes of the user's own document: `{id, type: inserted|updated|removed, data|diff, unset}`.
-    /// `services` (hashed login tokens, 2FA data) is removed.
+    /// `services` (hashed login tokens, 2FA data) is removed. Produced by
+    /// [`decode_event`] only: a [`Session`](super::Session) never delivers it,
+    /// because any member of a shared room can publish a forged one
+    /// (`stream-notify-room-users` relays `{rid}/userData` verbatim). The
+    /// session treats it as a hint, re-reads `/me` and sends
+    /// [`SessionEvent::MeChanged`] instead.
     UserData(Value),
+    /// The user's own document as re-read from `GET /api/v1/me` after a
+    /// `userData` hint (only when it differs from the cached one).
+    MeChanged(Box<User>),
     /// The server ended this login (`{uid}/force_logout`).
     ForceLogout {
         session_id: Option<String>,

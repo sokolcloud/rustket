@@ -202,15 +202,6 @@ fn open_secrets(mode: SecretsMode, wanted: Vec<(ServerId, String)>) -> SecretsRe
 }
 
 /// Room of a link segment: a room id, or a room name / display name.
-/// `true` for absolute `http`, `https` and `mailto` URLs.
-pub fn is_openable_url(url: &str) -> bool {
-    url::Url::parse(url).is_ok_and(|u| match u.scheme() {
-        "http" | "https" => u.host_str().is_some_and(|h| !h.is_empty()),
-        "mailto" => true,
-        _ => false,
-    })
-}
-
 fn find_room(ws: &rustket_core::Workspace, name: &str) -> Option<String> {
     if ws.room(name).is_some() {
         return Some(name.to_owned());
@@ -419,10 +410,10 @@ impl App {
     /// Opens an absolute `http`/`https`/`mailto` URL in the browser; anything
     /// else (other schemes, paths) is refused.
     fn open_url(&mut self, url: String) -> Task<Message> {
-        if !is_openable_url(&url) {
+        let Some(url) = rustket_core::uikit::openable_url(&url).map(str::to_owned) else {
             tracing::warn!("refusing to open a non-http URL");
             return self.toast(BannerKind::Error, t!("app.url_refused"), String::new());
-        }
+        };
         if !self.open_urls {
             tracing::info!("not opening browser (disabled)");
             return Task::none();
@@ -2453,6 +2444,7 @@ mod tests {
 
     #[test]
     fn openable_urls() {
+        use rustket_core::uikit::is_openable_url;
         assert!(is_openable_url("https://chat.example.com/oauth?x=1"));
         assert!(is_openable_url("http://localhost:3000/home"));
         assert!(is_openable_url("mailto:a@b.c"));
@@ -2463,6 +2455,7 @@ mod tests {
             "javascript:alert(1)",
             "x.desktop",
             "https://",
+            "mailto:",
         ] {
             assert!(!is_openable_url(bad), "{bad}");
         }

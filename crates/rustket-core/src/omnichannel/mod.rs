@@ -49,8 +49,6 @@ pub struct OmnichannelUpdate {
     pub queue_grew: bool,
     /// Re-run the queue initialisation (§5.1 step 4).
     pub reinit_queue: bool,
-    /// `statusLivechat` had an unexpected value: re-read `me`.
-    pub reread_me: bool,
     /// Re-fetch `livechat/config/routing` (routing method changed).
     pub refetch_routing: bool,
     /// Re-fetch the priorities (EE).
@@ -69,7 +67,6 @@ impl OmnichannelUpdate {
             changed: self.changed || o.changed,
             queue_grew: self.queue_grew || o.queue_grew,
             reinit_queue: self.reinit_queue || o.reinit_queue,
-            reread_me: self.reread_me || o.reread_me,
             refetch_routing: self.refetch_routing || o.refetch_routing,
             refetch_priorities: self.refetch_priorities || o.refetch_priorities,
             refetch_license: self.refetch_license || o.refetch_license,
@@ -104,7 +101,7 @@ pub struct OmnichannelState {
     pub priorities: Vec<Priority>,
     /// [`Workspace::me_generation`] seen by the last `recompute`.
     last_me_generation: u64,
-    /// `statusLivechat` from `userData` since that `me` (recorded even while the
+    /// `statusLivechat` of a `MeChanged` since that `me` (recorded even while the
     /// user is not an agent yet: the roles change may be applied later).
     userdata_status: Option<AgentStatus>,
 }
@@ -246,17 +243,16 @@ impl OmnichannelState {
             reinit_queue: self.manual_queue && queue::needs_reinit(ev),
             ..Default::default()
         };
-        if let Some(status) = ev.agent_status() {
-            if status == AgentStatus::Unknown {
-                u.reread_me = true;
-            } else {
-                self.userdata_status = Some(status);
-                if self.is_agent && status != self.agent_status {
-                    self.agent_status = status;
-                    u.changed = true;
-                    // Availability gates the manual queue.
-                    u.reinit_queue = true;
-                }
+        // An unexpected `statusLivechat` (already from `/me`) is ignored.
+        if let Some(status) = ev.agent_status()
+            && status != AgentStatus::Unknown
+        {
+            self.userdata_status = Some(status);
+            if self.is_agent && status != self.agent_status {
+                self.agent_status = status;
+                u.changed = true;
+                // Availability gates the manual queue.
+                u.reinit_queue = true;
             }
         }
         if let SessionEvent::SettingChanged { setting, .. } = ev
@@ -414,9 +410,7 @@ mod tests {
             ..Default::default()
         }]);
         assert_eq!(o.queue.len(), 1);
-        let u = o.apply_event(&SessionEvent::UserData(
-            json!({"type":"updated","diff":{"statusLivechat":"not-available"}}),
-        ));
+        let u = o.apply_event(&status_event("not-available"));
         assert!(u.changed && u.reinit_queue);
         assert_eq!(o.agent_status, AgentStatus::NotAvailable);
         o.recompute(&ws);
@@ -424,16 +418,12 @@ mod tests {
         assert!(o.queue.is_empty());
         // `me` did not change, so the userData status sticks.
         assert_eq!(o.agent_status, AgentStatus::NotAvailable);
-        let u = o.apply_event(&SessionEvent::UserData(
-            json!({"type":"updated","diff":{"statusLivechat":"available "}}),
-        ));
+        let u = o.apply_event(&status_event("available "));
         assert!(u.changed);
         o.recompute(&ws);
         assert!(o.manual_queue);
-        let u = o.apply_event(&SessionEvent::UserData(
-            json!({"type":"updated","diff":{"statusLivechat":"bogus"}}),
-        ));
-        assert!(u.reread_me && !u.changed);
+        let u = o.apply_event(&status_event("bogus"));
+        assert!(!u.changed);
     }
 
     #[test]
@@ -498,8 +488,11 @@ mod tests {
         );
     }
 
+    /// The user re-read from `/me` after a `userData` hint.
     fn status_event(s: &str) -> SessionEvent {
-        SessionEvent::UserData(json!({"type":"updated","diff":{"statusLivechat":s}}))
+        SessionEvent::MeChanged(Box::new(
+            serde_json::from_value(json!({"_id": "me", "statusLivechat": s})).unwrap(),
+        ))
     }
 
     #[test]

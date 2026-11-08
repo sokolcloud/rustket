@@ -834,8 +834,9 @@ impl Workspace {
 
     // --- realtime: user, server, settings ---------------------------------------
 
-    /// The current user's document (realtime `userData`, or a fresh `/me`). Its
-    /// status also updates the presence cache that [`Self::my_status`] reads.
+    /// The current user's document (a fresh `/me`; the session re-reads it
+    /// after `userData` hints, `SessionEvent::MeChanged`). Its status also
+    /// updates the presence cache that [`Self::my_status`] reads.
     pub fn apply_me(&mut self, me: User) {
         self.me_generation += 1;
         if me.status.is_some() {

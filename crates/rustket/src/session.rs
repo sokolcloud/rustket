@@ -296,7 +296,7 @@ pub fn apply_event(ws: &mut Workspace, ev: &SessionEvent) -> Followup {
             Followup::RoomReset(rid.clone())
         }
         E::EphemeralMessage(m) => {
-            ws.apply_message((**m).clone());
+            ws.apply_ephemeral_message((**m).clone());
             Followup::None
         }
         E::MessageDeleted { rid, id } => {
@@ -403,6 +403,12 @@ pub fn apply_event(ws: &mut Workspace, ev: &SessionEvent) -> Followup {
         E::Notification(n) => Followup::Notification(n.clone()),
         // Not modelled in the workspace yet (later phases): user renames and
         // deletions, own-document diffs, UIKit, video conferences, E2E, banners.
+        // Re-read from `/me` by the session (the raw `userData` is never
+        // delivered: other room members can forge it).
+        E::MeChanged(me) => {
+            ws.apply_me((**me).clone());
+            Followup::None
+        }
         E::UserNameChanged { .. } | E::UserDeleted { .. } | E::UserData(_) => Followup::None,
         E::RoomVideoConference { .. }
         | E::CustomSoundUpdated(_)
@@ -511,6 +517,20 @@ mod tests {
             );
         }
         assert_eq!(ws.timeline("r1").unwrap().len(), 3);
+        // Ephemeral messages are flagged as such.
+        apply_event(
+            &mut ws,
+            &SessionEvent::EphemeralMessage(Box::new(msg("r1", "e", 1003, "rocket.cat"))),
+        );
+        assert!(ws.is_ephemeral("r1", "e"));
+        assert!(!ws.is_ephemeral("r1", "c"));
+        apply_event(
+            &mut ws,
+            &SessionEvent::MessageDeleted {
+                rid: "r1".into(),
+                id: "e".into(),
+            },
+        );
         apply_event(
             &mut ws,
             &SessionEvent::MessageDeleted {
@@ -579,6 +599,28 @@ mod tests {
             },
         );
         assert!(ws.room("r1").is_none());
+    }
+
+    #[test]
+    fn user_data_is_ignored_and_me_changed_applied() {
+        let mut ws = Workspace::new();
+        apply_event(&mut ws, &SessionEvent::Ready { me: Box::new(me()) });
+        let name = ws.me().and_then(|m| m.name.clone());
+        apply_event(
+            &mut ws,
+            &SessionEvent::UserData(serde_json::json!({
+                "id": "me", "type": "updated", "diff": {"name": "SPOOF", "username": "spoof"}
+            })),
+        );
+        assert_eq!(ws.username(), Some("alice"));
+        assert_eq!(ws.me().and_then(|m| m.name.clone()), name);
+        let mut fetched = me();
+        fetched.name = Some("Alice Renamed".into());
+        apply_event(&mut ws, &SessionEvent::MeChanged(Box::new(fetched)));
+        assert_eq!(
+            ws.me().and_then(|m| m.name.as_deref()),
+            Some("Alice Renamed")
+        );
     }
 
     #[test]

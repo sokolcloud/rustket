@@ -300,15 +300,16 @@ impl InquiryQueue {
 }
 
 /// Whether `ev` requires re-running the queue initialisation (departments,
-/// `queuedForUser`, stream set): reconnect/resync, department membership,
-/// availability, or a change of the routing method, pool size or sort setting.
+/// `queuedForUser`, stream set): reconnect/resync, department membership, or
+/// a change of the routing method, pool size or sort setting. Availability
+/// changes are found by [`super::OmnichannelState::apply_event`] (comparing
+/// the status of the `/me` the session re-read).
 /// Role and permission changes are not listed: they only matter when they flip
 /// [`super::OmnichannelState::wants_queue`], which `recompute` reports
 /// ([`super::OmnichannelState::recompute_update`]).
 pub fn needs_reinit(ev: &SessionEvent) -> bool {
     match ev {
         SessionEvent::Resync { .. } => true,
-        SessionEvent::UserData(_) => ev.agent_status().is_some(),
         SessionEvent::SettingChanged { setting, .. } => matches!(
             setting.id.as_str(),
             settings::ROUTING_METHOD | settings::POOL_MAX_DISPLAYED | settings::SORTING_MECHANISM
@@ -567,11 +568,10 @@ mod tests {
         assert!(needs_reinit(&SessionEvent::Resync {
             reason: ResyncReason::Reconnected
         }));
-        assert!(needs_reinit(&SessionEvent::UserData(
-            json!({"type":"updated","diff":{"statusLivechat":"available"}})
-        )));
+        // Availability changes are detected by `OmnichannelState::apply_event`
+        // (it compares the `/me` status); a raw `userData` is never trusted.
         assert!(!needs_reinit(&SessionEvent::UserData(
-            json!({"type":"updated","diff":{"name":"x"}})
+            json!({"type":"updated","diff":{"statusLivechat":"available"}})
         )));
         let setting = |id: &str| SessionEvent::SettingChanged {
             kind: ChangeKind::Updated,

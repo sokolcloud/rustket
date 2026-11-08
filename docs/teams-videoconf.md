@@ -883,11 +883,10 @@ Publishing (`RC:packages/streamer/src/notifications.module.ts`):
   `{uid}/userData` stream (`streamRoomUsers.allowWrite` takes `video-conference` and `userData`)
   **[live, checker]**: a member of a shared room published `{"type":"updated","id":<victim uid>,
   "diff":{"name":"SPOOF"}}` and the victim's `{uid}/userData` subscription received it. Rustket
-  subscribes `userData` (`NOTIFY_USER_EVENTS`) and `Session::observe`
-  (`crates/rocketchat/src/session/mod.rs`) copies `diff.username`/`diff.name` into the cached own
-  user when `id` matches, so any co-member can rename the user inside Rustket. Out of scope for this
-  spec, but it needs a fix in the session layer (e.g. only trust `userData` fields that are
-  re-confirmed by `/me`, or ignore `username` from the stream) and a note in `docs/protocol.md`.
+  subscribes `userData` (`NOTIFY_USER_EVENTS`); `Session::observe` used to copy
+  `diff.username`/`diff.name` into the cached own user, so any co-member could rename the user
+  inside Rustket. Fixed in the session layer: `userData` is only a hint for a rate-limited `/me`
+  re-read (`SessionEvent::MeChanged`), see `docs/protocol.md`.
 
 Consequence for Rustket: every `{uid}/video-conference` event is untrusted input. Accept an
 incoming `call`/`ring` only after (1) shape validation (`action` a known string, `callId`/`uid`/`rid`
@@ -1313,7 +1312,8 @@ system-message keys of §3 in `preview.yml` + `room_render.yml`; every key in en
 - UNVERIFIED (code only): the 40 s `end` for an already accepted direct call (§7.6) and the server
   `join` events; both need a provider app and the `videoconference-enterprise` module.
 - The `{rid}/userData` relay through `stream-notify-room-users` (§7.5) is a server weakness that
-  affects Rustket's session layer, not only calls; track it outside this spec.
+  affects Rustket's session layer, not only calls; the session now distrusts `userData` (re-reads
+  `/me`), see `docs/protocol.md`.
 - `teams.listRooms` leaking private child rooms to users with an empty `__rooms` (§2.8) is a server
   bug; it may be fixed in later 8.x releases. The client must not rely on either behaviour.
 - `teams.members` loads every active user matching the filters on the server; prefer

@@ -39,6 +39,9 @@ struct State {
     login: LoginPolicy,
     real_name: bool,
     username: String,
+    name: String,
+    /// `GET /api/v1/me` requests served.
+    me_calls: usize,
     /// Drop every new socket (server unreachable).
     refuse: bool,
     /// `(connection index, client frame)`.
@@ -68,6 +71,8 @@ impl Mock {
                 login: Box::new(login_ok),
                 real_name: false,
                 username: "alice".into(),
+                name: "Alice A".into(),
+                me_calls: 0,
                 refuse: false,
                 log: Vec::new(),
                 conns: Vec::new(),
@@ -110,8 +115,9 @@ impl Mock {
                 req.extend_from_slice(&buf[..n]);
             }
             let body = if head.starts_with("GET /api/v1/me") {
-                let username = self.state.lock().unwrap().username.clone();
-                json!({"_id": UID, "username": username, "name": "Alice A", "success": true})
+                let mut st = self.state.lock().unwrap();
+                st.me_calls += 1;
+                json!({"_id": UID, "username": st.username, "name": st.name, "success": true})
             } else {
                 let real = self.state.lock().unwrap().real_name;
                 json!({"settings": [{"_id": "UI_Use_Real_Name", "value": real}],
@@ -760,13 +766,14 @@ async fn user_activity_identity() {
         json!([format!("{RID}/user-activity"), "alice", [], {"tmid": "t1"}])
     );
 
-    // A username change of the own user is picked up.
+    // A username change of the own user is picked up (re-read from `/me`).
+    mock.state.lock().unwrap().username = "alice2".into();
     mock.event(
         "stream-notify-user",
         &format!("{UID}/userData"),
         json!([{"id": UID, "type": "updated", "diff": {"username": "alice2"}}]),
     );
-    expect(&mut events, |e| matches!(e, SessionEvent::UserData(_))).await;
+    expect(&mut events, |e| matches!(e, SessionEvent::MeChanged(_))).await;
     assert_eq!(session.me().unwrap().username.as_deref(), Some("alice2"));
     session
         .set_user_activity(RID, None, &["user-typing"])
@@ -1034,5 +1041,82 @@ async fn identity_is_refreshed_after_reconnect() {
         .wait_frames(1, |_, v| v["method"] == "stream-notify-room")
         .await;
     assert_eq!(calls[0].1["params"][1], "renamed");
+    session.close().await;
+}
+
+fn user_data(diff: Value) -> Value {
+    json!([{"id": UID, "type": "updated", "diff": diff}])
+}
+
+fn me_calls(mock: &Mock) -> usize {
+    mock.state.lock().unwrap().me_calls
+}
+
+/// Any member of a shared room can publish `{rid}/userData`, which the server
+/// relays to the user's `{uid}/userData`: its fields are never applied.
+#[tokio::test]
+async fn forged_user_data_does_not_change_the_user() {
+    let mock = Mock::start().await;
+    let (session, mut events) = start(&mock).await;
+    let before = me_calls(&mock);
+    mock.event(
+        "stream-notify-user",
+        &format!("{UID}/userData"),
+        user_data(json!({"name": "SPOOF", "username": "spoof", "roles": ["admin"]})),
+    );
+    let seen = collect_for(&mut events, Duration::from_millis(1500)).await;
+    assert!(
+        !seen
+            .iter()
+            .any(|e| matches!(e, SessionEvent::UserData(_) | SessionEvent::MeChanged(_))),
+        "{seen:?}"
+    );
+    assert_eq!(me_calls(&mock), before + 1, "the hint re-read /me once");
+    let me = session.me().unwrap();
+    assert_eq!(me.name.as_deref(), Some("Alice A"));
+    assert_eq!(me.username.as_deref(), Some("alice"));
+    assert_eq!(me.roles, None);
+    session.close().await;
+}
+
+/// A real change is fetched from `/me`; bursts share one request and
+/// requests are at least `ME_REFRESH_INTERVAL` apart.
+#[tokio::test]
+async fn user_data_hints_refresh_me_rate_limited() {
+    let mock = Mock::start().await;
+    let (session, mut events) = start(&mock).await;
+    let before = me_calls(&mock);
+    mock.state.lock().unwrap().name = "Alice B".into();
+    for _ in 0..5 {
+        mock.event(
+            "stream-notify-user",
+            &format!("{UID}/userData"),
+            user_data(json!({"name": "ignored"})),
+        );
+    }
+    let ev = expect(&mut events, |e| matches!(e, SessionEvent::MeChanged(_))).await;
+    let first = std::time::Instant::now();
+    let SessionEvent::MeChanged(me) = ev else {
+        unreachable!()
+    };
+    assert_eq!(me.name.as_deref(), Some("Alice B"));
+    assert_eq!(session.me().unwrap().name.as_deref(), Some("Alice B"));
+    assert_eq!(me_calls(&mock), before + 1, "one request for the burst");
+
+    // The next hint waits for the interval.
+    mock.state.lock().unwrap().name = "Alice C".into();
+    mock.event(
+        "stream-notify-user",
+        &format!("{UID}/userData"),
+        user_data(json!({})),
+    );
+    let ev = expect(&mut events, |e| matches!(e, SessionEvent::MeChanged(_))).await;
+    assert!(
+        first.elapsed() >= rocketchat::session::ME_REFRESH_INTERVAL - Duration::from_millis(400),
+        "{:?}",
+        first.elapsed()
+    );
+    assert!(matches!(ev, SessionEvent::MeChanged(me) if me.name.as_deref() == Some("Alice C")));
+    assert_eq!(me_calls(&mock), before + 2);
     session.close().await;
 }

@@ -13,6 +13,9 @@
 //!   [`SessionEvent::Degraded`], and followed by a `Resync` once it is back.
 //! - Dropping (or closing) the [`Session`] closes the socket and ends every task;
 //!   the terminal event (`Connection(Closed)` or `LoggedOut`) is the last one.
+//! - `userData` events are never trusted (other members of a shared room can
+//!   forge them): they only trigger a rate-limited `/me` refresh, delivered as
+//!   [`SessionEvent::MeChanged`].
 //!
 //! **Logging**: meteor-ddp redacts credentials in its own logs, but tungstenite
 //! logs raw WebSocket frames (including the resume token) at TRACE. Never enable
@@ -28,7 +31,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::Stream;
 use meteor_ddp::http::{HeaderValue, header};
@@ -135,6 +138,11 @@ pub const NOTIFY_ROOM_EVENTS: &[&str] = &[
 ];
 
 /// Activity name of "typing" in [`Session::set_user_activity`].
+/// At most one `/me` refresh per this interval after `userData` hints.
+pub const ME_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+/// Hints arriving within this delay share one `/me` refresh.
+const ME_REFRESH_DEBOUNCE: Duration = Duration::from_millis(250);
+
 pub const ACTIVITY_TYPING: &str = "user-typing";
 pub const ACTIVITY_RECORDING: &str = "user-recording";
 pub const ACTIVITY_UPLOADING: &str = "user-uploading";
@@ -293,6 +301,16 @@ struct Core {
     /// Why the server rejected the token, once it did.
     logged_out: Mutex<Option<String>>,
     registry: Arc<Registry>,
+    me_refresh: Mutex<MeRefresh>,
+}
+
+/// State of the `/me` refreshes triggered by `userData` hints.
+#[derive(Debug, Default)]
+struct MeRefresh {
+    /// A refresh is waiting to run (later hints join it).
+    scheduled: bool,
+    /// When the last refresh started.
+    last: Option<Instant>,
 }
 
 impl Core {
@@ -384,27 +402,69 @@ impl Core {
         }
     }
 
-    /// Keeps the cached user and settings current.
-    fn observe(&self, event: &SessionEvent) {
+    /// A `userData` event arrived: re-read `/me` (debounced, at most once per
+    /// [`ME_REFRESH_INTERVAL`]) and send [`SessionEvent::MeChanged`] when the
+    /// user differs from the cached one. The event's own fields are never used.
+    fn hint_me_changed(self: &Arc<Self>) {
+        let delay = {
+            let mut r = self
+                .me_refresh
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if r.scheduled {
+                return;
+            }
+            r.scheduled = true;
+            let wait = r.last.map_or(Duration::ZERO, |t| {
+                ME_REFRESH_INTERVAL.saturating_sub(t.elapsed())
+            });
+            wait.max(ME_REFRESH_DEBOUNCE)
+        };
+        let core = Arc::downgrade(self);
+        let mut shutdown = self.shutdown.subscribe();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = shutdown.wait_for(|s| *s) => return,
+                () = tokio::time::sleep(delay) => {}
+            }
+            let Some(core) = core.upgrade() else {
+                return;
+            };
+            {
+                let mut r = core
+                    .me_refresh
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                r.scheduled = false;
+                r.last = Some(Instant::now());
+            }
+            match core.rest.me().await {
+                Ok(me) => {
+                    let changed = {
+                        let mut cached = core.me.write().unwrap_or_else(PoisonError::into_inner);
+                        let changed = cached.as_ref() != Some(&me);
+                        if changed {
+                            *cached = Some(me.clone());
+                        }
+                        changed
+                    };
+                    if changed {
+                        core.emit(SessionEvent::MeChanged(Box::new(me)));
+                    }
+                }
+                Err(e) => tracing::debug!(error = %e, "refreshing the user after userData failed"),
+            }
+        });
+    }
+
+    /// Keeps the cached user and settings current; returns whether `event` is
+    /// delivered (`userData` is not: see [`SessionEvent::UserData`]).
+    fn observe(self: &Arc<Self>, event: &SessionEvent) -> bool {
         let uid = self.credentials.user_id.as_str();
         match event {
-            SessionEvent::UserData(v)
-                if v.get("id").and_then(Value::as_str) == Some(uid)
-                    && v.get("type").and_then(Value::as_str) == Some("updated") =>
-            {
-                let diff = v.get("diff");
-                let field = |k: &str| diff.and_then(|d| d.get(k)).and_then(Value::as_str);
-                let (username, name) = (field("username"), field("name"));
-                if username.is_some() || name.is_some() {
-                    self.update_me(|me| {
-                        if let Some(u) = username {
-                            me.username = Some(u.to_owned());
-                        }
-                        if let Some(n) = name {
-                            me.name = Some(n.to_owned());
-                        }
-                    });
-                }
+            SessionEvent::UserData(_) => {
+                self.hint_me_changed();
+                return false;
             }
             SessionEvent::UserNameChanged {
                 uid: changed,
@@ -425,6 +485,7 @@ impl Core {
             }
             _ => {}
         }
+        true
     }
 
     async fn on_connected(&self, ddp: DdpHandle) -> std::result::Result<(), HookError> {
@@ -536,6 +597,7 @@ impl Session {
             first_done: AtomicBool::new(false),
             logged_out: Mutex::new(None),
             registry: Arc::new(Registry::new()),
+            me_refresh: Mutex::new(MeRefresh::default()),
         });
 
         let mut config = DdpConfig::new(url)
@@ -622,9 +684,7 @@ impl Session {
         core.emit(SessionEvent::Ready { me: Box::new(me) });
         let observer = Arc::downgrade(core);
         tokio::spawn(pump::run(tx, ctl_rx, Some(feed), move |event| {
-            if let Some(core) = observer.upgrade() {
-                core.observe(event);
-            }
+            observer.upgrade().is_none_or(|core| core.observe(event))
         }));
         tokio::spawn(supervisor::monitor(
             Arc::downgrade(core),
@@ -695,7 +755,8 @@ impl Session {
     }
 
     /// The current user: fetched at the first login, then kept current from
-    /// `userData` and `Users:NameChanged` (username and name).
+    /// `/me` refreshes (after `userData` hints and reconnects) and
+    /// `Users:NameChanged` (username and name).
     pub fn me(&self) -> Option<User> {
         self.core
             .me

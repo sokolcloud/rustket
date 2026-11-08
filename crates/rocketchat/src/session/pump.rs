@@ -98,12 +98,13 @@ async fn next_feed(
 }
 
 /// Runs until the terminal event is delivered, the consumer is dropped, or every
-/// control sender is gone. `observe` sees every decoded stream event first.
+/// control sender is gone. `observe` sees every decoded stream event first and
+/// returns whether it is delivered.
 pub(super) async fn run(
     tx: mpsc::Sender<SessionEvent>,
     mut ctl: mpsc::UnboundedReceiver<Ctl>,
     mut feed: Option<broadcast::Receiver<Arc<DataMessage>>>,
-    mut observe: impl FnMut(&SessionEvent) + Send,
+    mut observe: impl FnMut(&SessionEvent) -> bool + Send,
 ) {
     let mut out = Out {
         tx,
@@ -152,8 +153,11 @@ pub(super) async fn run(
             m = next_feed(&mut feed), if !terminating => match m {
                 Ok(m) if is_session_stream(&m.collection) => {
                     let event = decode_event(&m);
-                    observe(&event);
-                    out.data(event)
+                    if observe(&event) {
+                        out.data(event)
+                    } else {
+                        true
+                    }
                 }
                 Ok(_) => true,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -228,7 +232,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(capacity);
         let (ctl, ctl_rx) = mpsc::unbounded_channel();
         let (feed, feed_rx) = broadcast::channel(feed_capacity);
-        let task = tokio::spawn(run(tx, ctl_rx, Some(feed_rx), |_| {}));
+        let task = tokio::spawn(run(tx, ctl_rx, Some(feed_rx), |_| true));
         Harness {
             rx,
             ctl,
@@ -374,7 +378,7 @@ mod tests {
         for i in 0..6 {
             feed.send(del(&i.to_string())).unwrap();
         }
-        let task = tokio::spawn(run(tx, ctl_rx, Some(feed_rx), |_| {}));
+        let task = tokio::spawn(run(tx, ctl_rx, Some(feed_rx), |_| true));
         let mut rx = rx;
         assert_eq!(
             rx.recv().await,
@@ -407,10 +411,13 @@ mod tests {
         let seen2 = seen.clone();
         tokio::spawn(run(tx, ctl_rx, Some(feed_rx), move |e| {
             seen2.lock().unwrap().push(e.clone());
+            // The observer may withhold an event.
+            *e != deleted("2")
         }));
+        feed.send(del("2")).unwrap();
         feed.send(del("1")).unwrap();
         assert_eq!(rx.recv().await, Some(deleted("1")));
-        assert_eq!(*seen.lock().unwrap(), vec![deleted("1")]);
+        assert_eq!(*seen.lock().unwrap(), vec![deleted("2"), deleted("1")]);
         drop(ctl);
         assert_eq!(rx.recv().await, Some(conn(ConnectionState::Closed)));
         assert_eq!(rx.recv().await, None);

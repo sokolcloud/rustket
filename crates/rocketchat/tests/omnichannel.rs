@@ -381,19 +381,35 @@ fn ddp_department_agent_data() {
 
 #[test]
 fn ddp_agent_status() {
+    // The wire shape still decodes, but a raw `userData` never yields a
+    // status: the session re-reads `/me` (`MeChanged`) instead.
+    let status = |name: &str| {
+        let ev = decode(name);
+        assert_eq!(ev.agent_status(), None, "{name}");
+        let rocketchat::session::SessionEvent::UserData(v) = ev else {
+            panic!("{name}")
+        };
+        AgentStatus::from_user_data(&v)
+    };
     assert_eq!(
-        decode("user_data_status_livechat").agent_status(),
+        status("user_data_status_livechat"),
         Some(AgentStatus::Available)
     );
     assert_eq!(
-        decode("synthetic_user_data_status_livechat_space").agent_status(),
+        status("synthetic_user_data_status_livechat_space"),
         Some(AgentStatus::Available)
     );
     assert_eq!(
-        decode("synthetic_user_data_status_livechat_system").agent_status(),
+        status("synthetic_user_data_status_livechat_system"),
         Some(AgentStatus::NotAvailable)
     );
     assert!(decode("user_data_status_livechat").omnichannel().is_none());
+    let me: rocketchat::models::User =
+        serde_json::from_value(json!({"_id": AGENT, "statusLivechat": "available"})).unwrap();
+    let ev = rocketchat::session::SessionEvent::MeChanged(Box::new(me));
+    assert_eq!(ev.agent_status(), Some(AgentStatus::Available));
+    let ev = rocketchat::session::SessionEvent::MeChanged(Box::default());
+    assert_eq!(ev.agent_status(), Some(AgentStatus::NotAvailable));
 }
 
 #[test]
