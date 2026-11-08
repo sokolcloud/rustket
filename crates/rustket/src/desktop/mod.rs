@@ -66,6 +66,11 @@ pub enum Request {
     /// A notification server signal for a notification shown by another
     /// component (call notifications, `crate::videoconf`).
     ForeignSignal(u32, notifications::Signal),
+    /// "Join" on a server conference notification (`crate::videoconf`).
+    JoinCall {
+        server_id: ServerId,
+        call_id: String,
+    },
 }
 
 /// A value of `me.settings.preferences`.

@@ -10,6 +10,7 @@ use iced::{Alignment, Element, Length};
 use rocketchat::models::{Paginated, Room, RoomType};
 use rocketchat::rest::{CreateRoom, Page, TeamRef};
 use rust_i18n::t;
+use rustket_core::Workspace;
 use rustket_core::teams;
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::{self, Icon};
@@ -101,6 +102,24 @@ enum Dialog {
     Create(CreateDialog),
 }
 
+/// Whether a change of `rid` makes the listed team rooms out of date: a room
+/// moved into or out of `team`, its auto-join flag changed, or it is gone.
+fn list_affected(ws: &Workspace, listed: &[Room], team: &str, rid: &str) -> bool {
+    let Some(entry) = ws.room(rid) else {
+        // Left or deleted: only a listed room matters.
+        return listed.iter().any(|r| r.id == rid);
+    };
+    let in_team = teams::team_id_of(ws, rid) == Some(team);
+    match listed.iter().find(|r| r.id == rid) {
+        Some(old) => {
+            let auto_join = |r: Option<&Room>| r.and_then(|r| r.team_default).unwrap_or(false);
+            !in_team
+                || (entry.room.is_some() && auto_join(entry.room.as_ref()) != auto_join(Some(old)))
+        }
+        None => in_team,
+    }
+}
+
 #[derive(Default)]
 pub struct Channels {
     query: String,
@@ -162,12 +181,15 @@ impl Channels {
             let rid = self.pending_open.take().unwrap_or_default();
             return Action::effect(Effect::OpenRoom(rid));
         }
-        // A room of this team changed (moved in or out, auto-join): refresh.
+        // Team membership or auto-join of a room changed: refresh. Other
+        // changes (new messages, unread counts) leave the list alone.
         let team = team_id(ctx);
-        let touched = changes.rooms.iter().any(|rid| {
-            self.list.items.iter().any(|r| &r.id == rid)
-                || (team.is_some() && teams::team_id_of(ctx.workspace, rid) == team.as_deref())
-                    && rid != ctx.rid
+        let touched = team.as_deref().is_some_and(|team| {
+            changes
+                .rooms
+                .iter()
+                .filter(|rid| *rid != ctx.rid)
+                .any(|rid| list_affected(ctx.workspace, &self.list.items, team, rid))
         });
         if touched && !self.list.is_busy() && self.dialog.is_none() {
             return self.reload(ctx);
@@ -776,9 +798,10 @@ impl Channels {
                     } else {
                         Icon::Hash
                     };
-                    let mut meta = vec![
-                        t!("teams.members_count", count = r.users_count.unwrap_or(0)).into_owned(),
-                    ];
+                    let mut meta = vec![super::count_text(
+                        "teams.members_count",
+                        r.users_count.unwrap_or(0),
+                    )];
                     if let Some(topic) = r.topic.clone().filter(|t| !t.trim().is_empty()) {
                         meta.push(topic.lines().next().unwrap_or_default().to_owned());
                     }
@@ -836,6 +859,29 @@ mod tests {
     use rocketchat::ServerUrl;
     use rustket_core::ServerId;
     use rustket_core::workspace::{Change, Workspace};
+
+    #[test]
+    fn only_team_changes_reload_the_list() {
+        let mut ws = Workspace::new();
+        let room = |id: &str, team: Option<&str>, auto: bool| Room {
+            id: id.into(),
+            t: RoomType::Channel,
+            team_id: team.map(Into::into),
+            team_default: Some(auto),
+            ..Default::default()
+        };
+        let listed = vec![room("a", Some("T"), false)];
+        ws.apply_room(Change::Inserted, room("a", Some("T"), false));
+        assert!(!list_affected(&ws, &listed, "T", "a"), "new message etc.");
+        ws.apply_room(Change::Updated, room("a", Some("T"), true));
+        assert!(list_affected(&ws, &listed, "T", "a"), "auto-join changed");
+        ws.apply_room(Change::Updated, room("a", None, false));
+        assert!(list_affected(&ws, &listed, "T", "a"), "moved out");
+        ws.apply_room(Change::Inserted, room("b", Some("T"), false));
+        assert!(list_affected(&ws, &listed, "T", "b"), "moved in");
+        ws.apply_room(Change::Inserted, room("c", Some("U"), false));
+        assert!(!list_affected(&ws, &listed, "T", "c"), "other team");
+    }
 
     #[test]
     fn open_not_joined_asks_first_and_filter_reloads() {

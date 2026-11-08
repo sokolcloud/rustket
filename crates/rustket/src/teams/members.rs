@@ -26,6 +26,28 @@ use crate::room::panel::paged::{LoadState, PageReq, Paged};
 use crate::room::panel::{Kind, common, debounce};
 use crate::room::{Action, Effect, UpdateCtx, ViewCtx};
 
+/// Results per field of a member search.
+const SEARCH_LIMIT: u64 = 100;
+
+/// Username matches, then name matches not already listed.
+fn merge_members(a: Vec<TeamMember>, b: Vec<TeamMember>) -> Paginated<TeamMember> {
+    let mut items = a;
+    for m in b {
+        if !items.iter().any(|x| x.user.id == m.user.id) {
+            items.push(m);
+        }
+    }
+    let n = items.len();
+    Paginated {
+        items,
+        count: n as u64,
+        offset: 0,
+        total: n as u64,
+        raw_len: n,
+        dropped: 0,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Msg {
     Query(String),
@@ -106,17 +128,35 @@ impl Members {
         let q = self.query.trim().to_owned();
         Action::task(ctx.rest_task(
             move |rest| async move {
-                // `username` and `name` are ANDed by the server: filter by one.
-                let filter = MemberFilter {
-                    username: Some(q),
+                if q.is_empty() {
+                    return rest
+                        .teams_members(
+                            TeamRef::Id(&team),
+                            &MemberFilter::default(),
+                            Page::new(req.offset, super::PAGE),
+                        )
+                        .await;
+                }
+                // `username` and `name` are ANDed by the server: search each
+                // and merge (one page of results).
+                if req.offset > 0 {
+                    return Ok(Paginated::default());
+                }
+                let by_username = MemberFilter {
+                    username: Some(q.clone()),
                     ..Default::default()
                 };
-                rest.teams_members(
-                    TeamRef::Id(&team),
-                    &filter,
-                    Page::new(req.offset, super::PAGE),
+                let by_name = MemberFilter {
+                    name: Some(q),
+                    ..Default::default()
+                };
+                let page = Page::new(0, SEARCH_LIMIT);
+                let (a, b) = futures::future::join(
+                    rest.teams_members(TeamRef::Id(&team), &by_username, page),
+                    rest.teams_members(TeamRef::Id(&team), &by_name, page),
                 )
-                .await
+                .await;
+                Ok(merge_members(a?.items, b?.items))
             },
             move |r| Msg::Page(req, r),
         ))
@@ -418,7 +458,7 @@ impl Members {
                 if self.list.total > 0 {
                     col = col.push(
                         container(
-                            text(t!("teams.members_total", count = self.list.total).into_owned())
+                            text(super::count_text("teams.members_total", self.list.total))
                                 .size(TEXT_CAPTION)
                                 .style(style::text_hint),
                         )
@@ -436,9 +476,15 @@ impl Members {
                         .map(|p| p.status)
                         .or(m.user.status)
                         .unwrap_or(UserStatus::Offline);
-                    let mut title = row![ellipsis(name.clone()).size(TEXT_BODY).font(FONT_MEDIUM),]
-                        .spacing(SPACE_1)
-                        .align_y(Alignment::Center);
+                    // Role chips follow the name (not pushed to the far edge).
+                    let mut title = row![
+                        ellipsis(name.clone())
+                            .width(Length::Shrink)
+                            .size(TEXT_BODY)
+                            .font(FONT_MEDIUM),
+                    ]
+                    .spacing(SPACE_1)
+                    .align_y(Alignment::Center);
                     for r in &m.roles {
                         title = title.push(chip(common::role_label(r), ChipKind::Neutral));
                     }

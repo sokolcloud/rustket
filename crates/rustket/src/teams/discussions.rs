@@ -52,6 +52,14 @@ pub fn deleted_label(m: &Message) -> Option<String> {
         .then(|| t!("teams.discussion_deleted").into_owned())
 }
 
+/// `rooms.info` says the discussion no longer exists (or is not accessible).
+fn is_gone(e: &crate::error::Failure) -> bool {
+    matches!(
+        e.error().api_error_code(),
+        Some("error-room-not-found" | "not-allowed" | "error-not-allowed")
+    )
+}
+
 impl Discussions {
     pub fn activate(&mut self, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
         self.reload(ctx)
@@ -86,7 +94,10 @@ impl Discussions {
         if changes.timelines.contains(ctx.rid)
             && let Some(t) = ctx.workspace.timeline(ctx.rid)
         {
-            let mut added = false;
+            // Only discussions newer than the list head are new; older ones
+            // (the timeline scrolled back) arrive with their page.
+            let newest = self.list.items.first().and_then(|m| m.ts);
+            let mut added = Vec::new();
             for i in t.iter() {
                 let m = &i.message;
                 if m.drid.is_none() {
@@ -98,15 +109,19 @@ impl Discussions {
                             *x = m.clone();
                         }
                     }
-                    None if self.query.trim().is_empty() && self.list.loaded => {
-                        self.list.items.insert(0, m.clone());
-                        added = true;
+                    None if self.query.trim().is_empty()
+                        && self.list.loaded
+                        && (newest.is_none() || m.ts > newest) =>
+                    {
+                        added.push(m.clone());
                     }
                     None => {}
                 }
             }
-            if added {
-                self.list.total += 1;
+            if !added.is_empty() {
+                self.list.total += added.len() as u64;
+                added.sort_by_key(|a| std::cmp::Reverse(a.ts));
+                self.list.items.splice(0..0, added);
             }
         }
         Action::none()
@@ -123,6 +138,9 @@ impl Discussions {
             Msg::Search(_) => Action::none(),
             Msg::Page(req, r) => {
                 self.list.finish(req, r);
+                // Live inserts shift the server's offsets: drop repeats.
+                let mut seen = std::collections::HashSet::new();
+                self.list.items.retain(|m| seen.insert(m.id.clone()));
                 Action::none()
             }
             Msg::More => match self.list.begin_more() {
@@ -149,6 +167,12 @@ impl Discussions {
                     move |rest| async move { rest.rooms_info(&d2).await.map(drop) },
                     move |r| Msg::Checked(drid, r),
                 ))
+            }
+            Msg::Checked(drid, Err(e)) if !is_gone(&e) => {
+                if self.confirm_join.as_ref().is_some_and(|(d, _)| *d == drid) {
+                    self.confirm_join = None;
+                }
+                Action::effect(common::error_toast(&t!("teams.discussion"), &e))
             }
             Msg::Checked(drid, r) => {
                 if r.is_err() {
@@ -239,7 +263,7 @@ impl Discussions {
                         if count == 0 {
                             t!("teams.discussion_empty").into_owned()
                         } else {
-                            t!("teams.messages_count", count = count).into_owned()
+                            super::count_text("teams.messages_count", count)
                         },
                     ];
                     if let Some(lm) = m.dlm.or(m.ts) {

@@ -101,6 +101,8 @@ pub struct Calls {
     notify: notify::CallNotifier,
     /// The embedded-provider hint was shown this run.
     embedded_hint: bool,
+    /// When the armed info-drain timer fires.
+    info_timer: Option<Instant>,
 }
 
 impl Default for Calls {
@@ -112,6 +114,7 @@ impl Default for Calls {
             cam: false,
             notify: notify::CallNotifier::default(),
             embedded_hint: false,
+            info_timer: None,
         }
     }
 }
@@ -179,6 +182,8 @@ pub enum Message {
     OpenAdmin(ServerId),
     OpenRoom(ServerId, String),
     Tick,
+    /// Wakes the `video-conference.info` drain (rate limit, retries).
+    InfoTimer,
     /// A publish / cancel / decline finished (only logged).
     Done(&'static str, Res<()>),
     Notify(notify::Msg),
@@ -280,19 +285,21 @@ pub fn update(app: &mut App, msg: Message) -> Out {
         Message::Action(sid, a) => on_action(app, sid, a),
         Message::Info(sid, call_id, r) => {
             if let Some(s) = app.servers.get_mut(&sid) {
-                s.workspace
-                    .videoconf_mut()
-                    .finish(&call_id, r.map_err(|e| e.to_string()));
+                s.workspace.videoconf_mut().finish(
+                    &call_id,
+                    r.map_err(|e| e.to_string()),
+                    Instant::now(),
+                );
             }
             (Task::none(), Vec::new())
         }
         Message::Verified(sid, call_id, r) => {
+            let now = Instant::now();
             if let (Ok(info), Some(s)) = (&r, app.servers.get_mut(&sid)) {
                 s.workspace
                     .videoconf_mut()
-                    .finish(&call_id, Ok(info.clone()));
+                    .finish(&call_id, Ok(info.clone()), now);
             }
-            let now = Instant::now();
             let cmds =
                 app.calls
                     .server(&sid)
@@ -335,14 +342,9 @@ pub fn update(app: &mut App, msg: Message) -> Out {
             }
             *busy = true;
             let (sid, rid) = (sid.clone(), rid.clone());
-            let ring = app.servers.get(&sid).is_some_and(|s| {
-                rustket_core::teams::is_direct_call_room(&s.workspace, &rid)
-                    && rustket_core::permissions::has_permission(
-                        &s.workspace,
-                        rustket_core::teams::perms::VIDEOCONF_RING_USERS,
-                        None,
-                    )
-            });
+            // Like the web client: always ask to ring; the server applies
+            // `videoconf-ring-users` and the room type (DMs incl. group DMs).
+            let ring = true;
             let r2 = rid.clone();
             let s2 = sid.clone();
             let t = rest_task(
@@ -479,6 +481,11 @@ pub fn update(app: &mut App, msg: Message) -> Out {
             }
             (Task::batch(tasks), fx)
         }
+        Message::InfoTimer => {
+            // `fetch_wanted` runs after this update.
+            app.calls.info_timer = None;
+            (Task::none(), Vec::new())
+        }
         Message::Done(what, r) => {
             if let Err(e) = r {
                 tracing::debug!(what, error = %e, "call request failed");
@@ -538,6 +545,13 @@ fn failed(app: &mut App, sid: ServerId, e: &Failure) -> Out {
 fn on_action(app: &mut App, sid: ServerId, a: CallAction) -> Out {
     match a {
         CallAction::Start(rid) | CallAction::CallBack(rid) => {
+            let allowed = app.servers.get(&sid).is_some_and(|s| {
+                rustket_core::teams::video_call_button(&s.workspace, &rid)
+                    == rustket_core::teams::CallButton::Enabled
+            });
+            if !allowed {
+                return (Task::none(), Vec::new());
+            }
             if app.calls.server(&sid).mgr.is_busy() {
                 return notice(sid, CallNotice::Busy);
             }
@@ -618,6 +632,45 @@ fn notice(sid: ServerId, n: CallNotice) -> Out {
     )
 }
 
+/// Which call alerts the user's preferences allow on `sid`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Alerts {
+    pub sound: bool,
+    pub notify: bool,
+}
+
+/// Call sounds and notifications follow the desktop preferences (sound,
+/// notifications), the account's sound and volume preferences, and stay
+/// silent while the user is Busy (the popup still shows).
+pub fn alerts_for(ws: &rustket_core::Workspace, prefs: &rustket_core::config::UiPrefs) -> Alerts {
+    use rocketchat::models::UserStatus;
+    if ws.my_status() == UserStatus::Busy {
+        return Alerts {
+            sound: false,
+            notify: false,
+        };
+    }
+    let pref = |k: &str| crate::desktop::user_pref(ws, k);
+    let muted = pref("newMessageNotification").and_then(|v| v.as_str()) == Some("none")
+        || ["notificationsSoundVolume", "masterVolume"]
+            .iter()
+            .any(|k| pref(k).and_then(|v| v.as_f64()).is_some_and(|v| v <= 0.0));
+    Alerts {
+        sound: prefs.sound && !muted,
+        notify: prefs.desktop_notifications,
+    }
+}
+
+fn alerts(app: &App, sid: &ServerId) -> Alerts {
+    match app.servers.get(sid) {
+        Some(s) => alerts_for(&s.workspace, &app.config.ui),
+        None => Alerts {
+            sound: false,
+            notify: false,
+        },
+    }
+}
+
 /// Turns manager commands into requests, sounds and notifications.
 fn run(app: &mut App, sid: &ServerId, cmds: Vec<CallCommand>) -> Out {
     let mut tasks = Vec::new();
@@ -625,6 +678,16 @@ fn run(app: &mut App, sid: &ServerId, cmds: Vec<CallCommand>) -> Out {
     for c in cmds {
         match c {
             CallCommand::FetchInfo(id) => {
+                // Shares the server's `video-conference.info` rate limit with
+                // the blocks; without budget the caller's next `call` retries.
+                let allowed = app
+                    .servers
+                    .get_mut(sid)
+                    .is_some_and(|s| s.workspace.videoconf_mut().try_acquire(Instant::now()));
+                if !allowed {
+                    app.calls.server(sid).mgr.drop_unverified(&id);
+                    continue;
+                }
                 let (s2, c2) = (sid.clone(), id.clone());
                 tasks.push(wrap(rest_task(
                     app,
@@ -675,10 +738,18 @@ fn run(app: &mut App, sid: &ServerId, cmds: Vec<CallCommand>) -> Out {
             | CallCommand::HideOutgoing(_)
             | CallCommand::StopRinger
             | CallCommand::StopDialer => {}
-            CallCommand::PlayRinger => app.desktop.sound.play(Some("phone-incoming-call")),
-            CallCommand::PlayDialer => app.desktop.sound.play(Some("phone-outgoing-calling")),
+            CallCommand::PlayRinger => {
+                if alerts(app, sid).sound {
+                    app.desktop.sound.play_theme("phone-incoming-call");
+                }
+            }
+            CallCommand::PlayDialer => {
+                if alerts(app, sid).sound {
+                    app.desktop.sound.play_theme("phone-outgoing-calling");
+                }
+            }
             CallCommand::Notify(id) => {
-                if !app.focused {
+                if !app.focused && alerts(app, sid).notify {
                     let caller = app
                         .calls
                         .manager(sid)
@@ -747,10 +818,42 @@ pub fn on_session_event(app: &mut App, sid: &ServerId, ev: &SessionEvent) -> Out
     }
 }
 
-/// Fetches the `video-conference.info` documents blocks asked for.
-pub fn fetch_wanted(app: &mut App) -> Task<crate::message::Message> {
-    let sids: Vec<ServerId> = app.servers.keys().cloned().collect();
+/// Forgets the call state of servers that were removed or logged out.
+fn drop_gone_servers(app: &mut App) -> Vec<Task<crate::message::Message>> {
+    let gone: Vec<ServerId> = app
+        .calls
+        .servers
+        .keys()
+        .filter(|sid| !app.servers.get(*sid).is_some_and(|s| s.is_logged_in()))
+        .cloned()
+        .collect();
     let mut tasks = Vec::new();
+    for sid in gone {
+        if let Some(sc) = app.calls.servers.remove(&sid) {
+            for c in sc.mgr.incoming() {
+                tasks.push(wrap(
+                    app.calls
+                        .notify
+                        .close(&sid, &c.call_id)
+                        .map(Message::Notify),
+                ));
+            }
+        }
+        if app.calls.dialog.as_ref().is_some_and(|(d, _)| *d == sid) {
+            app.calls.dialog = None;
+        }
+    }
+    tasks
+}
+
+/// Fetches the `video-conference.info` documents blocks asked for (within
+/// the rate limit; a timer wakes the next drain) and forgets the call state
+/// of servers that are gone. Runs after every update.
+pub fn fetch_wanted(app: &mut App) -> Task<crate::message::Message> {
+    let now = Instant::now();
+    let mut tasks = drop_gone_servers(app);
+    let mut wake: Option<Instant> = None;
+    let sids: Vec<ServerId> = app.servers.keys().cloned().collect();
     for sid in sids {
         let Some(s) = app.servers.get_mut(&sid) else {
             continue;
@@ -758,7 +861,10 @@ pub fn fetch_wanted(app: &mut App) -> Task<crate::message::Message> {
         if s.session.is_none() {
             continue;
         }
-        let ids = s.workspace.videoconf_mut().take_wanted();
+        let ids = s.workspace.videoconf_mut().take_wanted(now);
+        if let Some(at) = s.workspace.videoconf().next_wakeup(now) {
+            wake = Some(wake.map_or(at, |w| w.min(at)));
+        }
         for id in ids {
             let (s2, c2) = (sid.clone(), id.clone());
             tasks.push(wrap(rest_task(
@@ -768,6 +874,17 @@ pub fn fetch_wanted(app: &mut App) -> Task<crate::message::Message> {
                 move |r| Message::Info(s2, id, r),
             )));
         }
+    }
+    if let Some(at) = wake
+        && app.calls.info_timer.is_none_or(|t| at < t)
+    {
+        app.calls.info_timer = Some(at);
+        let delay = at
+            .saturating_duration_since(now)
+            .max(Duration::from_millis(50));
+        tasks.push(wrap(Task::perform(tokio::time::sleep(delay), |_| {
+            Message::InfoTimer
+        })));
     }
     Task::batch(tasks)
 }
@@ -798,6 +915,48 @@ mod tests {
             call_url(&https, "c 1", "").as_deref(),
             Some("https://chat.example.org/conference/c%201")
         );
+    }
+
+    #[test]
+    fn call_alerts_follow_prefs_and_busy() {
+        use rocketchat::models::UserStatus;
+        use rustket_core::config::UiPrefs;
+        let mut ws = rustket_core::Workspace::new();
+        ws.apply_me(
+            serde_json::from_value(serde_json::json!({
+                "_id": "me", "username": "me", "status": "online",
+                "settings": {"preferences": {}}
+            }))
+            .unwrap(),
+        );
+        let prefs = UiPrefs::default();
+        let on = Alerts {
+            sound: true,
+            notify: true,
+        };
+        assert_eq!(alerts_for(&ws, &prefs), on);
+        let quiet = UiPrefs {
+            sound: false,
+            desktop_notifications: false,
+            ..UiPrefs::default()
+        };
+        assert_eq!(
+            alerts_for(&ws, &quiet),
+            Alerts {
+                sound: false,
+                notify: false
+            }
+        );
+        ws.apply_me(
+            serde_json::from_value(serde_json::json!({
+                "_id": "me", "username": "me", "status": "online",
+                "settings": {"preferences": {"masterVolume": 0}}
+            }))
+            .unwrap(),
+        );
+        assert!(!alerts_for(&ws, &prefs).sound);
+        ws.apply_user_status("me", Some("me"), UserStatus::Busy, None);
+        assert!(!alerts_for(&ws, &prefs).notify);
     }
 
     #[test]

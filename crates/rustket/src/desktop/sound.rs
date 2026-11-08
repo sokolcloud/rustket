@@ -179,6 +179,16 @@ impl Sound {
     /// theme's instant-message sound). Must be called inside the tokio runtime.
     pub fn play(&self, name: Option<&str>) {
         let _ = name;
+        self.play_id(None);
+    }
+
+    /// Plays the freedesktop theme sound `id` (e.g. `phone-incoming-call`),
+    /// falling back to the message sound when the theme lacks it.
+    pub fn play_theme(&self, id: &'static str) {
+        self.play_id(Some(id));
+    }
+
+    fn play_id(&self, id: Option<&'static str>) {
         if !self.enabled {
             return;
         }
@@ -190,14 +200,30 @@ impl Sound {
             tracing::debug!("no sound player or sound file found");
             return;
         };
-        let Some(mut cmd) = command(player, MESSAGE_SOUND, file.as_deref()) else {
-            tracing::debug!("no sound theme file found");
-            return;
-        };
+        let (player, file) = (player.clone(), file.clone());
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
         handle.spawn_blocking(move || {
+            let themed = id.and_then(|id| {
+                let f = theme_file(
+                    &data_dirs(
+                        std::env::var_os("XDG_DATA_HOME"),
+                        std::env::var_os("XDG_DATA_DIRS"),
+                    ),
+                    id,
+                );
+                match (f, player.kind) {
+                    (Some(f), _) => command(&player, id, Some(&f)),
+                    (None, PlayerKind::Canberra) => command(&player, id, None),
+                    (None, _) => None,
+                }
+            });
+            let Some(mut cmd) = themed.or_else(|| command(&player, MESSAGE_SOUND, file.as_deref()))
+            else {
+                tracing::debug!("no sound theme file found");
+                return;
+            };
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {

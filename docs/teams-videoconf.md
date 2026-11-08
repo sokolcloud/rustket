@@ -1349,8 +1349,25 @@ Deviations from §10, kept small for the parallel merge:
   bottom-right over everything, dialogs as a modal; desktop call notifications go through the
   desktop backend (`Notifications::backend`) and their signals come back as
   `desktop::Request::ForeignSignal`. Ringing sounds are one-shot freedesktop theme sounds
-  (`phone-incoming-call`, `phone-outgoing-calling`), not looped.
+  (`phone-incoming-call`, `phone-outgoing-calling`, `Sound::play_theme`; the message sound when
+  the theme lacks them), not looped. Call sounds and notifications follow the desktop sound /
+  notification preferences, `newMessageNotification: none`, zero `masterVolume` /
+  `notificationsSoundVolume`, and are silent while the user is Busy (the popup still shows).
+  "Join" on a server conference notification (`payload.conferenceId`) raises the window, opens
+  the room and joins (`desktop::Request::JoinCall`). `start` always sends `allowRinging: true`
+  like the web; the server applies `videoconf-ring-users`.
+- §7.5 hardening: nothing about existing calls changes before a signal is verified; the
+  per-caller cooldown is renewed only by verified calls, at most 3 calls wait for verification,
+  the dismissed list is bounded, and verification shares the `video-conference.info` budget of
+  the blocks (12 requests / 3 s; the server allows 15). Block info is refetched by the store
+  itself after `{rid}/videoconf` / `Resync` (not only when the row is rebuilt), and failures
+  (incl. 429) are retried after 5 s / 20 s / 60 s.
 - Not done: the "a discussion for this message already exists" warning (§6.2), the delete
   confirmation text for `discussion-created` messages (§6.4), patching a stale `drid` in the
   timeline (the Discussions panel drops it after `rooms.info` fails), conference-window mode
-  (§7.6, EE only), voice-call notices (§8, by design nothing is registered).
+  (§7.6, EE only), voice-call notices (§8, by design nothing is registered). The call
+  information dialog is drawn locally from the cached `video-conference.info` instead of the
+  `videoconf-core` UIKit modal (§7.8), and the mic/cam choice is kept per run, not persisted per
+  server (§7.7). The old `Discussions` / `TeamChannels` modes of `room/panel/rooms.rs` are no
+  longer reachable (`teams::TeamPanel` takes those kinds first); removing them is left to the
+  owner of that module.

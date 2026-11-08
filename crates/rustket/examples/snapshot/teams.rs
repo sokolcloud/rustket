@@ -102,7 +102,8 @@ async fn setup(server: &ServerUrl, ledger: &Ledger, uid: &str) -> (String, Strin
         let v: Value = admin
             .post(
                 "channels.create",
-                &json!({"name": name, "members": members, "extraData": {"teamId": team}}),
+                &json!({"name": name, "members": members,
+                        "extraData": {"teamId": team, "topic": "Deploys and on-call"}}),
             )
             .await
             .expect("channels.create in team");
@@ -280,12 +281,14 @@ pub async fn teams_shots(
             &[],
             true,
         );
+        s.workspace.videoconf_mut().finish(
+            "rk-snap-call-1",
+            Ok(ongoing),
+            std::time::Instant::now(),
+        );
         s.workspace
             .videoconf_mut()
-            .finish("rk-snap-call-1", Ok(ongoing));
-        s.workspace
-            .videoconf_mut()
-            .finish("rk-snap-call-2", Ok(ended));
+            .finish("rk-snap-call-2", Ok(ended), std::time::Instant::now());
         for (i, call) in ["rk-snap-call-1", "rk-snap-call-2"].iter().enumerate() {
             s.workspace.apply_message(videoconf_message(
                 &format!("rk-snap-vc-{i}"),

@@ -224,7 +224,9 @@ fn loaded(
             direct,
         } => {
             let mut footer = row![].spacing(SPACE_3).align_y(Alignment::Center);
-            if direct {
+            let can_call = rustket_core::teams::video_call_button(rc.workspace, &msg.rid)
+                == rustket_core::teams::CallButton::Enabled;
+            if direct && can_call {
                 let label = if v.creator_id() == Some(me) {
                     t!("videoconf.call_again")
                 } else {

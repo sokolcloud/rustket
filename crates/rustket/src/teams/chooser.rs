@@ -72,6 +72,9 @@ pub struct Chooser {
     main_rid: String,
     team_name: String,
     rooms: Option<Result<Vec<Choice>, String>>,
+    /// The user's child rooms are not visible to us (`listRoomsOfUser` needs
+    /// `view-all-team-channels`): removal goes on without a room choice.
+    rooms_hidden: bool,
     selected: BTreeSet<String>,
     confirm_step: bool,
     busy: bool,
@@ -106,6 +109,21 @@ pub fn rooms_to_send(
         .collect()
 }
 
+/// Page size and upper bound of the child-room lists.
+const PAGE: u64 = 100;
+const MAX_ROOMS: u64 = 2_000;
+
+/// A permission refusal (HTTP 403 / `unauthorized`), not a failure.
+fn is_forbidden(e: &rocketchat::Error) -> bool {
+    match e {
+        rocketchat::Error::Api { status, error, .. } => {
+            *status == 403 || error.as_deref() == Some("unauthorized")
+        }
+        rocketchat::Error::Status { status, .. } => *status == 403,
+        _ => false,
+    }
+}
+
 fn choice_of(r: &Room, locked: bool) -> Choice {
     Choice {
         rid: r.id.clone(),
@@ -123,6 +141,7 @@ impl Chooser {
             main_rid: main_rid.to_owned(),
             team_name: team_name.to_owned(),
             rooms: None,
+            rooms_hidden: false,
             selected: BTreeSet::new(),
             confirm_step: false,
             busy: false,
@@ -138,10 +157,25 @@ impl Chooser {
         match &self.flow {
             Flow::Delete => ctx.rest_task(
                 move |rest| async move {
-                    let p = rest
-                        .teams_list_rooms(TeamRef::Id(&team), None, false, Page::new(0, 100))
-                        .await?;
-                    Ok(p.items.into_iter().filter(|r| r.id != main).collect())
+                    let mut out: Vec<Room> = Vec::new();
+                    let mut offset = 0;
+                    loop {
+                        let p = rest
+                            .teams_list_rooms(
+                                TeamRef::Id(&team),
+                                None,
+                                false,
+                                Page::new(offset, PAGE),
+                            )
+                            .await?;
+                        offset += p.raw_len as u64;
+                        let done = p.raw_len == 0 || offset >= p.total || offset >= MAX_ROOMS;
+                        out.extend(p.items.into_iter().filter(|r| r.id != main));
+                        if done {
+                            break;
+                        }
+                    }
+                    Ok(out)
                 },
                 Msg::LoadedRooms,
             ),
@@ -153,19 +187,29 @@ impl Chooser {
                 };
                 ctx.rest_task(
                     move |rest| async move {
-                        let p: rocketchat::models::Paginated<TeamRoomOfUser> = rest
-                            .teams_list_rooms_of_user(
-                                TeamRef::Id(&team),
-                                &uid,
-                                can_delete,
-                                Page::new(0, 100),
-                            )
-                            .await?;
-                        Ok(p.items
-                            .iter()
-                            .filter(|r| r.room.id != main)
-                            .map(|r| choice_of(&r.room, lock_last_owner && r.is_last_owner))
-                            .collect())
+                        let mut out = Vec::new();
+                        let mut offset = 0;
+                        loop {
+                            let p: rocketchat::models::Paginated<TeamRoomOfUser> = rest
+                                .teams_list_rooms_of_user(
+                                    TeamRef::Id(&team),
+                                    &uid,
+                                    can_delete,
+                                    Page::new(offset, PAGE),
+                                )
+                                .await?;
+                            offset += p.raw_len as u64;
+                            let done = p.raw_len == 0 || offset >= p.total || offset >= MAX_ROOMS;
+                            out.extend(
+                                p.items.iter().filter(|r| r.room.id != main).map(|r| {
+                                    choice_of(&r.room, lock_last_owner && r.is_last_owner)
+                                }),
+                            );
+                            if done {
+                                break;
+                            }
+                        }
+                        Ok(out)
                     },
                     Msg::Loaded,
                 )
@@ -175,6 +219,13 @@ impl Chooser {
 
     pub fn update(&mut self, msg: Msg, ctx: &UpdateCtx<'_>) -> (iced::Task<Msg>, Outcome) {
         match msg {
+            Msg::Loaded(Err(e))
+                if matches!(self.flow, Flow::RemoveMember { .. }) && is_forbidden(e.error()) =>
+            {
+                // Moderators may remove members but not list their rooms.
+                self.rooms_hidden = true;
+                self.rooms = Some(Ok(Vec::new()));
+            }
             Msg::Loaded(r) => {
                 self.rooms = Some(r.map_err(|e| super::error_text(&e)));
             }
@@ -382,8 +433,13 @@ impl Chooser {
                     body = body.push(text(e.clone()).size(TEXT_BODY).style(style::text_danger));
                 }
                 Some(Ok(list)) if list.is_empty() => {
+                    let key = if self.rooms_hidden {
+                        "teams.remove_member_rooms_hidden"
+                    } else {
+                        "teams.no_child_rooms"
+                    };
                     body = body.push(
-                        text(t!("teams.no_child_rooms").into_owned())
+                        text(t!(key).into_owned())
                             .size(TEXT_BODY)
                             .style(style::text_secondary),
                     );
@@ -453,6 +509,20 @@ impl Chooser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forbidden_is_recognised() {
+        let api = |status, error: Option<&str>| rocketchat::Error::Api {
+            status,
+            error: error.map(str::to_owned),
+            error_type: None,
+            message: None,
+            details: None,
+        };
+        assert!(is_forbidden(&api(403, None)));
+        assert!(is_forbidden(&api(400, Some("unauthorized"))));
+        assert!(!is_forbidden(&api(400, Some("error-invalid-team"))));
+    }
 
     #[test]
     fn main_room_is_never_sent() {

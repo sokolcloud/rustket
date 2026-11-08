@@ -1,15 +1,19 @@
 //! Live teams / discussions / video-conference tests against the dev server
 //! (see CLAUDE.md). Skipped unless `RUSTKET_TEST_SERVER` is set. Global state
-//! is never changed: throwaway users, teams and rooms are deleted at the end.
+//! is never changed: throwaway users, teams and rooms are deleted at the end,
+//! also when an assertion fails (the panic is re-raised after the cleanup).
 
 #![allow(clippy::unwrap_used)]
 
+use std::panic::AssertUnwindSafe;
 use std::time::Duration;
+
+use futures::FutureExt;
 
 use rocketchat::models::VideoConfAction;
 use rocketchat::rest::videoconf::{NO_PROVIDER_APP, provider_error};
 use rocketchat::rest::{CreateRoom, CreateTeam, MemberFilter, Page, TeamRef};
-use rocketchat::session::{Session, SessionEvent, SessionOptions};
+use rocketchat::session::{Session, SessionEvent, SessionEvents, SessionOptions};
 use rocketchat::{RestClient, ServerUrl, TlsConfig};
 use serde_json::{Value, json};
 
@@ -87,7 +91,7 @@ async fn teams_round_trip() {
     let (mid, _mname, member) = temp_user(&admin, &server, "tvl-mem").await;
     let mut cleanup_rooms: Vec<String> = Vec::new();
 
-    let result = async {
+    let result = AssertUnwindSafe(async {
         let team = owner
             .teams_create(&CreateTeam {
                 name: unique("tvl-team"),
@@ -209,14 +213,17 @@ async fn teams_round_trip() {
         owner.teams_delete(t, &[&child.id]).await.unwrap();
         assert!(owner.rooms_info(&child.id).await.is_err());
         assert!(owner.rooms_info(&team.room_id).await.is_err());
-        let _ = oid;
-    };
-    result.await;
+    })
+    .catch_unwind()
+    .await;
     for rid in cleanup_rooms {
         let _ = admin.rooms_delete(&rid).await;
     }
     delete_user(&admin, &oid).await;
     delete_user(&admin, &mid).await;
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[tokio::test]
@@ -224,19 +231,46 @@ async fn convert_channel_to_team_and_back() {
     let Some(server) = server() else { return };
     let admin = login(&server, "admin", "adminpass").await;
     let (uid, _name, rest) = temp_user(&admin, &server, "tvl-conv").await;
-    let room = rest
-        .channels_create(&CreateRoom::new(unique("tvl-conv")))
-        .await
-        .unwrap();
-    let team = rest.channels_convert_to_team(&room.id).await.unwrap();
-    assert_eq!(team.room_id, room.id);
-    rest.teams_convert_to_channel(TeamRef::Id(&team.id), &[])
-        .await
-        .unwrap();
-    let after = rest.rooms_info(&room.id).await.unwrap();
-    assert!(!after.is_team() && after.team_id.is_none());
-    let _ = admin.rooms_delete(&room.id).await;
+    let mut room_id = None;
+    let result = AssertUnwindSafe(async {
+        let room = rest
+            .channels_create(&CreateRoom::new(unique("tvl-conv")))
+            .await
+            .unwrap();
+        room_id = Some(room.id.clone());
+        let team = rest.channels_convert_to_team(&room.id).await.unwrap();
+        assert_eq!(team.room_id, room.id);
+        rest.teams_convert_to_channel(TeamRef::Id(&team.id), &[])
+            .await
+            .unwrap();
+        let after = rest.rooms_info(&room.id).await.unwrap();
+        assert!(!after.is_team() && after.team_id.is_none());
+    })
+    .catch_unwind()
+    .await;
+    if let Some(rid) = room_id {
+        let _ = admin.rooms_delete(&rid).await;
+    }
     delete_user(&admin, &uid).await;
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// Whether a `VideoConference` signal for `call_id` arrives within `secs`.
+async fn signal_seen(events: &mut SessionEvents, call_id: &str, secs: u64) -> bool {
+    let fut = async {
+        loop {
+            match events.recv().await {
+                Some(SessionEvent::VideoConference(s)) if s.call_id == call_id => return true,
+                Some(_) => {}
+                None => return false,
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(secs), fut)
+        .await
+        .unwrap_or(false)
 }
 
 #[tokio::test]
@@ -244,74 +278,117 @@ async fn video_conference_without_provider() {
     let Some(server) = server() else { return };
     let admin = login(&server, "admin", "adminpass").await;
     let (uid, _name, rest) = temp_user(&admin, &server, "tvl-vc").await;
-    let room = rest
-        .channels_create(&CreateRoom::new(unique("tvl-vc")))
-        .await
-        .unwrap();
-    assert!(rest.videoconf_providers().await.unwrap().is_empty());
-    let e = rest.videoconf_capabilities().await.unwrap_err();
-    assert_eq!(provider_error(&e), Some(NO_PROVIDER_APP));
-    assert!(rest.videoconf_joinable().await.unwrap().is_empty());
-    assert_eq!(
-        rest.videoconf_list(&room.id, Page::default())
+    let (peer_id, peer_name, peer) = temp_user(&admin, &server, "tvl-vcp").await;
+    let mut room_id = None;
+    let tls = TlsConfig::new().build().unwrap();
+    let result = AssertUnwindSafe(async {
+        let room = rest
+            .channels_create(&CreateRoom {
+                members: vec![peer_name.clone()],
+                ..CreateRoom::new(unique("tvl-vc"))
+            })
             .await
-            .unwrap()
-            .total,
-        0
-    );
+            .unwrap();
+        room_id = Some(room.id.clone());
+        assert!(rest.videoconf_providers().await.unwrap().is_empty());
+        let e = rest.videoconf_capabilities().await.unwrap_err();
+        assert_eq!(provider_error(&e), Some(NO_PROVIDER_APP));
+        assert!(rest.videoconf_joinable().await.unwrap().is_empty());
+        assert_eq!(
+            rest.videoconf_list(&room.id, Page::default())
+                .await
+                .unwrap()
+                .total,
+            0
+        );
 
-    // `start` fails the same way and pushes an ephemeral explanation.
-    let (session, mut events) = Session::start(
-        server.clone(),
-        &TlsConfig::new().build().unwrap(),
-        rest.credentials().unwrap(),
-        SessionOptions::default(),
-    )
-    .await
-    .unwrap();
-    let e = rest
-        .videoconf_start(&room.id, None, false)
-        .await
-        .unwrap_err();
-    assert_eq!(provider_error(&e), Some(NO_PROVIDER_APP));
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    let mut ephemeral = false;
-    while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, events.recv()).await {
-        if let SessionEvent::EphemeralMessage(m) = ev
-            && m.rid == room.id
-        {
-            ephemeral = true;
-            break;
-        }
-    }
-    assert!(ephemeral, "no ephemeral provider message");
-
-    // Unknown calls: the documented error shapes.
-    let e = rest.videoconf_info("nope").await.unwrap_err();
-    assert_eq!(e.api_error_code(), Some("invalid-params"));
-    let e = rest.videoconf_join("nope", true, false).await.unwrap_err();
-    assert_eq!(e.api_error_code(), Some("invalid-params"));
-    let e = rest.videoconf_decline("nope").await.unwrap_err();
-    assert!(matches!(e, rocketchat::Error::Api { status: 404, .. }));
-
-    // A signal about a call that does not exist is not relayed.
-    session
-        .notify_video_conference(&uid, VideoConfAction::Call, "fake-call", &room.id)
+        // `start` fails the same way and pushes an ephemeral explanation.
+        let (session, mut events) = Session::start(
+            server.clone(),
+            &tls,
+            rest.credentials().unwrap(),
+            SessionOptions::default(),
+        )
         .await
         .unwrap();
-    let quiet = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match events.recv().await {
-                Some(SessionEvent::VideoConference(s)) => return Some(s),
-                Some(_) => {}
-                None => return None,
+        let e = rest
+            .videoconf_start(&room.id, None, false)
+            .await
+            .unwrap_err();
+        assert_eq!(provider_error(&e), Some(NO_PROVIDER_APP));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let mut ephemeral = false;
+        while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, events.recv()).await {
+            if let SessionEvent::EphemeralMessage(m) = ev
+                && m.rid == room.id
+            {
+                ephemeral = true;
+                break;
             }
         }
-    })
-    .await;
-    assert!(!matches!(quiet, Ok(Some(_))), "fake call was relayed");
+        assert!(ephemeral, "no ephemeral provider message");
 
-    session.close().await;
-    let _ = admin.rooms_delete(&room.id).await;
+        // Unknown calls: the documented error shapes.
+        let e = rest.videoconf_info("nope").await.unwrap_err();
+        assert_eq!(e.api_error_code(), Some("invalid-params"));
+        let e = rest.videoconf_join("nope", true, false).await.unwrap_err();
+        assert_eq!(e.api_error_code(), Some("invalid-params"));
+        let e = rest.videoconf_decline("nope").await.unwrap_err();
+        assert!(matches!(e, rocketchat::Error::Api { status: 404, .. }));
+
+        // The publisher never receives its own events, so the peer listens.
+        let (peer_session, mut peer_events) = Session::start(
+            server.clone(),
+            &tls,
+            peer.credentials().unwrap(),
+            SessionOptions::default(),
+        )
+        .await
+        .unwrap();
+        // Positive control: the unvalidated room relay reaches the peer.
+        let probe = json!({
+            "action": "call",
+            "params": { "callId": "relay-probe", "uid": uid, "rid": room.id },
+        });
+        let mut seen = false;
+        for _ in 0..5 {
+            session
+                .call(
+                    "stream-notify-room-users",
+                    vec![
+                        json!(format!("{}/video-conference", room.id)),
+                        probe.clone(),
+                    ],
+                )
+                .await
+                .unwrap();
+            if signal_seen(&mut peer_events, "relay-probe", 3).await {
+                seen = true;
+                break;
+            }
+        }
+        assert!(seen, "the peer never saw the relayed probe");
+        // A validated signal about a call that does not exist is not relayed.
+        session
+            .notify_video_conference(&peer_id, VideoConfAction::Call, "fake-call", &room.id)
+            .await
+            .unwrap();
+        assert!(
+            !signal_seen(&mut peer_events, "fake-call", 3).await,
+            "fake call was relayed"
+        );
+
+        peer_session.close().await;
+        session.close().await;
+    })
+    .catch_unwind()
+    .await;
+    if let Some(rid) = room_id {
+        let _ = admin.rooms_delete(&rid).await;
+    }
     delete_user(&admin, &uid).await;
+    delete_user(&admin, &peer_id).await;
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
 }

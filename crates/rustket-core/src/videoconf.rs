@@ -5,7 +5,7 @@
 //! Everything here is synchronous and `Instant`-driven (no I/O): the app turns
 //! [`CallCommand`]s into REST calls, DDP publishes, popups and sounds.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -26,10 +26,22 @@ pub const ACCEPT_TIMEOUT: Duration = Duration::from_millis(5_000);
 pub const DISMISS_TTL: Duration = Duration::from_millis(200_000);
 /// At most one new incoming call per sender in this window.
 pub const SENDER_COOLDOWN: Duration = Duration::from_secs(5);
+/// Incoming calls waiting for verification at once; more are dropped.
+pub const MAX_UNVERIFIED: usize = 3;
+/// Bound of the dismissed-call list.
+pub const MAX_DISMISSED: usize = 256;
 /// Cached provider capabilities expire after this long.
 pub const CAPABILITIES_TTL: Duration = Duration::from_secs(300);
-/// `video-conference.info` requests started per drain (rate limit 15 / 3 s).
-pub const INFO_BATCH: usize = 5;
+/// `video-conference.info` requests allowed per [`INFO_WINDOW`] (the server
+/// allows 15 / 3 s; block and verification fetches share the budget).
+pub const INFO_RATE: usize = 12;
+pub const INFO_WINDOW: Duration = Duration::from_millis(3_000);
+/// Back-off before a failed `video-conference.info` is retried.
+pub const INFO_RETRY: [Duration; 3] = [
+    Duration::from_secs(5),
+    Duration::from_secs(20),
+    Duration::from_secs(60),
+];
 
 // ---- info cache -----------------------------------------------------------------
 
@@ -48,6 +60,26 @@ struct InfoEntry {
     version: u64,
     stale: bool,
     in_flight: bool,
+    failures: usize,
+    retry_at: Option<Instant>,
+}
+
+impl InfoEntry {
+    fn new() -> Self {
+        Self {
+            state: InfoState::Loading,
+            version: 0,
+            stale: false,
+            in_flight: false,
+            failures: 0,
+            retry_at: None,
+        }
+    }
+
+    /// Refetch without the view asking again (invalidated or retry due).
+    fn due(&self, now: Instant) -> bool {
+        !self.in_flight && (self.stale || self.retry_at.is_some_and(|at| now >= at))
+    }
 }
 
 /// Call ids the renderer asked for (interior mutability: `view` only has
@@ -55,14 +87,17 @@ struct InfoEntry {
 #[derive(Debug, Default)]
 struct Wanted(Mutex<BTreeSet<String>>);
 
+impl Wanted {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 impl Clone for Wanted {
     fn clone(&self) -> Self {
-        Self(Mutex::new(
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
-        ))
+        Self(Mutex::new(self.lock().clone()))
     }
 }
 
@@ -71,6 +106,8 @@ impl Clone for Wanted {
 pub struct VideoConfStore {
     entries: HashMap<String, InfoEntry>,
     wanted: Wanted,
+    /// Start times of recent `video-conference.info` requests.
+    sent: VecDeque<Instant>,
     capabilities: Option<(Instant, Result<ProviderCapabilities, String>)>,
     license_modules: Option<Vec<String>>,
 }
@@ -106,73 +143,135 @@ impl VideoConfStore {
         if call_id.is_empty() || !self.needs_fetch(call_id) {
             return;
         }
-        self.wanted
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(call_id.to_owned());
+        self.wanted.lock().insert(call_id.to_owned());
     }
 
-    /// Call ids to fetch now (at most [`INFO_BATCH`]; the rest stay wanted).
-    /// They are marked in flight; report each with [`Self::finish`].
-    pub fn take_wanted(&mut self) -> Vec<String> {
-        let mut set = std::mem::take(
-            &mut *self
-                .wanted
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+    fn prune_sent(&mut self, now: Instant) {
+        while self
+            .sent
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= INFO_WINDOW)
+        {
+            self.sent.pop_front();
+        }
+    }
+
+    /// Takes one request from the shared `video-conference.info` budget.
+    pub fn try_acquire(&mut self, now: Instant) -> bool {
+        self.prune_sent(now);
+        if self.sent.len() >= INFO_RATE {
+            return false;
+        }
+        self.sent.push_back(now);
+        true
+    }
+
+    /// Call ids to fetch now: wanted by the view, invalidated, or due for a
+    /// retry, within the request budget (the rest wait). They are marked in
+    /// flight; report each with [`Self::finish`].
+    pub fn take_wanted(&mut self, now: Instant) -> Vec<String> {
+        let mut set = std::mem::take(&mut *self.wanted.lock());
+        set.extend(
+            self.entries
+                .iter()
+                .filter(|(_, e)| e.due(now))
+                .map(|(id, _)| id.clone()),
         );
         let mut out = Vec::new();
-        while out.len() < INFO_BATCH {
-            let Some(id) = set.pop_first() else { break };
-            if !self.needs_fetch(&id) {
+        let mut rest = BTreeSet::new();
+        while let Some(id) = set.pop_first() {
+            let pending = match self.entries.get(&id) {
+                None => true,
+                Some(e) => e.due(now),
+            };
+            if !pending {
                 continue;
             }
-            let e = self.entries.entry(id.clone()).or_insert(InfoEntry {
-                state: InfoState::Loading,
-                version: 0,
-                stale: false,
-                in_flight: false,
-            });
+            if !self.try_acquire(now) {
+                // Entries are found again by `due`; only new ids need keeping.
+                if !self.entries.contains_key(&id) {
+                    rest.insert(id);
+                }
+                continue;
+            }
+            let e = self
+                .entries
+                .entry(id.clone())
+                .or_insert_with(InfoEntry::new);
             e.in_flight = true;
             e.stale = false;
+            e.retry_at = None;
             out.push(id);
         }
-        if !set.is_empty() {
-            self.wanted
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend(set);
+        if !rest.is_empty() {
+            self.wanted.lock().extend(rest);
         }
         out
     }
 
-    /// Result of `video-conference.info` for `call_id`. A failure keeps
-    /// earlier data. A document for another call id is refused.
-    pub fn finish(&mut self, call_id: &str, result: Result<VideoConference, String>) {
-        let e = self.entries.entry(call_id.to_owned()).or_insert(InfoEntry {
-            state: InfoState::Loading,
-            version: 0,
-            stale: false,
-            in_flight: false,
+    /// When [`Self::take_wanted`] has something to do again (budget refill
+    /// or a retry), if anything is waiting.
+    pub fn next_wakeup(&self, now: Instant) -> Option<Instant> {
+        let waiting = !self.wanted.lock().is_empty()
+            || self.entries.values().any(|e| !e.in_flight && e.stale);
+        let refill = waiting.then(|| {
+            if self.sent.len() >= INFO_RATE {
+                self.sent.front().map_or(now, |at| *at + INFO_WINDOW)
+            } else {
+                now
+            }
         });
+        let retry = self
+            .entries
+            .values()
+            .filter(|e| !e.in_flight)
+            .filter_map(|e| e.retry_at)
+            .min();
+        match (refill, retry) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Result of `video-conference.info` for `call_id`. A failure keeps
+    /// earlier data and is retried with back-off. A document for another
+    /// call id is refused.
+    pub fn finish(&mut self, call_id: &str, result: Result<VideoConference, String>, now: Instant) {
+        let e = self
+            .entries
+            .entry(call_id.to_owned())
+            .or_insert_with(InfoEntry::new);
         e.in_flight = false;
         e.version += 1;
         match result {
-            Ok(v) if v.id == call_id => e.state = InfoState::Loaded(Box::new(v)),
-            _ if matches!(e.state, InfoState::Loaded(_)) => {}
-            _ => e.state = InfoState::Failed,
+            Ok(v) if v.id == call_id => {
+                e.state = InfoState::Loaded(Box::new(v));
+                e.failures = 0;
+                e.retry_at = None;
+            }
+            Ok(_) => {
+                if !matches!(e.state, InfoState::Loaded(_)) {
+                    e.state = InfoState::Failed;
+                }
+            }
+            Err(_) => {
+                if !matches!(e.state, InfoState::Loaded(_)) {
+                    e.state = InfoState::Failed;
+                }
+                e.retry_at = INFO_RETRY.get(e.failures).map(|d| now + *d);
+                e.failures += 1;
+            }
         }
     }
 
     /// `{rid}/videoconf` for `call_id`: refetch unless the call ended (final).
+    /// The refetch does not wait for the view to ask again.
     pub fn invalidate(&mut self, call_id: &str) {
         if let Some(e) = self.entries.get_mut(call_id) {
             let ended = matches!(&e.state, InfoState::Loaded(v) if v.is_ended());
             if !ended {
                 e.stale = true;
+                e.failures = 0;
             }
         }
     }
@@ -375,6 +474,17 @@ impl CallManager {
     }
 
     fn dismiss(&mut self, call_id: &str, now: Instant, out: &mut Vec<CallCommand>) {
+        self.dismissed
+            .retain(|_, at| now.duration_since(*at) < DISMISS_TTL);
+        if self.dismissed.len() >= MAX_DISMISSED
+            && let Some(oldest) = self
+                .dismissed
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(id, _)| id.clone())
+        {
+            self.dismissed.remove(&oldest);
+        }
         self.dismissed.insert(call_id.to_owned(), now);
         self.drop_incoming(call_id, out);
     }
@@ -421,23 +531,16 @@ impl CallManager {
                     }
                     return out;
                 }
+                // Nothing about other calls changes before verification
+                // (§7.5): the cooldown is renewed only by verified calls and
+                // unverified entries are capped globally.
                 if self
                     .last_from
                     .get(&s.uid)
                     .is_some_and(|at| now.duration_since(*at) < SENDER_COOLDOWN)
+                    || self.incoming.iter().filter(|c| !c.verified).count() >= MAX_UNVERIFIED
                 {
                     return out;
-                }
-                self.last_from.insert(s.uid.clone(), now);
-                // A new call from the same user replaces an older ringing one.
-                let older: Vec<String> = self
-                    .incoming
-                    .iter()
-                    .filter(|c| c.uid == s.uid && c.accept_deadline.is_none())
-                    .map(|c| c.call_id.clone())
-                    .collect();
-                for id in older {
-                    self.drop_incoming(&id, &mut out);
                 }
                 self.incoming.push(Incoming {
                     call_id: s.call_id.clone(),
@@ -585,6 +688,22 @@ impl CallManager {
         }
         c.verified = true;
         c.deadline = now + CALL_TIMEOUT;
+        let uid = c.uid.clone();
+        self.last_from
+            .retain(|_, at| now.duration_since(*at) < SENDER_COOLDOWN);
+        self.last_from.insert(uid.clone(), now);
+        // A new verified call from the same user replaces an older ringing one.
+        let older: Vec<String> = self
+            .incoming
+            .iter()
+            .filter(|o| {
+                o.uid == uid && o.verified && o.call_id != call_id && o.accept_deadline.is_none()
+            })
+            .map(|o| o.call_id.clone())
+            .collect();
+        for id in older {
+            self.drop_incoming(&id, &mut out);
+        }
         out.push(CallCommand::ShowIncoming(call_id.to_owned()));
         out.push(CallCommand::PlayRinger);
         out.push(CallCommand::Notify(call_id.to_owned()));
@@ -630,6 +749,12 @@ impl CallManager {
             }
         }
         out
+    }
+
+    /// No request budget to verify `call_id`: forget it without dismissing
+    /// (the caller's next `call` tries again).
+    pub fn drop_unverified(&mut self, call_id: &str) {
+        self.incoming.retain(|c| c.verified || c.call_id != call_id);
     }
 
     /// The user accepted incoming `call_id`.
@@ -1002,11 +1127,12 @@ mod tests {
         let out = m.on_verified("c1", Ok(&info("c1", "bob")), t0);
         assert!(out.is_empty());
         assert!(!m.is_active());
-        // Another call from the same sender within the cooldown is dropped.
-        assert!(
-            m.on_signal(sig(VideoConfAction::Call, "c2", "eve"), true, t0)
-                .is_empty()
+        // A failed verification does not block the claimed sender.
+        assert_eq!(
+            m.on_signal(sig(VideoConfAction::Call, "c2", "eve"), true, t0),
+            vec![CallCommand::FetchInfo("c2".into())]
         );
+        m.on_verified("c2", Err(()), t0);
         let t1 = t0 + SENDER_COOLDOWN;
         let mut ended = info("c4", "eve");
         ended.ended_at = rocketchat::RcDate::from_millis(1);
@@ -1027,6 +1153,66 @@ mod tests {
         assert!(has(&out, &CallCommand::StopRinger));
     }
 
+    /// An unverified spoof claiming the real caller neither evicts the
+    /// ringing call nor blocks its refreshes; unverified entries are capped.
+    #[test]
+    fn spoof_cannot_evict_or_suppress_a_verified_call() {
+        let t0 = Instant::now();
+        let mut m = CallManager::new("me");
+        m.on_signal(sig(VideoConfAction::Call, "real", "bob"), true, t0);
+        m.on_verified("real", Ok(&info("real", "bob")), t0);
+        let out = m.on_signal(sig(VideoConfAction::Call, "fake", "bob"), true, t0);
+        assert!(out.is_empty(), "within the verified caller's cooldown");
+        let t1 = t0 + SENDER_COOLDOWN;
+        let out = m.on_signal(sig(VideoConfAction::Call, "fake2", "bob"), true, t1);
+        assert_eq!(out, vec![CallCommand::FetchInfo("fake2".into())]);
+        assert_eq!(m.incoming().count(), 1, "real call still shown");
+        let out = m.on_verified("fake2", Err(()), t1);
+        assert!(!has(&out, &CallCommand::HideIncoming("real".into())));
+        // The real caller's refresh still works.
+        m.on_signal(sig(VideoConfAction::Call, "real", "bob"), true, t1);
+        assert!(m.tick(t1 + Duration::from_secs(9)).is_empty());
+        assert_eq!(m.incoming().next().unwrap().call_id, "real");
+        // A verified newer call from bob replaces the older one.
+        let t2 = t1 + SENDER_COOLDOWN;
+        m.on_signal(sig(VideoConfAction::Call, "new", "bob"), true, t2);
+        let out = m.on_verified("new", Ok(&info("new", "bob")), t2);
+        assert!(has(&out, &CallCommand::HideIncoming("real".into())));
+        assert_eq!(m.incoming().count(), 1);
+
+        let mut m = CallManager::new("me");
+        for i in 0..10 {
+            m.on_signal(
+                sig(VideoConfAction::Call, &format!("s{i}"), &format!("u{i}")),
+                true,
+                t0,
+            );
+        }
+        let pending = (0..10)
+            .filter(|i| m.incoming_call(&format!("s{i}")).is_some())
+            .count();
+        assert_eq!(pending, MAX_UNVERIFIED);
+        m.drop_unverified("s0");
+        assert!(m.incoming_call("s0").is_none());
+        // Not dismissed: a re-send is verified again.
+        assert_eq!(
+            m.on_signal(sig(VideoConfAction::Call, "s0", "u0"), true, t0),
+            vec![CallCommand::FetchInfo("s0".into())]
+        );
+    }
+
+    #[test]
+    fn dismissed_list_is_bounded() {
+        let t0 = Instant::now();
+        let mut m = CallManager::new("me");
+        for i in 0..(MAX_DISMISSED + 50) {
+            let id = format!("c{i}");
+            m.on_signal(sig(VideoConfAction::Call, &id, &format!("u{i}")), true, t0);
+            m.on_verified(&id, Err(()), t0);
+        }
+        assert!(m.dismissed.len() <= MAX_DISMISSED);
+    }
+
     #[test]
     fn dismissal_expires() {
         let t0 = Instant::now();
@@ -1042,31 +1228,70 @@ mod tests {
 
     #[test]
     fn info_store() {
+        let now = Instant::now();
         let mut s = VideoConfStore::default();
         s.want("c1");
         s.want("c2");
-        assert_eq!(s.take_wanted(), vec!["c1", "c2"]);
+        assert_eq!(s.take_wanted(now), vec!["c1", "c2"]);
         s.want("c1");
-        assert!(s.take_wanted().is_empty(), "in flight");
-        s.finish("c1", Ok(info("c1", "bob")));
+        assert!(s.take_wanted(now).is_empty(), "in flight");
+        s.finish("c1", Ok(info("c1", "bob")), now);
         let v1 = s.version("c1");
-        s.finish("c2", Ok(info("other", "bob")));
+        s.finish("c2", Ok(info("other", "bob")), now);
         assert_eq!(s.state("c2"), Some(&InfoState::Failed), "wrong id refused");
+        // Invalidation refetches without the view asking again.
         s.invalidate("c1");
-        s.want("c1");
-        assert_eq!(s.take_wanted(), vec!["c1"]);
-        s.finish("c1", Err("x".into()));
+        assert_eq!(s.take_wanted(now), vec!["c1"]);
+        s.finish("c1", Err("x".into()), now);
         assert!(s.info("c1").is_some(), "failure keeps data");
         assert!(s.version("c1") > v1);
         let mut ended = info("c3", "bob");
         ended.ended_at = rocketchat::RcDate::from_millis(5);
-        s.finish("c3", Ok(ended));
+        s.want("c3");
+        s.take_wanted(now);
+        s.finish("c3", Ok(ended), now);
         s.invalidate("c3");
         s.want("c3");
-        assert!(s.take_wanted().is_empty(), "ended calls are final");
-        let now = Instant::now();
+        assert!(
+            !s.take_wanted(now + INFO_WINDOW).contains(&"c3".to_owned()),
+            "ended calls are final"
+        );
         s.set_capabilities(now, Err("no-videoconf-provider-app".into()));
         assert!(s.capabilities(now).is_some());
         assert!(s.capabilities(now + CAPABILITIES_TTL).is_none());
+    }
+
+    #[test]
+    fn info_fetches_respect_the_rate_limit_and_retry() {
+        let t0 = Instant::now();
+        let mut s = VideoConfStore::default();
+        for i in 0..20 {
+            s.want(&format!("c{i:02}"));
+        }
+        let first = s.take_wanted(t0);
+        assert_eq!(first.len(), INFO_RATE);
+        assert!(s.take_wanted(t0).is_empty(), "budget used up");
+        assert_eq!(s.next_wakeup(t0), Some(t0 + INFO_WINDOW));
+        let rest = s.take_wanted(t0 + INFO_WINDOW);
+        assert_eq!(rest.len(), 20 - INFO_RATE);
+        assert_eq!(s.next_wakeup(t0 + INFO_WINDOW), None);
+        // A failure (e.g. 429) is retried after a back-off, a few times.
+        let t1 = t0 + INFO_WINDOW * 2;
+        s.finish("c00", Err("429".into()), t1);
+        assert_eq!(s.state("c00"), Some(&InfoState::Failed));
+        assert!(s.take_wanted(t1).is_empty());
+        assert_eq!(s.next_wakeup(t1), Some(t1 + INFO_RETRY[0]));
+        let mut t = t1;
+        for d in INFO_RETRY {
+            t += d;
+            assert_eq!(s.take_wanted(t), vec!["c00"]);
+            s.finish("c00", Err("x".into()), t);
+        }
+        assert!(s.take_wanted(t + Duration::from_secs(3600)).is_empty());
+        // A room event brings it back.
+        s.invalidate("c00");
+        assert_eq!(s.take_wanted(t), vec!["c00"]);
+        s.finish("c00", Ok(info("c00", "bob")), t);
+        assert!(s.info("c00").is_some());
     }
 }

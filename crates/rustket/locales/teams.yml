@@ -110,6 +110,9 @@ teams.locked_cannot_delete:
 teams.no_child_rooms:
   en: "The team has no other rooms."
   ru: "У команды нет других комнат."
+teams.remove_member_rooms_hidden:
+  en: "You cannot see which team rooms this user is in. They will be removed from the team only."
+  ru: "Вы не видите, в каких комнатах команды состоит пользователь. Он будет удалён только из команды."
 teams.select_all:
   en: "Select all"
   ru: "Выбрать все"
@@ -176,9 +179,15 @@ teams.filter_autojoin:
 teams.no_rooms:
   en: "No rooms in this team"
   ru: "В команде нет комнат"
-teams.members_count:
+teams.members_count_one:
+  en: "%{count} member"
+  ru: "%{count} участник"
+teams.members_count_few:
   en: "%{count} members"
-  ru: "Участников: %{count}"
+  ru: "%{count} участника"
+teams.members_count_many:
+  en: "%{count} members"
+  ru: "%{count} участников"
 teams.not_joined:
   en: "not joined"
   ru: "вы не участник"
@@ -260,9 +269,15 @@ teams.search_members:
 teams.no_members:
   en: "No members found"
   ru: "Участники не найдены"
-teams.members_total:
+teams.members_total_one:
+  en: "%{count} member"
+  ru: "%{count} участник"
+teams.members_total_few:
   en: "%{count} members"
-  ru: "Участников: %{count}"
+  ru: "%{count} участника"
+teams.members_total_many:
+  en: "%{count} members"
+  ru: "%{count} участников"
 teams.added_by:
   en: "added by @%{user}"
   ru: "добавил(а) @%{user}"
@@ -302,9 +317,15 @@ teams.discussion:
 teams.discussion_empty:
   en: "No messages yet"
   ru: "Сообщений пока нет"
-teams.messages_count:
+teams.messages_count_one:
+  en: "%{count} message"
+  ru: "%{count} сообщение"
+teams.messages_count_few:
   en: "%{count} messages"
-  ru: "Сообщений: %{count}"
+  ru: "%{count} сообщения"
+teams.messages_count_many:
+  en: "%{count} messages"
+  ru: "%{count} сообщений"
 teams.discussion_deleted:
   en: "Discussion deleted"
   ru: "Обсуждение удалено"

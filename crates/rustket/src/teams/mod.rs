@@ -117,6 +117,40 @@ pub fn back_link<'a, M: Clone + 'a>(team: String, on: M) -> Element<'a, M> {
     .into()
 }
 
+/// `{key}_one|few|many` with `count` in the current locale.
+pub fn count_text(key: &str, n: u64) -> String {
+    let form = crate::room::render::plural(n);
+    t!(format!("{key}_{form}"), count = n).into_owned()
+}
+
+/// [`back_link`] taking only its own width, followed by the room topic.
+pub fn back_link_with<'a, M: Clone + 'a>(
+    team: String,
+    on: M,
+    topic: Element<'a, M>,
+) -> Element<'a, M> {
+    use iced::widget::{mouse_area, row, text};
+    use rustket_ui::icon::{self, Icon};
+    use rustket_ui::theme::{TEXT_CAPTION, tokens};
+    let label = rustket_ui::widget::ellipsis(t!("teams.back_to_team", team = team).into_owned())
+        .width(iced::Length::Shrink)
+        .size(TEXT_CAPTION)
+        .style(|theme: &iced::Theme| Some(tokens(theme).link));
+    row![
+        icon::sized(Icon::ArrowLeft, 12.0).style(rustket_ui::style::text_secondary),
+        mouse_area(label)
+            .interaction(iced::mouse::Interaction::Pointer)
+            .on_press(on),
+        text("·")
+            .size(TEXT_CAPTION)
+            .style(rustket_ui::style::text_secondary),
+        topic,
+    ]
+    .spacing(rustket_ui::theme::SPACE_1)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
 /// Sidebar second line of a team child room without a last message: "in
 /// {team}" (the main room's name).
 pub fn sidebar_caption(ws: &Workspace, rid: &str) -> Option<String> {
