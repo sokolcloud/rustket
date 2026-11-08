@@ -128,6 +128,9 @@ pub struct Timeline {
     next_request: u64,
     /// Number of [`Self::reset`] calls.
     resets: u64,
+    /// Ids of messages shown from the offline cache ([`Self::seed_cached`]);
+    /// dropped when the first page from the server arrives.
+    seeded: HashSet<String>,
 }
 
 impl Timeline {
@@ -156,6 +159,7 @@ impl Timeline {
             id: NEXT_TIMELINE_ID.fetch_add(1, Ordering::Relaxed),
             next_request: 0,
             resets: 0,
+            seeded: HashSet::new(),
         }
     }
 
@@ -459,6 +463,66 @@ impl Timeline {
         };
         self.last_updated_at = None;
         self.resets += 1;
+        self.seeded.clear();
+        self.bump();
+    }
+
+    // --- offline cache ----------------------------------------------------------
+
+    /// Shows messages from the offline cache before the first page arrived
+    /// (no-op once a page was loaded). They are not trusted: the first page
+    /// from the server replaces all of them, so a message deleted or edited
+    /// meanwhile never stays. The `chat.syncMessages` watermark is left
+    /// alone. Returns whether anything was added.
+    pub fn seed_cached(&mut self, parent: Option<Message>, messages: Vec<Message>) -> bool {
+        if self.pagination.loaded {
+            return false;
+        }
+        let watermark = self.last_updated_at;
+        let mut changed = false;
+        if let (TimelineKind::Thread { tmid }, Some(p)) = (&self.kind, parent)
+            && self.parent.is_none()
+            && &p.id == tmid
+        {
+            self.parent = Some(p);
+            changed = true;
+        }
+        for m in messages {
+            if self.contains(&m.id) || !self.accepts(&m) || m.hidden == Some(true) {
+                continue;
+            }
+            let id = m.id.clone();
+            if self.put(m, DeliveryState::Sent) {
+                self.seeded.insert(id);
+                changed = true;
+            }
+        }
+        self.last_updated_at = watermark;
+        if changed {
+            self.bump();
+        }
+        changed
+    }
+
+    /// Whether messages from the offline cache are shown.
+    pub fn has_seeded(&self) -> bool {
+        !self.seeded.is_empty()
+    }
+
+    /// Drops the messages shown from the offline cache (the first page from
+    /// the server arrived). Messages delivered in realtime meanwhile stay.
+    fn drop_seeded(&mut self) {
+        if self.seeded.is_empty() {
+            return;
+        }
+        let seeded = std::mem::take(&mut self.seeded);
+        self.items
+            .retain(|(_, id), item| item.is_pending() || !seeded.contains(id));
+        self.index = self
+            .items
+            .keys()
+            .map(|(ts, id)| (id.clone(), *ts))
+            .collect();
         self.bump();
     }
 
@@ -575,6 +639,9 @@ impl Timeline {
             Ok(mut messages) => {
                 self.pagination.error = None;
                 let first = !self.pagination.loaded;
+                if first {
+                    self.drop_seeded();
+                }
                 let floor = if cursor.is_done() {
                     i64::MIN
                 } else {
@@ -678,6 +745,9 @@ impl Timeline {
             Ok(mut page) => {
                 self.pagination.error = None;
                 let first = !self.pagination.loaded;
+                if first {
+                    self.drop_seeded();
+                }
                 let has_more = page.has_more() && page.raw_len > 0;
                 let floor = if has_more {
                     let oldest = page.items.iter().map(ts_ms).min();

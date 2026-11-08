@@ -1509,6 +1509,42 @@ commands, decrypt-on-download for attachments with hash verification. Strings in
   between Rustket and the 8.9 web client in both directions, including a room key reset and a
   passphrase change on each side.
 
+### 15.1 Offline cache (phase 13)
+
+The SQLite offline cache (`rustket_core::cache`, `crates/rustket/src/cache`) stores ciphertext
+only. Every message passes `cache::sanitize::message` on its way into the database (the storage
+layer, so no caller can bypass it):
+
+- a message the app processed (any `rustket:` marker, i.e. decrypted in place) keeps `content`
+  (the envelope) and loses `msg`, `md`, `attachments`, `file`, `files`, `urls`, `blocks`,
+  `mentions`, `channels` and `e2e`; without an envelope it is not stored at all;
+- a processed `message_pinned_e2e` (pinned text decrypted into an attachment) is not stored;
+- an encrypted message the app has not processed is the server's form and is stored as is
+  (minus `e2e`); a room's `lastMessage` follows the same rules;
+- the current user is stored without `services` and `e2e`, subscriptions without `E2EKey`,
+  `E2ESuggestedKey`, `oldRoomKeys`, `suggestedOldRoomKeys` (the manager only works with the
+  server's copies, delivered by the initial load before it starts).
+
+Cached messages are seeded into timelines and decrypted on display as usual (`e2e::shown`); while
+the manager is not running (offline start) they show the locked placeholder.
+
+**Outbox decision:** pending messages of encrypted rooms are **not persisted**. Only a pending
+message of a room whose room object is known and unencrypted, and whose subscription holds no
+room key, is written (`cache::persistable`); one already on disk stays while its room is not
+known yet (cleared cache, initial load not in) and is dropped once the room turns out encrypted.
+The storage layer also skips encrypted shapes and messages of a room stored as encrypted, and
+runs with `secure_delete` so removed rows do not linger in free pages. A pending E2E message holds
+the plaintext until `outgoing::prepare_send` encrypts it at send time, and encrypting it at write
+time would bind it to a room key that may be rotated before it is sent. Within the running
+process such a message is still queued while offline; once the server is back it waits until
+`outgoing::mode` is `Encrypt` (manager ready, room key present) and is never sent as plaintext
+automatically, even where unencrypted messages are allowed (the user can retry by hand).
+Quitting drops it.
+Tests: `rustket-core cache::tests::e2e_plaintext_never_reaches_the_file` scans the database and
+WAL files (before and after a checkpoint) for the plaintext, the room key and the private key;
+`rustket tests/cache_flows.rs` checks that a realistic pending message (plaintext, no `t`) of a
+room known only by a subscription with a room key never reaches the files.
+
 ---
 
 ## 16. Open questions

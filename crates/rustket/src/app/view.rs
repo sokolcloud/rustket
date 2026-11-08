@@ -203,7 +203,9 @@ impl App {
             active_room: s.active_room.as_deref(),
             now,
         };
-        let sidebar_view: Element<'a, Message> = if s.workspace.last_sync().is_none() && s.syncing {
+        // The cached workspace is shown instead of the placeholder.
+        let loading = s.workspace.last_sync().is_none() && s.syncing && !s.workspace.from_cache();
+        let sidebar_view: Element<'a, Message> = if loading {
             container(loading_placeholder(Some(
                 t!("app.loading_rooms").into_owned(),
             )))
@@ -250,7 +252,10 @@ impl App {
         // and go in one slot; the room keeps its widget state (composer
         // focus, timeline scroll) meanwhile. The UIKit busy pill floats.
         let mut strips: Vec<Element<'_, Message>> = Vec::new();
-        if let Some(strip) = self.connection_strip(s) {
+        let retry = Message::RetryConnection(s.id.clone());
+        if let Some(strip) = crate::cache::view::strip(s, self.config.ui.clock_24h, retry)
+            .or_else(|| self.connection_strip(s))
+        {
             strips.push(strip);
         }
         if let Some(b) = crate::e2e::view::banner(s) {

@@ -115,6 +115,7 @@ fn main() -> iced::Result {
         open_urls: true,
         desktop: true,
         window_decorated: Some(decorations),
+        offline_cache: rustket::cache::default_base(),
         ..Flags::default()
     };
     let result = iced::application(move || App::new(flags.clone()), App::update, App::view)

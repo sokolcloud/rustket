@@ -8,6 +8,7 @@
 rust_i18n::i18n!("locales", fallback = "en");
 
 pub mod app;
+pub mod cache;
 pub mod component;
 pub mod config_writer;
 pub mod deeplink;

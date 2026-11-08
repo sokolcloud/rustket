@@ -173,7 +173,7 @@ struct OutboxEntry {
 static OUTBOX: LazyLock<Mutex<HashMap<(String, String), OutboxEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn outbox_start(server: &ServerId, rid: &str, id: &str) {
+pub(crate) fn outbox_start(server: &ServerId, rid: &str, id: &str) {
     if let Ok(mut map) = OUTBOX.lock() {
         map.insert(
             (server.as_str().to_owned(), id.to_owned()),
@@ -193,7 +193,7 @@ fn outbox_finish(server: &str, id: &str, r: &Res<Box<rocketchat::models::Message
     }
 }
 
-fn outbox_forget(server: &ServerId, id: &str) {
+pub(crate) fn outbox_forget(server: &ServerId, id: &str) {
     if let Ok(mut map) = OUTBOX.lock() {
         map.remove(&(server.as_str().to_owned(), id.to_owned()));
     }

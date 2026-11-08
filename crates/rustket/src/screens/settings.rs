@@ -56,6 +56,7 @@ pub enum Message {
     ClearImageCache,
     /// Disk cache cap in MiB (`UiPrefs::image_cache_mb`).
     SetImageCacheMb(u32),
+    ClearOfflineCache,
     OpenUrl(String),
     Close,
 }
@@ -74,6 +75,9 @@ pub struct SettingsView<'a> {
     pub secrets_in_memory: bool,
     /// Whether a tray exists and the window can be hidden to it.
     pub tray: TraySupport,
+    /// Offline cache (`crate::cache`): `Some((bytes on disk, clearing))`
+    /// when it is enabled.
+    pub offline_cache: Option<(Option<u64>, bool)>,
 }
 
 #[derive(Debug)]
@@ -201,6 +205,8 @@ impl Settings {
                 ))
             }
             Message::SetImageCacheMb(mb) => Self::pref(ctx, |p| p.image_cache_mb = mb),
+            // The result is toasted by `crate::cache` once it is done.
+            Message::ClearOfflineCache => Action::effect(Effect::ClearOfflineCache),
             Message::OpenUrl(url) => Action::effect(Effect::OpenUrl(url)),
             Message::Close => Action::effect(Effect::Close),
         }
@@ -474,9 +480,12 @@ impl Settings {
             ],
         ));
 
+        let with_cache_row = |rows| {
+            crate::cache::view::with_storage_row(v.offline_cache, Message::ClearOfflineCache, rows)
+        };
         body = body.push(section(
             t!("settings.storage").into_owned(),
-            vec![
+            with_cache_row(vec![
                 row![
                     column![
                         text(t!("settings.image_cache")).size(TEXT_BODY),
@@ -500,7 +509,7 @@ impl Settings {
                         Message::SetImageCacheMb,
                     ),
                 ),
-            ],
+            ]),
         ));
 
         body = body.push(section(

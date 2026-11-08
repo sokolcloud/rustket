@@ -94,7 +94,7 @@ impl App {
                 let screen = settings::Settings::with_autostart_home(home);
                 let load = screen.load().map(Message::Settings);
                 self.screen = Screen::Settings(Box::new(screen));
-                load
+                Task::batch([load, crate::cache::size_task(self)])
             }
             (Nav::Workspace, _) => {
                 self.screen = if self.servers.is_empty() {
@@ -204,6 +204,7 @@ impl App {
                 }
                 Effect::RegisterUrlHandler => self.open_register_handler(),
                 Effect::ClearImageCache => self.clear_image_cache(),
+                Effect::ClearOfflineCache => crate::cache::clear_all(self),
                 Effect::TestNotification => self
                     .desktop
                     .test_notification(&self.config.ui)
@@ -458,6 +459,7 @@ impl App {
             }
             Go::Quit => {
                 self.flush_config();
+                crate::cache::on_quit(self);
                 iced::exit()
             }
         }
@@ -716,6 +718,10 @@ impl App {
             secret_backend: self.secret_backend,
             secrets_in_memory: self.secrets_mode == SecretsMode::System,
             tray: self.desktop.tray_support(),
+            offline_cache: self
+                .offline
+                .enabled()
+                .then_some((self.offline.size, self.offline.clearing)),
         }
     }
 }

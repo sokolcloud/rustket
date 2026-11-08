@@ -464,6 +464,9 @@ async fn main() {
                 return;
             }
             let fixture = setup(&server, ledger).await;
+            if cache_shots::cache_shots(&server, &out, &fixture.user).await {
+                return;
+            }
             run(server, out, fixture).await;
         })
     };
@@ -923,6 +926,8 @@ mod shell;
 
 #[path = "snapshot/admin.rs"]
 mod admin_shots;
+#[path = "snapshot/cache.rs"]
+mod cache_shots;
 #[path = "snapshot/omni.rs"]
 mod omni;
 #[path = "snapshot/teams.rs"]

@@ -48,6 +48,11 @@ impl Settings {
         self.map.get(id)
     }
 
+    /// Every setting as `(id, value)`, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> + '_ {
+        self.map.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     pub fn bool(&self, id: &str) -> Option<bool> {
         match self.map.get(id)? {
             Value::Bool(b) => Some(*b),

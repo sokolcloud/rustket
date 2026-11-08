@@ -249,6 +249,13 @@ pub struct Workspace {
     videoconf: crate::videoconf::VideoConfStore,
     /// End-to-end encryption of this account (set by the app while logged in).
     e2e: Option<crate::e2e::E2eManager>,
+    /// Shows the offline cache ([`Self::apply_cached`]) until the first
+    /// initial load from the server.
+    from_cache: bool,
+    /// Rooms whose room/subscription came from the offline cache and were
+    /// not touched by the server since: the initial load replaces them even
+    /// on an `_updatedAt` tie.
+    cached_rooms: HashSet<String>,
 }
 
 /// When a realtime event touched something.
@@ -616,9 +623,126 @@ impl Workspace {
         if next_since.is_some() {
             self.last_sync = next_since;
         }
+        self.from_cache = false;
+        self.cached_rooms.clear();
         self.realtime.snapshot_applied();
         self.changes.rooms.extend(self.rooms.keys().cloned());
         self.mark(Dirty::ALL);
+    }
+
+    // --- offline cache ----------------------------------------------------------
+
+    /// Shows the offline cache of this account until the server's initial
+    /// load arrives ([`Self::from_cache`]). Only applies to a workspace that
+    /// holds no server data yet (no initial load, no rooms); values the
+    /// session already delivered (`me`, settings) are kept. Presence is not
+    /// cached. The initial load then replaces every cached room and
+    /// subscription (also on an `_updatedAt` tie) and drops those the server
+    /// no longer lists. Returns whether the cache was applied.
+    pub fn apply_cached(&mut self, state: crate::cache::CachedState) -> bool {
+        if self.last_sync.is_some() || !self.rooms.is_empty() {
+            return false;
+        }
+        let crate::cache::CachedState {
+            me,
+            server_info,
+            settings,
+            permissions,
+            roles,
+            subscriptions,
+            rooms,
+            custom_emoji,
+            custom_statuses,
+            saved_at: _,
+        } = state;
+        if self.me.is_none() {
+            // Not connected: the own status is not known.
+            self.me = me.map(|mut m| {
+                m.status = Some(UserStatus::Offline);
+                m
+            });
+        }
+        if self.server_info.is_none() {
+            self.server_info = server_info;
+        }
+        if self.settings.is_empty() {
+            self.settings = Settings::from_list(settings);
+        }
+        if self.permissions.is_empty() {
+            self.permissions = permissions.into_iter().map(|p| (p.id, p.roles)).collect();
+        }
+        if self.roles.is_empty() {
+            self.roles = roles.into_iter().map(|r| (r.id.clone(), r)).collect();
+        }
+        if self.emoji.is_empty() {
+            self.emoji.set_all(custom_emoji);
+        }
+        if self.custom_statuses.is_empty() {
+            self.custom_statuses = custom_statuses
+                .into_iter()
+                .map(|s| (s.id.clone(), s))
+                .collect();
+        }
+        for s in subscriptions {
+            let rid = s.rid.clone();
+            self.rooms.entry(rid.clone()).or_default().sub = Some(s);
+            self.cached_rooms.insert(rid);
+        }
+        for r in rooms {
+            let rid = r.id.clone();
+            self.rooms.entry(rid.clone()).or_default().room = Some(r);
+            self.cached_rooms.insert(rid);
+        }
+        self.from_cache = true;
+        self.changes.rooms.extend(self.rooms.keys().cloned());
+        self.mark(Dirty::ALL);
+        true
+    }
+
+    /// The workspace shows the offline cache: the server's initial load has
+    /// not arrived yet. Automatic read marks wait until it has.
+    pub fn from_cache(&self) -> bool {
+        self.from_cache
+    }
+
+    /// Shows cached messages in the open room (`tmid: None`) or thread
+    /// timeline before its first page arrived (see [`Timeline::seed_cached`]).
+    /// Returns whether anything was added.
+    pub fn seed_cached_messages(
+        &mut self,
+        rid: &str,
+        tmid: Option<&str>,
+        parent: Option<Message>,
+        messages: Vec<Message>,
+    ) -> bool {
+        match tmid {
+            None => {
+                let changed = self
+                    .timelines
+                    .get_mut(rid)
+                    .is_some_and(|t| t.seed_cached(None, messages));
+                if changed {
+                    self.mark_timeline(rid);
+                }
+                changed
+            }
+            Some(tmid) => {
+                let changed = self
+                    .threads
+                    .get_mut(tmid)
+                    .filter(|t| t.rid() == rid)
+                    .is_some_and(|t| t.seed_cached(parent, messages));
+                if changed {
+                    self.mark_thread(tmid);
+                }
+                changed
+            }
+        }
+    }
+
+    /// Every local message not yet confirmed by the server (all rooms).
+    pub fn outbox_items(&self) -> impl Iterator<Item = &TimelineItem> + '_ {
+        self.outbox.values()
     }
 
     /// Merges a [`DeltaData`] (after a reconnect), with the same guards as
@@ -720,9 +844,11 @@ impl Workspace {
             return;
         }
         let rid = sub.rid.clone();
+        let cached = self.cached_rooms.contains(&rid);
         let entry = self.rooms.entry(rid.clone()).or_default();
         if let Some(old) = entry.sub.as_ref()
             && old.updated_at.is_some()
+            && !cached
             && !is_newer(sub.updated_at, old.updated_at)
         {
             return;
@@ -743,9 +869,11 @@ impl Workspace {
             return;
         }
         let rid = room.id.clone();
+        let cached = self.cached_rooms.contains(&rid);
         let entry = self.rooms.entry(rid.clone()).or_default();
         if let Some(old) = entry.room.as_ref()
             && old.updated_at.is_some()
+            && !cached
             && !is_newer(room.updated_at, old.updated_at)
         {
             return;
@@ -1101,6 +1229,7 @@ impl Workspace {
         }
         self.realtime.removed.remove(&sub.rid);
         self.realtime.rooms.insert(sub.rid.clone(), m);
+        self.cached_rooms.remove(&sub.rid);
         let rid = sub.rid.clone();
         let entry = self.rooms.entry(rid.clone()).or_default();
         if let Some(old) = entry.sub.as_ref()
@@ -1150,6 +1279,7 @@ impl Workspace {
         }
         self.realtime.removed.remove(&room.id);
         self.realtime.rooms.insert(room.id.clone(), m);
+        self.cached_rooms.remove(&room.id);
         let rid = room.id.clone();
         let entry = self.rooms.entry(rid.clone()).or_default();
         if let Some(old) = entry.room.as_ref()
