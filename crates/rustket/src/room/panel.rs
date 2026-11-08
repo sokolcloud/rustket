@@ -54,6 +54,8 @@ pub enum Kind {
     UserInfo(String),
     Invite,
     TeamChannels,
+    /// Omnichannel panels (`crate::omnichannel::panel`).
+    Omnichannel(crate::omnichannel::panel::PanelKind),
 }
 
 impl Kind {
@@ -74,6 +76,7 @@ impl Kind {
             Kind::UserInfo(_) => "room_panel.user_info",
             Kind::Invite => "room_panel.invite",
             Kind::TeamChannels => "room_panel.team_channels",
+            Kind::Omnichannel(k) => k.i18n_key(),
         }
     }
 
@@ -85,7 +88,7 @@ impl Kind {
                 | (Kind::Info, Kind::RoomSettings | Kind::TeamChannels)
                 | (Kind::Threads, Kind::Thread(_))
                 | (Kind::Search, Kind::UserInfo(_))
-        )
+        ) || matches!((from, self), (Kind::Omnichannel(f), Kind::Omnichannel(k)) if k.back_target(f))
     }
 }
 
@@ -113,6 +116,7 @@ pub enum BodyMsg {
     Settings(settings::Msg),
     Invite(invite::Msg),
     Thread(thread::Msg),
+    Omni(crate::omnichannel::panel::Msg),
 }
 
 /// State of the open panel.
@@ -127,6 +131,7 @@ enum Body {
     Settings(settings::Settings),
     Invite(invite::Invite),
     Thread(Box<thread::Thread>),
+    Omni(Box<crate::omnichannel::panel::OmniPanel>),
 }
 
 impl Body {
@@ -153,6 +158,9 @@ impl Body {
             Kind::RoomSettings => Body::Settings(settings::Settings::default()),
             Kind::Invite => Body::Invite(invite::Invite::default()),
             Kind::Thread(tmid) => Body::Thread(Box::new(thread::Thread::new(rid, tmid))),
+            Kind::Omnichannel(k) => {
+                Body::Omni(Box::new(crate::omnichannel::panel::OmniPanel::new(k)))
+            }
         }
     }
 }
@@ -461,6 +469,7 @@ impl Panel {
             Some(Body::Settings(b)) => wrap(g, b.activate(ctx), BodyMsg::Settings),
             Some(Body::Invite(b)) => wrap(g, b.activate(ctx), BodyMsg::Invite),
             Some(Body::Thread(b)) => wrap(g, b.activate(ctx), BodyMsg::Thread),
+            Some(Body::Omni(b)) => wrap(g, b.activate(ctx), BodyMsg::Omni),
             None => Action::none(),
         }
     }
@@ -494,6 +503,7 @@ impl Panel {
             (Some(Body::Thread(b)), BodyMsg::Thread(m)) => {
                 wrap(g, b.update(m, ctx), BodyMsg::Thread)
             }
+            (Some(Body::Omni(b)), BodyMsg::Omni(m)) => wrap(g, b.update(m, ctx), BodyMsg::Omni),
             _ => Action::none(),
         }
     }
@@ -516,6 +526,7 @@ impl Panel {
             Some(Body::Rooms(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Rooms),
             Some(Body::Settings(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Settings),
             Some(Body::Thread(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Thread),
+            Some(Body::Omni(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Omni),
             _ => Action::none(),
         }
     }
@@ -570,6 +581,7 @@ impl Panel {
             Some(Body::Thread(b)) => b
                 .view(ctx)
                 .map(move |m| Message::Body(g, BodyMsg::Thread(m))),
+            Some(Body::Omni(b)) => b.view(ctx).map(move |m| Message::Body(g, BodyMsg::Omni(m))),
             None => common::loading(),
         };
         let mut head = row![].spacing(SPACE_2).align_y(Alignment::Center);

@@ -179,6 +179,9 @@ pub enum Effect {
     StartDiscussion {
         pmid: Option<String>,
     },
+    /// A request to the omnichannel part of the room (quick actions, panels);
+    /// routed to `OmniRoom::request`.
+    Omni(crate::omnichannel::room::Request),
 }
 
 /// Requests other room components make to the composer.
@@ -273,6 +276,8 @@ pub enum Message {
     MarkedRead(Res<()>),
     /// The message of a permalink was fetched.
     Focused(Res<Box<rocketchat::models::Message>>),
+    /// Omnichannel callouts and dialogs (`crate::omnichannel::room`).
+    Omni(crate::omnichannel::room::Msg),
 }
 
 /// Everything shown for one open room.
@@ -283,6 +288,8 @@ pub struct RoomView {
     pub timeline: timeline::Timeline,
     pub composer: composer::Composer,
     pub panel: panel::Panel,
+    /// Omnichannel callouts, quick actions and dialogs (inert for other rooms).
+    pub omni: crate::omnichannel::room::OmniRoom,
     marking_read: bool,
     /// Newest message from others (`ts` ms) the user has seen as read (last
     /// read mark, or history loaded after the read mark of `open`): the
@@ -307,6 +314,7 @@ impl RoomView {
             timeline: timeline::Timeline::new(&rid),
             composer: composer::Composer::new(&rid),
             panel: panel::Panel::new(&rid),
+            omni: crate::omnichannel::room::OmniRoom::new(&rid),
             marking_read: false,
             marked_upto: None,
             watching: false,
@@ -530,6 +538,7 @@ impl RoomView {
             Message::Timeline(m) => self.timeline.update(m, ctx).map(Message::Timeline),
             Message::Composer(m) => self.composer.update(m, ctx).map(Message::Composer),
             Message::Panel(m) => self.panel.update(m, ctx).map(Message::Panel),
+            Message::Omni(m) => self.omni.update(m, ctx).map(Message::Omni),
             Message::Watched(Ok(guard)) => {
                 self.watching = false;
                 self.watch = Some(guard);
@@ -630,6 +639,12 @@ impl RoomView {
                             .filter(|e| !matches!(e, Effect::Compose(_))),
                     );
                 }
+                Effect::Omni(r) => {
+                    let a = self.omni.request(r, ctx).map(Message::Omni);
+                    let a = self.handle_effects(a, ctx);
+                    tasks.push(a.task);
+                    up.extend(a.effects);
+                }
                 Effect::ClosePanel => {
                     self.panel.close();
                     tasks.push(
@@ -677,6 +692,7 @@ impl RoomView {
                 .on_changes(changes, ctx)
                 .map(Message::Composer),
             self.panel.on_changes(changes, ctx).map(Message::Panel),
+            self.omni.on_changes(changes, ctx).map(Message::Omni),
         ];
         let mut merged = Action::none();
         let mut tasks = vec![history];
@@ -710,7 +726,8 @@ impl RoomView {
         let main = column![
             self.header.view(ctx).map(Message::Header),
             container(timeline).width(Length::Fill).height(Length::Fill),
-            self.composer.view(ctx).map(Message::Composer),
+            self.omni
+                .wrap_composer(self.composer.view(ctx).map(Message::Composer), ctx),
         ]
         .width(Length::Fill)
         .height(Length::Fill);
@@ -761,6 +778,11 @@ impl RoomView {
                 self.panel
                     .overlay(ctx)
                     .map(|(k, e, d)| (k + 10, e.map(Message::Panel), Message::Panel(d)))
+            })
+            .or_else(|| {
+                self.omni
+                    .overlay(ctx)
+                    .map(|(k, e, d)| (k, e.map(Message::Omni), Message::Omni(d)))
             });
         let (overlay, dismiss) = match overlay {
             Some((k, e, d)) => (Some((k, e)), Some(d)),

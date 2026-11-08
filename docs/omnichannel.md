@@ -1418,6 +1418,33 @@ Deviations from §22.1/§22.2, forced by keeping `crates/rustket` source-compati
 - Timeline: renderers for §18 types, hide `command`.
 - Desktop: `type == "l"` notifications, rid-less queue notifications, new-room sound + loop.
 
+### 22.3a As implemented (UI round, 2026-11-08)
+
+- `src/omnichannel/`: `Omni` (per server, `ServerState::omni`) owns the `OmnichannelState`;
+  `glue.rs` hooks into `App::update` (after every update: new-session loads, recompute when
+  the `ME | SETTINGS | PERMISSIONS | ROLES` revision changed, queue / canned stream watches;
+  before each session event: `apply_event`, new-room sound, closing the view of a removed `t:l`
+  subscription, `stream-room-data` rooms applied). Room components and the sidebar only get the
+  workspace in their contexts, so the state is published as a read-only snapshot per server
+  (`omnichannel::shared`), read by views.
+- Sidebar: queue rows (inquiries) and the split "Chats in progress" / "On hold" groups are
+  drawn first; clicking a queued chat fetches it (`rooms.info`, preview) and opens it.
+- Room: `RoomView::omni` (`omnichannel::room::OmniRoom`) wraps the composer slot (callouts of
+  §7.1, the unknown-contact banner) and owns the dialogs (`dialogs/{close_chat, forward_chat,
+  confirm (return to queue + on hold), transcript}.rs`); the header shows the quick actions
+  of §7.2 plus contact/canned panel buttons; panels are `room::panel::Kind::Omnichannel(PanelKind
+  ::{Info, Edit, Contact, ContactHistory, ContactHistoryChat(rid), Canned})`.
+- Contact center: opened from a sidebar header button, drawn in place of the room area
+  (contacts / chats tabs; chats are restricted to `agents=[me]` without `view-livechat-rooms`).
+- Sign-out: an available agent is set `not-available` (REST `agent.status`) before the logout,
+  like the web client's DDP `logout`; the DDP `logout` method itself is not called (it would
+  remove the login token, which is wrong for personal access tokens).
+- `agent.status` with an explicit status is retried once after a transient HTTP failure (a
+  pooled keep-alive connection closed by the server was seen in the headless snapshot run).
+- Not done: the continuous new-room sound loop (`Livechat_continuous_sound_notification_new_
+  livechat_room`), the EE tag/priority/SLA pickers, contact editing/blocking, creating canned
+  responses, queue preview through `stream-room-data`.
+
 ### 22.4 Phasing
 
 1. MVP (CE, verifiable): model changes, availability toggle, sidebar sections, composer states

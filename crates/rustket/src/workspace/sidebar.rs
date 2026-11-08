@@ -40,6 +40,8 @@ pub enum Message {
     Status(super::status_menu::Message),
     Directory,
     Create,
+    /// Omnichannel groups and buttons (`crate::omnichannel::sidebar`).
+    Omni(crate::omnichannel::sidebar::Msg),
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +53,7 @@ pub enum Out {
     Status(super::status_menu::Message),
     Directory,
     Create,
+    Omni(crate::omnichannel::sidebar::Msg),
 }
 
 pub struct SidebarCtx<'a> {
@@ -98,6 +101,8 @@ impl Sidebar {
             Message::Status(m) => Out::Status(m),
             Message::Directory => Out::Directory,
             Message::Create => Out::Create,
+            Message::Omni(crate::omnichannel::sidebar::Msg::Toggle(key)) => Out::ToggleSection(key),
+            Message::Omni(m) => Out::Omni(m),
         }
     }
 
@@ -162,7 +167,7 @@ impl Sidebar {
         ctx: &SidebarCtx<'a>,
         status: Element<'a, super::status_menu::Message>,
     ) -> Element<'a, Message> {
-        let header = self.header(status);
+        let header = self.header(status, crate::omnichannel::sidebar::header_button(ctx));
         let search = container(
             row![
                 icon::sized(Icon::Search, 16.0).style(style::text_hint),
@@ -188,7 +193,8 @@ impl Sidebar {
             }
         })
         .padding([0.0, SPACE_1]);
-        let body: Element<'a, Message> = if self.sections.is_empty() {
+        let queue = crate::omnichannel::sidebar::queue_group(ctx, &self.filter);
+        let body: Element<'a, Message> = if self.sections.is_empty() && queue.is_none() {
             if self.filter.trim().is_empty() {
                 empty_state(Icon::Inbox, t!("sidebar.no_rooms"), String::new())
             } else {
@@ -196,7 +202,20 @@ impl Sidebar {
             }
         } else {
             let mut list = Column::new().spacing(0).padding([0.0, SPACE_2]);
+            // Omnichannel groups first (queue, in progress, on hold).
+            let row = |item: &'a RoomListItem| self.row(item, ctx);
+            list = crate::omnichannel::sidebar::push_groups(
+                list,
+                queue,
+                &self.sections,
+                ctx,
+                &self.filter,
+                &row,
+            );
             for section in &self.sections {
+                if section.kind == SectionKind::Omnichannel {
+                    continue;
+                }
                 let collapsed = self.filter.trim().is_empty()
                     && ctx.collapsed.contains(section.kind.i18n_key());
                 list = list.push(section_header(
@@ -230,23 +249,24 @@ impl Sidebar {
     fn header<'a>(
         &'a self,
         status: Element<'a, super::status_menu::Message>,
+        omni: Option<Element<'a, Message>>,
     ) -> Element<'a, Message> {
         let menu = status.map(Message::Status);
-        container(
-            row![
-                container(menu).width(Length::Fill),
-                icon_button(
-                    Icon::Globe,
-                    Some(Message::Directory),
-                    t!("sidebar.directory")
-                ),
-                icon_button(Icon::SquarePen, Some(Message::Create), t!("sidebar.create")),
-            ]
-            .spacing(SPACE_1)
-            .align_y(Alignment::Center),
-        )
-        .padding([SPACE_2, SPACE_2])
-        .into()
+        let mut bar = row![
+            container(menu).width(Length::Fill),
+            icon_button(
+                Icon::Globe,
+                Some(Message::Directory),
+                t!("sidebar.directory")
+            ),
+            icon_button(Icon::SquarePen, Some(Message::Create), t!("sidebar.create")),
+        ]
+        .spacing(SPACE_1)
+        .align_y(Alignment::Center);
+        if let Some(b) = omni {
+            bar = bar.push(b);
+        }
+        container(bar).padding([SPACE_2, SPACE_2]).into()
     }
 
     fn row<'a>(&'a self, item: &'a RoomListItem, ctx: &SidebarCtx<'a>) -> Element<'a, Message> {

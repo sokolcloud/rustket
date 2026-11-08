@@ -1,0 +1,538 @@
+//! Omnichannel (livechat) agent UI (`docs/omnichannel.md` §22.3), on top of
+//! `rustket_core::omnichannel` and the `rocketchat` livechat layer.
+//! Strings: `locales/omnichannel.yml` (`omnichannel.*`).
+//!
+//! - [`Omni`] (per server, in `ServerState::omni`) keeps the
+//!   [`OmnichannelState`]: routing config, license, departments, queue,
+//!   canned responses, custom fields; it is recomputed after `me`, settings,
+//!   permissions or roles changed and fed with the session events
+//!   (`glue.rs`, hooked into `App::update`). Views read the published
+//!   snapshot ([`shared`]).
+//! - [`status`]: availability toggle in the status menu.
+//! - [`sidebar`]: queue, "Chats in progress" and "On hold" groups.
+//! - [`room`]: composer callouts, header quick actions and [`dialogs`].
+//! - [`panel`]: room info, edit, contact, history, canned responses.
+//! - [`contact_center`]: contacts and chats, in place of the room area.
+//! - [`system`]: omnichannel system message texts; [`canned`]: `!` autocomplete.
+
+pub mod canned;
+pub mod contact_center;
+pub mod dialogs;
+mod glue;
+pub mod panel;
+pub mod room;
+pub mod shared;
+pub mod sidebar;
+pub mod status;
+pub mod system;
+
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use iced::Task;
+use rocketchat::models::{
+    AgentDepartment, CannedResponse, CustomFieldDef, Inquiry, LicenseInfo, Paginated, Priority,
+    RoutingConfig,
+};
+use rocketchat::rest::LivechatPage;
+use rocketchat::session::{
+    StreamWatch, canned_responses_subscription, inquiry_queue_subscriptions,
+};
+use rust_i18n::t;
+use rustket_core::omnichannel::permissions::settings;
+use rustket_core::omnichannel::queue::SnapshotToken;
+use rustket_core::omnichannel::{OmnichannelState, OmnichannelUpdate};
+use rustket_core::{Dirty, ServerId, Workspace};
+
+use crate::error::{Failure, Res};
+use crate::screens::directory::open;
+use crate::session::SessionHandle;
+
+pub use glue::sign_out_agent;
+pub use status::is_available_agent;
+
+/// Default queue page when the pool size setting is 0 (`count=0` is only
+/// "unlimited" with `API_Allow_Infinite_Count`, which agents cannot read).
+const QUEUE_COUNT: u64 = 100;
+
+/// A stream subscription guard that can travel in a message.
+#[derive(Debug, Clone)]
+pub struct Watch(pub Arc<StreamWatch>);
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Routing(Res<RoutingConfig>),
+    License(Res<LicenseInfo>),
+    Departments(Res<Vec<AgentDepartment>>),
+    Queue(SnapshotToken, Res<Paginated<Inquiry>>),
+    QueueWatch(Vec<String>, Res<Watch>),
+    CannedWatch(Res<Watch>),
+    CustomFields(Res<Paginated<CustomFieldDef>>),
+    Canned(Res<Vec<CannedResponse>>),
+    Priorities(Res<Paginated<Priority>>),
+    /// A room fetched for opening (queued chat preview, contact center).
+    Opened(Box<Res<open::Opened>>),
+    ContactCenter(contact_center::Msg),
+}
+
+/// Omnichannel controller of one server.
+#[derive(Default)]
+pub struct Omni {
+    pub state: OmnichannelState,
+    /// The session the loads belong to (`Arc` address).
+    session: Option<usize>,
+    /// Workspace revision (`me`, settings, permissions, roles) of the last recompute.
+    rev: Option<u64>,
+    routing_loading: bool,
+    license_loading: bool,
+    departments_loading: bool,
+    /// After the departments arrived: start the queue snapshot / load canned responses.
+    queue_after_departments: bool,
+    canned_after_departments: bool,
+    fields_loaded: bool,
+    queue_watch: Option<Watch>,
+    /// Stream names wanted for the queue (watch pending or held).
+    queue_keys: Vec<String>,
+    canned_watch: Option<Watch>,
+    canned_wanted: bool,
+    pub contact_center: Option<contact_center::ContactCenter>,
+    /// The active room when the contact center opened (another room closes it).
+    contact_center_room: Option<String>,
+    /// Livechat subscriptions seen (the new-room sound is for new ones).
+    seen_live: HashSet<String>,
+}
+
+/// User-facing text of a failed omnichannel call, with wording for the
+/// codes of `docs/omnichannel.md` §3–§16.
+pub fn error_text(f: &Failure) -> String {
+    let e = f.error();
+    if e.is_enterprise_only() {
+        return t!("omnichannel.err.enterprise").into_owned();
+    }
+    let key = match e.livechat_error_code() {
+        Some("error-comment-is-required") => "omnichannel.err.comment_required",
+        Some("error-tags-must-be-assigned-before-closing-chat") => "omnichannel.err.tags_required",
+        Some(
+            "error-not-authorized" | "error-not-allowed" | "error-unauthorized" | "Not_authorized",
+        ) => "omnichannel.err.not_allowed",
+        Some(
+            "error-room-already-closed" | "This_conversation_is_already_closed" | "room-closed",
+        ) => "omnichannel.err.already_closed",
+        Some("error-inquiry-taken") => "omnichannel.err.inquiry_taken",
+        Some("error-agent-status-service-offline") => "omnichannel.err.agent_offline",
+        Some("error-user-is-offline") => "omnichannel.err.target_offline",
+        Some("error-forwarding-chat-same-department") => "omnichannel.err.same_department",
+        Some("error-no-agents-available-for-service-on-department") => {
+            "omnichannel.err.no_agents_in_department"
+        }
+        Some("error-selected-agent-room-agent-are-same") => "omnichannel.err.same_agent",
+        Some("error-room-onHold") => "omnichannel.err.on_hold",
+        Some("error-mac-limit-reached") => "omnichannel.err.mac_limit",
+        Some("error-transcript-already-requested") => "omnichannel.err.transcript_requested",
+        Some("error-business-hours-are-closed") => "omnichannel.err.business_hours",
+        Some("Agent not found") => "omnichannel.err.not_agent",
+        _ => return f.user_text(),
+    };
+    t!(key).into_owned()
+}
+
+/// The new-room sound of the user (`newRoomNotification`, default `door`);
+/// `None` when switched off.
+pub fn new_room_sound(ws: &Workspace) -> Option<String> {
+    let name = crate::desktop::user_pref(ws, "newRoomNotification")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("door");
+    (name != "none").then(|| name.to_owned())
+}
+
+impl Omni {
+    /// Back to the logged-out state (logout, session dropped).
+    pub fn reset(&mut self, sid: &ServerId) {
+        *self = Self::default();
+        shared::forget(sid);
+    }
+
+    fn publish(&self, sid: &ServerId) {
+        shared::publish(sid, &self.state);
+    }
+
+    fn rest_task<T: Send + 'static>(
+        h: &SessionHandle,
+        call: impl FnOnce(
+            rocketchat::RestClient,
+        )
+            -> std::pin::Pin<Box<dyn Future<Output = rocketchat::Result<T>> + Send>>
+        + Send
+        + 'static,
+        map: impl FnOnce(Res<T>) -> Message + Send + 'static,
+    ) -> Task<Message> {
+        let rest = h.rest().clone();
+        Task::perform(async move { call(rest).await.map_err(Failure::from) }, map)
+    }
+
+    /// Per update: (re)starts the loads for a new session, recomputes after
+    /// workspace changes and keeps the stream watches in line.
+    pub fn tick(
+        &mut self,
+        sid: &ServerId,
+        ws: &Workspace,
+        session: Option<&SessionHandle>,
+    ) -> Task<Message> {
+        let Some(h) = session else {
+            if self.session.is_some() {
+                self.session = None;
+                self.queue_watch = None;
+                self.canned_watch = None;
+                self.queue_keys.clear();
+                self.canned_wanted = false;
+                self.routing_loading = false;
+                self.license_loading = false;
+                self.departments_loading = false;
+            }
+            return Task::none();
+        };
+        if ws.me().is_none() {
+            return Task::none();
+        }
+        let ptr = Arc::as_ptr(&h.0) as usize;
+        let new_session = self.session != Some(ptr);
+        let mut u = OmnichannelUpdate::default();
+        if new_session {
+            self.session = Some(ptr);
+            self.rev = None;
+            self.queue_watch = None;
+            self.canned_watch = None;
+            self.queue_keys.clear();
+            self.canned_wanted = false;
+            self.routing_loading = false;
+            self.license_loading = false;
+            self.departments_loading = false;
+        }
+        let rev = ws.revision(Dirty::ME | Dirty::SETTINGS | Dirty::PERMISSIONS | Dirty::ROLES);
+        if self.rev != Some(rev) {
+            self.rev = Some(rev);
+            u = u.merge(self.state.recompute_update(ws));
+            if new_session && self.state.accessible {
+                u.refetch_routing = true;
+                u.refetch_license = true;
+                u.reinit_queue = self.state.wants_queue();
+                u.refetch_canned = true;
+            }
+        }
+        let mut tasks = vec![self.handle(u, ws, h)];
+        tasks.push(self.sync_watches(ws, h));
+        self.publish(sid);
+        Task::batch(tasks)
+    }
+
+    /// Runs the follow-up loads an update asks for.
+    pub fn handle(
+        &mut self,
+        u: OmnichannelUpdate,
+        ws: &Workspace,
+        h: &SessionHandle,
+    ) -> Task<Message> {
+        let mut tasks = Vec::new();
+        if u.refetch_routing && !self.routing_loading && self.state.accessible {
+            self.routing_loading = true;
+            tasks.push(Self::rest_task(
+                h,
+                |r| Box::pin(async move { r.livechat_routing_config().await }),
+                Message::Routing,
+            ));
+        }
+        if u.refetch_license && !self.license_loading && self.state.accessible {
+            self.license_loading = true;
+            tasks.push(Self::rest_task(
+                h,
+                |r| Box::pin(async move { r.licenses_info().await }),
+                Message::License,
+            ));
+        }
+        let wants_queue = u.reinit_queue && self.state.wants_queue();
+        let wants_canned = u.refetch_canned && self.state.canned_enabled(ws);
+        if (wants_queue || wants_canned) && self.state.wants_departments(ws) {
+            self.queue_after_departments |= wants_queue;
+            self.canned_after_departments |= wants_canned;
+            if !self.departments_loading
+                && let Some(uid) = ws.user_id().map(str::to_owned)
+            {
+                self.departments_loading = true;
+                tasks.push(Self::rest_task(
+                    h,
+                    move |r| {
+                        Box::pin(async move { r.livechat_agent_departments(&uid, false).await })
+                    },
+                    Message::Departments,
+                ));
+            }
+        } else {
+            if wants_queue {
+                tasks.push(self.load_queue(ws, h));
+            }
+            if wants_canned {
+                tasks.push(Self::load_canned(h));
+            }
+        }
+        if u.refetch_priorities && self.state.has_module(LicenseInfo::LIVECHAT_ENTERPRISE) {
+            tasks.push(Self::rest_task(
+                h,
+                |r| Box::pin(async move { r.livechat_priorities().await }),
+                Message::Priorities,
+            ));
+        }
+        if self.state.enabled && !self.fields_loaded {
+            self.fields_loaded = true;
+            tasks.push(Self::rest_task(
+                h,
+                |r| {
+                    Box::pin(
+                        async move { r.livechat_custom_fields(LivechatPage::new(0, 100)).await },
+                    )
+                },
+                Message::CustomFields,
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    fn load_queue(&mut self, ws: &Workspace, h: &SessionHandle) -> Task<Message> {
+        let token = self.state.queue.begin_snapshot();
+        let cap = ws.settings().i64_or(settings::POOL_MAX_DISPLAYED, 0);
+        let count = u64::try_from(cap)
+            .ok()
+            .filter(|c| *c > 0)
+            .unwrap_or(QUEUE_COUNT);
+        Self::rest_task(
+            h,
+            move |r| Box::pin(async move { r.livechat_inquiries_queued(Some(count), None).await }),
+            move |res| Message::Queue(token, res),
+        )
+    }
+
+    fn load_canned(h: &SessionHandle) -> Task<Message> {
+        Self::rest_task(
+            h,
+            |r| Box::pin(async move { r.canned_responses_all().await }),
+            Message::Canned,
+        )
+    }
+
+    /// Subscribes / drops the queue and canned-response streams as wanted.
+    fn sync_watches(&mut self, ws: &Workspace, h: &SessionHandle) -> Task<Message> {
+        let mut tasks = Vec::new();
+        let wanted: Vec<(&'static str, String)> = match (self.state.wants_queue(), ws.user_id()) {
+            (true, Some(uid)) => inquiry_queue_subscriptions(uid, self.state.department_ids()),
+            _ => Vec::new(),
+        };
+        let names: Vec<String> = wanted.iter().map(|(s, k)| format!("{s}:{k}")).collect();
+        if names != self.queue_keys {
+            self.queue_keys = names.clone();
+            self.queue_watch = None;
+            if !wanted.is_empty() {
+                let h = h.clone();
+                tasks.push(Task::perform(
+                    async move {
+                        h.session()
+                            .watch_streams(&wanted)
+                            .await
+                            .map(|w| Watch(Arc::new(w)))
+                            .map_err(Failure::from)
+                    },
+                    move |r| Message::QueueWatch(names.clone(), r),
+                ));
+            }
+        }
+        let canned = self.state.canned_enabled(ws);
+        if canned != self.canned_wanted {
+            self.canned_wanted = canned;
+            self.canned_watch = None;
+            if canned {
+                let h = h.clone();
+                tasks.push(Task::perform(
+                    async move {
+                        h.session()
+                            .watch_streams(&[canned_responses_subscription()])
+                            .await
+                            .map(|w| Watch(Arc::new(w)))
+                            .map_err(Failure::from)
+                    },
+                    Message::CannedWatch,
+                ));
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    /// Applies a result; returns the follow-up loads.
+    pub fn apply(
+        &mut self,
+        m: Message,
+        sid: &ServerId,
+        ws: &Workspace,
+        h: Option<&SessionHandle>,
+    ) -> Task<Message> {
+        let mut follow = OmnichannelUpdate::default();
+        let mut tasks = Vec::new();
+        match m {
+            Message::Routing(r) => {
+                self.routing_loading = false;
+                match r {
+                    Ok(cfg) => self.state.set_routing(Some(cfg)),
+                    Err(e) => tracing::warn!(error = %e, "omnichannel routing config"),
+                }
+                follow = self.state.recompute_update(ws);
+            }
+            Message::License(r) => {
+                self.license_loading = false;
+                match r {
+                    Ok(l) => self.state.set_license(Some(l)),
+                    Err(e) => tracing::debug!(error = %e, "licenses.info"),
+                }
+                follow = self.state.recompute_update(ws);
+                follow.refetch_canned = true;
+            }
+            Message::Departments(r) => {
+                self.departments_loading = false;
+                match r {
+                    Ok(d) => self.state.set_departments(d),
+                    Err(e) => tracing::warn!(error = %e, "agent departments"),
+                }
+                follow = self.state.recompute_update(ws);
+                if let Some(h) = h {
+                    if std::mem::take(&mut self.queue_after_departments) && self.state.wants_queue()
+                    {
+                        tasks.push(self.load_queue(ws, h));
+                    }
+                    if std::mem::take(&mut self.canned_after_departments)
+                        && self.state.canned_enabled(ws)
+                    {
+                        tasks.push(Self::load_canned(h));
+                    }
+                }
+                follow.reinit_queue = false;
+                follow.refetch_canned = false;
+            }
+            Message::Queue(token, r) => match r {
+                Ok(p) => {
+                    self.state.queue.apply_snapshot(token, p.items);
+                }
+                Err(e) => tracing::warn!(error = %e, "queued inquiries"),
+            },
+            Message::QueueWatch(names, r) => {
+                if names == self.queue_keys {
+                    match r {
+                        Ok(w) => {
+                            let refused = w.0.refused();
+                            if !refused.is_empty() {
+                                tracing::warn!(?refused, "queue streams refused");
+                            }
+                            self.queue_watch = Some(w);
+                        }
+                        Err(e) => tracing::warn!(error = %e, "queue streams"),
+                    }
+                }
+            }
+            Message::CannedWatch(r) => match r {
+                Ok(w) if self.canned_wanted => self.canned_watch = Some(w),
+                Ok(_) => {}
+                Err(e) => tracing::debug!(error = %e, "canned responses stream"),
+            },
+            Message::CustomFields(r) => match r {
+                Ok(p) => self.state.custom_fields = p.items,
+                Err(e) => tracing::debug!(error = %e, "livechat custom fields"),
+            },
+            Message::Canned(r) => match r {
+                Ok(list) => self.state.canned.replace(list),
+                Err(e) => tracing::debug!(error = %e, "canned responses"),
+            },
+            Message::Priorities(r) => match r {
+                Ok(p) => self.state.priorities = p.items,
+                Err(e) => tracing::debug!(error = %e, "priorities"),
+            },
+            Message::Opened(_) | Message::ContactCenter(_) => {}
+        }
+        if let Some(h) = h {
+            tasks.push(self.handle(follow, ws, h));
+            tasks.push(self.sync_watches(ws, h));
+        }
+        self.publish(sid);
+        Task::batch(tasks)
+    }
+
+    /// The Resync after a reconnect: watches that failed are tried again.
+    pub fn on_resync(&mut self) {
+        if self.queue_watch.is_none() {
+            self.queue_keys.clear();
+        }
+        if self.canned_watch.is_none() {
+            self.canned_wanted = false;
+        }
+    }
+
+    /// Whether `rid` is a livechat subscription not seen before (sound).
+    pub fn first_seen(&mut self, rid: &str) -> bool {
+        self.seen_live.insert(rid.to_owned())
+    }
+
+    pub fn open_contact_center(&mut self, active_room: Option<&str>) {
+        self.contact_center = Some(contact_center::ContactCenter::new());
+        self.contact_center_room = active_room.map(str::to_owned);
+    }
+
+    /// Closes the contact center when another room was opened meanwhile.
+    pub fn follow_active_room(&mut self, active_room: Option<&str>) {
+        if self.contact_center.is_some() && self.contact_center_room.as_deref() != active_room {
+            self.contact_center = None;
+        }
+    }
+
+    pub fn close_contact_center(&mut self) {
+        self.contact_center = None;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn errors_are_translated() {
+        rust_i18n::set_locale("en");
+        let f = Failure::from(rocketchat::Error::Api {
+            status: 400,
+            error: Some("error-comment-is-required".into()),
+            error_type: None,
+            message: None,
+            details: None,
+        });
+        assert_eq!(error_text(&f), t!("omnichannel.err.comment_required"));
+        let f = Failure::from(rocketchat::Error::Api {
+            status: 400,
+            error: Some("This is an enterprise feature [error-action-not-allowed]".into()),
+            error_type: Some("error-action-not-allowed".into()),
+            message: None,
+            details: None,
+        });
+        assert_eq!(error_text(&f), t!("omnichannel.err.enterprise"));
+        let f = Failure::from(rocketchat::Error::Api {
+            status: 400,
+            error: Some("something odd".into()),
+            error_type: None,
+            message: None,
+            details: None,
+        });
+        assert_eq!(error_text(&f), "something odd");
+    }
+
+    #[test]
+    fn contact_center_follows_the_active_room() {
+        let mut o = Omni::default();
+        o.open_contact_center(Some("a"));
+        o.follow_active_room(Some("a"));
+        assert!(o.contact_center.is_some());
+        o.follow_active_room(Some("b"));
+        assert!(o.contact_center.is_none());
+    }
+}

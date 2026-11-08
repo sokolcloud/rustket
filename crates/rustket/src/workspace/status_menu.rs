@@ -49,6 +49,8 @@ pub enum Message {
     Logout,
     LogoutEverywhere,
     RemoveServer,
+    /// Omnichannel agent availability (`crate::omnichannel::status`).
+    Omni(crate::omnichannel::status::Msg),
 }
 
 #[derive(Debug, Default)]
@@ -272,6 +274,7 @@ impl StatusMenu {
                 self.open = false;
                 Action::effect(Effect::RemoveServer)
             }
+            Message::Omni(m) => crate::omnichannel::status::update(m, ctx).map(Message::Omni),
         }
     }
 
@@ -321,8 +324,12 @@ impl StatusMenu {
                         .style(|theme: &Theme| Some(tokens(theme).text_secondary)),
                 ]
                 .width(Length::Fill),
-                icon::sized(Icon::ChevronDown, 14.0),
             ]
+            .push(
+                crate::omnichannel::status::indicator(ws)
+                    .unwrap_or_else(|| iced::widget::space().into()),
+            )
+            .push(icon::sized(Icon::ChevronDown, 14.0))
             .spacing(SPACE_2)
             .align_y(Alignment::Center),
         )
@@ -402,6 +409,9 @@ impl StatusMenu {
                 enabled.then_some(Message::SetStatus(s)),
                 false,
             ));
+        }
+        if let Some(e) = crate::omnichannel::status::menu_entry(ws, enabled, Message::Omni) {
+            col = col.push(divider()).push(e);
         }
         let customs = offered_custom(ws);
         if !customs.is_empty() {

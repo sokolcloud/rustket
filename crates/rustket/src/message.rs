@@ -63,6 +63,8 @@ pub enum Message {
     QuickSwitcher(ServerId, crate::dialogs::quick_switcher::Message),
     StatusMenu(ServerId, crate::workspace::status_menu::Message),
     Desktop(crate::desktop::Message),
+    /// Omnichannel controller message: server, session epoch, message.
+    Omni(ServerId, u64, crate::omnichannel::Message),
     /// Ctrl+K.
     OpenQuickSwitcher,
     SidebarResized(f32),

@@ -51,6 +51,7 @@ pub(crate) fn visible_in<'a>(ws: &'a Workspace, rid: &str) -> impl Fn(&RcMessage
     move |m: &RcMessage| {
         !m.t.as_deref()
             .is_some_and(|t| m.is_system() && system::is_hidden(t, &hidden, room_sys))
+            && !crate::omnichannel::system::hidden(m)
     }
 }
 

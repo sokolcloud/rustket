@@ -38,6 +38,8 @@ pub enum Message {
     OpenRoom(String),
     /// Menu: create a discussion in this room.
     CreateDiscussion,
+    /// Omnichannel quick action or panel (`crate::omnichannel::room`).
+    Omni(crate::omnichannel::room::Request),
 }
 
 pub struct Header {
@@ -81,6 +83,16 @@ pub fn dm_partner(ws: &Workspace, rid: &str) -> Option<String> {
 pub fn buttons(ws: &Workspace, rid: &str) -> Buttons {
     let dm = dm_partner(ws, rid);
     let entry = ws.room(rid);
+    // Omnichannel rooms: the chat info panel; no threads, discussions or members.
+    if entry.is_some_and(|e| e.room_type() == RoomType::Livechat) {
+        return Buttons {
+            threads: false,
+            discussions: false,
+            members: false,
+            team_channels: false,
+            info: panel::Kind::Omnichannel(crate::omnichannel::panel::PanelKind::Info),
+        };
+    }
     Buttons {
         threads: ws.settings().threads_enabled(),
         // Discussions cannot be nested (the web hides it inside one too).
@@ -350,6 +362,10 @@ impl Header {
                 }
             }
             Message::OpenRoom(rid) => Action::effect(Effect::OpenRoom(rid)),
+            Message::Omni(r) => {
+                self.menu_open = false;
+                Action::effect(Effect::Omni(r))
+            }
         }
     }
 
@@ -553,6 +569,9 @@ impl Header {
         // Buttons; the ones that do not fit go into the menu.
         let (inline, overflow, call) = layout_buttons(&buttons(ws, &self.rid), width);
         let mut actions = row![].spacing(SPACE_1).align_y(Alignment::Center);
+        for b in crate::omnichannel::room::header_buttons(ctx) {
+            actions = actions.push(b.map(Message::Omni));
+        }
         if call {
             actions = actions.push(icon_button_with(
                 Icon::Video,

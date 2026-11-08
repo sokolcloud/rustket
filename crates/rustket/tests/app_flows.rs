@@ -620,6 +620,63 @@ async fn removed_room_closes_its_view_and_can_be_reopened() {
     assert!(app.servers[&sid].rooms.contains_key("r1"));
 }
 
+/// Omnichannel: a chat closed or forwarded elsewhere (subscription removed)
+/// closes its view; omnichannel results of an old session are dropped.
+#[tokio::test]
+async fn closed_livechat_chat_closes_its_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid, _) = app_with(dir.path(), Some("A"), vec![]);
+    let me = user("A", "alice");
+    let m = ev(
+        &app,
+        &sid,
+        SessionEvent::Ready {
+            me: Box::new(me.clone()),
+        },
+    );
+    let _ = app.update(m);
+    let mut data = initial(me, &[("r1", 0)]);
+    let mut s = sub("L1", "A", 1, T0);
+    s.t = RoomType::Livechat;
+    data.subscriptions.push(s.clone());
+    let mut r = room("L1", T0);
+    r.t = RoomType::Livechat;
+    r.name = None;
+    r.fname = Some("Visitor".into());
+    r.open = Some(true);
+    r.served_by = Some(serde_json::json!({"_id": "A", "username": "alice"}));
+    data.rooms.push(r);
+    let m = loaded(&app, &sid, data);
+    let _ = app.update(m);
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("L1".into()),
+    ));
+    assert!(app.servers[&sid].rooms.contains_key("L1"));
+    let epoch = app.servers[&sid].generation;
+    let _ = app.update(Message::Omni(
+        sid.clone(),
+        epoch + 1,
+        rustket::omnichannel::Message::Routing(Ok(Default::default())),
+    ));
+    assert!(
+        app.servers[&sid].omni.state.routing.is_none(),
+        "stale epoch"
+    );
+    let m = ev(
+        &app,
+        &sid,
+        SessionEvent::SubscriptionChanged {
+            kind: ChangeKind::Removed,
+            sub: Box::new(s),
+        },
+    );
+    let _ = app.update(m);
+    let s = &app.servers[&sid];
+    assert!(!s.rooms.contains_key("L1"));
+    assert_eq!(s.active_room, None);
+}
+
 // --- config writes (review #17) ---------------------------------------------------------
 
 #[tokio::test]

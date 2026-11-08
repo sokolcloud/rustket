@@ -676,8 +676,8 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "08-room-dark");
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
-    // `RUSTKET_SNAPSHOT_ONLY=glue`: only the integration shots.
-    let only_glue = std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() == Ok("glue");
+    // `RUSTKET_SNAPSHOT_ONLY=glue|omni`: only the integration shots.
+    let only_glue = std::env::var("RUSTKET_SNAPSHOT_ONLY").is_ok();
     if !only_glue {
         composer_snapshots(&mut d, &out, &sid, &rid).await;
         timeline_fixture::shoot(&mut d, &out, &sid).await;
@@ -685,6 +685,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
         account_shots(&mut d, &out, &sid).await;
     }
     glue::glue_shots(&mut d, &server, &out, &sid, &rid, &fixture.ledger).await;
+    omni::omni_shots(&mut d, &server, &out, &sid, &user).await;
 
     // Log out through the app: the login token is revoked on the server.
     let creds: Credentials = d.app.servers[&sid].credentials.clone().expect("creds");
@@ -874,6 +875,8 @@ fn image_bytes(w: u32, h: u32) -> Vec<u8> {
 }
 #[path = "snapshot/glue.rs"]
 mod glue;
+#[path = "snapshot/omni.rs"]
+mod omni;
 #[path = "snapshot/timeline_fixture.rs"]
 mod timeline_fixture;
 /// Quick switcher, directory, create dialogs and account tabs (light + dark).

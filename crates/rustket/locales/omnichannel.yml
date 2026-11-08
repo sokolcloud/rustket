@@ -1,0 +1,580 @@
+_version: 2
+omnichannel.available:
+  en: "Available for chats"
+  ru: "Принимаю чаты"
+omnichannel.not_available:
+  en: "Not available for chats"
+  ru: "Не принимаю чаты"
+omnichannel.offline_hint:
+  en: "You cannot take new conversations because you're offline"
+  ru: "Вы не можете принимать новые беседы, пока вы не в сети"
+omnichannel.availability_failed:
+  en: "Could not change your availability"
+  ru: "Не удалось изменить доступность"
+omnichannel.availability_unchanged:
+  en: "The server kept your availability (business hours may be closed)."
+  ru: "Сервер оставил прежнюю доступность (возможно, сейчас нерабочие часы)."
+omnichannel.section_queued:
+  en: "Queued chats"
+  ru: "Чаты в очереди"
+omnichannel.section_open:
+  en: "Chats in progress"
+  ru: "Текущие чаты"
+omnichannel.section_on_hold:
+  en: "On hold"
+  ru: "На удержании"
+omnichannel.contact_center:
+  en: "Contact Center"
+  ru: "Контакт-центр"
+omnichannel.close_screen:
+  en: "Close"
+  ru: "Закрыть"
+omnichannel.tab_contacts:
+  en: "Contacts"
+  ru: "Контакты"
+omnichannel.tab_chats:
+  en: "Chats"
+  ru: "Чаты"
+omnichannel.search_contacts:
+  en: "Search contacts"
+  ru: "Поиск контактов"
+omnichannel.search_chats:
+  en: "Search chats"
+  ru: "Поиск чатов"
+omnichannel.nothing_found:
+  en: "Nothing found"
+  ru: "Ничего не найдено"
+omnichannel.channels_count:
+  en: "Channels: %{count}"
+  ru: "Каналов: %{count}"
+omnichannel.status_open:
+  en: "Open"
+  ru: "Открыт"
+omnichannel.status_closed:
+  en: "Closed"
+  ru: "Закрыт"
+omnichannel.status_on_hold:
+  en: "On hold"
+  ru: "На удержании"
+omnichannel.status_queued:
+  en: "Queued"
+  ru: "В очереди"
+omnichannel.open_failed:
+  en: "Could not open the chat"
+  ru: "Не удалось открыть чат"
+omnichannel.qa.move_to_queue:
+  en: "Move to the queue"
+  ru: "Вернуть в очередь"
+omnichannel.qa.forward:
+  en: "Forward chat"
+  ru: "Переадресовать чат"
+omnichannel.qa.transcript_email:
+  en: "Send transcript via email"
+  ru: "Отправить стенограмму по эл. почте"
+omnichannel.qa.transcript_pdf:
+  en: "Export transcript as PDF"
+  ru: "Экспортировать стенограмму в PDF"
+omnichannel.qa.on_hold:
+  en: "Place chat On-Hold"
+  ru: "Поставить чат на удержание"
+omnichannel.qa.close:
+  en: "End conversation"
+  ru: "Завершить беседу"
+omnichannel.contact_info:
+  en: "Contact information"
+  ru: "Информация о контакте"
+omnichannel.canned:
+  en: "Canned responses"
+  ru: "Шаблоны ответов"
+omnichannel.callout_closed:
+  en: "This conversation is already closed."
+  ru: "Эта беседа уже закрыта."
+omnichannel.callout_over_mac:
+  en: "The workspace has exceeded the monthly limit of active contacts. Talk to your workspace admin to address this issue."
+  ru: "Рабочее пространство превысило месячный лимит активных контактов. Обратитесь к администратору."
+omnichannel.callout_on_hold:
+  en: "This chat is on-hold due to inactivity"
+  ru: "Этот чат на удержании из-за неактивности"
+omnichannel.callout_preview:
+  en: "You are in preview mode of this chat"
+  ru: "Вы просматриваете этот чат в режиме предпросмотра"
+omnichannel.callout_read_only:
+  en: "This room is read only"
+  ru: "Эта комната только для чтения"
+omnichannel.resume:
+  en: "Resume"
+  ru: "Возобновить"
+omnichannel.take:
+  en: "Take it!"
+  ru: "Взять!"
+omnichannel.join:
+  en: "Join"
+  ru: "Присоединиться"
+omnichannel.take_offline:
+  en: "You cannot take new conversations because you're offline"
+  ru: "Вы не можете принимать новые беседы, пока вы не в сети"
+omnichannel.take_unavailable:
+  en: "You cannot take new conversations because you're unavailable"
+  ru: "Вы не можете принимать новые беседы, пока вы недоступны"
+omnichannel.take_failed:
+  en: "Could not take the chat"
+  ru: "Не удалось взять чат"
+omnichannel.join_failed:
+  en: "Could not join the chat"
+  ru: "Не удалось присоединиться к чату"
+omnichannel.resume_failed:
+  en: "Could not resume the chat"
+  ru: "Не удалось возобновить чат"
+omnichannel.pdf_failed:
+  en: "Could not request the PDF transcript"
+  ru: "Не удалось запросить стенограмму в PDF"
+omnichannel.pdf_requested:
+  en: "The PDF transcript was requested"
+  ru: "Стенограмма в PDF запрошена"
+omnichannel.unknown_contact:
+  en: "Unknown contact. This contact is not on the contact list."
+  ru: "Неизвестный контакт. Этого контакта нет в списке контактов."
+omnichannel.unknown_contact_chip:
+  en: "Unknown"
+  ru: "Неизвестный"
+omnichannel.dismiss:
+  en: "Dismiss"
+  ru: "Скрыть"
+omnichannel.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+omnichannel.close_title:
+  en: "End conversation"
+  ru: "Завершить беседу"
+omnichannel.close_title_full:
+  en: "Wrap up conversation"
+  ru: "Завершение беседы"
+omnichannel.close_confirm_body:
+  en: "Are you sure you want to close this chat?"
+  ru: "Вы уверены, что хотите закрыть этот чат?"
+omnichannel.close_confirm:
+  en: "End conversation"
+  ru: "Завершить"
+omnichannel.closed_ok:
+  en: "Chat closed successfully"
+  ru: "Чат успешно закрыт"
+omnichannel.comment:
+  en: "Comment"
+  ru: "Комментарий"
+omnichannel.comment_required:
+  en: "Comment (required)"
+  ru: "Комментарий (обязательно)"
+omnichannel.comment_placeholder:
+  en: "Add a comment"
+  ru: "Добавьте комментарий"
+omnichannel.tags:
+  en: "Tags"
+  ru: "Теги"
+omnichannel.tags_required:
+  en: "Tags (required)"
+  ru: "Теги (обязательно)"
+omnichannel.tag_placeholder:
+  en: "New tag"
+  ru: "Новый тег"
+omnichannel.add_tag:
+  en: "Add"
+  ru: "Добавить"
+omnichannel.remove_tag:
+  en: "Remove tag"
+  ru: "Удалить тег"
+omnichannel.transcript:
+  en: "Chat transcript"
+  ru: "Стенограмма чата"
+omnichannel.transcript_pdf:
+  en: "Export chat transcript as PDF"
+  ru: "Экспортировать стенограмму в PDF"
+omnichannel.transcript_email:
+  en: "Send chat transcript via email"
+  ru: "Отправить стенограмму по эл. почте"
+omnichannel.transcript_to:
+  en: "To: %{email}"
+  ru: "Кому: %{email}"
+omnichannel.subject:
+  en: "Subject"
+  ru: "Тема"
+omnichannel.transcript_default_subject:
+  en: "Transcript of your omnichannel conversation."
+  ru: "Стенограмма вашей беседы."
+omnichannel.transcript_title:
+  en: "Transcript"
+  ru: "Стенограмма"
+omnichannel.transcript_send:
+  en: "Send"
+  ru: "Отправить"
+omnichannel.transcript_discard:
+  en: "Discard"
+  ru: "Отменить запрос"
+omnichannel.transcript_pending:
+  en: "A transcript will be sent to %{email} when the chat closes."
+  ru: "Стенограмма будет отправлена на %{email} после закрытия чата."
+omnichannel.transcript_subject_is:
+  en: "Subject: %{subject}"
+  ru: "Тема: %{subject}"
+omnichannel.transcript_no_email:
+  en: "The customer does not have a registered email address"
+  ru: "У клиента нет зарегистрированного адреса эл. почты"
+omnichannel.transcript_requested:
+  en: "The transcript will be sent when the chat closes"
+  ru: "Стенограмма будет отправлена после закрытия чата"
+omnichannel.transcript_sent:
+  en: "Transcript sent"
+  ru: "Стенограмма отправлена"
+omnichannel.transcript_discarded:
+  en: "Transcript request discarded"
+  ru: "Запрос стенограммы отменён"
+omnichannel.forward_title:
+  en: "Forward chat"
+  ru: "Переадресовать чат"
+omnichannel.forward_to_agent:
+  en: "To an agent"
+  ru: "Оператору"
+omnichannel.forward_to_department:
+  en: "To a department"
+  ru: "В отдел"
+omnichannel.search_agents:
+  en: "Search agents"
+  ru: "Поиск операторов"
+omnichannel.search_departments:
+  en: "Search departments"
+  ru: "Поиск отделов"
+omnichannel.no_agents:
+  en: "No available agents"
+  ru: "Нет доступных операторов"
+omnichannel.no_departments:
+  en: "No departments"
+  ru: "Нет отделов"
+omnichannel.forward_comment:
+  en: "Leave a comment (optional)"
+  ru: "Комментарий (необязательно)"
+omnichannel.forward_confirm:
+  en: "Forward"
+  ru: "Переадресовать"
+omnichannel.forwarded_ok:
+  en: "Transferred"
+  ru: "Чат переадресован"
+omnichannel.return_title:
+  en: "Move to the queue"
+  ru: "Вернуть в очередь"
+omnichannel.return_body:
+  en: "Would you like to move back this room to the queue? All conversation history will be kept on the room."
+  ru: "Вернуть эту комнату в очередь? Вся история беседы сохранится в комнате."
+omnichannel.return_confirm:
+  en: "Move to the queue"
+  ru: "Вернуть"
+omnichannel.returned_to_queue:
+  en: "The chat was moved to the queue"
+  ru: "Чат возвращён в очередь"
+omnichannel.on_hold_title:
+  en: "Place chat On-Hold"
+  ru: "Поставить чат на удержание"
+omnichannel.on_hold_body:
+  en: "Do you want to place this chat on hold? The chat resumes when the visitor writes or you resume it."
+  ru: "Поставить этот чат на удержание? Чат возобновится, когда посетитель напишет или вы его возобновите."
+omnichannel.on_hold_confirm:
+  en: "Place on hold"
+  ru: "На удержание"
+omnichannel.placed_on_hold:
+  en: "The chat was placed on hold"
+  ru: "Чат поставлен на удержание"
+omnichannel.panel.info:
+  en: "Room information"
+  ru: "Информация о комнате"
+omnichannel.panel.edit:
+  en: "Edit room information"
+  ru: "Изменить информацию о комнате"
+omnichannel.panel.contact:
+  en: "Contact information"
+  ru: "Информация о контакте"
+omnichannel.panel.history:
+  en: "Contact history"
+  ru: "История контакта"
+omnichannel.panel.history_chat:
+  en: "Past chat"
+  ru: "Прошлый чат"
+omnichannel.panel.canned:
+  en: "Canned responses"
+  ru: "Шаблоны ответов"
+omnichannel.info.channel:
+  en: "Channel"
+  ru: "Канал"
+omnichannel.info.contact:
+  en: "Contact"
+  ru: "Контакт"
+omnichannel.info.agent:
+  en: "Agent"
+  ru: "Оператор"
+omnichannel.info.department:
+  en: "Department"
+  ru: "Отдел"
+omnichannel.info.tags:
+  en: "Tags"
+  ru: "Теги"
+omnichannel.info.topic:
+  en: "Topic"
+  ru: "Тема"
+omnichannel.info.queue_time:
+  en: "Queue time"
+  ru: "Время в очереди"
+omnichannel.info.duration:
+  en: "Chat duration"
+  ru: "Длительность чата"
+omnichannel.info.created_at:
+  en: "Created at"
+  ru: "Создан"
+omnichannel.info.closed_at:
+  en: "Closed at"
+  ru: "Закрыт"
+omnichannel.info.taken_at:
+  en: "Taken at"
+  ru: "Принят"
+omnichannel.info.avg_response:
+  en: "Avg. response time"
+  ru: "Среднее время ответа"
+omnichannel.info.inactivity:
+  en: "Inactivity time"
+  ru: "Время неактивности"
+omnichannel.info.sla:
+  en: "SLA policy"
+  ru: "Политика SLA"
+omnichannel.info.priority:
+  en: "Priority"
+  ru: "Приоритет"
+omnichannel.source_livechat:
+  en: "Livechat"
+  ru: "Онлайн-чат"
+omnichannel.source_email:
+  en: "Email"
+  ru: "Эл. почта"
+omnichannel.source_sms:
+  en: "SMS"
+  ru: "SMS"
+omnichannel.source_custom_app:
+  en: "Custom (APP)"
+  ru: "Другое (приложение)"
+omnichannel.source_custom_api:
+  en: "Custom (API)"
+  ru: "Другое (API)"
+omnichannel.source_custom:
+  en: "Custom Integration"
+  ru: "Другая интеграция"
+omnichannel.source_external:
+  en: "External"
+  ru: "Внешний"
+omnichannel.edit:
+  en: "Edit"
+  ru: "Изменить"
+omnichannel.edit_not_allowed:
+  en: "Only the serving agent can edit this chat."
+  ru: "Изменять этот чат может только обслуживающий оператор."
+omnichannel.save:
+  en: "Save"
+  ru: "Сохранить"
+omnichannel.saved:
+  en: "Room information saved"
+  ru: "Информация о комнате сохранена"
+omnichannel.no_contact:
+  en: "No contact information"
+  ru: "Нет информации о контакте"
+omnichannel.emails:
+  en: "Email"
+  ru: "Эл. почта"
+omnichannel.phones:
+  en: "Phone"
+  ru: "Телефон"
+omnichannel.channels:
+  en: "Channels"
+  ru: "Каналы"
+omnichannel.blocked:
+  en: "Blocked"
+  ru: "Заблокирован"
+omnichannel.verified:
+  en: "Verified"
+  ru: "Подтверждён"
+omnichannel.last_chat:
+  en: "Last chat"
+  ru: "Последний чат"
+omnichannel.history:
+  en: "Chat history"
+  ru: "История чатов"
+omnichannel.no_history:
+  en: "No closed chats yet"
+  ru: "Закрытых чатов пока нет"
+omnichannel.no_messages:
+  en: "No messages"
+  ru: "Нет сообщений"
+omnichannel.messages_count:
+  en: "%{count} messages"
+  ru: "Сообщений: %{count}"
+omnichannel.search_messages:
+  en: "Search messages"
+  ru: "Поиск сообщений"
+omnichannel.canned_unavailable:
+  en: "Canned responses need an Enterprise license and the permission to use them."
+  ru: "Для шаблонов ответов нужны лицензия Enterprise и соответствующее право."
+omnichannel.canned_none:
+  en: "No canned responses"
+  ru: "Нет шаблонов ответов"
+omnichannel.canned_search:
+  en: "Search canned responses"
+  ru: "Поиск шаблонов"
+omnichannel.canned_all:
+  en: "All"
+  ru: "Все"
+omnichannel.canned_public:
+  en: "Public"
+  ru: "Общие"
+omnichannel.canned_department:
+  en: "Department"
+  ru: "Отдел"
+omnichannel.canned_private:
+  en: "Private"
+  ru: "Личные"
+omnichannel.canned_other:
+  en: "Other"
+  ru: "Другие"
+omnichannel.canned_use:
+  en: "Use"
+  ru: "Вставить"
+omnichannel.err.enterprise:
+  en: "This feature needs an Enterprise license."
+  ru: "Для этой функции нужна лицензия Enterprise."
+omnichannel.err.comment_required:
+  en: "A comment is required to close this chat."
+  ru: "Чтобы закрыть чат, нужен комментарий."
+omnichannel.err.tags_required:
+  en: "Tags must be assigned before closing the chat."
+  ru: "Перед закрытием чата нужно назначить теги."
+omnichannel.err.not_allowed:
+  en: "You are not allowed to do this."
+  ru: "У вас нет прав на это действие."
+omnichannel.err.already_closed:
+  en: "This conversation is already closed."
+  ru: "Эта беседа уже закрыта."
+omnichannel.err.inquiry_taken:
+  en: "Another agent already took this chat."
+  ru: "Этот чат уже взял другой оператор."
+omnichannel.err.agent_offline:
+  en: "You must be online and available to take chats."
+  ru: "Чтобы брать чаты, нужно быть в сети и доступным."
+omnichannel.err.target_offline:
+  en: "The agent is offline or not available."
+  ru: "Оператор не в сети или недоступен."
+omnichannel.err.same_department:
+  en: "The chat is already in this department."
+  ru: "Чат уже в этом отделе."
+omnichannel.err.no_agents_in_department:
+  en: "No agents are available in this department."
+  ru: "В этом отделе нет доступных операторов."
+omnichannel.err.same_agent:
+  en: "This agent already serves the chat."
+  ru: "Этот оператор уже обслуживает чат."
+omnichannel.err.on_hold:
+  en: "Chats on hold cannot be moved."
+  ru: "Чаты на удержании нельзя перемещать."
+omnichannel.err.mac_limit:
+  en: "The workspace has exceeded the monthly limit of active contacts."
+  ru: "Рабочее пространство превысило месячный лимит активных контактов."
+omnichannel.err.transcript_requested:
+  en: "A transcript was already requested for this chat."
+  ru: "Стенограмма для этого чата уже запрошена."
+omnichannel.err.business_hours:
+  en: "Business hours are closed."
+  ru: "Сейчас нерабочие часы."
+omnichannel.err.not_agent:
+  en: "You are not an omnichannel agent."
+  ru: "Вы не оператор омниканала."
+omnichannel.err.return_failed:
+  en: "The chat could not be moved to the queue."
+  ru: "Не удалось вернуть чат в очередь."
+omnichannel.err.no_visitor_token:
+  en: "The visitor of this chat is unknown."
+  ru: "Посетитель этого чата неизвестен."
+omnichannel.sys.started:
+  en: "Chat started"
+  ru: "Чат начался"
+omnichannel.sys.closed:
+  en: "Conversation closed"
+  ru: "Беседа закрыта"
+omnichannel.sys.closed_comment:
+  en: "Conversation closed: %{comment}."
+  ru: "Беседа закрыта: %{comment}."
+omnichannel.sys.video_call:
+  en: "New Video Call Request"
+  ru: "Новый запрос на видео-звонок"
+omnichannel.sys.navigation:
+  en: "New Navigation: %{history}"
+  ru: "Новая навигация: %{history}"
+omnichannel.sys.transfer:
+  en: "New Chat Transfer: %{transfer}"
+  ru: "Новый чат-трансфер: %{transfer}"
+omnichannel.sys.to_agent:
+  en: "%{from} transferred the chat to %{to}"
+  ru: "%{from} перенаправил чат в %{to}"
+omnichannel.sys.to_agent_comment:
+  en: "%{from} transferred the chat to %{to} with a comment: %{comment}"
+  ru: "%{from} передал чат %{to} с комментарием: %{comment}"
+omnichannel.sys.to_department:
+  en: "%{from} transferred the chat to the department %{to}"
+  ru: "%{from} перенаправил чат в департамент %{to}"
+omnichannel.sys.to_department_comment:
+  en: "%{from} transferred the chat to the department %{to} with a comment: %{comment}"
+  ru: "%{from} передал чат в отдел %{to} с комментарием: %{comment}"
+omnichannel.sys.to_queue:
+  en: "%{from} returned the chat to the queue"
+  ru: "%{from} вернул чат в очередь"
+omnichannel.sys.to_queue_comment:
+  en: "%{from} returned the chat to the queue with a comment: %{comment}"
+  ru: "%{from} вернул чат в очередь с комментарием: %{comment}"
+omnichannel.sys.auto_to_agent:
+  en: "%{from} transferred the chat to %{to} since it was unanswered for %{duration} seconds"
+  ru: "%{from} передал чат %{to}, так как на него не отвечали %{duration} с"
+omnichannel.sys.auto_to_queue:
+  en: "%{from} returned the chat to the queue since it was unanswered for %{duration} seconds"
+  ru: "%{from} вернул чат в очередь, так как на него не отвечали %{duration} с"
+omnichannel.sys.transferred:
+  en: "%{from} transferred the chat"
+  ru: "%{from} передал чат"
+omnichannel.sys.fallback:
+  en: "Transferred to fallback department: %{fallback}"
+  ru: "Передано в резервный отдел: %{fallback}"
+omnichannel.sys.fallback_reason:
+  en: "The original department ( %{from} ) doesn't have online agents. Chat succesfully transferred to %{to}"
+  ru: "В исходном отделе ( %{from} ) нет операторов в сети. Чат успешно передан отделу %{to}"
+omnichannel.sys.transcript:
+  en: "Chat transcript sent: %{transcript}"
+  ru: "Стенограмма чата отправлена: %{transcript}"
+omnichannel.sys.transcript_visitor:
+  en: "%{guest} requested the chat transcript"
+  ru: "%{guest} запросил стенограмму чата"
+omnichannel.sys.transcript_user:
+  en: "%{agent} sent the chat transcript to %{guest}"
+  ru: "%{agent} отправил стенограмму чата гостю %{guest}"
+omnichannel.sys.on_hold:
+  en: "Chat On Hold: %{comment}"
+  ru: "Чат на удержании: %{comment}"
+omnichannel.sys.resumed:
+  en: "On Hold Chat Resumed: %{comment}"
+  ru: "Чат в режиме удержания возобновлен: %{comment}"
+omnichannel.sys.no_comment:
+  en: "No comment provided"
+  ru: "Без комментария"
+omnichannel.sys.priority:
+  en: "Priority changed: %{user} changed the priority to %{priority}"
+  ru: "Приоритет изменён: %{user} изменил приоритет на %{priority}"
+omnichannel.sys.sla:
+  en: "SLA Policy changed: %{user} changed the SLA Policy to %{sla}"
+  ru: "Политика SLA изменена: %{user} изменил политику SLA на %{sla}"
+omnichannel.sys.unknown_user:
+  en: "Unknown User"
+  ru: "Неизвестный пользователь"
+omnichannel.sys.unprioritized:
+  en: "Unprioritized"
+  ru: "Без приоритета"
+omnichannel.sys.without_sla:
+  en: "Without SLA"
+  ru: "Без SLA"

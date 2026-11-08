@@ -600,7 +600,8 @@ impl App {
         let after = self.after_update();
         let confirm = self.show_next_confirmation();
         let unread = self.unread_hook();
-        Task::batch([task, after, confirm, unread])
+        let omni = self.omni_after_update();
+        Task::batch([task, after, confirm, unread, omni])
     }
 
     /// Applies pending workspace changes to derived views and fetches wanted images.
@@ -813,8 +814,10 @@ impl App {
                     tracing::debug!(server = %sid, "dropping event of an old session");
                     return Task::none();
                 }
-                self.on_server_event(sid, ev)
+                let omni = self.omni_on_event(&sid, &ev);
+                Task::batch([omni, self.on_server_event(sid, ev)])
             }
+            Message::Omni(sid, epoch, m) => self.on_omni(sid, epoch, m),
             Message::InitialLoaded(sid, epoch, r) => self.on_initial_loaded(sid, epoch, r),
             Message::Resynced(sid, epoch, delta, rooms) => {
                 self.on_resynced(sid, epoch, delta, rooms)
@@ -1254,6 +1257,7 @@ impl App {
         let (url, tls) = (s.url.clone(), s.tls.clone());
         let kind = self.config.server(sid).and_then(|e| e.token_kind);
         let revoke = everywhere || kind == Some(TokenKind::Login);
+        let agent = crate::omnichannel::is_available_agent(&s.workspace);
         // Stop-typing calls of the open rooms; not chained before the
         // logout, which must not wait for a DDP call while the socket is down
         // (the server drops the activity with the connection anyway).
@@ -1270,6 +1274,9 @@ impl App {
                 let sid = sid.clone();
                 Task::perform(
                     async move {
+                        if agent {
+                            crate::omnichannel::sign_out_agent(&h).await;
+                        }
                         tokio::time::timeout(LOGOUT_TIMEOUT, h.session().logout())
                             .await
                             .map_err(|_| "timeout".to_owned())?
@@ -1294,6 +1301,9 @@ impl App {
             }
             (false, Some(h), _) => Task::perform(
                 async move {
+                    if agent {
+                        crate::omnichannel::sign_out_agent(&h).await;
+                    }
                     h.session().close().await;
                 },
                 |_| Message::Noop,
@@ -1369,6 +1379,7 @@ impl App {
                 self.save_config()
             }
             sidebar::Out::Status(m) => self.on_status_menu(sid, m),
+            sidebar::Out::Omni(m) => self.on_omni_sidebar(sid, m),
             sidebar::Out::Directory => self.navigate(component::Nav::Directory),
             sidebar::Out::Create => self.navigate(component::Nav::CreateRoom(
                 crate::dialogs::create_room::Kind::Channel,
@@ -1561,7 +1572,8 @@ impl App {
                 | room::Effect::OpenPanel(_)
                 | room::Effect::ClosePanel
                 | room::Effect::ShowMessage(_)
-                | room::Effect::Compose(_) => Task::none(),
+                | room::Effect::Compose(_)
+                | room::Effect::Omni(_) => Task::none(),
                 room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
                 room::Effect::StartDiscussion { pmid } => self.start_discussion(sid, rid, pmid),
                 room::Effect::RecentEmoji(key) => {

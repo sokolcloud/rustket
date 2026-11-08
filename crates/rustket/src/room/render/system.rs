@@ -24,6 +24,9 @@ pub fn system_text(m: &Message, real_names: bool) -> String {
 
 /// [`system_text`] in locale `loc`.
 pub fn system_text_in(m: &Message, real_names: bool, loc: &str) -> String {
+    if let Some(s) = crate::omnichannel::system::text(m, loc) {
+        return s;
+    }
     let user = actor(m, real_names);
     let msg = sanitize_bidi(&m.msg);
     let role = match m.role.as_deref().unwrap_or_default() {
