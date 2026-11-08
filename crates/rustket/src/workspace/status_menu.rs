@@ -46,6 +46,8 @@ pub enum Message {
     StatusSet(Option<UserStatus>, Option<String>, Res<()>),
     Account,
     Settings,
+    /// Administration (shown with any admin permission).
+    Admin,
     Logout,
     LogoutEverywhere,
     RemoveServer,
@@ -260,6 +262,10 @@ impl StatusMenu {
                 self.open = false;
                 Action::effect(Effect::Navigate(Nav::Settings))
             }
+            Message::Admin => {
+                self.open = false;
+                Action::effect(Effect::Navigate(Nav::Admin))
+            }
             Message::Logout => {
                 self.open = false;
                 Action::effect(Effect::Logout { everywhere: false })
@@ -460,7 +466,15 @@ impl StatusMenu {
                 labelled(Icon::Settings, t!("status_menu.settings").into_owned()),
                 Some(Message::Settings),
                 false,
-            ))
+            ));
+        if rustket_core::admin::can_view_admin(ws) {
+            col = col.push(item(
+                labelled(Icon::Shield, t!("admin.entry").into_owned()),
+                Some(Message::Admin),
+                false,
+            ));
+        }
+        col = col
             .push(divider())
             .push(item(
                 labelled(Icon::LogOut, t!("status_menu.logout").into_owned()),

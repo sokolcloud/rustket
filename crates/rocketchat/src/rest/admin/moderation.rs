@@ -124,6 +124,16 @@ impl RestClient {
         Ok(field::<Option<ModerationReport>>(v, "report").unwrap_or(None))
     }
 
+    /// Deletes a reported message as its author (`chat.delete` with
+    /// `asUser: true`, like the web's moderation console).
+    pub async fn moderation_delete_message(&self, rid: &str, msg_id: &str) -> Result<()> {
+        self.post_ok(
+            "chat.delete",
+            &json!({ "roomId": rid, "msgId": msg_id, "asUser": true }),
+        )
+        .await
+    }
+
     /// Dismisses the reports of one message.
     pub async fn moderation_dismiss_message_reports(
         &self,

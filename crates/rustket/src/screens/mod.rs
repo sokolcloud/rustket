@@ -2,6 +2,7 @@
 
 pub mod account;
 pub mod add_server;
+pub mod admin;
 pub mod cert;
 pub mod directory;
 pub mod login;

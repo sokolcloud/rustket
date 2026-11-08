@@ -91,6 +91,7 @@ pub enum Screen {
     Settings(Box<crate::screens::settings::Settings>),
     Account(ServerId, Box<crate::screens::account::Account>),
     Directory(ServerId, Box<crate::screens::directory::Directory>),
+    Admin(ServerId, Box<crate::screens::admin::Admin>),
 }
 
 pub enum Modal {
@@ -790,6 +791,7 @@ impl App {
             Message::Settings(m) => self.on_settings(m),
             Message::Account(sid, m) => self.on_account(sid, m),
             Message::Directory(sid, m) => self.on_directory(sid, m),
+            Message::Admin(sid, m) => self.on_admin(sid, m),
             Message::CreateRoom(sid, m) => self.on_create_room(sid, m),
             Message::QuickSwitcher(sid, m) => self.on_quick_switcher(sid, m),
             Message::StatusMenu(sid, m) => self.on_status_menu(sid, m),
@@ -1635,6 +1637,7 @@ impl App {
     }
 
     fn on_server_event(&mut self, sid: ServerId, ev: ServerEvent) -> Task<Message> {
+        self.admin_event(&sid, &ev);
         let Some(s) = self.servers.get_mut(&sid) else {
             return Task::none();
         };
@@ -2379,6 +2382,11 @@ impl App {
                 c.subscription()
                     .with(sid.clone())
                     .map(|(sid, m)| Message::Directory(sid, m)),
+            ),
+            Screen::Admin(sid, c) => subs.push(
+                c.subscription()
+                    .with(sid.clone())
+                    .map(|(sid, m)| Message::Admin(sid, m)),
             ),
             _ => {}
         }

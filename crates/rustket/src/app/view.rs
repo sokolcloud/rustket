@@ -59,6 +59,11 @@ impl App {
                 c.view(&self.component_view_ctx(s))
                     .map(move |m| Message::Directory(sid.clone(), m))
             }),
+            Screen::Admin(sid, c) => self.server_page(sid, |s| {
+                let sid = sid.clone();
+                crate::screens::admin::view_in(c, self.component_view_ctx(s))
+                    .map(move |m| Message::Admin(sid.clone(), m))
+            }),
         };
         let (overlay, dismiss) = self.overlay();
         let content = modal(base, overlay, dismiss);
@@ -80,7 +85,7 @@ impl App {
     fn rail(&self) -> Element<'_, Message> {
         let adding = !matches!(
             self.screen,
-            Screen::Server | Screen::Account(..) | Screen::Directory(..)
+            Screen::Server | Screen::Account(..) | Screen::Directory(..) | Screen::Admin(..)
         );
         let entries = self
             .config

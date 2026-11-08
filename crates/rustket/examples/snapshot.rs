@@ -445,6 +445,9 @@ async fn main() {
     let work = {
         let (server, ledger) = (server.clone(), ledger.clone());
         tokio::spawn(async move {
+            if admin_shots::admin_shots(&server, &out).await {
+                return;
+            }
             let fixture = setup(&server, ledger).await;
             run(server, out, fixture).await;
         })
@@ -874,6 +877,9 @@ fn image_bytes(w: u32, h: u32) -> Vec<u8> {
 }
 #[path = "snapshot/glue.rs"]
 mod glue;
+
+#[path = "snapshot/admin.rs"]
+mod admin_shots;
 #[path = "snapshot/timeline_fixture.rs"]
 mod timeline_fixture;
 /// Quick switcher, directory, create dialogs and account tabs (light + dark).

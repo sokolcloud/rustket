@@ -1,0 +1,1624 @@
+_version: 2
+admin.apps.author:
+  en: "Author"
+  ru: "Автор"
+admin.apps.count:
+  en: "Enabled: %{marketplace} of %{max_marketplace} marketplace apps, %{private} of %{max_private} private apps"
+  ru: "Включено: %{marketplace} из %{max_marketplace} приложений маркетплейса, %{private} из %{max_private} частных"
+admin.apps.details:
+  en: "Details"
+  ru: "Сведения"
+admin.apps.empty:
+  en: "No apps installed."
+  ru: "Приложения не установлены."
+admin.apps.logs:
+  en: "Logs (%{total})"
+  ru: "Журнал (%{total})"
+admin.apps.marketplace:
+  en: "Marketplace"
+  ru: "Маркетплейс"
+admin.apps.no_logs:
+  en: "No logs."
+  ru: "Записей нет."
+admin.apps.no_settings:
+  en: "This app has no settings."
+  ru: "У приложения нет настроек."
+admin.apps.private:
+  en: "Private"
+  ru: "Частное"
+admin.apps.saved:
+  en: "App settings saved"
+  ru: "Настройки приложения сохранены"
+admin.apps.settings:
+  en: "Settings"
+  ru: "Настройки"
+admin.apps.status:
+  en: "Status"
+  ru: "Состояние"
+admin.apps.uninstall:
+  en: "Uninstall"
+  ru: "Удалить"
+admin.apps.uninstall_body:
+  en: "App %{name} will be uninstalled."
+  ru: "Приложение %{name} будет удалено."
+admin.apps.uninstalled:
+  en: "App uninstalled"
+  ru: "Приложение удалено"
+admin.apps.version:
+  en: "Version"
+  ru: "Версия"
+admin.back:
+  en: "Back"
+  ru: "Назад"
+admin.beta:
+  en: "Beta"
+  ru: "Бета"
+admin.browser_body:
+  en: "This area is not available in Rustket yet. Open it in the browser (it uses the browser's own login)."
+  ru: "Этот раздел пока недоступен в Rustket. Откройте его в браузере (браузер использует свой вход)."
+admin.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+admin.choose_file:
+  en: "Choose file"
+  ru: "Выбрать файл"
+admin.close:
+  en: "Close"
+  ru: "Закрыть"
+admin.copied:
+  en: "Copied to the clipboard"
+  ru: "Скопировано в буфер обмена"
+admin.copy:
+  en: "Copy"
+  ru: "Копировать"
+admin.delete:
+  en: "Delete"
+  ru: "Удалить"
+admin.discard:
+  en: "Discard changes"
+  ru: "Отменить изменения"
+admin.done:
+  en: "Done"
+  ru: "Готово"
+admin.edit:
+  en: "Edit"
+  ru: "Изменить"
+admin.emoji.aliases:
+  en: "Aliases"
+  ru: "Псевдонимы"
+admin.emoji.aliases_hint:
+  en: "Comma-separated"
+  ru: "Через запятую"
+admin.emoji.delete_body:
+  en: "Emoji :%{name}: will be deleted."
+  ru: "Эмодзи :%{name}: будет удалён."
+admin.emoji.delete_title:
+  en: "Delete emoji"
+  ru: "Удалить эмодзи"
+admin.emoji.deleted:
+  en: "Emoji deleted"
+  ru: "Эмодзи удалён"
+admin.emoji.edit:
+  en: "Edit emoji"
+  ru: "Изменить эмодзи"
+admin.emoji.empty:
+  en: "No custom emoji."
+  ru: "Пользовательских эмодзи нет."
+admin.emoji.file_required:
+  en: "Choose an image."
+  ru: "Выберите изображение."
+admin.emoji.image:
+  en: "Image"
+  ru: "Изображение"
+admin.emoji.invalid_alias:
+  en: "Aliases must not contain any of : < > & | \" ' / \\ ( )."
+  ru: "Псевдонимы не должны содержать символы : < > & | \" ' / \\ ( )."
+admin.emoji.invalid_name:
+  en: "The name must not contain spaces or any of , : < > & \" ' / \\ ( )."
+  ru: "Название не должно содержать пробелы и символы , : < > & \" ' / \\ ( )."
+admin.emoji.name:
+  en: "Name"
+  ru: "Название"
+admin.emoji.new:
+  en: "New emoji"
+  ru: "Новый эмодзи"
+admin.emoji.saved:
+  en: "Emoji saved"
+  ru: "Эмодзи сохранён"
+admin.emoji.stored_as:
+  en: "Saved as :%{name}:"
+  ru: "Будет сохранён как :%{name}:"
+admin.entry:
+  en: "Administration"
+  ru: "Администрирование"
+admin.failed:
+  en: "Failed"
+  ru: "Ошибка"
+admin.file_too_large:
+  en: "The file is larger than %{max}."
+  ru: "Файл больше %{max}."
+admin.inboxes.active:
+  en: "Active"
+  ru: "Активен"
+admin.inboxes.bad_port:
+  en: "Enter valid ports."
+  ru: "Введите корректные порты."
+admin.inboxes.delete_body:
+  en: "Inbox %{name} will be deleted."
+  ru: "Ящик %{name} будет удалён."
+admin.inboxes.delete_title:
+  en: "Delete inbox"
+  ru: "Удалить ящик"
+admin.inboxes.deleted:
+  en: "Inbox deleted"
+  ru: "Ящик удалён"
+admin.inboxes.department:
+  en: "Department ID"
+  ru: "ID отдела"
+admin.inboxes.description:
+  en: "Description"
+  ru: "Описание"
+admin.inboxes.duplicate:
+  en: "Another inbox already uses this address."
+  ru: "Этот адрес уже использует другой ящик."
+admin.inboxes.edit:
+  en: "Edit inbox"
+  ru: "Изменить ящик"
+admin.inboxes.email:
+  en: "E-mail"
+  ru: "Почта"
+admin.inboxes.empty:
+  en: "No e-mail inboxes."
+  ru: "Почтовых ящиков нет."
+admin.inboxes.name:
+  en: "Name"
+  ru: "Название"
+admin.inboxes.new:
+  en: "New inbox"
+  ru: "Новый ящик"
+admin.inboxes.port:
+  en: "Port"
+  ru: "Порт"
+admin.inboxes.required:
+  en: "Name, e-mail and both servers are required."
+  ru: "Укажите название, почту и оба сервера."
+admin.inboxes.saved:
+  en: "Inbox saved"
+  ru: "Ящик сохранён"
+admin.inboxes.secure:
+  en: "Secure connection"
+  ru: "Защищённое соединение"
+admin.inboxes.send_test:
+  en: "Send test e-mail"
+  ru: "Отправить тестовое письмо"
+admin.inboxes.sender_info:
+  en: "Sender info"
+  ru: "Сведения об отправителе"
+admin.inboxes.server:
+  en: "Server"
+  ru: "Сервер"
+admin.inboxes.test_sent:
+  en: "Test e-mail sent"
+  ru: "Тестовое письмо отправлено"
+admin.inboxes.username:
+  en: "Username"
+  ru: "Пользователь"
+admin.integrations.alias:
+  en: "Alias"
+  ru: "Псевдоним"
+admin.integrations.all:
+  en: "All"
+  ru: "Все"
+admin.integrations.avatar:
+  en: "Avatar URL"
+  ru: "URL аватара"
+admin.integrations.channel:
+  en: "Channel"
+  ru: "Канал"
+admin.integrations.channel_hint:
+  en: "#channel, @user, or several separated by commas"
+  ru: "#канал, @пользователь или несколько через запятую"
+admin.integrations.channel_required:
+  en: "Choose a channel."
+  ru: "Укажите канал."
+admin.integrations.clear:
+  en: "Clear history"
+  ru: "Очистить историю"
+admin.integrations.clear_body:
+  en: "The whole history of this webhook will be deleted."
+  ru: "Вся история этого веб-хука будет удалена."
+admin.integrations.clear_title:
+  en: "Clear history"
+  ru: "Очистить историю"
+admin.integrations.created:
+  en: "Created"
+  ru: "Создана"
+admin.integrations.created_by:
+  en: "Created by"
+  ru: "Создал"
+admin.integrations.curl:
+  en: "Example"
+  ru: "Пример"
+admin.integrations.delete_body:
+  en: "Integration %{name} will be deleted."
+  ru: "Интеграция %{name} будет удалена."
+admin.integrations.delete_title:
+  en: "Delete integration"
+  ru: "Удалить интеграцию"
+admin.integrations.deleted:
+  en: "Integration deleted"
+  ru: "Интеграция удалена"
+admin.integrations.emoji:
+  en: "Emoji"
+  ru: "Эмодзи"
+admin.integrations.empty:
+  en: "No integrations."
+  ru: "Интеграций нет."
+admin.integrations.enabled:
+  en: "Enabled"
+  ru: "Включена"
+admin.integrations.error:
+  en: "Error"
+  ru: "Ошибка"
+admin.integrations.ev_file_uploaded:
+  en: "File uploaded"
+  ru: "Загружен файл"
+admin.integrations.ev_room_archived:
+  en: "Room archived"
+  ru: "Комната архивирована"
+admin.integrations.ev_room_created:
+  en: "Room created"
+  ru: "Комната создана"
+admin.integrations.ev_room_joined:
+  en: "User joined room"
+  ru: "Пользователь вошёл в комнату"
+admin.integrations.ev_room_left:
+  en: "User left room"
+  ru: "Пользователь вышел из комнаты"
+admin.integrations.ev_send_message:
+  en: "Message sent"
+  ru: "Отправлено сообщение"
+admin.integrations.ev_unknown:
+  en: "Unknown"
+  ru: "Неизвестно"
+admin.integrations.ev_user_created:
+  en: "User created"
+  ru: "Пользователь создан"
+admin.integrations.event:
+  en: "Event"
+  ru: "Событие"
+admin.integrations.finished:
+  en: "Finished"
+  ru: "Завершено"
+admin.integrations.history:
+  en: "History"
+  ru: "История"
+admin.integrations.http_error:
+  en: "HTTP error"
+  ru: "Ошибка HTTP"
+admin.integrations.http_result:
+  en: "HTTP result"
+  ru: "Результат HTTP"
+admin.integrations.impersonate:
+  en: "Impersonate user"
+  ru: "Отправлять от имени пользователя"
+admin.integrations.incoming:
+  en: "Incoming"
+  ru: "Входящие"
+admin.integrations.increments_of_two:
+  en: "Increments of two"
+  ru: "Шаги по два"
+admin.integrations.name:
+  en: "Name"
+  ru: "Название"
+admin.integrations.new_incoming:
+  en: "New incoming"
+  ru: "Новая входящая"
+admin.integrations.new_outgoing:
+  en: "New outgoing"
+  ru: "Новая исходящая"
+admin.integrations.no_history:
+  en: "No history yet."
+  ru: "Истории пока нет."
+admin.integrations.outgoing:
+  en: "Outgoing"
+  ru: "Исходящие"
+admin.integrations.override:
+  en: "Allow overriding the destination channel"
+  ru: "Разрешить переопределять канал назначения"
+admin.integrations.post_as:
+  en: "Post as"
+  ru: "Публиковать от имени"
+admin.integrations.post_as_hint:
+  en: "Username the messages are posted as"
+  ru: "Логин, от имени которого публикуются сообщения"
+admin.integrations.powers_of_ten:
+  en: "Powers of ten"
+  ru: "Степени десяти"
+admin.integrations.powers_of_two:
+  en: "Powers of two"
+  ru: "Степени двойки"
+admin.integrations.replay:
+  en: "Replay"
+  ru: "Повторить"
+admin.integrations.replayed:
+  en: "Replayed"
+  ru: "Повторено"
+admin.integrations.retry:
+  en: "Retry failed calls"
+  ru: "Повторять неудачные вызовы"
+admin.integrations.retry_count:
+  en: "Retry count"
+  ru: "Число повторов"
+admin.integrations.retry_delay:
+  en: "Retry delay"
+  ru: "Задержка повторов"
+admin.integrations.run_on_edits:
+  en: "Run on edits"
+  ru: "Срабатывать при редактировании"
+admin.integrations.saved:
+  en: "Integration saved"
+  ru: "Интеграция сохранена"
+admin.integrations.script:
+  en: "Script"
+  ru: "Скрипт"
+admin.integrations.script_enabled:
+  en: "Script enabled"
+  ru: "Скрипт включён"
+admin.integrations.script_error:
+  en: "Script error: %{error}"
+  ru: "Ошибка скрипта: %{error}"
+admin.integrations.script_hint:
+  en: "JavaScript class Script, compiled by the server"
+  ru: "JavaScript-класс Script, компилируется сервером"
+admin.integrations.step:
+  en: "Step"
+  ru: "Шаг"
+admin.integrations.target_room:
+  en: "Target room"
+  ru: "Целевая комната"
+admin.integrations.token:
+  en: "Token"
+  ru: "Токен"
+admin.integrations.token_required:
+  en: "Outgoing webhooks need a token."
+  ru: "Исходящему веб-хуку нужен токен."
+admin.integrations.trigger_anywhere:
+  en: "Trigger words anywhere in the message"
+  ru: "Ключевые слова в любом месте сообщения"
+admin.integrations.trigger_words:
+  en: "Trigger words"
+  ru: "Ключевые слова"
+admin.integrations.trigger_words_hint:
+  en: "Comma-separated; empty: every message"
+  ru: "Через запятую; пусто — каждое сообщение"
+admin.integrations.type:
+  en: "Type"
+  ru: "Тип"
+admin.integrations.urls:
+  en: "URLs"
+  ru: "URL-адреса"
+admin.integrations.urls_hint:
+  en: "One per line"
+  ru: "По одному в строке"
+admin.integrations.urls_required:
+  en: "Enter at least one URL."
+  ru: "Введите хотя бы один URL."
+admin.integrations.username_required:
+  en: "Choose the user to post as."
+  ru: "Укажите пользователя для публикации."
+admin.integrations.webhook:
+  en: "Webhook"
+  ru: "Веб-хук"
+admin.integrations.webhook_url:
+  en: "Webhook URL"
+  ru: "URL веб-хука"
+admin.invites.copied:
+  en: "Invite link copied"
+  ru: "Ссылка-приглашение скопирована"
+admin.invites.copy:
+  en: "Copy link"
+  ru: "Копировать ссылку"
+admin.invites.created:
+  en: "Created"
+  ru: "Создано"
+admin.invites.empty:
+  en: "No invites."
+  ru: "Приглашений нет."
+admin.invites.expired:
+  en: "Expired"
+  ru: "Истекло"
+admin.invites.expires:
+  en: "Expires"
+  ru: "Истекает"
+admin.invites.left:
+  en: "Left"
+  ru: "Осталось"
+admin.invites.never:
+  en: "Never"
+  ru: "Никогда"
+admin.invites.remove_body:
+  en: "Invite %{id} will stop working."
+  ru: "Приглашение %{id} перестанет работать."
+admin.invites.remove_title:
+  en: "Remove invite"
+  ru: "Удалить приглашение"
+admin.invites.removed:
+  en: "Invite removed"
+  ru: "Приглашение удалено"
+admin.invites.room:
+  en: "Room"
+  ru: "Комната"
+admin.invites.token:
+  en: "Token"
+  ru: "Токен"
+admin.invites.unlimited:
+  en: "Unlimited"
+  ru: "Без ограничений"
+admin.invites.uses:
+  en: "Uses"
+  ru: "Использовано"
+admin.loading:
+  en: "Loading…"
+  ru: "Загрузка…"
+admin.mailer.bad_from:
+  en: "Enter a valid From address."
+  ru: "Введите корректный адрес отправителя."
+admin.mailer.body:
+  en: "E-mail body"
+  ru: "Текст письма"
+admin.mailer.body_hint:
+  en: "HTML; must contain [unsubscribe]. Placeholders: [name], [fname], [lname], [email], [Site_Name], [Site_URL]"
+  ru: "HTML; должен содержать [unsubscribe]. Подстановки: [name], [fname], [lname], [email], [Site_Name], [Site_URL]"
+admin.mailer.dry_run:
+  en: "Dry run"
+  ru: "Пробный запуск"
+admin.mailer.dry_run_hint:
+  en: "A dry run sends one e-mail to the user whose address is the From address."
+  ru: "Пробный запуск отправляет одно письмо пользователю с адресом из поля «От кого»."
+admin.mailer.from:
+  en: "From"
+  ru: "От кого"
+admin.mailer.query:
+  en: "Query"
+  ru: "Запрос"
+admin.mailer.query_hint:
+  en: "Optional MongoDB filter on users, as JSON"
+  ru: "Необязательный фильтр пользователей MongoDB в JSON"
+admin.mailer.send:
+  en: "Send"
+  ru: "Отправить"
+admin.mailer.sent:
+  en: "The e-mails are being sent"
+  ru: "Письма отправляются"
+admin.mailer.subject:
+  en: "Subject"
+  ru: "Тема"
+admin.mailer.subject_required:
+  en: "Enter a subject."
+  ru: "Введите тему."
+admin.mailer.unsubscribe_required:
+  en: "The body must contain the [unsubscribe] link."
+  ru: "Текст должен содержать ссылку [unsubscribe]."
+admin.mod.confirm:
+  en: "Confirm"
+  ru: "Подтвердить"
+admin.mod.deactivate:
+  en: "Deactivate user"
+  ru: "Деактивировать пользователя"
+admin.mod.deactivate_body:
+  en: "The reported messages are deleted, the user is deactivated (rooms they own get a new owner) and the reports are dismissed."
+  ru: "Сообщения с жалобами будут удалены, пользователь деактивирован (у его комнат появится новый владелец), жалобы отклонены."
+admin.mod.delete_all:
+  en: "Delete all messages"
+  ru: "Удалить все сообщения"
+admin.mod.delete_all_body:
+  en: "All reported messages of this user will be deleted."
+  ru: "Все сообщения пользователя с жалобами будут удалены."
+admin.mod.delete_message:
+  en: "Delete message"
+  ru: "Удалить сообщение"
+admin.mod.delete_message_body:
+  en: "The message will be deleted and its reports dismissed."
+  ru: "Сообщение будет удалено, жалобы на него — отклонены."
+admin.mod.details:
+  en: "Reports of %{user}"
+  ru: "Жалобы на %{user}"
+admin.mod.dismiss:
+  en: "Dismiss"
+  ru: "Отклонить"
+admin.mod.dismiss_all:
+  en: "Dismiss reports"
+  ru: "Отклонить жалобы"
+admin.mod.dismiss_body:
+  en: "The reports will be dismissed."
+  ru: "Жалобы будут отклонены."
+admin.mod.done:
+  en: "Done"
+  ru: "Готово"
+admin.mod.empty:
+  en: "No reports."
+  ru: "Жалоб нет."
+admin.mod.message:
+  en: "Last message"
+  ru: "Последнее сообщение"
+admin.mod.messages:
+  en: "Reported messages"
+  ru: "Жалобы на сообщения"
+admin.mod.no_messages:
+  en: "No reported messages."
+  ru: "Сообщений с жалобами нет."
+admin.mod.reported_at:
+  en: "Reported"
+  ru: "Жалоба"
+admin.mod.reports:
+  en: "Reports"
+  ru: "Жалобы"
+admin.mod.reset_avatar:
+  en: "Reset avatar"
+  ru: "Сбросить аватар"
+admin.mod.reset_avatar_body:
+  en: "The user's avatar is reset to the default."
+  ru: "Аватар пользователя будет сброшен."
+admin.mod.rooms:
+  en: "Rooms"
+  ru: "Комнаты"
+admin.mod.user:
+  en: "User"
+  ru: "Пользователь"
+admin.mod.users:
+  en: "Reported users"
+  ru: "Жалобы на пользователей"
+admin.name_required:
+  en: "A name is required."
+  ru: "Укажите имя."
+admin.next:
+  en: "Next page"
+  ru: "Следующая страница"
+admin.no:
+  en: "No"
+  ru: "Нет"
+admin.no_sections:
+  en: "You have no administration permissions on this server."
+  ru: "У вас нет прав администрирования на этом сервере."
+admin.not_allowed:
+  en: "You are not allowed to do this."
+  ru: "У вас нет прав на это действие."
+admin.oauth.active:
+  en: "Active"
+  ru: "Активно"
+admin.oauth.authorize_url:
+  en: "Authorization URL"
+  ru: "URL авторизации"
+admin.oauth.client_id:
+  en: "Client ID"
+  ru: "Client ID"
+admin.oauth.client_secret:
+  en: "Client secret"
+  ru: "Client secret"
+admin.oauth.created:
+  en: "Created"
+  ru: "Создано"
+admin.oauth.created_by:
+  en: "Created by"
+  ru: "Создал"
+admin.oauth.delete_body:
+  en: "Application %{name} will be deleted; its clients can no longer log in."
+  ru: "Приложение %{name} будет удалено; его клиенты больше не смогут входить."
+admin.oauth.delete_title:
+  en: "Delete application"
+  ru: "Удалить приложение"
+admin.oauth.deleted:
+  en: "Application deleted"
+  ru: "Приложение удалено"
+admin.oauth.edit:
+  en: "Edit application"
+  ru: "Изменить приложение"
+admin.oauth.empty:
+  en: "No OAuth applications."
+  ru: "OAuth-приложений нет."
+admin.oauth.name:
+  en: "Name"
+  ru: "Название"
+admin.oauth.new:
+  en: "New application"
+  ru: "Новое приложение"
+admin.oauth.redirect:
+  en: "Redirect URI"
+  ru: "URI перенаправления"
+admin.oauth.redirect_hint:
+  en: "Several URIs separated by commas"
+  ru: "Несколько URI через запятую"
+admin.oauth.required:
+  en: "Name and redirect URI are required."
+  ru: "Укажите название и URI перенаправления."
+admin.oauth.saved:
+  en: "Application saved"
+  ru: "Приложение сохранено"
+admin.oauth.token_url:
+  en: "Access token URL"
+  ru: "URL токена доступа"
+admin.ok:
+  en: "OK"
+  ru: "ОК"
+admin.open_in_browser:
+  en: "Open in browser"
+  ru: "Открыть в браузере"
+admin.overview:
+  en: "Overview"
+  ru: "Обзор"
+admin.password:
+  en: "Password"
+  ru: "Пароль"
+admin.perms.add_user:
+  en: "Add"
+  ru: "Добавить"
+admin.perms.custom_roles_premium:
+  en: "Built-in roles can be edited; custom roles need a Premium license."
+  ru: "Встроенные роли можно изменять; для своих ролей нужна лицензия Premium."
+admin.perms.description:
+  en: "Description"
+  ru: "Описание"
+admin.perms.filter:
+  en: "Filter permissions"
+  ru: "Фильтр прав"
+admin.perms.mandatory2fa:
+  en: "Two-factor authentication required"
+  ru: "Обязательная двухфакторная аутентификация"
+admin.perms.no_users:
+  en: "No users in this role."
+  ru: "У этой роли нет пользователей."
+admin.perms.page:
+  en: "Page %{page} of %{pages} (%{total})"
+  ru: "Страница %{page} из %{pages} (%{total})"
+admin.perms.permission:
+  en: "Permission"
+  ru: "Право"
+admin.perms.permissions:
+  en: "Permissions"
+  ru: "Права"
+admin.perms.protected:
+  en: "Built-in role: its name and scope cannot change."
+  ru: "Встроенная роль: название и область изменить нельзя."
+admin.perms.remove_user_body:
+  en: "Remove %{user} from role %{role}?"
+  ru: "Убрать %{user} из роли %{role}?"
+admin.perms.remove_user_title:
+  en: "Remove from role"
+  ru: "Убрать из роли"
+admin.perms.role_name:
+  en: "Name"
+  ru: "Название"
+admin.perms.role_saved:
+  en: "Role saved"
+  ru: "Роль сохранена"
+admin.perms.role_title:
+  en: "Role %{name}"
+  ru: "Роль %{name}"
+admin.perms.roles:
+  en: "Roles"
+  ru: "Роли"
+admin.perms.roles_hint:
+  en: "Open a role to edit it and manage its users."
+  ru: "Откройте роль, чтобы изменить её и управлять пользователями."
+admin.perms.scope:
+  en: "Scope"
+  ru: "Область"
+admin.perms.setting_permissions:
+  en: "Setting permissions"
+  ru: "Права на настройки"
+admin.perms.users_in_role:
+  en: "Users in role (%{total})"
+  ru: "Пользователи с ролью (%{total})"
+admin.premium:
+  en: "Premium"
+  ru: "Premium"
+admin.premium_body:
+  en: "This area is only available with an enterprise license module this workspace does not have. You can still open it in the browser."
+  ru: "Этот раздел доступен только с модулем корпоративной лицензии, которого нет у рабочего пространства. Его можно открыть в браузере."
+admin.premium_title:
+  en: "%{section} needs a Premium license"
+  ru: "Для раздела «%{section}» нужна лицензия Premium"
+admin.prev:
+  en: "Previous page"
+  ru: "Предыдущая страница"
+admin.range:
+  en: "%{from}–%{to} of %{total}"
+  ru: "%{from}–%{to} из %{total}"
+admin.refresh:
+  en: "Refresh"
+  ru: "Обновить"
+admin.retry:
+  en: "Retry"
+  ru: "Повторить"
+admin.rooms.announcement:
+  en: "Announcement"
+  ru: "Объявление"
+admin.rooms.archived:
+  en: "Archived"
+  ru: "В архиве"
+admin.rooms.created:
+  en: "Created"
+  ru: "Создана"
+admin.rooms.default:
+  en: "Default"
+  ru: "По умолчанию"
+admin.rooms.delete_body:
+  en: "The room and all its messages will be deleted. This cannot be undone."
+  ru: "Комната и все её сообщения будут удалены. Это нельзя отменить."
+admin.rooms.delete_team_body:
+  en: "This is a team's main room: the team will be deleted (its other rooms stay)."
+  ru: "Это основная комната команды: команда будет удалена (остальные её комнаты останутся)."
+admin.rooms.delete_title:
+  en: "Delete %{name}"
+  ru: "Удалить %{name}"
+admin.rooms.deleted:
+  en: "Room deleted"
+  ru: "Комната удалена"
+admin.rooms.description:
+  en: "Description"
+  ru: "Описание"
+admin.rooms.empty:
+  en: "No rooms found."
+  ru: "Комнаты не найдены."
+admin.rooms.favorite:
+  en: "Favorite by default"
+  ru: "В избранном по умолчанию"
+admin.rooms.featured:
+  en: "Featured"
+  ru: "Рекомендуемая"
+admin.rooms.msgs:
+  en: "Messages"
+  ru: "Сообщения"
+admin.rooms.name:
+  en: "Name"
+  ru: "Название"
+admin.rooms.name_required:
+  en: "The room needs a name."
+  ru: "Укажите название комнаты."
+admin.rooms.owner:
+  en: "Owner"
+  ru: "Владелец"
+admin.rooms.private:
+  en: "Private"
+  ru: "Приватная"
+admin.rooms.read_only:
+  en: "Read-only"
+  ru: "Только чтение"
+admin.rooms.saved:
+  en: "Room saved"
+  ru: "Комната сохранена"
+admin.rooms.search:
+  en: "Search rooms"
+  ru: "Поиск комнат"
+admin.rooms.t_channel:
+  en: "Channel"
+  ru: "Канал"
+admin.rooms.t_direct:
+  en: "Direct"
+  ru: "Личные"
+admin.rooms.t_discussion:
+  en: "Discussion"
+  ru: "Обсуждение"
+admin.rooms.t_livechat:
+  en: "Omnichannel"
+  ru: "Омниканальность"
+admin.rooms.t_private:
+  en: "Private group"
+  ru: "Приватная группа"
+admin.rooms.t_team:
+  en: "Team"
+  ru: "Команда"
+admin.rooms.topic:
+  en: "Topic"
+  ru: "Тема"
+admin.rooms.type:
+  en: "Type"
+  ru: "Тип"
+admin.rooms.types:
+  en: "Types:"
+  ru: "Типы:"
+admin.rooms.users:
+  en: "Users"
+  ru: "Участники"
+admin.save:
+  en: "Save"
+  ru: "Сохранить"
+admin.search:
+  en: "Search"
+  ru: "Поиск"
+admin.section.ai_center:
+  en: "AI Center"
+  ru: "Центр ИИ"
+admin.section.apps:
+  en: "Apps"
+  ru: "Приложения"
+admin.section.device_management:
+  en: "Device management"
+  ru: "Управление устройствами"
+admin.section.email_inboxes:
+  en: "Email inboxes"
+  ru: "Почтовые ящики"
+admin.section.emoji:
+  en: "Emoji"
+  ru: "Эмодзи"
+admin.section.engagement:
+  en: "Engagement"
+  ru: "Вовлечённость"
+admin.section.home:
+  en: "Overview"
+  ru: "Обзор"
+admin.section.import:
+  en: "Import"
+  ru: "Импорт"
+admin.section.integrations:
+  en: "Integrations"
+  ru: "Интеграции"
+admin.section.invites:
+  en: "Invites"
+  ru: "Приглашения"
+admin.section.mailer:
+  en: "Mailer"
+  ru: "Рассылка"
+admin.section.moderation:
+  en: "Moderation"
+  ru: "Модерация"
+admin.section.permissions:
+  en: "Permissions"
+  ru: "Права доступа"
+admin.section.reports:
+  en: "Reports"
+  ru: "Отчёты"
+admin.section.rooms:
+  en: "Rooms"
+  ru: "Комнаты"
+admin.section.settings:
+  en: "Settings"
+  ru: "Настройки"
+admin.section.sounds:
+  en: "Sounds"
+  ru: "Звуки"
+admin.section.subscription:
+  en: "Subscription"
+  ru: "Подписка"
+admin.section.third_party_login:
+  en: "Third-party login"
+  ru: "Сторонний вход"
+admin.section.user_status:
+  en: "User status"
+  ru: "Статусы пользователей"
+admin.section.users:
+  en: "Users"
+  ru: "Пользователи"
+admin.section.workspace:
+  en: "Workspace"
+  ru: "Рабочее пространство"
+admin.section_hint.ai_center:
+  en: "AI features"
+  ru: "Функции ИИ"
+admin.section_hint.apps:
+  en: "Installed apps"
+  ru: "Установленные приложения"
+admin.section_hint.device_management:
+  en: "Sessions of all users"
+  ru: "Сеансы всех пользователей"
+admin.section_hint.email_inboxes:
+  en: "Omnichannel e-mail inboxes"
+  ru: "Почтовые ящики омниканальности"
+admin.section_hint.emoji:
+  en: "Custom emoji"
+  ru: "Пользовательские эмодзи"
+admin.section_hint.engagement:
+  en: "Usage dashboards"
+  ru: "Панели использования"
+admin.section_hint.import:
+  en: "Import data from other tools"
+  ru: "Импорт данных из других систем"
+admin.section_hint.integrations:
+  en: "Incoming and outgoing webhooks"
+  ru: "Входящие и исходящие веб-хуки"
+admin.section_hint.invites:
+  en: "Invite links"
+  ru: "Ссылки-приглашения"
+admin.section_hint.mailer:
+  en: "E-mail users"
+  ru: "Письма пользователям"
+admin.section_hint.moderation:
+  en: "Reported messages and users"
+  ru: "Жалобы на сообщения и пользователей"
+admin.section_hint.permissions:
+  en: "Permission matrix and roles"
+  ru: "Матрица прав и роли"
+admin.section_hint.reports:
+  en: "Raw statistics"
+  ru: "Исходная статистика"
+admin.section_hint.rooms:
+  en: "All rooms of the workspace"
+  ru: "Все комнаты рабочего пространства"
+admin.section_hint.settings:
+  en: "All workspace settings"
+  ru: "Все настройки рабочего пространства"
+admin.section_hint.sounds:
+  en: "Custom notification sounds"
+  ru: "Пользовательские звуки уведомлений"
+admin.section_hint.subscription:
+  en: "License and cloud registration"
+  ru: "Лицензия и регистрация в облаке"
+admin.section_hint.third_party_login:
+  en: "OAuth apps using this server"
+  ru: "OAuth-приложения, использующие сервер"
+admin.section_hint.user_status:
+  en: "Custom statuses"
+  ru: "Пользовательские статусы"
+admin.section_hint.users:
+  en: "Accounts, roles and activation"
+  ru: "Учётные записи, роли и активация"
+admin.section_hint.workspace:
+  en: "Version, statistics and deployment"
+  ru: "Версия, статистика и развёртывание"
+admin.settings.alerts_body:
+  en: "Some changed settings come with a warning:"
+  ru: "Для некоторых изменённых настроек есть предупреждения:"
+admin.settings.alerts_title:
+  en: "Confirm settings change"
+  ru: "Подтвердите изменение настроек"
+admin.settings.asset_delete:
+  en: "Delete asset"
+  ru: "Удалить ресурс"
+admin.settings.asset_delete_body:
+  en: "%{name} goes back to the built-in default."
+  ru: "%{name} вернётся к встроенному значению."
+admin.settings.asset_saved:
+  en: "Asset updated"
+  ru: "Ресурс обновлён"
+admin.settings.blocked:
+  en: "Blocked by the server configuration."
+  ru: "Заблокировано конфигурацией сервера."
+admin.settings.changed:
+  en: "Changed"
+  ru: "Изменено"
+admin.settings.color:
+  en: "Color"
+  ru: "Цвет"
+admin.settings.conflict:
+  en: "Changed on the server while you were editing."
+  ru: "Изменено на сервере во время редактирования."
+admin.settings.conflicts:
+  en: "%{n} of your unsaved changes were also changed on the server."
+  ru: "%{n} из ваших несохранённых изменений также изменены на сервере."
+admin.settings.days:
+  en: "days"
+  ru: "дни"
+admin.settings.default_language:
+  en: "Default"
+  ru: "По умолчанию"
+admin.settings.default_timezone:
+  en: "Server default"
+  ru: "По умолчанию сервера"
+admin.settings.effective:
+  en: "Effective value without the license: %{value}"
+  ru: "Действующее значение без лицензии: %{value}"
+admin.settings.empty_group:
+  en: "This group has no settings you can see."
+  ru: "В этой группе нет доступных вам настроек."
+admin.settings.env:
+  en: "Set by an environment variable: changes are overwritten on restart."
+  ru: "Задано переменной окружения: изменения сбросятся при перезапуске."
+admin.settings.error.invalid_json:
+  en: "Invalid JSON"
+  ru: "Некорректный JSON"
+admin.settings.error.not_integer:
+  en: "Enter a whole number."
+  ru: "Введите целое число."
+admin.settings.error.out_of_range:
+  en: "Enter a value from %{min} to %{max}."
+  ru: "Введите значение от %{min} до %{max}."
+admin.settings.error.out_of_range_max:
+  en: "Enter a value of at most %{max}."
+  ru: "Введите значение не больше %{max}."
+admin.settings.error.out_of_range_min:
+  en: "Enter a value of at least %{min}."
+  ru: "Введите значение не меньше %{min}."
+admin.settings.error.wrong_type:
+  en: "Invalid value"
+  ru: "Некорректное значение"
+admin.settings.expression:
+  en: "Expression"
+  ru: "Выражение"
+admin.settings.hours:
+  en: "hours"
+  ru: "часы"
+admin.settings.keep_mine:
+  en: "Keep mine"
+  ru: "Оставить моё"
+admin.settings.ldap_search:
+  en: "Test LDAP search"
+  ru: "Проверить поиск LDAP"
+admin.settings.ldap_sync:
+  en: "Sync now"
+  ru: "Синхронизировать"
+admin.settings.ldap_sync_body:
+  en: "Users are synchronized from LDAP now."
+  ru: "Пользователи будут синхронизированы из LDAP."
+admin.settings.ldap_test:
+  en: "Test connection"
+  ru: "Проверить подключение"
+admin.settings.ldap_user_help:
+  en: "Username to look up in LDAP"
+  ru: "Логин для поиска в LDAP"
+admin.settings.license_hint:
+  en: "The license is managed on the Subscription page."
+  ru: "Лицензия управляется на странице «Подписка»."
+admin.settings.minutes:
+  en: "minutes"
+  ru: "минуты"
+admin.settings.n_changed:
+  en: "%{n} changed"
+  ru: "Изменено: %{n}"
+admin.settings.no_asset:
+  en: "No file (built-in default)"
+  ru: "Файла нет (встроенный по умолчанию)"
+admin.settings.no_match:
+  en: "No settings match."
+  ru: "Подходящих настроек нет."
+admin.settings.oauth_add:
+  en: "Add custom OAuth"
+  ru: "Добавить свой OAuth"
+admin.settings.oauth_name_help:
+  en: "Name of the new OAuth service"
+  ru: "Название новой службы OAuth"
+admin.settings.oauth_refresh:
+  en: "Refresh OAuth services"
+  ru: "Обновить службы OAuth"
+admin.settings.oauth_remove:
+  en: "Remove custom OAuth"
+  ru: "Удалить свой OAuth"
+admin.settings.oauth_remove_body:
+  en: "OAuth service %{name} and its settings will be removed."
+  ru: "Служба OAuth %{name} и её настройки будут удалены."
+admin.settings.read_only:
+  en: "You can view the settings but not change them."
+  ru: "Вы можете просматривать настройки, но не изменять их."
+admin.settings.reset:
+  en: "Reset to default"
+  ru: "Сбросить к значению по умолчанию"
+admin.settings.restart_body:
+  en: "The server will restart; everybody is disconnected for a while."
+  ru: "Сервер перезапустится; все пользователи на время отключатся."
+admin.settings.reveal:
+  en: "Show or hide"
+  ru: "Показать или скрыть"
+admin.settings.run:
+  en: "Run"
+  ru: "Выполнить"
+admin.settings.saml_help:
+  en: "URL of the identity provider's metadata; the values are filled in, not saved."
+  ru: "URL метаданных провайдера; значения подставляются, но не сохраняются."
+admin.settings.saml_loaded:
+  en: "Metadata loaded: review and save"
+  ru: "Метаданные загружены: проверьте и сохраните"
+admin.settings.saml_metadata:
+  en: "Load IdP metadata"
+  ru: "Загрузить метаданные IdP"
+admin.settings.save_first:
+  en: "Save your changes to enable this action."
+  ru: "Сохраните изменения, чтобы выполнить действие."
+admin.settings.saved:
+  en: "Settings updated"
+  ru: "Настройки обновлены"
+admin.settings.search:
+  en: "Search settings"
+  ru: "Поиск настроек"
+admin.settings.take_server:
+  en: "Use the server's value"
+  ru: "Взять значение сервера"
+admin.sounds.delete_body:
+  en: "Sound %{name} will be deleted."
+  ru: "Звук %{name} будет удалён."
+admin.sounds.delete_title:
+  en: "Delete sound"
+  ru: "Удалить звук"
+admin.sounds.deleted:
+  en: "Sound deleted"
+  ru: "Звук удалён"
+admin.sounds.edit:
+  en: "Edit sound"
+  ru: "Изменить звук"
+admin.sounds.empty:
+  en: "No custom sounds."
+  ru: "Пользовательских звуков нет."
+admin.sounds.file:
+  en: "Sound file"
+  ru: "Файл звука"
+admin.sounds.file_hint:
+  en: "MP3 or WAV, at most 5 MB"
+  ru: "MP3 или WAV, не больше 5 МБ"
+admin.sounds.file_required:
+  en: "Choose a sound file."
+  ru: "Выберите файл звука."
+admin.sounds.format:
+  en: "Format"
+  ru: "Формат"
+admin.sounds.name:
+  en: "Name"
+  ru: "Название"
+admin.sounds.new:
+  en: "New sound"
+  ru: "Новый звук"
+admin.sounds.saved:
+  en: "Sound saved"
+  ru: "Звук сохранён"
+admin.statuses.away:
+  en: "Away"
+  ru: "Отошёл"
+admin.statuses.busy:
+  en: "Busy"
+  ru: "Занят"
+admin.statuses.delete_body:
+  en: "Status %{name} will be deleted."
+  ru: "Статус %{name} будет удалён."
+admin.statuses.delete_title:
+  en: "Delete status"
+  ru: "Удалить статус"
+admin.statuses.deleted:
+  en: "Status deleted"
+  ru: "Статус удалён"
+admin.statuses.edit:
+  en: "Edit status"
+  ru: "Изменить статус"
+admin.statuses.empty:
+  en: "No custom statuses."
+  ru: "Пользовательских статусов нет."
+admin.statuses.invalid_name:
+  en: "The name must not contain < > & \" '."
+  ru: "Название не должно содержать < > & \" '."
+admin.statuses.name:
+  en: "Name"
+  ru: "Название"
+admin.statuses.new:
+  en: "New status"
+  ru: "Новый статус"
+admin.statuses.offline:
+  en: "Offline"
+  ru: "Не в сети"
+admin.statuses.online:
+  en: "Online"
+  ru: "В сети"
+admin.statuses.presence:
+  en: "Presence"
+  ru: "Присутствие"
+admin.statuses.saved:
+  en: "Status saved"
+  ru: "Статус сохранён"
+admin.tfa_code:
+  en: "Code"
+  ru: "Код"
+admin.tfa_email_help:
+  en: "Enter the code sent by e-mail to %{who}."
+  ru: "Введите код, отправленный по почте %{who}."
+admin.tfa_invalid:
+  en: "Invalid code, try again."
+  ru: "Неверный код, попробуйте ещё раз."
+admin.tfa_password_help:
+  en: "This action needs your password."
+  ru: "Для этого действия нужен ваш пароль."
+admin.tfa_title:
+  en: "Confirm with your second factor"
+  ru: "Подтвердите вторым фактором"
+admin.tfa_totp_help:
+  en: "Enter the code from your authenticator app."
+  ru: "Введите код из приложения-аутентификатора."
+admin.tfa_verify:
+  en: "Verify"
+  ru: "Подтвердить"
+admin.title:
+  en: "Administration"
+  ru: "Администрирование"
+admin.unsaved_body:
+  en: "The settings page has unsaved changes. Discard them?"
+  ru: "На странице настроек есть несохранённые изменения. Отменить их?"
+admin.unsaved_title:
+  en: "Unsaved changes"
+  ru: "Несохранённые изменения"
+admin.users.activate:
+  en: "Activate"
+  ru: "Активировать"
+admin.users.activated:
+  en: "User activated"
+  ru: "Пользователь активирован"
+admin.users.active:
+  en: "Active"
+  ru: "Активные"
+admin.users.all:
+  en: "All"
+  ru: "Все"
+admin.users.bad_email:
+  en: "Enter a valid e-mail address."
+  ru: "Введите корректный адрес почты."
+admin.users.bio:
+  en: "Bio"
+  ru: "О себе"
+admin.users.continue:
+  en: "Continue"
+  ru: "Продолжить"
+admin.users.created:
+  en: "User %{name} created"
+  ru: "Пользователь %{name} создан"
+admin.users.created_at:
+  en: "Created"
+  ru: "Создан"
+admin.users.deactivate:
+  en: "Deactivate"
+  ru: "Деактивировать"
+admin.users.deactivated:
+  en: "Deactivated"
+  ru: "Деактивированные"
+admin.users.deactivated_chip:
+  en: "Deactivated"
+  ru: "Деактивирован"
+admin.users.deactivated_done:
+  en: "User deactivated"
+  ru: "Пользователь деактивирован"
+admin.users.delete_body:
+  en: "The user will be deleted. This cannot be undone."
+  ru: "Пользователь будет удалён. Это нельзя отменить."
+admin.users.delete_title:
+  en: "Delete user"
+  ru: "Удалить пользователя"
+admin.users.deleted:
+  en: "User deleted"
+  ru: "Пользователь удалён"
+admin.users.details:
+  en: "User"
+  ru: "Пользователь"
+admin.users.e2e_reset:
+  en: "E2E key reset"
+  ru: "Ключ E2E сброшен"
+admin.users.edit_title:
+  en: "Edit user"
+  ru: "Изменить пользователя"
+admin.users.email:
+  en: "E-mail"
+  ru: "Почта"
+admin.users.empty:
+  en: "No users found."
+  ru: "Пользователи не найдены."
+admin.users.join_default:
+  en: "Join default channels"
+  ru: "Добавить в каналы по умолчанию"
+admin.users.last_login:
+  en: "Last login"
+  ru: "Последний вход"
+admin.users.last_owner_body:
+  en: "The user is the last owner of some rooms."
+  ru: "Пользователь — последний владелец некоторых комнат."
+admin.users.last_owner_title:
+  en: "Last owner of rooms"
+  ru: "Последний владелец комнат"
+admin.users.make_admin:
+  en: "Make admin"
+  ru: "Сделать администратором"
+admin.users.name:
+  en: "Name"
+  ru: "Имя"
+admin.users.new:
+  en: "New user"
+  ru: "Новый пользователь"
+admin.users.new_owner:
+  en: "A new owner will be chosen for: %{rooms}"
+  ru: "Новый владелец будет назначен для: %{rooms}"
+admin.users.nickname:
+  en: "Nickname"
+  ru: "Псевдоним"
+admin.users.no_smtp:
+  en: "SMTP is not configured: no e-mails can be sent."
+  ru: "SMTP не настроен: письма не отправляются."
+admin.users.password_keep:
+  en: "Leave empty to keep the current password."
+  ru: "Оставьте пустым, чтобы не менять пароль."
+admin.users.password_required:
+  en: "Enter a password or choose a random one."
+  ru: "Введите пароль или выберите случайный."
+admin.users.pending:
+  en: "Pending"
+  ru: "Ожидают"
+admin.users.pending_chip:
+  en: "Pending"
+  ru: "Ожидает"
+admin.users.random_password:
+  en: "Set a random password and send it by e-mail"
+  ru: "Задать случайный пароль и отправить по почте"
+admin.users.remove_admin:
+  en: "Remove admin"
+  ru: "Снять администратора"
+admin.users.require_change:
+  en: "Require password change"
+  ru: "Потребовать смену пароля"
+admin.users.required:
+  en: "Name and username are required."
+  ru: "Укажите имя и логин."
+admin.users.reset:
+  en: "Reset"
+  ru: "Сбросить"
+admin.users.reset_e2e:
+  en: "Reset E2E key"
+  ru: "Сбросить ключ E2E"
+admin.users.reset_e2e_body:
+  en: "The user's end-to-end encryption key is removed; encrypted history becomes unreadable for them."
+  ru: "Ключ сквозного шифрования пользователя будет удалён; зашифрованная история станет для него нечитаемой."
+admin.users.reset_totp:
+  en: "Reset TOTP"
+  ru: "Сбросить TOTP"
+admin.users.reset_totp_body:
+  en: "The user's authenticator app 2FA will be removed."
+  ru: "Двухфакторная аутентификация через приложение будет отключена."
+admin.users.roles:
+  en: "Roles"
+  ru: "Роли"
+admin.users.roles_updated:
+  en: "Roles updated"
+  ru: "Роли обновлены"
+admin.users.rooms:
+  en: "Rooms"
+  ru: "Комнаты"
+admin.users.rooms_removed:
+  en: "These rooms will be deleted: %{rooms}"
+  ru: "Эти комнаты будут удалены: %{rooms}"
+admin.users.saved:
+  en: "User saved"
+  ru: "Пользователь сохранён"
+admin.users.search:
+  en: "Search by name, username or e-mail"
+  ru: "Поиск по имени, логину или почте"
+admin.users.send_welcome:
+  en: "Send welcome e-mail"
+  ru: "Отправить приветствие"
+admin.users.status:
+  en: "Status"
+  ru: "Статус"
+admin.users.status_text:
+  en: "Status message"
+  ru: "Текст статуса"
+admin.users.totp_reset:
+  en: "TOTP reset"
+  ru: "TOTP сброшен"
+admin.users.username:
+  en: "Username"
+  ru: "Логин"
+admin.users.verified:
+  en: "E-mail verified"
+  ru: "Почта подтверждена"
+admin.users.welcome:
+  en: "Send welcome e-mail"
+  ru: "Отправить приветственное письмо"
+admin.users.welcome_sent:
+  en: "Welcome e-mail sent"
+  ru: "Приветственное письмо отправлено"
+admin.ws.active_guests:
+  en: "Active guests"
+  ru: "Активные гости"
+admin.ws.active_users:
+  en: "Active users"
+  ru: "Активные пользователи"
+admin.ws.address:
+  en: "Address"
+  ru: "Адрес"
+admin.ws.app_users:
+  en: "App users"
+  ru: "Пользователи приложений"
+admin.ws.apps_engine:
+  en: "Apps-Engine"
+  ru: "Apps-Engine"
+admin.ws.away:
+  en: "Away"
+  ru: "Отошёл"
+admin.ws.banners:
+  en: "Banners"
+  ru: "Баннеры"
+admin.ws.build:
+  en: "Build date"
+  ru: "Дата сборки"
+admin.ws.busy:
+  en: "Busy"
+  ru: "Занят"
+admin.ws.channel_messages:
+  en: "Messages in channels"
+  ru: "Сообщений в каналах"
+admin.ws.channels:
+  en: "Channels"
+  ru: "Каналы"
+admin.ws.commit:
+  en: "Commit"
+  ru: "Коммит"
+admin.ws.community:
+  en: "Community"
+  ru: "Community"
+admin.ws.connected:
+  en: "Connected users"
+  ru: "Подключено"
+admin.ws.connected_flag:
+  en: "Connected"
+  ru: "Подключён"
+admin.ws.created:
+  en: "Created"
+  ru: "Создан"
+admin.ws.deployment:
+  en: "Deployment"
+  ru: "Развёртывание"
+admin.ws.deployment_id:
+  en: "Deployment ID"
+  ru: "ID развёртывания"
+admin.ws.direct:
+  en: "Direct messages"
+  ru: "Личные сообщения"
+admin.ws.direct_messages:
+  en: "Messages in DMs"
+  ru: "Сообщений в личных"
+admin.ws.discussions:
+  en: "Discussions"
+  ru: "Обсуждения"
+admin.ws.download:
+  en: "Download info"
+  ru: "Скачать сведения"
+admin.ws.group_messages:
+  en: "Messages in private groups"
+  ru: "Сообщений в приватных группах"
+admin.ws.heartbeat:
+  en: "Last heartbeat (ms)"
+  ru: "Последний отклик (мс)"
+admin.ws.instances:
+  en: "Instances (%{n})"
+  ru: "Экземпляры (%{n})"
+admin.ws.instances_title:
+  en: "Instances"
+  ru: "Экземпляры"
+admin.ws.license:
+  en: "License"
+  ru: "Лицензия"
+admin.ws.licensed:
+  en: "Enterprise"
+  ru: "Корпоративная"
+admin.ws.livechat:
+  en: "Omnichannel"
+  ru: "Омниканальность"
+admin.ws.local:
+  en: "Local"
+  ru: "Локальный"
+admin.ws.migration:
+  en: "Migration"
+  ru: "Миграция"
+admin.ws.modules:
+  en: "Active modules"
+  ru: "Активные модули"
+admin.ws.mongo:
+  en: "MongoDB"
+  ru: "MongoDB"
+admin.ws.name:
+  en: "Name"
+  ru: "Имя"
+admin.ws.no_banners:
+  en: "No active banners."
+  ru: "Активных баннеров нет."
+admin.ws.node:
+  en: "Node.js"
+  ru: "Node.js"
+admin.ws.non_active:
+  en: "Deactivated users"
+  ru: "Деактивированные"
+admin.ws.offline:
+  en: "Offline"
+  ru: "Не в сети"
+admin.ws.online:
+  en: "Online"
+  ru: "В сети"
+admin.ws.pid:
+  en: "PID"
+  ru: "PID"
+admin.ws.private_groups:
+  en: "Private groups"
+  ru: "Приватные группы"
+admin.ws.rooms_messages:
+  en: "Rooms and messages"
+  ru: "Комнаты и сообщения"
+admin.ws.saved:
+  en: "statistics.json saved"
+  ru: "statistics.json сохранён"
+admin.ws.site_url:
+  en: "Site URL"
+  ru: "Адрес сайта"
+admin.ws.stats_at:
+  en: "Statistics from"
+  ru: "Статистика от"
+admin.ws.total:
+  en: "Total"
+  ru: "Всего"
+admin.ws.total_messages:
+  en: "Total messages"
+  ru: "Всего сообщений"
+admin.ws.total_rooms:
+  en: "Total rooms"
+  ru: "Всего комнат"
+admin.ws.uploads:
+  en: "Uploads"
+  ru: "Загрузки"
+admin.ws.uploads_size:
+  en: "Uploads size"
+  ru: "Объём загрузок"
+admin.ws.users:
+  en: "Users"
+  ru: "Пользователи"
+admin.ws.version:
+  en: "Version"
+  ru: "Версия"
+admin.yes:
+  en: "Yes"
+  ru: "Да"
+admin.apps.st.unknown:
+  en: "Unknown"
+  ru: "Неизвестно"
+admin.apps.st.constructed:
+  en: "Constructed"
+  ru: "Создано"
+admin.apps.st.initialized:
+  en: "Initialized"
+  ru: "Инициализировано"
+admin.apps.st.auto_enabled:
+  en: "Enabled"
+  ru: "Включено"
+admin.apps.st.manually_enabled:
+  en: "Enabled"
+  ru: "Включено"
+admin.apps.st.compiler_error_disabled:
+  en: "Disabled: compiler error"
+  ru: "Отключено: ошибка компиляции"
+admin.apps.st.invalid_license_disabled:
+  en: "Disabled: invalid license"
+  ru: "Отключено: недействительная лицензия"
+admin.apps.st.invalid_installation_disabled:
+  en: "Disabled: invalid installation"
+  ru: "Отключено: некорректная установка"
+admin.apps.st.error_disabled:
+  en: "Disabled: error"
+  ru: "Отключено: ошибка"
+admin.apps.st.manually_disabled:
+  en: "Disabled"
+  ru: "Отключено"
+admin.apps.st.invalid_settings_disabled:
+  en: "Disabled: invalid settings"
+  ru: "Отключено: некорректные настройки"
+admin.apps.st.disabled:
+  en: "Disabled"
+  ru: "Отключено"
+admin.settings.invalid:
+  en: "Fix %{n} invalid setting(s): %{names}"
+  ru: "Исправьте неверные настройки (%{n}): %{names}"
+admin.settings.save:
+  en: "Save changes"
+  ru: "Сохранить изменения"
+admin.settings.restore_defaults:
+  en: "Restore defaults"
+  ru: "Восстановить по умолчанию"
+admin.mailer.confirm_title:
+  en: "Send e-mail?"
+  ru: "Отправить письмо?"
+admin.mailer.confirm_all:
+  en: "Dry run is off: every user will receive this e-mail. This cannot be undone."
+  ru: "Тестовый режим выключен: письмо получат все пользователи. Это нельзя отменить."
+admin.mailer.confirm_query:
+  en: "Dry run is off: every user matching the query will receive this e-mail. This cannot be undone."
+  ru: "Тестовый режим выключен: письмо получат все пользователи, подходящие под запрос. Это нельзя отменить."
+admin.mod.show_reports:
+  en: "Show reports"
+  ru: "Показать жалобы"
+admin.mod.hide_reports:
+  en: "Hide reports"
+  ru: "Скрыть жалобы"
+admin.mod.no_reports:
+  en: "No reports."
+  ru: "Жалоб нет."
+admin.mod.reported_by:
+  en: "Reported by %{user}"
+  ru: "Пожаловался: %{user}"
+admin.mod.unknown_reporter:
+  en: "Unknown user"
+  ru: "Неизвестный пользователь"
