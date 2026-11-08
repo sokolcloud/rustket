@@ -13,6 +13,7 @@ in parallel, so ownership matters.
 | panel agent | `src/room/panel.rs` (+ `room/panel/…`), `src/room/header.rs` | `room_panel.yml`, `room_header.yml` |
 | desktop agent | `src/screens/settings.rs`, `src/desktop/` (notifications, tray, idle, sound, autostart), `src/workspace/status_menu.rs` | `settings.yml`, `desktop.yml`, `status_menu.yml` |
 | account agent | `src/screens/account.rs`, `src/screens/directory.rs`, `src/dialogs/create_room.rs`, `src/dialogs/quick_switcher.rs` | `account.yml`, `directory.yml`, `create_room.yml`, `quick_switcher.yml` |
+| e2e agent | `src/e2e/`, `src/screens/account/e2e.rs` | `e2e.yml` |
 | shell (shared) | `src/app.rs`, `src/app/*.rs`, `src/message.rs`, `src/room/mod.rs`, `src/component.rs`, `src/session.rs`, `src/workspace/{mod,sidebar,rail}.rs`, `src/screens/{login,add_server,page}.rs` | `app.yml`, `sidebar.yml`, … |
 
 Rules:
@@ -326,3 +327,28 @@ reloads itself when its timeline is reset (resync, history import). Expanded,
 it is drawn over the room column (max 855 px, like the web) and later threads
 of the session open expanded too. `Effect::OpenPanel(Kind::Thread(t))` for
 the open thread keeps it open (only header buttons toggle panels).
+
+### End-to-end encryption (`src/e2e/`)
+
+One `rustket_core::e2e::E2eManager` per logged-in server, reachable from
+every component as `ctx.workspace.e2e()`; `ServerState::e2e`
+(`e2e::ServerE2e`) owns its lifecycle (`e2e::after_update`, called by the
+app before the workspace changes are taken: start once the initial load is
+in, feed changed rooms/subscriptions and settings, restart when `E2E_Enable`
+turns on; `e2e::forget_secrets` on logout / `force_logout`).
+- Encrypted messages are decrypted in place before anything is drawn
+  (`e2e::shown`, `Workspace::rewrite_messages`): `msg`/`md`/attachments/files
+  hold the plaintext, `content` keeps the envelope, `Message::e2e` a marker
+  (`rustket_core::e2e::shown`) that is only believed for messages the app
+  processed. Use `e2e::shown::is_decrypted(m)` / `state(m)`; the original
+  payload for an edit comes from `e2e::shown::raw_view(m)`. Lists loaded
+  outside the workspace (panels) call `e2e::shown::process_list`.
+- The renderer shows placeholders for messages that are not decrypted
+  (`e2e::view::placeholder` in `render::message_body_with`).
+- Encrypted file URLs end in `e2e::files::FRAGMENT`; the image loader and
+  downloads decrypt them (`e2e::files`). Never write their bytes to a cache.
+- Sending: `e2e::outgoing::{mode, prepare_send, prepare_edit, upload_mode}`;
+  an encrypted message is never sent or edited as plaintext.
+- Room UI: `e2e::room` (header key icon, menu entries and dialogs kept by
+  `Header`, body replacement, composer notices, `filter_actions`). Room
+  components ask for the account modal with `Effect::E2e(RoomRequest)`.

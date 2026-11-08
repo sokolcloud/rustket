@@ -9,6 +9,7 @@ use super::{App, Modal, Screen, SecretsMode};
 use crate::component::{self, Ctx, Effect, Nav};
 use crate::desktop;
 use crate::dialogs::{create_room, quick_switcher};
+use crate::e2e;
 use crate::message::Message;
 use crate::screens::{account, directory, settings};
 use crate::workspace::{ServerState, status_menu};
@@ -196,6 +197,43 @@ impl App {
             });
         }
         Task::batch(tasks)
+    }
+
+    /// End-to-end encryption flow of server `sid` (banner, modals, manager
+    /// events).
+    pub(super) fn on_e2e(&mut self, sid: ServerId, epoch: u64, m: e2e::Message) -> Task<Message> {
+        let Some(s) = self.servers.get_mut(&sid) else {
+            return Task::none();
+        };
+        if !s.is_current(epoch) {
+            return Task::none();
+        }
+        let (task, requests) = e2e::update(s, m);
+        let s2 = sid.clone();
+        let mut tasks = vec![task.map(move |m| Message::E2e(s2.clone(), epoch, m))];
+        for r in requests {
+            tasks.push(match r {
+                e2e::Request::Toast(kind, title, body) => self.toast(kind, title, body),
+                e2e::Request::OpenAccountSecurity => {
+                    self.screen = Screen::Account(
+                        sid.clone(),
+                        Box::new(account::Account::with_tab(account::Tab::Security)),
+                    );
+                    Task::none()
+                }
+            });
+        }
+        Task::batch(tasks)
+    }
+
+    /// A room component asked for the account E2E flow.
+    pub(super) fn on_e2e_room(&mut self, sid: &ServerId, req: e2e::RoomRequest) -> Task<Message> {
+        let Some(epoch) = self.servers.get(sid).map(|s| s.generation) else {
+            return Task::none();
+        };
+        match req {
+            e2e::RoomRequest::OpenModal => self.on_e2e(sid.clone(), epoch, e2e::Message::OpenModal),
+        }
     }
 
     pub(super) fn on_settings(&mut self, m: settings::Message) -> Task<Message> {

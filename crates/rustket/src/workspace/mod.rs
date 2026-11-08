@@ -47,6 +47,8 @@ pub struct ServerState {
     pub start_error: Option<String>,
     /// `true` until the token was looked up at startup.
     pub restoring: bool,
+    /// End-to-end encryption of this account.
+    pub e2e: crate::e2e::ServerE2e,
 }
 
 impl ServerState {
@@ -90,6 +92,7 @@ impl ServerState {
             pending_room: None,
             start_error: None,
             restoring: true,
+            e2e: Default::default(),
         })
     }
 
@@ -123,6 +126,7 @@ impl ServerState {
         self.credentials = None;
         let _ = self.close_rooms();
         self.session = None;
+        self.e2e.reset();
         self.workspace = Workspace::new();
         self.sidebar = sidebar::Sidebar::default();
         self.syncing = false;

@@ -1,0 +1,280 @@
+_version: 2
+e2e.account_title:
+  en: "End-to-end encryption"
+  ru: "Сквозное шифрование"
+e2e.account_help:
+  en: "Messages and files in encrypted rooms can only be read on devices that know your E2E password."
+  ru: "Сообщения и файлы зашифрованных комнат можно прочитать только на устройствах, которым известен ваш пароль E2E."
+e2e.account_state_ready:
+  en: "Active"
+  ru: "Активно"
+e2e.account_state_locked:
+  en: "Password needed"
+  ru: "Нужен пароль"
+e2e.account_state_loading:
+  en: "Loading keys"
+  ru: "Загрузка ключей"
+e2e.account_state_error:
+  en: "Error"
+  ru: "Ошибка"
+e2e.account_state_off:
+  en: "Off"
+  ru: "Выключено"
+e2e.account_change_title:
+  en: "Change E2E password"
+  ru: "Сменить пароль E2E"
+e2e.account_change_unavailable:
+  en: "Enter your current E2E password first (banner above the rooms) to change it."
+  ru: "Чтобы сменить пароль E2E, сначала введите текущий (баннер над комнатами)."
+e2e.account_new_label:
+  en: "New E2E password"
+  ru: "Новый пароль E2E"
+e2e.account_confirm_label:
+  en: "Confirm the new E2E password"
+  ru: "Повторите новый пароль E2E"
+e2e.account_mismatch:
+  en: "The passwords do not match"
+  ru: "Пароли не совпадают"
+e2e.account_change:
+  en: "Change password"
+  ru: "Сменить пароль"
+e2e.account_changed:
+  en: "E2E password changed"
+  ru: "Пароль E2E изменён"
+e2e.account_rule_length:
+  en: "At least 30 characters"
+  ru: "Не менее 30 символов"
+e2e.account_rule_lower:
+  en: "A lowercase letter"
+  ru: "Строчная буква"
+e2e.account_rule_upper:
+  en: "An uppercase letter"
+  ru: "Заглавная буква"
+e2e.account_rule_digit:
+  en: "A digit"
+  ru: "Цифра"
+e2e.account_rule_special:
+  en: "A special character"
+  ru: "Специальный символ"
+e2e.account_rule_ascii:
+  en: "Latin letters, digits and symbols only (readable by every client)"
+  ru: "Только латиница, цифры и символы (читается всеми клиентами)"
+e2e.account_reset_title:
+  en: "Reset E2E password"
+  ru: "Сбросить пароль E2E"
+e2e.account_reset_help:
+  en: "Forgot your E2E password? Resetting creates new keys: messages encrypted before stay unreadable for you until another member shares the room keys again, and you will be logged out."
+  ru: "Забыли пароль E2E? Сброс создаёт новые ключи: прежние зашифрованные сообщения останутся недоступны, пока другой участник снова не передаст ключи комнат, и вы выйдете из аккаунта."
+e2e.account_reset_confirm:
+  en: "This cannot be undone. You will be logged out of this server on every device."
+  ru: "Это нельзя отменить. Вы выйдете с этого сервера на всех устройствах."
+e2e.account_reset:
+  en: "Reset E2E password"
+  ru: "Сбросить пароль E2E"
+e2e.account_reset_done:
+  en: "E2E password reset"
+  ru: "Пароль E2E сброшен"
+e2e.account_reset_done_body:
+  en: "Log in again to create new encryption keys."
+  ru: "Войдите снова, чтобы создать новые ключи шифрования."
+e2e.banner_enter_password:
+  en: "Enter your E2E password to read and send encrypted messages"
+  ru: "Введите пароль E2E, чтобы читать и отправлять зашифрованные сообщения"
+e2e.banner_enter_password_action:
+  en: "Enter password"
+  ru: "Ввести пароль"
+e2e.banner_save_password:
+  en: "Save your new E2E password"
+  ru: "Сохраните новый пароль E2E"
+e2e.banner_save_password_action:
+  en: "Show password"
+  ru: "Показать пароль"
+e2e.banner_error:
+  en: "Your encryption keys could not be loaded"
+  ru: "Не удалось загрузить ключи шифрования"
+e2e.banner_disabled_by_admin:
+  en: "End-to-end encryption was disabled by the administrator: encrypted messages stay readable, new messages are not encrypted"
+  ru: "Администратор отключил сквозное шифрование: зашифрованные сообщения остаются доступны, новые не шифруются"
+e2e.retry:
+  en: "Retry"
+  ru: "Повторить"
+e2e.enter_password_title:
+  en: "Enter your E2E password"
+  ru: "Введите пароль E2E"
+e2e.enter_password_body:
+  en: "To access your encrypted rooms and messages, enter your end-to-end encryption password. It is not your login password."
+  ru: "Чтобы открыть зашифрованные комнаты и сообщения, введите пароль сквозного шифрования. Это не пароль от аккаунта."
+e2e.password_label:
+  en: "E2E password"
+  ru: "Пароль E2E"
+e2e.wrong_password:
+  en: "Incorrect E2E password"
+  ru: "Неверный пароль E2E"
+e2e.forgot_password:
+  en: "Forgot your E2E password?"
+  ru: "Забыли пароль E2E?"
+e2e.later:
+  en: "Do it later"
+  ru: "Позже"
+e2e.enable_encryption:
+  en: "Enable encryption"
+  ru: "Включить шифрование"
+e2e.enabled_toast:
+  en: "End-to-end encryption enabled"
+  ru: "Сквозное шифрование включено"
+e2e.unlock_failed:
+  en: "Your E2E key could not be unlocked"
+  ru: "Не удалось открыть ключ E2E"
+e2e.not_enabled_title:
+  en: "End-to-end encryption is not enabled"
+  ru: "Сквозное шифрование не включено"
+e2e.not_enabled_body:
+  en: "Encrypted rooms ask for your E2E password when you open them."
+  ru: "Зашифрованные комнаты попросят пароль E2E при открытии."
+e2e.save_password_title:
+  en: "Save your encryption password"
+  ru: "Сохраните пароль шифрования"
+e2e.save_password_body:
+  en: "This is your end-to-end encryption password. You need it to read encrypted messages on other devices and after logging in again. It is not stored on the server."
+  ru: "Это ваш пароль сквозного шифрования. Он нужен, чтобы читать зашифрованные сообщения на других устройствах и после повторного входа. На сервере он не хранится."
+e2e.save_password_once:
+  en: "It is shown only once. Please save it now."
+  ru: "Он показывается только один раз. Сохраните его сейчас."
+e2e.save_password_later_hint:
+  en: "You can change it later in My account → Security."
+  ru: "Позже его можно сменить в разделе «Мой аккаунт → Безопасность»."
+e2e.copy:
+  en: "Copy"
+  ru: "Копировать"
+e2e.copied:
+  en: "Copied to the clipboard"
+  ru: "Скопировано в буфер обмена"
+e2e.i_saved:
+  en: "I saved my password"
+  ru: "Я сохранил пароль"
+e2e.save_failed:
+  en: "Could not finish saving the password"
+  ru: "Не удалось завершить сохранение пароля"
+e2e.encrypted_message:
+  en: "Encrypted message"
+  ru: "Зашифрованное сообщение"
+e2e.encrypted_room:
+  en: "Encrypted"
+  ru: "Зашифровано"
+e2e.msg_locked:
+  en: "This message is end-to-end encrypted. Enter your E2E password to read it."
+  ru: "Сообщение защищено сквозным шифрованием. Введите пароль E2E, чтобы прочитать его."
+e2e.msg_waiting:
+  en: "Waiting for the room's encryption key…"
+  ru: "Ожидание ключа шифрования комнаты…"
+e2e.msg_no_key:
+  en: "This message cannot be decrypted: its key is missing after room key resets."
+  ru: "Сообщение нельзя расшифровать: после сброса ключей комнаты его ключ недоступен."
+e2e.msg_key_error:
+  en: "This message cannot be decrypted with the room key."
+  ru: "Сообщение не удаётся расшифровать ключом комнаты."
+e2e.msg_unsupported:
+  en: "This message uses an encryption that cannot be decrypted."
+  ru: "Сообщение зашифровано способом, который не поддерживается."
+e2e.msg_plaintext_edit:
+  en: "This message also contains unencrypted text"
+  ru: "Это сообщение содержит и незашифрованный текст"
+e2e.file_hash_mismatch:
+  en: "The decrypted file does not match its checksum"
+  ru: "Расшифрованный файл не совпадает с контрольной суммой"
+e2e.files_unencrypted_refused:
+  en: "Files cannot be sent unencrypted in an encrypted room"
+  ru: "В зашифрованную комнату нельзя отправлять незашифрованные файлы"
+e2e.send_blocked:
+  en: "The room's encryption key is not available yet, so nothing can be sent"
+  ru: "Ключ шифрования комнаты пока недоступен, отправка невозможна"
+e2e.edit_unreadable:
+  en: "This encrypted message cannot be edited here"
+  ru: "Это зашифрованное сообщение нельзя изменить здесь"
+e2e.composer_locked:
+  en: "Enter your E2E password to write in this encrypted room"
+  ru: "Введите пароль E2E, чтобы писать в этой зашифрованной комнате"
+e2e.composer_waiting:
+  en: "Waiting for the room's encryption key. Another member needs to be online to share it."
+  ru: "Ожидание ключа шифрования комнаты. Для этого в сети должен быть другой участник."
+e2e.composer_unavailable:
+  en: "End-to-end encryption is not ready on this device"
+  ru: "Сквозное шифрование на этом устройстве не готово"
+e2e.composer_unencrypted:
+  en: "Messages are sent unencrypted until the room key is available"
+  ru: "Сообщения отправляются без шифрования, пока ключ комнаты недоступен"
+e2e.enable_room:
+  en: "Enable encryption"
+  ru: "Включить шифрование"
+e2e.enable_room_body:
+  en: "Enable end-to-end encryption for this room? Messages and files will be readable only by members whose devices hold the room key. Search, link previews and some actions do not work with encrypted content."
+  ru: "Включить сквозное шифрование в этой комнате? Сообщения и файлы смогут прочитать только участники, у устройств которых есть ключ комнаты. Поиск, предпросмотр ссылок и часть действий с зашифрованным содержимым не работают."
+e2e.enable_room_confirm:
+  en: "Enable"
+  ru: "Включить"
+e2e.disable_room:
+  en: "Disable encryption"
+  ru: "Отключить шифрование"
+e2e.disable_room_body:
+  en: "Disable end-to-end encryption for this room? New messages will be sent unencrypted; messages encrypted before stay encrypted."
+  ru: "Отключить сквозное шифрование в этой комнате? Новые сообщения будут отправляться без шифрования; прежние зашифрованные сообщения останутся зашифрованными."
+e2e.disable_room_confirm:
+  en: "Disable"
+  ru: "Отключить"
+e2e.disable_room_reset_hint:
+  en: "Members cannot read the room because its keys are missing? Reset the room's encryption keys instead."
+  ru: "Участники не могут читать комнату из-за отсутствия ключей? Лучше сбросьте ключи шифрования комнаты."
+e2e.reset_room_key:
+  en: "Reset encryption keys"
+  ru: "Сбросить ключи шифрования"
+e2e.reset_room_key_body:
+  en: "Create a new encryption key for this room? Members get it from online members with the key. Members who had no key before cannot read older messages."
+  ru: "Создать новый ключ шифрования комнаты? Участники получат его от участников в сети, у которых есть ключ. Те, у кого ключа не было, не смогут прочитать старые сообщения."
+e2e.reset_room_key_confirm:
+  en: "Reset keys"
+  ru: "Сбросить ключи"
+e2e.room_key_reset:
+  en: "The room's encryption keys were reset"
+  ru: "Ключи шифрования комнаты сброшены"
+e2e.reset_no_key:
+  en: "The room has no encryption key yet"
+  ru: "У комнаты ещё нет ключа шифрования"
+e2e.reset_not_ready:
+  en: "End-to-end encryption is not ready on this device"
+  ru: "Сквозное шифрование на этом устройстве не готово"
+e2e.enabled_for_room:
+  en: "Encryption enabled for this room"
+  ru: "Шифрование в комнате включено"
+e2e.disabled_for_room:
+  en: "Encryption disabled for this room"
+  ru: "Шифрование в комнате отключено"
+e2e.room_action_failed:
+  en: "The encryption setting could not be changed"
+  ru: "Не удалось изменить настройку шифрования"
+e2e.not_running:
+  en: "End-to-end encryption is not running"
+  ru: "Сквозное шифрование не запущено"
+e2e.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+e2e.body_encrypted_title:
+  en: "%{room} is encrypted"
+  ru: "Комната %{room} зашифрована"
+e2e.body_enter_password:
+  en: "Enter your end-to-end encryption password to access it."
+  ru: "Введите пароль сквозного шифрования, чтобы открыть её."
+e2e.body_save_password:
+  en: "Save your end-to-end encryption password to access it."
+  ru: "Сохраните пароль сквозного шифрования, чтобы открыть её."
+e2e.body_waiting_title:
+  en: "Check back later"
+  ru: "Загляните позже"
+e2e.body_waiting:
+  en: "The encryption keys of %{room} need to be shared with you. Another room member needs to be online for this to happen."
+  ru: "Ключи шифрования комнаты %{room} должны быть переданы вам. Для этого в сети должен быть другой участник комнаты."
+e2e.insecure_server:
+  en: "This server is not using HTTPS: encryption keys travel over an unprotected connection."
+  ru: "Сервер не использует HTTPS: ключи шифрования передаются по незащищённому соединению."
+e2e.search_hint:
+  en: "Encrypted content cannot be searched"
+  ru: "Зашифрованное содержимое недоступно для поиска"

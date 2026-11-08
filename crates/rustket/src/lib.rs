@@ -13,6 +13,7 @@ pub mod config_writer;
 pub mod deeplink;
 pub mod desktop;
 pub mod dialogs;
+pub mod e2e;
 pub mod error;
 pub mod format;
 pub mod i18n;

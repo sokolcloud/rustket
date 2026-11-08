@@ -344,6 +344,7 @@ pub fn available(
     now: chrono::DateTime<Utc>,
 ) -> Vec<Act> {
     let mut acts = actions::available(ws, m, now);
+    crate::e2e::room::filter_actions(ws, m, &mut acts);
     if matches!(source, Source::Thread(_)) {
         acts.retain(|a| !matches!(a, Act::ReplyInThread | Act::StartDiscussion));
     }

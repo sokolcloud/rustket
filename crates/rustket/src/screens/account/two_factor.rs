@@ -31,6 +31,7 @@ pub enum Op {
     DisableEmail2fa,
     EnableTotp,
     ValidateTotp { code: String },
+    ResetE2eKey,
 }
 
 /// Result of a successful [`Op`].
@@ -46,6 +47,7 @@ pub enum Done {
     TotpStarted(api::TotpSetup),
     /// Backup codes, or `None` for a wrong TOTP code.
     TotpVerified(Option<Vec<String>>),
+    E2eReset,
 }
 
 /// Runs `op` (with `code` when the user already gave one).
@@ -75,6 +77,11 @@ pub fn run(ctx: &Ctx<'_>, op: Op, code: Option<TwoFactorCode>) -> Task<Message> 
                 Op::ValidateTotp { code: totp } => api::totp_validate(&rest, &totp, code)
                     .await
                     .map(Done::TotpVerified),
+                // `users.resetE2EKey` (own end-to-end encryption keys).
+                Op::ResetE2eKey => rest
+                    .e2e_reset_own_key(code.as_ref())
+                    .await
+                    .map(|()| Done::E2eReset),
             }
         },
         move |r| Message::Guarded(tag, r),

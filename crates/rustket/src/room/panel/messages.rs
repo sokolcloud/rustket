@@ -129,6 +129,11 @@ impl Messages {
                 self.reload(ctx)
             }
             Msg::Page(req, r) => {
+                // Encrypted results are decrypted before they are shown.
+                let r = r.map(|mut page| {
+                    crate::e2e::shown::process_list(ctx.workspace, ctx.server, &mut page.items);
+                    page
+                });
                 self.list.finish(req, r);
                 Action::none()
             }
@@ -308,6 +313,9 @@ impl Messages {
                     t!("room_panel.search_placeholder").into_owned(),
                     Msg::Query,
                 ));
+                if let Some(h) = crate::e2e::room::search_hint(ctx.workspace, ctx.rid) {
+                    top = top.push(h);
+                }
             }
             Mode::List(_) => {}
         }

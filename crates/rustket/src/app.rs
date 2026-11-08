@@ -614,6 +614,8 @@ impl App {
             let Some(s) = self.servers.get_mut(&sid) else {
                 continue;
             };
+            // E2E: start/feed the manager and decrypt what is shown.
+            tasks.push(crate::e2e::after_update(s, self.secrets.as_ref()));
             s.sidebar.refresh(
                 &s.workspace,
                 &self.config.ui,
@@ -744,6 +746,7 @@ impl App {
         match message {
             Message::Noop => Task::none(),
             Message::FileDropped(path) => self.route_file_drop(path),
+            Message::E2e(sid, epoch, m) => self.on_e2e(sid, epoch, m),
             Message::SecretsReady(s) => self.on_secrets_ready(s),
             Message::SystemTheme(mode) => {
                 self.system_mode = match mode {
@@ -1228,7 +1231,12 @@ impl App {
 
     /// The server rejected the token: drop it and show the login screen.
     fn logged_out(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
+        let mut e2e = Task::none();
         if let Some(s) = self.servers.get_mut(sid) {
+            // `force_logout` (e.g. an E2E key reset) also drops the E2E secrets.
+            if reason.as_deref() == Some("force_logout") {
+                e2e = crate::e2e::forget_secrets(s);
+            }
             // The token was rejected: nothing can be sent with it any more.
             s.reset();
         }
@@ -1238,7 +1246,7 @@ impl App {
             "force_logout" => t!("app.force_logout").into_owned(),
             _ => t!("app.session_expired").into_owned(),
         });
-        Task::batch([delete, purge, self.show_login(sid, reason)])
+        Task::batch([e2e, delete, purge, self.show_login(sid, reason)])
     }
 
     /// User logout. A login token is revoked on the server (through the
@@ -1260,8 +1268,9 @@ impl App {
         let typing = match self.servers.get_mut(sid) {
             Some(s) => {
                 let t = s.close_rooms().discard();
+                let e2e = crate::e2e::forget_secrets(s);
                 s.reset();
-                t
+                Task::batch([t, e2e])
             }
             None => Task::none(),
         };
@@ -1564,6 +1573,7 @@ impl App {
                 | room::Effect::Compose(_) => Task::none(),
                 room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
                 room::Effect::StartDiscussion { pmid } => self.start_discussion(sid, rid, pmid),
+                room::Effect::E2e(req) => self.on_e2e_room(sid, req),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
                     crate::room::emoji_picker::set_recent(&self.config.recent_emoji);
@@ -1638,6 +1648,9 @@ impl App {
         let Some(s) = self.servers.get_mut(&sid) else {
             return Task::none();
         };
+        if let ServerEvent::Event(ev) = &ev {
+            crate::e2e::on_event(s, ev);
+        }
         match ev {
             ServerEvent::Ready(handle) => {
                 s.session = Some(handle);
@@ -1648,6 +1661,7 @@ impl App {
             ServerEvent::Event(ev) => match session::apply_event(&mut s.workspace, &ev) {
                 Followup::None => Task::none(),
                 Followup::Notification(n) => {
+                    let n = crate::e2e::notify::prepare(&s.workspace, n);
                     let name = s.name.clone();
                     let server_active =
                         self.active.as_ref() == Some(&sid) && matches!(self.screen, Screen::Server);
@@ -2304,6 +2318,7 @@ impl App {
                         .map(|(sid, generation, ev)| Message::Server(sid, generation, ev)),
                 );
             }
+            subs.push(crate::e2e::subscription(s));
             for (rid, rv) in &s.rooms {
                 subs.push(
                     rv.subscription()

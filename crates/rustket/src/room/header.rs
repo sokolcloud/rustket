@@ -38,6 +38,8 @@ pub enum Message {
     OpenRoom(String),
     /// Menu: create a discussion in this room.
     CreateDiscussion,
+    /// End-to-end encryption: menu entries, dialogs, room body buttons.
+    E2e(crate::e2e::room::Msg),
 }
 
 pub struct Header {
@@ -48,6 +50,8 @@ pub struct Header {
     menu_open: bool,
     confirm: Option<RoomAction>,
     busy: bool,
+    /// End-to-end encryption dialogs of this room.
+    e2e: crate::e2e::room::RoomE2e,
 }
 
 /// What the header shows for a room.
@@ -173,6 +177,7 @@ pub fn menu_entries(
             .into(),
         );
     }
+    v.extend(crate::e2e::room::menu_entries_with(ws, rid, Message::E2e));
     let fav = common::is_favorite(ws, rid);
     let actions = [
         RoomAction::Favorite(!fav),
@@ -292,6 +297,7 @@ impl Header {
             menu_open: false,
             confirm: None,
             busy: false,
+            e2e: Default::default(),
         }
     }
 
@@ -350,7 +356,29 @@ impl Header {
                 }
             }
             Message::OpenRoom(rid) => Action::effect(Effect::OpenRoom(rid)),
+            Message::E2e(m) => {
+                self.menu_open = false;
+                self.e2e.update(m, ctx).map(Message::E2e)
+            }
         }
+    }
+
+    /// The E2E dialog over the room, if open.
+    pub fn overlay<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<(Element<'a, Message>, Message)> {
+        self.e2e
+            .overlay(ctx)
+            .map(|(e, d)| (e.map(Message::E2e), Message::E2e(d)))
+    }
+
+    /// What replaces the timeline of an encrypted room that cannot be read
+    /// yet (enter/save the password, waiting for the room key).
+    pub fn e2e_body<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, Message>> {
+        let ws = ctx.workspace;
+        let name = ws
+            .room(&self.rid)
+            .map(|e| room_list::display_name(ws, e, ws.use_real_names(ctx.prefs.use_real_names)))
+            .unwrap_or_default();
+        crate::e2e::room::body(ctx, name).map(|e| e.map(Message::E2e))
     }
 
     /// Which right panel is open (see [`Header::update`]).
@@ -463,6 +491,9 @@ impl Header {
         let mut title = row![].spacing(SPACE_1).align_y(Alignment::Center);
         if let Some(g) = glyph {
             title = title.push(icon::sized(g, 15.0).style(style::text_secondary));
+        }
+        if let Some(key) = crate::e2e::room::header_icon(ws, &self.rid) {
+            title = title.push(key);
         }
         title = title.push(
             ellipsis(name.clone())

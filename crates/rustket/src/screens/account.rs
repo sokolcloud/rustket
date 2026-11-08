@@ -3,6 +3,7 @@
 //! (`account.*`).
 
 pub mod api;
+pub mod e2e;
 pub mod preferences;
 pub mod profile;
 pub mod security;
@@ -327,6 +328,7 @@ impl Account {
                 self.security.email_disabled(r, ctx.workspace);
                 Action::none()
             }
+            Op::ResetE2eKey => self.security.e2e.reset_done(r.map(|r| r.map(|_| ()))),
         }
     }
 

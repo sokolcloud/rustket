@@ -1023,7 +1023,10 @@ impl Composer {
         } else {
             None
         };
-        let Some(trigger) = trigger else {
+        let Some(trigger) = trigger.filter(|t| {
+            t.kind != TriggerKind::Command
+                || !crate::e2e::outgoing::slash_commands_blocked(ctx.workspace, &self.rid)
+        }) else {
             self.popup = None;
             return Task::none();
         };
@@ -1213,9 +1216,16 @@ impl Composer {
                 return Action::task(self.focus());
             }
             let rid = self.rid.clone();
+            // Encrypted messages are edited encrypted (never with plaintext).
+            let original = find_message(ctx.workspace, &rid, self.tmid.as_deref(), &ed.mid);
+            let enc = match crate::e2e::outgoing::prepare_edit(ctx.workspace, original, &text) {
+                Some(Err(e)) => return Action::effect(error_toast(e)),
+                Some(Ok(enc)) => Some(enc),
+                None => None,
+            };
             return Action::task(Task::batch([
                 ctx.rest_task(
-                    move |rest| async move { rest.update_message(&rid, &ed.mid, &text).await },
+                    move |rest| crate::e2e::outgoing::update_message(rest, rid, ed.mid, text, enc),
                     |r| Message::Updated(r.map(Box::new)),
                 ),
                 self.focus(),
@@ -1225,7 +1235,17 @@ impl Composer {
         if text.is_empty() {
             return Action::none();
         }
-        let is_command = self.quotes.is_empty() && text::parse_slash(&text).is_some();
+        // An encrypted room without its key: nothing goes out (§7.6).
+        if matches!(
+            crate::e2e::outgoing::mode(ctx.workspace, &self.rid),
+            crate::e2e::outgoing::Mode::Blocked
+        ) {
+            return Action::effect(error_toast(crate::e2e::outgoing::blocked_text()));
+        }
+        // Slash commands do not run in rooms that must stay encrypted (§2.1).
+        let is_command = self.quotes.is_empty()
+            && text::parse_slash(&text).is_some()
+            && !crate::e2e::outgoing::slash_commands_blocked(ctx.workspace, &self.rid);
         if is_command && cached_commands(ctx.server_id).is_none() {
             // The text stays in the editor until the command list is known.
             if self.commands_loading {
@@ -1358,7 +1378,13 @@ impl Composer {
         if let Some(block) = permissions::post_block(ctx.workspace, &self.rid) {
             return self.notice_view(block, ctx);
         }
+        if let Some(n) = crate::e2e::room::composer_block(ctx.workspace, &self.rid) {
+            return container(n).padding([SPACE_2, SPACE_4]).into();
+        }
         let mut col = column![].spacing(SPACE_1);
+        if let Some(h) = crate::e2e::room::composer_hint(ctx.workspace, &self.rid) {
+            col = col.push(h);
+        }
         if let Some(l) = ctx
             .workspace
             .typing_label(&self.rid, self.tmid.as_deref(), ctx.now)
@@ -1729,6 +1755,8 @@ fn send_task(ctx: &UpdateCtx<'_>, m: rocketchat::models::Message) -> Task<Messag
     let id = m.id.clone();
     outbox_start(ctx.server_id, &m.rid, &id);
     let server = ctx.server_id.as_str().to_owned();
+    // Encrypted rooms: encrypted at send time with the current room key.
+    let enc = crate::e2e::outgoing::prepare_send(ctx.workspace, &m);
     let out = OutgoingMessage {
         id: Some(m.id),
         rid: m.rid,
@@ -1738,7 +1766,7 @@ fn send_task(ctx: &UpdateCtx<'_>, m: rocketchat::models::Message) -> Task<Messag
         ..Default::default()
     };
     ctx.rest_task(
-        move |rest| async move { rest.send_message(&out).await },
+        move |rest| crate::e2e::outgoing::send_outgoing(rest, out, enc),
         move |r| {
             let r = r.map(Box::new);
             outbox_finish(&server, &id, &r);

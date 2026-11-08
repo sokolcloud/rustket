@@ -54,6 +54,8 @@ pub enum Msg {
     ConfirmLogoutSession,
     CancelLogoutSession,
     SessionLoggedOut(String, Res<()>),
+    /// End-to-end encryption section.
+    E2e(super::e2e::Msg),
 }
 
 /// One login session of the user (`sessions/list`).
@@ -220,6 +222,8 @@ pub struct Security {
     pub confirm_logout: Option<String>,
     /// Session being logged out.
     pub logging_out: Option<String>,
+    /// End-to-end encryption section.
+    pub e2e: super::e2e::E2eSection,
 }
 
 /// Flags of the second factors on the workspace user. `services.*` changes
@@ -269,6 +273,7 @@ impl Security {
     pub fn update(&mut self, msg: Msg, ctx: &mut Ctx<'_>) -> Action<Message> {
         let s = |m| Message::Security(m);
         match msg {
+            Msg::E2e(m) => self.e2e.update(m, ctx),
             Msg::EnableTotp => {
                 if self.busy.is_some() {
                     return Action::none();
@@ -542,6 +547,9 @@ impl Security {
         }
         if let Some(n) = &self.notice {
             body = body.push(banner(BannerKind::Success, n.clone(), None));
+        }
+        if let Some(e2e) = self.e2e.view(ctx) {
+            body = body.push(e2e);
         }
         if !settings.bool_or("Accounts_TwoFactorAuthentication_Enabled", true) {
             body = body.push(banner(

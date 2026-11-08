@@ -233,6 +233,10 @@ pub fn message_body<'a>(msg: &'a Message, ctx: &ViewCtx<'a>) -> Element<'a, Rend
 /// Like [`message_body`] with interaction state (spoilers, collapsed
 /// attachments, downloads).
 pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, RenderMsg> {
+    // Encrypted messages that are not shown decrypted (pending, failed).
+    if let Some(p) = crate::e2e::view::placeholder(msg) {
+        return p;
+    }
     let mut col: Column<'static, RenderMsg> = column![].spacing(SPACE_1);
     if let Some(text) = text_part(msg, rc) {
         col = col.push(text);
@@ -242,6 +246,9 @@ pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, 
     }
     for p in attachments::link_previews(msg, rc) {
         col = col.push(p);
+    }
+    if let Some(n) = crate::e2e::view::plaintext_note(msg) {
+        col = col.push(n);
     }
     col.into()
 }

@@ -18,6 +18,7 @@ mod api;
 mod cache;
 mod distribution;
 mod room;
+pub mod shown;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -1491,6 +1492,14 @@ impl<A: E2eApi> E2eManager<A> {
     pub fn encrypt_payload(&self, rid: &str, payload: &DecryptedMessage) -> Result<Value> {
         let key = self.current_key(rid)?;
         Ok(key.encrypt_json(&payload.to_value())?.to_json())
+    }
+
+    /// Encrypts any JSON object with the room's current key (e.g. edited
+    /// upload metadata for `fileContent`). Top-level keys must not start with
+    /// `$` (§11.15).
+    pub fn encrypt_value(&self, rid: &str, value: &Value) -> Result<Value> {
+        let key = self.current_key(rid)?;
+        Ok(key.encrypt_json(value)?.to_json())
     }
 
     /// Encrypts a text message: `{msg}` + plaintext mentions (when enabled).

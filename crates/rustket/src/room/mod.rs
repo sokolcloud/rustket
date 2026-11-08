@@ -179,6 +179,8 @@ pub enum Effect {
     StartDiscussion {
         pmid: Option<String>,
     },
+    /// The account end-to-end encryption flow (enter/save the password).
+    E2e(crate::e2e::RoomRequest),
 }
 
 /// Requests other room components make to the composer.
@@ -704,6 +706,8 @@ impl RoomView {
                 t!("app.preview_not_allowed"),
                 t!("app.preview_join_hint"),
             )
+        } else if let Some(b) = self.header.e2e_body(ctx) {
+            b.map(Message::Header)
         } else {
             self.timeline.view(ctx).map(Message::Timeline)
         };
@@ -761,6 +765,11 @@ impl RoomView {
                 self.panel
                     .overlay(ctx)
                     .map(|(k, e, d)| (k + 10, e.map(Message::Panel), Message::Panel(d)))
+            })
+            .or_else(|| {
+                self.header
+                    .overlay(ctx)
+                    .map(|(e, d)| (40, e.map(Message::Header), Message::Header(d)))
             });
         let (overlay, dismiss) = match overlay {
             Some((k, e, d)) => (Some((k, e)), Some(d)),

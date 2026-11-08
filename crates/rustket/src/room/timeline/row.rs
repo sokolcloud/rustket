@@ -456,14 +456,8 @@ pub(crate) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: Da
     }
     let rc = env.rc();
     let name = author_name(m, rc.use_real_names);
-    let body: El = if m.is_encrypted() && m.msg.is_empty() {
-        text(t!("room_render.encrypted").into_owned())
-            .size(TEXT_SMALL)
-            .style(style::text_hint)
-            .into()
-    } else {
-        render::message_body_with(m, &rc).map(Message::render)
-    };
+    // Encrypted messages: the renderer shows their placeholder until decrypted.
+    let body: El = render::message_body_with(m, &rc).map(Message::render);
     let mut p = MessageRowProps::new(
         author_avatar(env, m, &name),
         name,
