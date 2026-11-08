@@ -1,0 +1,52 @@
+{
+  "success": true,
+  "type": "contextual_bar.open",
+  "triggerId": "TRIGGER",
+  "appId": "app1",
+  "view": {
+    "appId": "app1",
+    "type": "contextualBar",
+    "id": "bar-1",
+    "title": {
+      "type": "plain_text",
+      "text": "Poll results"
+    },
+    "blocks": [
+      {
+        "type": "section",
+        "appId": "app1",
+        "blockId": "b1",
+        "text": {
+          "type": "mrkdwn",
+          "text": "*3* votes"
+        }
+      },
+      {
+        "type": "tab_navigation",
+        "appId": "app1",
+        "blockId": "tabs",
+        "tabs": [
+          {
+            "type": "tab",
+            "actionId": "t1",
+            "title": {
+              "type": "plain_text",
+              "text": "Open"
+            },
+            "selected": true
+          },
+          {
+            "type": "tab",
+            "actionId": "t2",
+            "title": {
+              "type": "plain_text",
+              "text": "Closed"
+            },
+            "disabled": true
+          }
+        ]
+      }
+    ],
+    "showIcon": true
+  }
+}

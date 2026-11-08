@@ -1,0 +1,74 @@
+{
+  "banners": [
+    {
+      "_id": "ban1",
+      "platform": [
+        "web"
+      ],
+      "expireAt": "2027-01-01T00:00:00.000Z",
+      "startAt": "2026-01-01T00:00:00.000Z",
+      "createdBy": "cloud",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "surface": "banner",
+      "view": {
+        "viewId": "ban1-view",
+        "variant": "info",
+        "title": {
+          "type": "plain_text",
+          "text": "Announcement",
+          "i18n": {
+            "key": "title_key",
+            "ns": "app-cloud-announcements-core"
+          }
+        },
+        "blocks": [
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "Read *this*"
+            }
+          }
+        ]
+      },
+      "dictionary": {
+        "en": {
+          "title_key": "Cloud news"
+        }
+      }
+    },
+    {
+      "_id": "ban2",
+      "platform": [
+        "web"
+      ],
+      "createdBy": {
+        "_id": "u1",
+        "username": "admin"
+      },
+      "surface": "modal",
+      "view": {
+        "appId": "cloud-announcements-core",
+        "id": "announcement-1",
+        "title": {
+          "type": "plain_text",
+          "text": "Survey"
+        },
+        "blocks": []
+      }
+    },
+    {
+      "_id": "ban3",
+      "platform": [
+        "web"
+      ],
+      "surface": "banner",
+      "active": false,
+      "view": {
+        "viewId": "old",
+        "blocks": []
+      }
+    }
+  ],
+  "success": true
+}

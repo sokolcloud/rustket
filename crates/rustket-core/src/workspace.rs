@@ -26,6 +26,7 @@ use crate::settings::Settings;
 use crate::sync::{DeltaData, InitialData, RoomSync};
 use crate::timeline::{DeliveryState, PageTicket, Timeline, TimelineItem};
 use crate::typing::{TypingLabel, TypingState};
+use crate::uikit::UiKitStore;
 
 /// Kind of a realtime collection change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +240,10 @@ pub struct Workspace {
     last_sync: Option<RcDate>,
     changes: Changes,
     revisions: [u64; Dirty::BITS],
+    /// Ids of messages per room whose shown version arrived as an ephemeral
+    /// message (`{uid}/message`); see `uikit::trust` (docs/uikit.md §3.2).
+    ephemeral: HashMap<String, HashSet<String>>,
+    uikit: UiKitStore,
 }
 
 /// When a realtime event touched something.
@@ -1105,6 +1110,7 @@ impl Workspace {
 
     fn drop_room_timelines(&mut self, rid: &str) {
         self.outbox.retain(|_, i| i.message.rid != rid);
+        self.ephemeral.remove(rid);
         if self.timelines.remove(rid).is_some() {
             self.mark_timeline(rid);
         }
@@ -1164,6 +1170,7 @@ impl Workspace {
             return;
         }
         let rid = m.rid.clone();
+        self.forget_ephemeral(&rid, &m.id);
         if self.outbox.remove(&m.id).is_some() {
             self.mark(Dirty::TIMELINES);
         }
@@ -1222,6 +1229,7 @@ impl Workspace {
     }
 
     pub fn apply_message_deleted(&mut self, rid: &str, id: &str) {
+        self.forget_ephemeral(rid, id);
         if let Some(t) = self.timelines.get_mut(rid)
             && t.remove(id)
         {
@@ -1308,6 +1316,59 @@ impl Workspace {
         }
     }
 
+    // --- ephemeral messages and UIKit ----------------------------------------------
+
+    /// An ephemeral message (`SessionEvent::EphemeralMessage`): upserted like any
+    /// message (by `_id`, room and thread timelines), and flagged as ephemeral
+    /// while that version is the one shown. The flag is dropped when a message
+    /// with the same `_id` arrives any other way (stream, history, sync), is
+    /// deleted, or the room timeline is closed or reset.
+    pub fn apply_ephemeral_message(&mut self, m: Message) {
+        if m.hidden == Some(true) {
+            return;
+        }
+        let (rid, id) = (m.rid.clone(), m.id.clone());
+        let tmid = m.tmid.clone();
+        let shown = m.clone();
+        self.apply_message_from(m, true);
+        let stored = |t: Option<&Timeline>| {
+            t.and_then(|t| t.get(&id))
+                .is_some_and(|i| i.message == shown)
+        };
+        let in_room = stored(self.timelines.get(&rid));
+        let in_thread = stored(tmid.as_ref().and_then(|t| self.threads.get(t)));
+        if in_room || in_thread {
+            self.ephemeral.entry(rid.clone()).or_default().insert(id);
+            self.mark_timeline(&rid);
+        }
+    }
+
+    /// Whether the shown version of message `mid` in `rid` arrived as an
+    /// ephemeral message (never derived from message fields).
+    pub fn is_ephemeral(&self, rid: &str, mid: &str) -> bool {
+        self.ephemeral.get(rid).is_some_and(|s| s.contains(mid))
+    }
+
+    fn forget_ephemeral(&mut self, rid: &str, id: &str) {
+        if let Some(set) = self.ephemeral.get_mut(rid)
+            && set.remove(id)
+        {
+            if set.is_empty() {
+                self.ephemeral.remove(rid);
+            }
+            self.mark_timeline(rid);
+        }
+    }
+
+    /// UIKit state (open views, triggers, action buttons, app translations).
+    pub fn uikit(&self) -> &UiKitStore {
+        &self.uikit
+    }
+
+    pub fn uikit_mut(&mut self) -> &mut UiKitStore {
+        &mut self.uikit
+    }
+
     // --- timelines ----------------------------------------------------------------
 
     /// Opens (or re-opens) a room timeline, captures the subscription's `ls` for
@@ -1332,6 +1393,7 @@ impl Workspace {
     /// open room and thread timelines keep only pending messages and the next
     /// `begin_load_older` / `begin_load_thread` starts over.
     pub fn reset_room_timelines(&mut self, rid: &str) {
+        self.ephemeral.remove(rid);
         if let Some(t) = self.timelines.get_mut(rid) {
             t.reset();
             self.mark_timeline(rid);
@@ -1353,6 +1415,7 @@ impl Workspace {
     /// Forgets a room timeline (memory); it is reloaded on the next open.
     /// Pending messages survive in the outbox.
     pub fn close_room(&mut self, rid: &str) {
+        self.ephemeral.remove(rid);
         if self.timelines.remove(rid).is_some() {
             self.mark_timeline(rid);
         }
@@ -1474,7 +1537,20 @@ impl Workspace {
     }
 
     /// Server copies of pending messages arrived (e.g. in a page): they are sent.
+    /// Persisted copies also end the ephemeral trust of a message with that id.
     fn confirm_delivered(&mut self, ids: &[String]) {
+        if !self.ephemeral.is_empty() {
+            let mut changed = false;
+            for set in self.ephemeral.values_mut() {
+                for id in ids {
+                    changed |= set.remove(id);
+                }
+            }
+            self.ephemeral.retain(|_, s| !s.is_empty());
+            if changed {
+                self.mark(Dirty::TIMELINES);
+            }
+        }
         let before = self.outbox.len();
         for id in ids {
             self.outbox.remove(id);

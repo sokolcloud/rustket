@@ -1,0 +1,5 @@
+{
+  "success": false,
+  "errorType": "error-invalid-params",
+  "error": "must have required property 'platform'"
+}

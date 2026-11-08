@@ -1,0 +1,26 @@
+{
+  "type": "modal.open",
+  "triggerId": "TRIGGER",
+  "appId": "videoconf-core",
+  "view": {
+    "appId": "videoconf-core",
+    "id": "callid123-info",
+    "title": {
+      "type": "plain_text",
+      "text": "Video Conference Info",
+      "emoji": false
+    },
+    "close": {
+      "type": "button",
+      "appId": "videoconf-core",
+      "blockId": "callid123",
+      "text": {
+        "type": "plain_text",
+        "text": "Close",
+        "emoji": false
+      },
+      "actionId": "cancel"
+    },
+    "blocks": []
+  }
+}

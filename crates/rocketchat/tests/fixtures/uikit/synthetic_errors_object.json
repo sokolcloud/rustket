@@ -1,0 +1,10 @@
+{
+  "success": false,
+  "type": "errors",
+  "triggerId": "TRIGGER",
+  "appId": "app1",
+  "viewId": "view-1",
+  "errors": {
+    "question": "Question is required"
+  }
+}

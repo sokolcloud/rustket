@@ -1,0 +1,102 @@
+{
+  "success": true,
+  "type": "modal.open",
+  "triggerId": "TRIGGER",
+  "appId": "app1",
+  "view": {
+    "appId": "app1",
+    "type": "modal",
+    "id": "view-1",
+    "title": {
+      "type": "plain_text",
+      "text": "Create poll"
+    },
+    "submit": {
+      "type": "button",
+      "appId": "app1",
+      "blockId": "b_submit",
+      "actionId": "submit",
+      "text": {
+        "type": "plain_text",
+        "text": "Create"
+      }
+    },
+    "close": {
+      "type": "button",
+      "appId": "app1",
+      "blockId": "b_close",
+      "actionId": "close",
+      "text": {
+        "type": "plain_text",
+        "text": "Cancel"
+      },
+      "style": "danger"
+    },
+    "blocks": [
+      {
+        "type": "input",
+        "appId": "app1",
+        "blockId": "b_q",
+        "label": {
+          "type": "plain_text",
+          "text": "Question"
+        },
+        "element": {
+          "type": "plain_text_input",
+          "actionId": "question",
+          "initialValue": "Lunch?"
+        }
+      },
+      {
+        "type": "input",
+        "appId": "app1",
+        "blockId": "b_opts",
+        "label": {
+          "type": "plain_text",
+          "text": "Options"
+        },
+        "optional": true,
+        "element": {
+          "type": "checkbox",
+          "actionId": "opts",
+          "options": [
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Anonymous"
+              },
+              "value": "anon"
+            },
+            {
+              "text": {
+                "type": "plain_text",
+                "text": "Multiple"
+              },
+              "value": "multi"
+            }
+          ]
+        }
+      },
+      {
+        "type": "actions",
+        "appId": "app1",
+        "blockId": "b_act",
+        "elements": [
+          {
+            "type": "button",
+            "actionId": "add",
+            "text": {
+              "type": "plain_text",
+              "text": "Add choice"
+            },
+            "value": "add"
+          }
+        ]
+      }
+    ],
+    "showIcon": true,
+    "customField": {
+      "kept": true
+    }
+  }
+}

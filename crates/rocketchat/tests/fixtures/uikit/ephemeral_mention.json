@@ -1,0 +1,35 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-user",
+  "id": "id",
+  "fields": {
+    "eventName": "Hn6Gx3yWjzMXhxR4X/message",
+    "args": [
+      {
+        "groupable": false,
+        "u": {"_id": "rocket.cat", "username": "rocket.cat"},
+        "private": true,
+        "_id": "1794088390781",
+        "rid": "6aef9dc6ff2338a3f2a2ea1a",
+        "ts": {"$date": 1794088390782},
+        "_updatedAt": {"$date": 1794088390782},
+        "msg": "",
+        "mentions": [{"_id": "SLiu9igvh94B9T9Xu", "username": "bob", "name": "Bob", "type": "user"}],
+        "blocks": [
+          {"appId": "mention-core", "type": "section", "text": {"type": "mrkdwn", "text": "You mentioned *bob*, but they're not in this room."}},
+          {"type": "actions", "appId": "mention-core", "elements": [
+            {"type": "button", "appId": "mention-core", "blockId": "vSxru3XTbnFh8HJrc", "actionId": "add-users",
+             "value": "[{\"_id\":\"SLiu9igvh94B9T9Xu\",\"username\":\"bob\",\"name\":\"Bob\",\"type\":\"user\"}]",
+             "text": {"type": "plain_text", "text": "Add them"}},
+            {"type": "button", "appId": "mention-core", "blockId": "vSxru3XTbnFh8HJrc", "actionId": "dismiss",
+             "value": "[{\"_id\":\"SLiu9igvh94B9T9Xu\",\"username\":\"bob\",\"name\":\"Bob\",\"type\":\"user\"}]",
+             "text": {"type": "plain_text", "text": "Do nothing"}},
+            {"type": "button", "appId": "mention-core", "blockId": "vSxru3XTbnFh8HJrc", "actionId": "share-message",
+             "value": "[{\"_id\":\"SLiu9igvh94B9T9Xu\",\"username\":\"bob\",\"name\":\"Bob\",\"type\":\"user\"}]",
+             "text": {"type": "plain_text", "text": "Let them know"}}
+          ]}
+        ]
+      }
+    ]
+  }
+}

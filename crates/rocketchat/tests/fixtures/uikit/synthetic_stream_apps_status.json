@@ -1,0 +1,19 @@
+{
+  "msg": "changed",
+  "collection": "stream-apps",
+  "id": "id",
+  "fields": {
+    "eventName": "apps",
+    "args": [
+      [
+        "app/statusUpdate",
+        [
+          {
+            "appId": "app1",
+            "status": "manually_disabled"
+          }
+        ]
+      ]
+    ]
+  }
+}

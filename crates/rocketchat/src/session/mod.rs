@@ -162,6 +162,7 @@ pub fn global_subscriptions(uid: &str) -> Vec<(&'static str, String)> {
             .map(|e| (streams::NOTIFY_ALL, (*e).to_owned())),
     );
     out.push((streams::ROLES, "roles".to_owned()));
+    out.push((streams::APPS, "apps".to_owned()));
     out
 }
 

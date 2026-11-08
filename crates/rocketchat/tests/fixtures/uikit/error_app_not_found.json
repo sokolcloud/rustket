@@ -1,0 +1,4 @@
+{
+  "success": false,
+  "error": "No App found by the id of: nonexistent-app"
+}

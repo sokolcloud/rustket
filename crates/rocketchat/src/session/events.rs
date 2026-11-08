@@ -15,6 +15,7 @@ use crate::models::{
     CustomEmoji, CustomUserStatus, Message, Permission, Role, Room, RoomType, Setting,
     Subscription, User, UserRef, UserStatus, lenient,
 };
+use crate::uikit::ServerInteraction;
 
 /// Stream (publication) names.
 pub mod streams {
@@ -24,6 +25,9 @@ pub mod streams {
     pub const NOTIFY_ALL: &str = "stream-notify-all";
     pub const NOTIFY_ROOM: &str = "stream-notify-room";
     pub const ROLES: &str = "stream-roles";
+    /// Apps-engine changes; delivered as [`SessionEvent::Unknown`] and decoded with
+    /// [`AppsStreamEvent::from_session_event`](crate::models::AppsStreamEvent::from_session_event).
+    pub const APPS: &str = "stream-apps";
     /// Event name of the `stream-room-messages` subscription that delivers new and
     /// edited messages of every room the user can access: joined rooms *and* public
     /// channels the user never joined (see [`SessionEvent::Message`]).
@@ -377,8 +381,9 @@ pub enum SessionEvent {
         public: bool,
     },
 
-    /// UIKit interaction from an app (`{uid}/uiInteraction`).
-    UiInteraction(Value),
+    /// UIKit interaction from an app (`{uid}/uiInteraction`). Accept it only
+    /// for a trigger id this client issued (docs/uikit.md §4.2).
+    UiInteraction(Box<ServerInteraction>),
     /// `{uid}/video-conference`: `{action, params: {callId, uid, rid}}`.
     VideoConference(Value),
     /// Another member asks for the room's E2E key.
@@ -417,6 +422,15 @@ pub enum SessionEvent {
 pub fn decode_event(msg: &DataMessage) -> SessionEvent {
     let event_name = msg.event_name().unwrap_or_default();
     let args = msg.args().unwrap_or_default();
+    // `stream-apps` events stay `Unknown` (no dedicated variant yet) without
+    // the "undecoded" log line.
+    if msg.collection == streams::APPS {
+        return SessionEvent::Unknown {
+            collection: msg.collection.clone(),
+            event_name: event_name.to_owned(),
+            args: Value::Array(args.to_vec()),
+        };
+    }
     match decode_known(&msg.collection, event_name, args) {
         Some(ev) => ev,
         None => {
@@ -530,7 +544,9 @@ fn decode_notify_user(kind: &str, args: &[Value]) -> Option<SessionEvent> {
                 sub: Box::new(sub),
             }
         }
-        "uiInteraction" => SessionEvent::UiInteraction(first?.clone()),
+        "uiInteraction" => {
+            SessionEvent::UiInteraction(Box::new(ServerInteraction::from_value(first?.clone())))
+        }
         "video-conference" => SessionEvent::VideoConference(first?.clone()),
         "e2ekeyRequest" => SessionEvent::E2EKeyRequest {
             rid: str_at(args, 0)?,

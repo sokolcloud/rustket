@@ -1,0 +1,14 @@
+{
+  "msg": "changed",
+  "collection": "stream-apps",
+  "id": "id",
+  "fields": {
+    "eventName": "apps",
+    "args": [
+      [
+        "actions/changed",
+        []
+      ]
+    ]
+  }
+}

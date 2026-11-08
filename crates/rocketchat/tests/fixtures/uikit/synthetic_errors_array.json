@@ -1,0 +1,14 @@
+{
+  "type": "errors",
+  "triggerId": "TRIGGER",
+  "appId": "app1",
+  "viewId": "view-1",
+  "errors": [
+    {
+      "question": "Too short"
+    },
+    {
+      "opts": "Pick one"
+    }
+  ]
+}
