@@ -44,6 +44,8 @@ pub enum Message {
     Create,
     /// Omnichannel groups and buttons (`crate::omnichannel::sidebar`).
     Omni(crate::omnichannel::sidebar::Msg),
+    /// The room list scrolled or was resized.
+    Scrolled(scrollable::Viewport),
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +82,29 @@ pub struct Sidebar {
     presence_seen: u64,
     /// Bumped whenever `sections` change (recomputed or patched).
     sections_rev: u64,
+    /// Last reported scroll position of the list: (offset, viewport height,
+    /// content height).
+    viewport: Option<(f32, f32, f32)>,
+}
+
+/// Height of a section header slot (the header is centred in it; its own
+/// height is about 26.3 px).
+const HEADER_H: f32 = 27.0;
+/// Viewport height assumed before the scrollable reported one.
+const DEFAULT_VIEWPORT_H: f32 = 1600.0;
+/// Rows are built this far above and below the viewport.
+const OVERSCAN_PX: f32 = 400.0;
+/// The built slot range snaps to multiples of this, so scrolling rebuilds the
+/// list only every few rows.
+const WINDOW_STEP: usize = 16;
+
+/// Height of a room row; `rustket_ui::widget::room_list_item` has these
+/// fixed heights.
+fn row_height(d: Density) -> f32 {
+    match d {
+        Density::Condensed => 32.0,
+        Density::Extended => 56.0,
+    }
 }
 
 /// Inputs of [`room_list::compute`]. Presence only matters for the sorted
@@ -108,7 +133,11 @@ struct BodyKey<'k> {
     active: Option<&'k str>,
     density: u8,
     clock_24h: bool,
+    /// This server's image revision (not bumped by failures or by other
+    /// servers' and attachment images).
     images: u64,
+    /// Built slot range (see [`Sidebar::window`]).
+    window: (usize, usize),
     /// ROOMS, SETTINGS, ME, DRAFTS, TYPING revisions.
     workspace: [u64; 5],
     locale: String,
@@ -192,6 +221,14 @@ impl Sidebar {
             Message::Create => Out::Create,
             Message::Omni(crate::omnichannel::sidebar::Msg::Toggle(key)) => Out::ToggleSection(key),
             Message::Omni(m) => Out::Omni(m),
+            Message::Scrolled(v) => {
+                self.viewport = Some((
+                    v.absolute_offset().y,
+                    v.bounds().height,
+                    v.content_bounds().height,
+                ));
+                Out::None
+            }
         }
     }
 
@@ -355,7 +392,8 @@ impl Sidebar {
                 active: ctx.active_room,
                 density: ctx.prefs.density as u8,
                 clock_24h: ctx.prefs.clock_24h,
-                images: ctx.images.revision(),
+                images: ctx.images.server_revision(ctx.server_id),
+                window: self.window(ctx),
                 workspace: revs,
                 locale: rust_i18n::locale().to_string(),
                 day: chrono::Local::now().date_naive(),
@@ -363,8 +401,10 @@ impl Sidebar {
                     .is_some_and(|o| o.over_mac),
             };
             let ctx = *ctx;
-            let sections = lazy(key, move |_| self.sections_list(&ctx));
+            let window = key.window;
+            let sections = lazy(key, move |_| self.sections_list(&ctx, window));
             scrollable(column![omni, sections].width(Length::Fill))
+                .on_scroll(Message::Scrolled)
                 .height(Length::Fill)
                 .style(style::scrollable)
                 .into()
@@ -402,36 +442,118 @@ impl Sidebar {
         .into()
     }
 
+    /// The listed sections (not omnichannel) and whether each is collapsed.
+    fn listed<'s>(
+        &'s self,
+        ctx: &'s SidebarCtx<'_>,
+    ) -> impl Iterator<Item = (&'s Section, bool)> + 's {
+        let filtering = !self.filter.trim().is_empty();
+        self.sections
+            .iter()
+            .filter(|s| s.kind != SectionKind::Omnichannel)
+            .map(move |s| (s, !filtering && ctx.collapsed.contains(s.kind.i18n_key())))
+    }
+
+    /// Slot range `[start, end)` of the list (a slot is a section header or a
+    /// room row) that covers the viewport plus [`OVERSCAN_PX`]; only these
+    /// are built, laid out, drawn and have their avatars requested.
+    fn window(&self, ctx: &SidebarCtx<'_>) -> (usize, usize) {
+        let row_h = row_height(ctx.prefs.density);
+        let (mut slots, mut total) = (0usize, 0.0f32);
+        for (s, collapsed) in self.listed(ctx) {
+            let n = if collapsed { 0 } else { s.items.len() };
+            slots += 1 + n;
+            total += HEADER_H + n as f32 * row_h;
+        }
+        let (offset, height, content) = self.viewport.unwrap_or((0.0, DEFAULT_VIEWPORT_H, total));
+        // The omnichannel groups are drawn above the list in the same scrollable.
+        let above = (content - total).max(0.0);
+        let top = (offset - above).clamp(0.0, (total - height).max(0.0));
+        let (lo, hi) = (top - OVERSCAN_PX, top + height + OVERSCAN_PX);
+        let (mut y, mut slot) = (0.0f32, 0usize);
+        let (mut first, mut last) = (None, 0usize);
+        for (s, collapsed) in self.listed(ctx) {
+            if first.is_none() && y + HEADER_H > lo {
+                first = Some(slot);
+            }
+            if y < hi {
+                last = slot + 1;
+            }
+            y += HEADER_H;
+            slot += 1;
+            let n = if collapsed { 0 } else { s.items.len() };
+            if n > 0 {
+                let k0 = (((lo - y) / row_h).floor().max(0.0) as usize).min(n);
+                let k1 = (((hi - y) / row_h).ceil().max(0.0) as usize).min(n);
+                if first.is_none() && k0 < n {
+                    first = Some(slot + k0);
+                }
+                if k1 > 0 {
+                    last = slot + k1;
+                }
+            }
+            y += n as f32 * row_h;
+            slot += n;
+        }
+        let start = first.unwrap_or(0) / WINDOW_STEP * WINDOW_STEP;
+        let end = (last.div_ceil(WINDOW_STEP) * WINDOW_STEP).min(slots);
+        (start.min(end), end)
+    }
+
     /// The sections other than omnichannel, rows keyed by room (a room moving
     /// to the top keeps its widgets) and each row memoised on what it shows.
-    fn sections_list(&self, ctx: &SidebarCtx<'_>) -> Element<'static, Message> {
+    /// Only the slots in `window` are built; spacers stand for the rest.
+    fn sections_list(
+        &self,
+        ctx: &SidebarCtx<'_>,
+        (start, end): (usize, usize),
+    ) -> Element<'static, Message> {
         count_build(1, 0);
-        let mut list = keyed_list::<u64, Message, _, _>()
-            .spacing(0)
-            .padding([0.0, SPACE_2])
-            .width(Length::Fill);
-        for section in &self.sections {
-            if section.kind == SectionKind::Omnichannel {
-                continue;
-            }
-            let collapsed =
-                self.filter.trim().is_empty() && ctx.collapsed.contains(section.kind.i18n_key());
-            list = list.push(
-                hash_of(("section", section.kind.i18n_key())),
-                section_header(
+        let row_h = row_height(ctx.prefs.density);
+        let (mut before, mut after) = (0.0f32, 0.0f32);
+        let mut built: Vec<(u64, Element<'static, Message>)> = Vec::new();
+        let mut slot = 0usize;
+        for (section, collapsed) in self.listed(ctx) {
+            if slot < start {
+                before += HEADER_H;
+            } else if slot >= end {
+                after += HEADER_H;
+            } else {
+                let header = section_header(
                     t!(section.kind.i18n_key()).into_owned(),
                     collapsed,
                     Some(section.items.len() as u32),
                     Message::Toggle(section.kind),
-                ),
-            );
-            if !collapsed {
-                for item in &section.items {
-                    list = list.push(hash_of(&item.rid), self.row(item, ctx));
-                }
+                );
+                built.push((
+                    hash_of(("section", section.kind.i18n_key())),
+                    container(header).center_y(HEADER_H).into(),
+                ));
             }
+            slot += 1;
+            if collapsed {
+                continue;
+            }
+            let n = section.items.len();
+            let lo = start.clamp(slot, slot + n) - slot;
+            let hi = end.clamp(slot, slot + n) - slot;
+            before += lo as f32 * row_h;
+            after += (n - hi) as f32 * row_h;
+            for item in &section.items[lo..hi] {
+                built.push((hash_of(&item.rid), self.row(item, ctx)));
+            }
+            slot += n;
         }
-        list.into()
+        let mut list = keyed_list::<u64, Message, _, _>()
+            .spacing(0)
+            .padding([0.0, SPACE_2])
+            .width(Length::Fill)
+            .push(hash_of("above"), iced::widget::space().height(before));
+        for (key, el) in built {
+            list = list.push(key, el);
+        }
+        list.push(hash_of("below"), iced::widget::space().height(after))
+            .into()
     }
 
     fn row(&self, item: &RoomListItem, ctx: &SidebarCtx<'_>) -> Element<'static, Message> {
@@ -679,6 +801,27 @@ mod tests {
                 .and_then(|i| i.dm_status)
         }
 
+        /// Content height of the list (no omnichannel groups).
+        fn total(sb: &Sidebar) -> f32 {
+            let rows: usize = sb.sections.iter().map(|s| s.items.len()).sum();
+            sb.sections.len() as f32 * HEADER_H + rows as f32 * row_height(Density::Extended)
+        }
+
+        /// Scrolls the list so that the row of `rid` is in the viewport.
+        fn scroll_to(fx: &mut Fx, rid: &str) {
+            let mut y = 0.0;
+            for s in &fx.sidebar.sections {
+                y += HEADER_H;
+                if let Some(i) = s.items.iter().position(|i| i.rid == rid) {
+                    y += i as f32 * row_height(Density::Extended);
+                    break;
+                }
+                y += s.items.len() as f32 * row_height(Density::Extended);
+            }
+            let total = total(&fx.sidebar);
+            fx.sidebar.viewport = Some(((y - 100.0).max(0.0), 600.0, total));
+        }
+
         /// App review #54/#55/#56: rows used to be rebuilt (and reshaped)
         /// on every message, and all of them on a reorder.
         #[test]
@@ -688,7 +831,9 @@ mod tests {
             fx.refresh();
             BUILDS.with(|b| b.set((0, 0)));
             let mut tree = Tree::new(fx.view().as_widget());
-            assert_eq!(BUILDS.with(std::cell::Cell::get), (1, ROOMS + 1));
+            let (bodies, rows) = BUILDS.with(std::cell::Cell::get);
+            assert_eq!(bodies, 1);
+            assert!((20..64).contains(&rows), "only the rows on screen: {rows}");
 
             // A message that does not touch the sidebar (scroll, keystroke).
             assert_eq!(fx.diff(&mut tree), (0, 0));
@@ -719,6 +864,8 @@ mod tests {
             assert_eq!(fx.diff(&mut tree), (0, 0));
 
             // The DM partner's status: the dot changes, one row rebuilt.
+            scroll_to(&mut fx, "dm");
+            fx.diff(&mut tree);
             fx.ws
                 .apply_user_status("bobid", Some("bob"), UserStatus::Away, None);
             assert_ne!(fx.refresh(), rev);
@@ -732,6 +879,85 @@ mod tests {
             fx.sidebar.filter.clear();
             fx.diff(&mut tree);
             assert_eq!(fx.sidebar.room_count(), ROOMS + 1);
+        }
+
+        /// Review: image results (failures, other servers) and typing in
+        /// rooms off screen rebuilt every row's props; avatars of all rooms
+        /// were requested in row order.
+        #[test]
+        fn only_visible_rows_are_built_and_ask_for_avatars() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::new();
+            fx.refresh();
+            let mut tree = Tree::new(fx.view().as_widget());
+            let queued = fx.images.queued();
+            assert!(
+                queued > 0 && queued < 64,
+                "avatars of the rows on screen only: {queued}"
+            );
+            assert_eq!(fx.diff(&mut tree), (0, 0));
+
+            // A failed image and another server's image change nothing here.
+            let wanted = fx.images.take_wanted(|_| true);
+            fx.images
+                .finish(&fx.sid, 0, wanted[0].url.clone(), Err("x".into()));
+            assert_eq!(fx.diff(&mut tree), (0, 0));
+            let other = ServerId("other".into());
+            fx.images.get(&other, "http://other/avatar/x");
+            fx.images.take_wanted(|_| true);
+            fx.images.finish(
+                &other,
+                0,
+                "http://other/avatar/x".into(),
+                Ok(crate::images::Fetched::Initials),
+            );
+            assert_eq!(fx.diff(&mut tree), (0, 0));
+
+            // Typing in a room far below: no row is rebuilt.
+            let far = format!("r{:04}", ROOMS - 5);
+            fx.ws
+                .apply_user_activity(&far, "bob", &["user-typing".into()], None);
+            assert_eq!(fx.diff(&mut tree).1, 0);
+
+            // Scrolling there builds (and asks for) the rows on screen only;
+            // the content height stays the same.
+            scroll_to(&mut fx, &far);
+            let (bodies, rows) = fx.diff(&mut tree);
+            assert_eq!(bodies, 1);
+            assert!((10..64).contains(&rows), "{rows}");
+            let (start, end) = fx.sidebar.window(&SidebarCtx {
+                server_id: &fx.sid,
+                server: &fx.url,
+                workspace: &fx.ws,
+                images: &fx.images,
+                prefs: &fx.prefs,
+                collapsed: &fx.collapsed,
+                active_room: None,
+                now: Instant::now(),
+            });
+            assert!(start > 200 && end <= ROOMS + 3, "{start}..{end}");
+            // Small scrolls inside the built range do not rebuild.
+            let (o, h, c) = fx.sidebar.viewport.unwrap();
+            fx.sidebar.viewport = Some((o + 20.0, h, c));
+            assert_eq!(fx.diff(&mut tree), (0, 0));
+            // A stale offset past the end (the list got shorter) still shows
+            // the last rows.
+            fx.sidebar.viewport = Some((1e7, h, c));
+            fx.diff(&mut tree);
+            fx.sidebar.filter = "r0001".into();
+            fx.diff(&mut tree);
+            assert_eq!(fx.sidebar.room_count(), 1);
+            let ctx = SidebarCtx {
+                server_id: &fx.sid,
+                server: &fx.url,
+                workspace: &fx.ws,
+                images: &fx.images,
+                prefs: &fx.prefs,
+                collapsed: &fx.collapsed,
+                active_room: None,
+                now: Instant::now(),
+            };
+            assert_eq!(fx.sidebar.window(&ctx), (0, 2));
         }
 
         fn first_keyed(tree: &Tree) -> Option<&Tree> {

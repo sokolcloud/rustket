@@ -18,20 +18,17 @@ pub enum DlEvent {
 
 /// Invisible formatting characters: bidi marks, embeddings, overrides and
 /// isolates (which can show `invoice\u{202E}fdp.sh` as `invoicehs.pdf`),
-/// zero-width characters and other Unicode format (Cf) controls.
+/// zero-width characters and every other Unicode format (Cf) character,
+/// plus the line and paragraph separators (Zl, Zp), U+180E, U+2065 and the
+/// whole tag block (including its unassigned code points).
 fn is_format_char(c: char) -> bool {
+    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
     matches!(
-        c,
-        '\u{00AD}'
-            | '\u{061C}'
-            | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{206F}'
-            | '\u{FEFF}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{E0000}'..='\u{E007F}'
-    )
+        c.general_category(),
+        GeneralCategory::Format
+            | GeneralCategory::LineSeparator
+            | GeneralCategory::ParagraphSeparator
+    ) || matches!(c, '\u{180E}' | '\u{2065}' | '\u{E0000}'..='\u{E007F}')
 }
 
 /// A file name safe to create in a directory and to show in a file dialog:
@@ -115,6 +112,8 @@ pub fn media_dir(images_dir: Option<&Path>) -> Option<PathBuf> {
 
 /// Media files opened with the system player are deleted after this age.
 pub const MEDIA_TTL: Duration = Duration::from_secs(24 * 3600);
+/// How often a running app deletes stale media ([`MEDIA_TTL`]).
+pub const MEDIA_PURGE_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// Deletes the media opened with the system player from `dir` (see
 /// [`media_dir`]): everything, including decrypted end-to-end media, or only
@@ -369,6 +368,17 @@ mod tests {
             '\u{200B}',
             '\u{FEFF}',
             '\u{E0041}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{0600}',
+            '\u{06DD}',
+            '\u{070F}',
+            '\u{08E2}',
+            '\u{110BD}',
+            '\u{13430}',
+            '\u{1BCA0}',
+            '\u{1D173}',
+            '\u{00AD}',
         ] {
             assert_eq!(safe_file_name(&format!("a{c}b.txt")), "ab.txt", "{c:?}");
         }

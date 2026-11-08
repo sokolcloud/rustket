@@ -101,6 +101,9 @@ pub enum Message {
     CloseRequested(iced::window::Id),
     /// Flush image misses recorded by the last frame.
     FlushImages,
+    /// Hourly: delete media opened with the system player that is older
+    /// than `transfer::MEDIA_TTL`.
+    PurgeStaleMedia,
     /// Image fetch result: server, its cache generation at request time, URL.
     ImageLoaded(ServerId, u64, String, FetchResult),
     DeepLinks(Vec<String>),

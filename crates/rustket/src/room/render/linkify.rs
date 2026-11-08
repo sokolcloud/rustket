@@ -28,19 +28,28 @@ pub fn safe_url(src: &str) -> Option<String> {
 /// work per link whatever the input.
 const MAX_URL_LEN: usize = 8 * 1024;
 
+/// Most links recognised in one text; the rest stays plain text. Bounds the
+/// link widgets/spans built downstream.
+pub const MAX_LINKS: usize = 500;
+
 /// Byte ranges of URLs in `text` (`http(s)://…`, `www.…`, `mailto:…`), with
 /// trailing punctuation and unbalanced closing brackets left out. Linear in
-/// the length of `text`: it runs on the UI thread over untrusted texts.
+/// the length of `text`: it runs on the UI thread over untrusted texts. At
+/// most [`MAX_LINKS`] ranges.
 pub fn find_links(text: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let lower = text.to_ascii_lowercase();
     let bytes = lower.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
+    while i < bytes.len() && out.len() < MAX_LINKS {
         let at_boundary = i == 0 || !is_word_byte(bytes[i - 1]);
-        let prefix = ["https://", "http://", "mailto:", "www."]
-            .into_iter()
-            .find(|p| lower[i..].starts_with(p));
+        let prefix = matches!(bytes[i], b'h' | b'm' | b'w')
+            .then(|| {
+                ["https://", "http://", "mailto:", "www."]
+                    .into_iter()
+                    .find(|p| lower[i..].starts_with(p))
+            })
+            .flatten();
         match prefix {
             Some(p) if at_boundary => {
                 let start = i;
@@ -67,6 +76,7 @@ pub fn find_links(text: &str) -> Vec<(usize, usize)> {
                 // cannot start another link: skip it in one step.
                 i = scanned.max(i + p.len());
             }
+            _ if bytes[i].is_ascii() => i += 1,
             _ => {
                 i += text[i..].chars().next().map_or(1, char::len_utf8);
             }
@@ -150,6 +160,7 @@ mod tests {
             format!("https://{}", "a".repeat(60_000)),
             "https://a ".repeat(6_000),
         ];
+        assert_eq!(find_links(&inputs[6]).len(), MAX_LINKS);
         let started = std::time::Instant::now();
         for _ in 0..20 {
             for text in &inputs {
