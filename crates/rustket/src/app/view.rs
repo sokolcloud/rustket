@@ -97,17 +97,19 @@ impl App {
             &self.toasts,
             Message::CloseToast,
         );
+        // Counts presses (title bar included) so text selections yield
+        // keyboard shortcuts to whatever was clicked since.
         if !self.custom_chrome() {
-            return content;
+            return rustket_ui::widget::selectable::press_guard(content);
         }
         // Modals cover `content` only: the window can be moved, resized and
         // closed with one open.
-        window_frame(
+        rustket_ui::widget::selectable::press_guard(window_frame(
             self.title_bar(!blocked),
             content,
             self.titlebar.maximized,
             |d| Message::TitleBar(titlebar::Message::Resize(d)),
-        )
+        ))
     }
 
     /// `page` after the left rail (system title bar) or alone (the

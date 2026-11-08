@@ -281,10 +281,9 @@ impl Messages {
         } else {
             Msg::Show(m.id.clone())
         };
-        mouse_area(cell)
-            .interaction(iced::mouse::Interaction::Pointer)
-            .on_press(target)
-            .into()
+        // On click, not on press: a press in the body may start a text
+        // selection, and links in it act on their own.
+        rustket_ui::widget::selectable::click_area(cell, target)
     }
 
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {

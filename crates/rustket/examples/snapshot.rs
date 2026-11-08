@@ -694,6 +694,11 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "08-room-dark");
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
+    // `RUSTKET_SNAPSHOT_SELECTION`: only the text selection shots after the room.
+    if std::env::var("RUSTKET_SNAPSHOT_SELECTION").is_ok() {
+        selection::selection_shots(&mut d, &server, &out, &sid, &rid).await;
+        return;
+    }
     shell::shell_shots(&mut d, &out, &sid, &rid).await;
     // `RUSTKET_SNAPSHOT_POLISH`: focus rings, storage settings, 1024 px.
     if std::env::var("RUSTKET_SNAPSHOT_POLISH").is_ok() {
@@ -911,6 +916,8 @@ mod e2e;
 mod glue;
 #[path = "snapshot/polish.rs"]
 mod polish;
+#[path = "snapshot/selection.rs"]
+mod selection;
 #[path = "snapshot/shell.rs"]
 mod shell;
 

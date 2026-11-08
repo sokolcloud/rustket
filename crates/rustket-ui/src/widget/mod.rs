@@ -20,6 +20,7 @@ mod overlay;
 mod popover;
 mod presence;
 mod side_panel;
+pub mod selectable;
 mod sidebar;
 mod spinner;
 mod split;
