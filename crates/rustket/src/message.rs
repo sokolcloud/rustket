@@ -103,6 +103,11 @@ pub enum Message {
     /// Tab / Shift+Tab that no widget handled (modal dialogs cycle their own
     /// focus): move focus to the next (`true`) or previous input.
     FocusNext(bool),
+    /// F6 / Shift+F6: focus the next (`true`) or previous region
+    /// (`crate::focus`).
+    FocusRegion(bool),
+    /// Escape that no widget handled: close the right panel / settings page.
+    Escape,
     SidebarResized(f32),
     /// Room component message: server, session epoch, room id.
     Room(ServerId, u64, String, room::Message),

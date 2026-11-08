@@ -692,6 +692,11 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
     shell::shell_shots(&mut d, &out, &sid, &rid).await;
+    // `RUSTKET_SNAPSHOT_POLISH`: focus rings, storage settings, 1024 px.
+    if std::env::var("RUSTKET_SNAPSHOT_POLISH").is_ok() {
+        polish::polish_shots(&mut d, &server, &out, &sid, &rid, &user).await;
+        return;
+    }
     // `RUSTKET_SNAPSHOT_SHELL`: only the shots up to the shell states.
     if std::env::var("RUSTKET_SNAPSHOT_SHELL").is_ok() {
         return;
@@ -901,6 +906,8 @@ fn image_bytes(w: u32, h: u32) -> Vec<u8> {
 mod e2e;
 #[path = "snapshot/glue.rs"]
 mod glue;
+#[path = "snapshot/polish.rs"]
+mod polish;
 #[path = "snapshot/shell.rs"]
 mod shell;
 

@@ -15,7 +15,12 @@
 //!   Every server has a cache generation; purging (logout, removal) bumps it and
 //!   results of older generations are dropped by the app, which also does the
 //!   disk write, so in-flight fetches cannot repopulate a purged cache.
-//! - The memory LRU is bounded by entry count and bytes.
+//! - The memory LRU is bounded by entry count and bytes ([`MEMORY_BUDGET`]);
+//!   the initials and failure sets are bounded too ([`MAX_INITIALS`],
+//!   [`MAX_FAILED`]), so a long session does not grow without limit.
+//! - The disk cache is capped ([`set_disk_cap_mb`], Settings → Storage): when
+//!   it grows past the cap the oldest files (by modification time; a hit on a
+//!   versioned entry refreshes it) are deleted down to 90% ([`trim_disk`]).
 //! - At most [`MAX_FETCHES_PER_SERVER`] fetches of the server's own asset
 //!   routes and [`MAX_FOREIGN_FETCHES_PER_SERVER`] of other URLs (message
 //!   content) run per server; the rest wait in a queue served newest request
@@ -52,7 +57,14 @@ pub const IMAGE_MAX_PX: u32 = 1600;
 /// Minimum memory LRU capacity (entries).
 pub const MEMORY_CAPACITY: usize = 1024;
 /// Memory LRU byte budget (decoded RGBA).
-pub const MEMORY_BUDGET: usize = 192 * 1024 * 1024;
+pub const MEMORY_BUDGET: usize = 256 * 1024 * 1024;
+/// Most initials decisions kept in memory (they are cheap to restore from the
+/// disk markers).
+pub const MAX_INITIALS: usize = 50_000;
+/// Most recent failures remembered for the backoff.
+pub const MAX_FAILED: usize = 4096;
+/// One MiB.
+const MIB: u64 = 1024 * 1024;
 /// Disk entries of URLs without an `etag` are revalidated after this age.
 pub const UNVERSIONED_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 /// A failed URL is not retried for this long.
@@ -419,10 +431,20 @@ impl Images {
             }
             Ok(Fetched::Initials) => {
                 self.failed.remove(&url);
+                if self.initials.len() >= MAX_INITIALS {
+                    // Restored from the disk markers when shown again.
+                    self.initials.clear();
+                }
                 self.initials.insert(url);
             }
             Err(e) => {
                 tracing::debug!(error = %e, "image fetch failed");
+                if self.failed.len() >= MAX_FAILED {
+                    self.failed.retain(|_, t| t.elapsed() < FAILURE_BACKOFF);
+                    if self.failed.len() >= MAX_FAILED {
+                        self.failed.clear();
+                    }
+                }
                 self.failed.insert(url, Instant::now());
             }
         }
@@ -538,7 +560,14 @@ impl Images {
         self.wanted
             .borrow_mut()
             .retain(|r, _| &r.server_id != server_id);
+        DISK_USAGE.store(USAGE_UNKNOWN, Ordering::Relaxed);
         self.server_dir(server_id)
+    }
+
+    /// Entries in the initials and failure sets (for the bound tests).
+    #[cfg(test)]
+    pub(crate) fn side_sets(&self) -> (usize, usize) {
+        (self.initials.len(), self.failed.len())
     }
 
     pub fn len(&self) -> usize {
@@ -616,6 +645,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Writes a cache entry (called by the app when the generation is current).
+/// Trims the cache when enough was written since the last trim.
 pub fn write_cache_entry(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path
         .parent()
@@ -624,7 +654,140 @@ pub fn write_cache_entry(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         private_dir(root)?;
     }
     private_dir(dir)?;
-    write_private(path, bytes)
+    write_private(path, bytes)?;
+    let n = bytes.len() as u64;
+    let mut usage = DISK_USAGE.load(Ordering::Relaxed);
+    while usage != USAGE_UNKNOWN {
+        match DISK_USAGE.compare_exchange_weak(
+            usage,
+            usage.saturating_add(n).min(USAGE_UNKNOWN - 1),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(now) => usage = now,
+        }
+    }
+    let written = DISK_WRITTEN.fetch_add(n, Ordering::Relaxed) + n;
+    let cap = disk_cap();
+    let usage = DISK_USAGE.load(Ordering::Relaxed);
+    if (written >= cap / 20 || (usage != USAGE_UNKNOWN && usage > cap))
+        && let Some(root) = dir.parent()
+    {
+        trim_disk(root, cap);
+    }
+    Ok(())
+}
+
+/// Default disk cache cap.
+pub const DEFAULT_DISK_CAP: u64 = rustket_core::config::DEFAULT_IMAGE_CACHE_MB as u64 * MIB;
+/// Unfinished temporary files older than this are removed by [`trim_disk`].
+const STALE_TMP: Duration = Duration::from_secs(3600);
+const USAGE_UNKNOWN: u64 = u64::MAX;
+static DISK_CAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(DEFAULT_DISK_CAP);
+/// Bytes written since the last trim.
+static DISK_WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Size of the disk cache as of the last trim plus later writes.
+static DISK_USAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(USAGE_UNKNOWN);
+static TRIMMING: AtomicBool = AtomicBool::new(false);
+
+/// Sets the disk cache cap (`UiPrefs::image_cache_mb`). Returns whether it
+/// went down (the caller then runs [`trim_task`]).
+pub fn set_disk_cap_mb(mb: u32) -> bool {
+    let cap = u64::from(mb.max(1)) * MIB;
+    DISK_CAP.swap(cap, Ordering::Relaxed) > cap
+}
+
+pub fn disk_cap() -> u64 {
+    DISK_CAP.load(Ordering::Relaxed)
+}
+
+/// Size of the disk cache in bytes, when known (after a trim scan).
+pub fn disk_usage() -> Option<u64> {
+    Some(DISK_USAGE.load(Ordering::Relaxed)).filter(|u| *u != USAGE_UNKNOWN)
+}
+
+/// Deletes the oldest files of the disk cache under `root` (one directory
+/// per server) until it is at most 90% of `cap` when it is over `cap`, and
+/// leftover temporary files. Returns the remaining size. Blocking: run it
+/// off the UI thread. Concurrent calls return right away.
+pub fn trim_disk(root: &Path, cap: u64) -> u64 {
+    if TRIMMING.swap(true, Ordering::AcqRel) {
+        return DISK_USAGE.load(Ordering::Relaxed);
+    }
+    DISK_WRITTEN.store(0, Ordering::Relaxed);
+    let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
+    let now = SystemTime::now();
+    for dir in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let Ok(kind) = dir.file_type() else { continue };
+        if !kind.is_dir() {
+            continue;
+        }
+        for f in std::fs::read_dir(dir.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let Ok(meta) = f.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let path = f.path();
+            let tmp = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.starts_with("tmp"));
+            if tmp {
+                if now.duration_since(mtime).unwrap_or_default() > STALE_TMP {
+                    let _ = std::fs::remove_file(&path);
+                }
+                continue;
+            }
+            files.push((mtime, meta.len(), path));
+        }
+    }
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    if total > cap {
+        let target = cap - cap / 10;
+        files.sort_unstable_by_key(|f| f.0);
+        let mut removed = 0usize;
+        for (_, len, path) in files {
+            if total <= target {
+                break;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                total = total.saturating_sub(len);
+                removed += 1;
+            }
+        }
+        tracing::debug!(removed, total, cap, "image disk cache trimmed");
+    }
+    DISK_USAGE.store(total, Ordering::Relaxed);
+    TRIMMING.store(false, Ordering::Release);
+    total
+}
+
+/// [`trim_disk`] of `root` with the current cap, in a task.
+pub fn trim_task<M: Send + 'static>(root: Option<&Path>, done: M) -> iced::Task<M> {
+    let Some(root) = root.map(Path::to_path_buf) else {
+        return iced::Task::none();
+    };
+    iced::Task::perform(
+        async move {
+            let _ = tokio::task::spawn_blocking(move || trim_disk(&root, disk_cap())).await;
+        },
+        move |()| done,
+    )
+}
+
+/// Marks a versioned disk entry as recently used (its freshness does not
+/// depend on the modification time), so trimming evicts the least recently
+/// used first.
+fn touch_file(path: &Path) {
+    if let Ok(f) = std::fs::OpenOptions::new().write(true).open(path) {
+        let _ = f.set_modified(SystemTime::now());
+    }
 }
 
 fn decode_permits() -> &'static tokio::sync::Semaphore {
@@ -665,9 +828,16 @@ pub async fn fetch(rest: RestClient, server_dir: Option<PathBuf>, url: String) -
         let versioned = has_version(&url);
         let cached = tokio::task::spawn_blocking(move || {
             if read_fresh(&marker, versioned).is_some() {
+                if versioned {
+                    touch_file(&marker);
+                }
                 return Some(None);
             }
-            read_fresh(&png, versioned).map(Some)
+            let bytes = read_fresh(&png, versioned)?;
+            if versioned {
+                touch_file(&png);
+            }
+            Some(Some(bytes))
         })
         .await
         .ok()
@@ -1112,6 +1282,98 @@ mod tests {
         .await;
         assert!(r.is_err());
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// Phase 13: a long session with many large attachments, SVG avatars
+    /// and failing URLs stays within the memory budget and the set bounds.
+    #[test]
+    fn long_sessions_stay_bounded() {
+        let mut images = Images::new(None);
+        images.set_working_set(20_000);
+        let sid = ServerId("s".into());
+        let tiny = img(1);
+        // 1600x1600 RGBA claims ~10 MB each (synthetic: the handle is tiny).
+        for i in 0..200 {
+            let big = Loaded {
+                handle: tiny.handle.clone(),
+                width: IMAGE_MAX_PX,
+                height: IMAGE_MAX_PX,
+            };
+            assert!(images.finish(&sid, 0, format!("http://h/big{i}"), Ok(Fetched::Image(big))));
+            assert!(images.memory_bytes() <= MEMORY_BUDGET);
+        }
+        assert!(images.len() < 30, "{}", images.len());
+        // The newest images are the ones kept.
+        assert!(images.contains("http://h/big199"));
+        assert!(!images.contains("http://h/big0"));
+        for i in 0..MAX_INITIALS + 10 {
+            images.finish(&sid, 0, format!("http://h/svg{i}"), Ok(Fetched::Initials));
+        }
+        for i in 0..MAX_FAILED * 3 {
+            images.finish(&sid, 0, format!("http://h/bad{i}"), Err("x".into()));
+        }
+        let (initials, failed) = images.side_sets();
+        assert!(initials <= MAX_INITIALS, "{initials}");
+        assert!(failed <= MAX_FAILED, "{failed}");
+        // The latest decisions survive the bound.
+        assert!(images.shows_initials(&format!("http://h/svg{}", MAX_INITIALS + 9)));
+    }
+
+    /// Phase 13: the disk cache is trimmed oldest first down to 90% of the
+    /// cap; stale temporary files go too.
+    #[test]
+    fn disk_cache_is_trimmed_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("images");
+        let now = SystemTime::now();
+        let mut paths = Vec::new();
+        for (server, n) in [("a", 30u64), ("b", 30)] {
+            for i in 0..n {
+                let p = root.join(server).join(format!("{i:03}.png"));
+                write_private_entry(&p, &[0u8; 1024]);
+                // a/000 is the oldest, b/029 the newest.
+                let age = Duration::from_secs(if server == "a" { 10_000 } else { 5_000 } - i * 10);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&p)
+                    .unwrap()
+                    .set_modified(now - age)
+                    .unwrap();
+                paths.push(p);
+            }
+        }
+        let tmp = root.join("a").join("x.tmp123-4");
+        write_private_entry(&tmp, b"partial");
+        std::fs::File::options()
+            .write(true)
+            .open(&tmp)
+            .unwrap()
+            .set_modified(now - Duration::from_secs(7200))
+            .unwrap();
+        // Under the cap: nothing but the stale temporary file goes.
+        assert_eq!(trim_disk(&root, 100 * 1024), 60 * 1024);
+        assert!(!tmp.exists());
+        // Cap 40 KiB: down to 36 KiB, the oldest 24 files removed.
+        let left = trim_disk(&root, 40 * 1024);
+        assert_eq!(left, 36 * 1024);
+        let gone: Vec<bool> = paths.iter().map(|p| !p.exists()).collect();
+        assert!(gone[..24].iter().all(|g| *g), "oldest removed");
+        assert!(gone[24..].iter().all(|g| !*g), "newest kept");
+        // The cap setting: lowering it asks for a trim.
+        assert!(!set_disk_cap_mb(
+            rustket_core::config::DEFAULT_IMAGE_CACHE_MB
+        ));
+        assert!(set_disk_cap_mb(100));
+        assert_eq!(disk_cap(), 100 * MIB);
+        assert!(!set_disk_cap_mb(
+            rustket_core::config::DEFAULT_IMAGE_CACHE_MB
+        ));
+        assert_eq!(disk_cap(), DEFAULT_DISK_CAP);
+    }
+
+    fn write_private_entry(p: &Path, bytes: &[u8]) {
+        private_dir(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
     }
 
     #[test]

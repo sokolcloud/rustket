@@ -7,6 +7,7 @@ mod badge;
 mod button;
 mod ellipsis;
 mod feedback;
+mod focus_ring;
 mod header;
 mod hover_box;
 mod input;
@@ -18,6 +19,7 @@ mod misc;
 mod overlay;
 mod popover;
 mod presence;
+mod side_panel;
 mod sidebar;
 mod spinner;
 mod split;
@@ -34,14 +36,18 @@ pub use button::{
 };
 pub use ellipsis::{Ellipsis, ellipsis, sanitize_bidi};
 pub use feedback::{BannerKind, banner, status_strip};
+pub use focus_ring::{
+    FOCUS_RING_WIDTH, FocusRegion, FocusRing, draw_ring, focus_region, focus_ring, focus_within,
+    ring_colors,
+};
 pub use header::{header_bar, header_gap};
 pub use hover_box::{HoverBox, hover_box};
 pub use input::{TextField, text_field};
 pub use keyed_list::{KeyedColumn, keyed_list, keyed_list_keys};
 pub use layer::focus_cycle;
 pub use menu::{
-    MENU_MAX_WIDTH, MENU_WIDTH, MenuEntry, MenuItem, context_menu, menu_panel, menu_width,
-    popover_menu,
+    MENU_MAX_WIDTH, MENU_WIDTH, MenuEntry, MenuItem, context_menu, menu_nav, menu_panel,
+    menu_width, popover_menu,
 };
 pub use message::{
     GUTTER, MESSAGE_AVATAR, MessageRowProps, discussion_summary, message_row, message_toolbar,
@@ -53,6 +59,7 @@ pub use misc::{
 pub use overlay::{TOAST_WIDTH, Toast, dialog, modal, modal_keyed, toasts, toasts_with};
 pub use popover::{Placement, popover};
 pub use presence::{Presence, presence_dot};
+pub use side_panel::{MIN_MAIN_WIDTH, MIN_SIDE_WIDTH, side_panel};
 pub use sidebar::{
     Density, RailIcon, RoomListItemProps, add_server_button, room_list_item, section_header,
     workspace_rail_item,

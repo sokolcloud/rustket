@@ -6,6 +6,7 @@ use iced::{Alignment, Element, Length, Theme, border};
 use super::avatar::{AvatarShape, AvatarSource, avatar, face};
 use super::badge::{BadgeKind, badge, dot};
 use super::ellipsis::ellipsis;
+use super::focus_ring::focus_ring;
 use super::misc::{TooltipPosition, tooltip};
 use super::presence::Presence;
 use crate::icon::{self, Icon};
@@ -196,13 +197,14 @@ pub fn room_list_item<'a, Message: Clone + 'a>(
         .into()
     };
 
-    button(container(content).center_y(Length::Fill))
+    let on_press = p.on_press;
+    let row = button(container(content).center_y(Length::Fill))
         .width(Length::Fill)
         .height(if condensed { 32.0 } else { 56.0 })
         .padding([0.0, SPACE_2])
         .style(style::button_list_item(p.is_selected))
-        .on_press(p.on_press)
-        .into()
+        .on_press(on_press.clone());
+    focus_ring(row, Some(on_press)).into()
 }
 
 /// Collapsible sidebar group header ("Favorites", "Channels"…).
@@ -235,7 +237,7 @@ pub fn section_header<'a, Message: Clone + 'a>(
                 .style(style::text_hint),
         );
     }
-    button(content)
+    let header = button(content)
         .width(Length::Fill)
         .padding([6.0, SPACE_2])
         .style(|theme: &Theme, status| {
@@ -248,8 +250,8 @@ pub fn section_header<'a, Message: Clone + 'a>(
             s.background = None;
             s
         })
-        .on_press(on_toggle)
-        .into()
+        .on_press(on_toggle.clone());
+    focus_ring(header, Some(on_toggle)).into()
 }
 
 /// What a rail item shows.
@@ -328,7 +330,8 @@ pub fn workspace_rail_item<'a, Message: Clone + 'a>(
     let item = button(layers)
         .padding(0)
         .style(style::button_bare)
-        .on_press(on_press);
+        .on_press(on_press.clone());
+    let item = focus_ring(item, Some(on_press)).radius(RADIUS_LG + 3.0);
     let content =
         row![indicator, space().width(6), item, space().width(10)].align_y(Alignment::Center);
     tooltip(content, name, TooltipPosition::Right)
@@ -358,7 +361,8 @@ pub fn add_server_button<'a, Message: Clone + 'a>(
                 ..button::Style::default()
             }
         })
-        .on_press(on_press);
+        .on_press(on_press.clone());
+    let tile = focus_ring(tile, Some(on_press)).radius(RADIUS_LG);
     let content = row![space().width(13), tile, space().width(13)];
     tooltip(content, label, TooltipPosition::Right)
 }

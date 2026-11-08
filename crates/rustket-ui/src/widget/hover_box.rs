@@ -13,7 +13,9 @@ type StyleFn<'a> = Box<dyn Fn(&Theme, bool) -> container::Style + 'a>;
 
 /// Draws `content` with a background chosen by `style(theme, hovered)` and, while
 /// hovered, the `on_hover` layers on top (laid out over the content's bounds, e.g.
-/// a toolbar aligned top-right or a timestamp in the gutter).
+/// a toolbar aligned top-right or a timestamp in the gutter). The layers also
+/// show while one of their widgets has the keyboard focus (Tab reaches a
+/// row's toolbar), and then get keyboard events.
 pub struct HoverBox<'a, Message> {
     children: Vec<Element<'a, Message>>,
     style: StyleFn<'a>,
@@ -35,6 +37,14 @@ pub fn hover_box<'a, Message: 'a>(
 #[derive(Default)]
 struct State {
     hovered: bool,
+    /// A widget of the hover layers has the keyboard focus.
+    focus_within: bool,
+}
+
+impl State {
+    fn shown(&self, hovered: bool) -> bool {
+        hovered || self.focus_within
+    }
 }
 
 impl<'a, Message: 'a> From<HoverBox<'a, Message>> for Element<'a, Message> {
@@ -104,7 +114,8 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for HoverBox<'_, Message> {
             return;
         };
         let hovered = cursor.is_over(bounds);
-        let s = (self.style)(theme, hovered);
+        let shown = tree.state.downcast_ref::<State>().shown(hovered);
+        let s = (self.style)(theme, shown);
         if s.background.is_some() || s.border.width > 0.0 {
             container::draw_background(renderer, &s, bounds);
         }
@@ -121,7 +132,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for HoverBox<'_, Message> {
                 .as_widget()
                 .draw(tree, renderer, theme, &style, layout, cursor, viewport);
         }
-        if hovered {
+        if shown {
             renderer.with_layer(visible, |renderer| {
                 for ((item, tree), layout) in parts {
                     item.as_widget()
@@ -178,7 +189,33 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for HoverBox<'_, Message> {
             Event::Mouse(mouse::Event::ButtonReleased(_) | mouse::Event::CursorLeft)
                 | Event::Touch(_)
         );
-        if hovered || was_hovered || resets {
+        // Focus moves with keys, clicks and widget operations (followed by a
+        // redraw): only then is it looked up.
+        if matches!(
+            event,
+            Event::Keyboard(_)
+                | Event::Mouse(mouse::Event::ButtonPressed(_))
+                | Event::Window(iced::window::Event::RedrawRequested(_))
+        ) {
+            let mut count = super::layer::FocusCount::default();
+            for ((child, tree), layout) in self.children[1..]
+                .iter_mut()
+                .zip(tree.children[1..].iter_mut())
+                .zip(layout.children().skip(1))
+            {
+                child
+                    .as_widget_mut()
+                    .operate(tree, layout, renderer, &mut count);
+            }
+            let state = tree.state.downcast_mut::<State>();
+            let within = count.focused.is_some();
+            if state.focus_within != within {
+                state.focus_within = within;
+                shell.request_redraw();
+            }
+        }
+        let focus_within = tree.state.downcast_ref::<State>().focus_within;
+        if hovered || was_hovered || resets || focus_within {
             let item_trees = &mut tree.children[1..];
             for ((child, tree), layout) in self.children[1..]
                 .iter_mut()
@@ -268,8 +305,10 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for HoverBox<'_, Message> {
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
-        // Overlays of the hover layers (tooltips, menus) only exist while hovered.
-        if !tree.state.downcast_ref::<State>().hovered {
+        // Overlays of the hover layers (tooltips, menus) only exist while
+        // they are shown.
+        let state = tree.state.downcast_ref::<State>();
+        if !state.shown(state.hovered) {
             let content_layout = layout.children().next()?;
             return self.children[0].as_widget_mut().overlay(
                 &mut tree.children[0],

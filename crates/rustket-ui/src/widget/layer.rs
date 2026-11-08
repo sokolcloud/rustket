@@ -605,9 +605,9 @@ impl Operation for WithoutFocus<'_> {
 
 /// Counts focusables and finds the focused one.
 #[derive(Default)]
-struct FocusCount {
-    total: usize,
-    focused: Option<usize>,
+pub(crate) struct FocusCount {
+    pub(crate) total: usize,
+    pub(crate) focused: Option<usize>,
 }
 
 impl Operation for FocusCount {

@@ -28,6 +28,10 @@ pub const MAX_RECENT_EMOJI: usize = 36;
 pub const MAX_RECENT_STATUS_TEXTS: usize = 5;
 /// Accepted range of [`UiPrefs::zoom`].
 pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
+/// Accepted range of [`UiPrefs::image_cache_mb`].
+pub const IMAGE_CACHE_MB_RANGE: std::ops::RangeInclusive<u32> = 50..=20_000;
+/// Default of [`UiPrefs::image_cache_mb`].
+pub const DEFAULT_IMAGE_CACHE_MB: u32 = 500;
 /// Largest accepted window width/height.
 const MAX_WINDOW_SIDE: u32 = 32_768;
 
@@ -206,6 +210,8 @@ pub struct UiPrefs {
     pub zoom: f32,
     /// Render with the GPU (wgpu); `false` restarts with the CPU renderer.
     pub hardware_acceleration: bool,
+    /// Size cap of the image disk cache in MiB (oldest files are evicted).
+    pub image_cache_mb: u32,
 }
 
 impl Default for UiPrefs {
@@ -228,6 +234,7 @@ impl Default for UiPrefs {
             start_minimized: false,
             zoom: 1.0,
             hardware_acceleration: true,
+            image_cache_mb: DEFAULT_IMAGE_CACHE_MB,
         }
     }
 }
@@ -317,6 +324,7 @@ const UI_KEYS: &[&str] = &[
     "start_minimized",
     "zoom",
     "hardware_acceleration",
+    "image_cache_mb",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -505,6 +513,10 @@ impl AppConfig {
         } else {
             self.ui.zoom = zoom.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
         }
+        self.ui.image_cache_mb = self
+            .ui
+            .image_cache_mb
+            .clamp(*IMAGE_CACHE_MB_RANGE.start(), *IMAGE_CACHE_MB_RANGE.end());
         if self.window.is_some_and(|w| {
             w.width == 0 || w.height == 0 || w.width > MAX_WINDOW_SIDE || w.height > MAX_WINDOW_SIDE
         }) {
@@ -946,6 +958,10 @@ mod tests {
         assert_eq!(c.window, None, "no size");
         let c = AppConfig::parse("[ui]\nzoom = 40.0").unwrap();
         assert_eq!(c.ui.zoom, *ZOOM_RANGE.end());
+        let c = AppConfig::parse("[ui]\nimage_cache_mb = 1").unwrap();
+        assert_eq!(c.ui.image_cache_mb, *IMAGE_CACHE_MB_RANGE.start());
+        let c = AppConfig::parse("[ui]\nzoom = 1.0").unwrap();
+        assert_eq!(c.ui.image_cache_mb, DEFAULT_IMAGE_CACHE_MB);
         let c = AppConfig::parse(
             "active_server = \"gone\"\n[[servers]]\nid = \"a\"\nurl = \"https://1\"\n[[servers]]\nid = \"a\"\nurl = \"https://2\"\n[[servers]]\nid = \"\"\nurl = \"https://3\"",
         )

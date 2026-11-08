@@ -14,7 +14,7 @@ use rustket_ui::theme::{
     FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_CAPTION,
     TEXT_SUBTITLE,
 };
-use rustket_ui::widget::{BannerKind, banner, divider, secondary_button};
+use rustket_ui::widget::{BannerKind, banner, divider, focus_ring, secondary_button};
 
 use crate::component::{Action, Effect};
 use crate::desktop::{TraySupport, autostart};
@@ -25,6 +25,8 @@ use crate::ui_state::UiState;
 pub const ZOOM_STEP: f32 = 0.1;
 pub const WEBSITE: &str = "https://rocket.chat";
 pub const DOCS: &str = "https://docs.rocket.chat";
+/// Choices of the image disk cache cap (MiB).
+pub const IMAGE_CACHE_CHOICES: [u32; 5] = [100, 250, 500, 1000, 2000];
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -51,6 +53,8 @@ pub enum Message {
     AutostartSet(bool, Result<(), String>),
     RegisterHandler,
     ClearImageCache,
+    /// Disk cache cap in MiB (`UiPrefs::image_cache_mb`).
+    SetImageCacheMb(u32),
     OpenUrl(String),
     Close,
 }
@@ -194,6 +198,7 @@ impl Settings {
                     String::new(),
                 ))
             }
+            Message::SetImageCacheMb(mb) => Self::pref(ctx, |p| p.image_cache_mb = mb),
             Message::OpenUrl(url) => Action::effect(Effect::OpenUrl(url)),
             Message::Close => Action::effect(Effect::Close),
         }
@@ -221,7 +226,7 @@ impl Settings {
         }
 
         let step = |glyph: &'static str, msg: Option<Message>| {
-            button(
+            let b = button(
                 text(glyph)
                     .size(TEXT_SUBTITLE)
                     .width(Length::Fill)
@@ -230,7 +235,8 @@ impl Settings {
             .width(36)
             .padding([2, 0])
             .style(style::button_secondary)
-            .on_press_maybe(msg)
+            .on_press_maybe(msg.clone());
+            focus_ring(b, msg)
         };
         let zoom = row![
             step(
@@ -477,6 +483,15 @@ impl Settings {
                 .spacing(SPACE_3)
                 .align_y(Alignment::Center)
                 .into(),
+                field(
+                    t!("settings.cache_limit").into_owned(),
+                    Some(cache_limit_help(ui.image_cache_mb)),
+                    segmented(
+                        &ui.image_cache_mb,
+                        cache_choices(ui.image_cache_mb),
+                        Message::SetImageCacheMb,
+                    ),
+                ),
             ],
         ));
 
@@ -561,14 +576,54 @@ fn switch<'a>(
     }
     row![
         col.width(Length::Fill),
-        toggler(value)
-            .size(20)
-            .style(style::toggler)
-            .on_toggle_maybe(on_toggle),
+        focus_ring(
+            toggler(value)
+                .size(20)
+                .style(style::toggler)
+                .on_toggle_maybe(on_toggle),
+            on_toggle.map(|f| f(!value)),
+        )
+        .radius(rustket_ui::theme::RADIUS_PILL),
     ]
     .spacing(SPACE_3)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// "100 MB", "1 GB" …
+pub fn size_label(mb: u64) -> String {
+    if mb >= 1000 && mb.is_multiple_of(1000) {
+        t!("settings.size_gb", n = mb / 1000).into_owned()
+    } else {
+        t!("settings.size_mb", n = mb).into_owned()
+    }
+}
+
+/// The cap choices, with a configured value outside them kept as its own.
+fn cache_choices(current: u32) -> Vec<(u32, String)> {
+    let mut v: Vec<u32> = IMAGE_CACHE_CHOICES.to_vec();
+    if !v.contains(&current) {
+        v.push(current);
+        v.sort_unstable();
+    }
+    v.into_iter()
+        .map(|mb| (mb, size_label(u64::from(mb))))
+        .collect()
+}
+
+fn cache_limit_help(cap_mb: u32) -> String {
+    let help = t!("settings.cache_limit_help").into_owned();
+    match crate::images::disk_usage() {
+        Some(bytes) => format!(
+            "{help}\n{}",
+            t!(
+                "settings.cache_used",
+                used = size_label(bytes.div_ceil(1024 * 1024)),
+                limit = size_label(u64::from(cap_mb))
+            )
+        ),
+        None => help,
+    }
 }
 
 /// A row of mutually exclusive buttons.
@@ -580,7 +635,8 @@ fn segmented<'a, T: Clone + PartialEq + 'a>(
     let mut r = row![].spacing(SPACE_2);
     for (value, label) in options {
         let selected = *current == value;
-        r = r.push(
+        let msg = to_msg(value);
+        r = r.push(focus_ring(
             button(text(label).size(TEXT_BODY))
                 .padding([6, 12])
                 .style(if selected {
@@ -588,18 +644,23 @@ fn segmented<'a, T: Clone + PartialEq + 'a>(
                 } else {
                     style::button_secondary
                 })
-                .on_press(to_msg(value)),
-        );
+                .on_press(msg.clone()),
+            Some(msg),
+        ));
     }
     r.into()
 }
 
 fn link<'a>(label: String, url: &'static str) -> Element<'a, Message> {
-    button(text(label).size(TEXT_BODY).style(style::text_link))
-        .padding(0)
-        .style(style::button_link)
-        .on_press(Message::OpenUrl(url.to_owned()))
-        .into()
+    let msg = Message::OpenUrl(url.to_owned());
+    focus_ring(
+        button(text(label).size(TEXT_BODY).style(style::text_link))
+            .padding(0)
+            .style(style::button_link)
+            .on_press(msg.clone()),
+        Some(msg),
+    )
+    .into()
 }
 
 #[cfg(test)]
@@ -647,6 +708,7 @@ mod tests {
             (Message::SetHardwareAcceleration(true), |c| {
                 c.hardware_acceleration
             }),
+            (Message::SetImageCacheMb(1000), |c| c.image_cache_mb == 1000),
         ] {
             let a = run(&mut s, &mut cfg, msg.clone());
             assert!(check(&cfg.ui), "{msg:?}");
@@ -655,6 +717,20 @@ mod tests {
                 "{msg:?}"
             );
         }
+    }
+
+    /// Storage: the disk cache cap choices keep a value set in the file.
+    #[test]
+    fn cache_limit_choices() {
+        rust_i18n::set_locale("en");
+        let labels = |mb| -> Vec<String> { cache_choices(mb).into_iter().map(|c| c.1).collect() };
+        assert_eq!(labels(500), ["100 MB", "250 MB", "500 MB", "1 GB", "2 GB"]);
+        assert_eq!(cache_choices(750).len(), 6);
+        assert_eq!(cache_choices(750)[3].0, 750);
+        assert_eq!(size_label(1500), "1500 MB");
+        rust_i18n::set_locale("ru");
+        assert_eq!(size_label(2000), "2 ГБ");
+        rust_i18n::set_locale("en");
     }
 
     #[test]

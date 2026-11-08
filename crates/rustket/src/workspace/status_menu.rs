@@ -16,8 +16,8 @@ use rustket_ui::theme::{
     FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, tokens,
 };
 use rustket_ui::widget::{
-    AvatarShape, BannerKind, Placement, avatar, divider, ellipsis, popover, presence_dot,
-    text_field,
+    AvatarShape, BannerKind, Placement, avatar, divider, ellipsis, focus_ring, menu_nav, popover,
+    presence_dot, text_field,
 };
 
 use crate::component::{Action, Ctx, Effect, Nav, ViewCtx};
@@ -346,6 +346,8 @@ impl StatusMenu {
         .width(Length::Fill)
         .style(style::button_ghost)
         .on_press(Message::Toggle(!self.open));
+        // Tab reaches the trigger; Enter/Space opens the menu.
+        let trigger = focus_ring(trigger, Some(Message::Toggle(!self.open)));
         let popup = self.popup(ws, name, username, src, status);
         popover(
             trigger,
@@ -365,13 +367,6 @@ impl StatusMenu {
         status: UserStatus,
     ) -> Element<'a, Message> {
         let enabled = !self.busy;
-        let item = |content: Element<'a, Message>, msg: Option<Message>, danger: bool| {
-            button(content)
-                .width(Length::Fill)
-                .padding([6, 8])
-                .style(style::button_menu_item(danger))
-                .on_press_maybe(msg)
-        };
         let labelled = |ic: Icon, label: String| -> Element<'a, Message> {
             row![icon::sized(ic, 16.0), ellipsis(label).size(TEXT_BODY)]
                 .spacing(SPACE_3)
@@ -383,7 +378,8 @@ impl StatusMenu {
                 .padding([SPACE_1, SPACE_2])
                 .into()
         };
-        let mut col = column![
+        let mut rows = Rows::default();
+        rows.plain(
             row![
                 avatar(src, 40.0, AvatarShape::Rounded),
                 column![
@@ -397,10 +393,9 @@ impl StatusMenu {
             .spacing(SPACE_3)
             .align_y(Alignment::Center)
             .padding([SPACE_2, SPACE_2]),
-            divider(),
-            caption(t!("status_menu.status").into_owned()),
-        ]
-        .spacing(0);
+        );
+        rows.plain(divider());
+        rows.plain(caption(t!("status_menu.status").into_owned()));
         for s in offered(ws) {
             let mut r = row![
                 container(presence_dot(presence(s), 10.0)).padding([0, 3]),
@@ -413,35 +408,31 @@ impl StatusMenu {
             if s == status {
                 r = r.push(icon::sized(Icon::Check, 14.0));
             }
-            col = col.push(item(
-                r.into(),
-                enabled.then_some(Message::SetStatus(s)),
-                false,
-            ));
+            rows.item(r, enabled.then_some(Message::SetStatus(s)), false);
         }
         if let Some(e) = crate::omnichannel::status::menu_entry(ws, enabled, Message::Omni) {
-            col = col.push(divider()).push(e);
+            rows.plain(divider());
+            rows.plain(e);
         }
         let customs = offered_custom(ws);
         if !customs.is_empty() {
-            col = col.push(caption(t!("status_menu.custom_statuses").into_owned()));
+            rows.plain(caption(t!("status_menu.custom_statuses").into_owned()));
             for c in customs {
-                col = col.push(item(
+                rows.item(
                     row![
                         container(presence_dot(presence(c.status_type), 10.0)).padding([0, 3]),
                         ellipsis(c.name.clone()).size(TEXT_BODY),
                     ]
                     .spacing(SPACE_3)
-                    .align_y(Alignment::Center)
-                    .into(),
+                    .align_y(Alignment::Center),
                     enabled.then(|| Message::SetCustom(c.id.clone())),
                     false,
-                ));
+                );
             }
         }
         if text_allowed(ws) {
-            col = col.push(divider());
-            col = col.push(caption(t!("status_menu.status_text").into_owned()));
+            rows.plain(divider());
+            rows.plain(caption(t!("status_menu.status_text").into_owned()));
             let mut field = row![
                 text_field("", &self.text, Message::TextChanged)
                     .placeholder(t!("status_menu.text_placeholder"))
@@ -458,70 +449,68 @@ impl StatusMenu {
                     t!("status_menu.clear_text"),
                 ));
             }
-            col = col.push(container(field).padding([SPACE_1, SPACE_2]));
+            rows.plain(container(field).padding([SPACE_1, SPACE_2]));
             let current = my_text(ws);
             for r in self.recent.iter().filter(|r| **r != current) {
-                col = col.push(item(
+                rows.item(
                     labelled(Icon::MessageCircle, r.clone()),
                     enabled.then(|| Message::UseRecent(r.clone())),
                     false,
-                ));
+                );
             }
         }
         let apps = crate::uikit::buttons::user_menu(ws);
         if !apps.is_empty() {
-            col = col
-                .push(divider())
-                .push(caption(t!("uikit.apps").into_owned()));
+            rows.plain(divider());
+            rows.plain(caption(t!("uikit.apps").into_owned()));
             for (label, m, danger) in apps {
-                col = col.push(item(
+                rows.item(
                     labelled(crate::uikit::buttons::COMPOSER_ICON, label),
                     Some(Message::UiKit(Box::new(m))),
                     danger,
-                ));
+                );
             }
         }
-        col = col
-            .push(divider())
-            .push(item(
-                labelled(Icon::User, t!("status_menu.account").into_owned()),
-                Some(Message::Account),
-                false,
-            ))
-            .push(item(
-                labelled(Icon::Settings, t!("status_menu.settings").into_owned()),
-                Some(Message::Settings),
-                false,
-            ));
+        rows.plain(divider());
+        rows.item(
+            labelled(Icon::User, t!("status_menu.account").into_owned()),
+            Some(Message::Account),
+            false,
+        );
+        rows.item(
+            labelled(Icon::Settings, t!("status_menu.settings").into_owned()),
+            Some(Message::Settings),
+            false,
+        );
         if rustket_core::admin::can_view_admin(ws) {
-            col = col.push(item(
+            rows.item(
                 labelled(Icon::Shield, t!("admin.entry").into_owned()),
                 Some(Message::Admin),
                 false,
-            ));
+            );
         }
-        col = col
-            .push(divider())
-            .push(item(
-                labelled(Icon::LogOut, t!("status_menu.logout").into_owned()),
-                Some(Message::Logout),
-                false,
-            ))
-            .push(item(
-                labelled(
-                    Icon::LogOut,
-                    t!("status_menu.logout_everywhere").into_owned(),
-                ),
-                Some(Message::LogoutEverywhere),
-                false,
-            ))
-            .push(item(
-                labelled(Icon::Trash2, t!("status_menu.remove_server").into_owned()),
-                Some(Message::RemoveServer),
-                true,
-            ));
+        rows.plain(divider());
+        rows.item(
+            labelled(Icon::LogOut, t!("status_menu.logout").into_owned()),
+            Some(Message::Logout),
+            false,
+        );
+        rows.item(
+            labelled(
+                Icon::LogOut,
+                t!("status_menu.logout_everywhere").into_owned(),
+            ),
+            Some(Message::LogoutEverywhere),
+            false,
+        );
+        rows.item(
+            labelled(Icon::Trash2, t!("status_menu.remove_server").into_owned()),
+            Some(Message::RemoveServer),
+            true,
+        );
+        let col = column(rows.els).spacing(0).padding(SPACE_1);
         container(
-            scrollable(col.padding(SPACE_1))
+            scrollable(menu_nav(col, rows.acts))
                 .style(style::scrollable)
                 .height(Length::Shrink),
         )
@@ -529,6 +518,39 @@ impl StatusMenu {
         .max_height(560)
         .style(style::container_popover)
         .into()
+    }
+}
+
+/// Rows of the popup and what each one selects with the keyboard
+/// (`menu_nav`: Up/Down/Home/End, Enter/Space).
+#[derive(Default)]
+struct Rows<'a> {
+    els: Vec<Element<'a, Message>>,
+    acts: Vec<Option<Message>>,
+}
+
+impl<'a> Rows<'a> {
+    fn plain(&mut self, el: impl Into<Element<'a, Message>>) {
+        self.els.push(el.into());
+        self.acts.push(None);
+    }
+
+    /// A menu entry (disabled without `msg`).
+    fn item(
+        &mut self,
+        content: impl Into<Element<'a, Message>>,
+        msg: Option<Message>,
+        danger: bool,
+    ) {
+        self.els.push(
+            button(content.into())
+                .width(Length::Fill)
+                .padding([6, 8])
+                .style(style::button_menu_item(danger))
+                .on_press_maybe(msg.clone())
+                .into(),
+        );
+        self.acts.push(msg);
     }
 }
 

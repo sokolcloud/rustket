@@ -35,6 +35,23 @@ Rules:
   (drive `App::update`); the headless screenshot example `examples/snapshot.rs`
   renders the real app against the dev server.
 
+## Keyboard and focus (`src/focus.rs`)
+
+iced 0.14 can only focus text inputs and editors. Buttons and rows become
+keyboard-focusable through `rustket_ui::widget::focus_ring(button, on_press)`
+(Tab reaches it, a focus ring is drawn, Enter/Space publish `on_press`; pass
+`None` for a disabled button, the tree shape stays the same). The
+`rustket-ui` builders (`action_button`/`primary_button`…, `icon_button`,
+`room_list_item`, `section_header`, rail items, reaction pills,
+thread/discussion summaries) already wrap themselves; wrap your own
+`iced::widget::button`s the same way. `focus_within(content)` draws the ring
+around a styled box whose inner (borderless) input has the focus. Custom
+menus use `menu_nav(column, actions)` for Up/Down/Enter (the status menu
+does). Hover toolbars (`hover_box`) show while one of their buttons has the
+focus. Regions for F6 are containers with the ids in `crate::focus`
+(sidebar, timeline, composer, panel); Escape that no widget took closes the
+right panel (`Message::Escape`).
+
 ## App-level components (`src/component.rs`)
 
 Screens (full page next to the rail), dialogs (modals) and the status menu

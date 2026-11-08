@@ -410,6 +410,11 @@ impl Composer {
     }
 
     /// Focuses the editor.
+    pub fn editor_id(&self) -> &iced::widget::Id {
+        &self.editor_id
+    }
+
+    /// Focuses the editor.
     pub fn focus(&self) -> Task<Message> {
         iced::widget::operation::focus(self.editor_id.clone())
     }

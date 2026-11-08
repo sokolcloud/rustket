@@ -4,6 +4,7 @@
 use iced::widget::{Button, Space, button, row, text};
 use iced::{Alignment, Element, Length, Padding, Theme};
 
+use super::focus_ring::focus_ring;
 use super::misc::tooltip;
 use super::spinner::spinner;
 use crate::icon::{self, Icon};
@@ -149,7 +150,8 @@ impl<'a, Message: Clone + 'a> From<ActionButton<'a, Message>> for Element<'a, Me
         let on_press = if b.loading { None } else { b.on_press };
         let loading = b.loading;
         let kind_style = b.kind.style();
-        button(iced::widget::container(content).center_y(Length::Fill))
+        let activate = on_press.clone();
+        let btn = button(iced::widget::container(content).center_y(Length::Fill))
             .padding(padding)
             .height(height)
             .width(b.width)
@@ -162,8 +164,8 @@ impl<'a, Message: Clone + 'a> From<ActionButton<'a, Message>> for Element<'a, Me
                 };
                 kind_style(theme, status)
             })
-            .on_press_maybe(on_press)
-            .into()
+            .on_press_maybe(on_press);
+        focus_ring(btn, activate).into()
     }
 }
 
@@ -194,7 +196,8 @@ pub fn icon_button_with<'a, Message: Clone + 'a>(
         } else {
             style::button_icon
         })
-        .on_press_maybe(on_press);
+        .on_press_maybe(on_press.clone());
+    let b = focus_ring(b, on_press);
     let label = tooltip_text.into();
     if label.is_empty() {
         b.into()

@@ -332,7 +332,10 @@ impl App {
             true,
             Message::Noop,
         );
-        (app, Task::batch([open, theme, handler, media]))
+        // Image disk cache cap (Settings → Storage).
+        images::set_disk_cap_mb(app.config.ui.image_cache_mb);
+        let trim = images::trim_task(app.images.disk_dir(), Message::Noop);
+        (app, Task::batch([open, theme, handler, media, trim]))
     }
 
     // --- helpers ---------------------------------------------------------------
@@ -656,6 +659,9 @@ impl App {
     /// Applies pending workspace changes to derived views and fetches wanted images.
     fn after_update(&mut self) -> Task<Message> {
         let mut tasks = vec![self.sync_room_visibility()];
+        if images::set_disk_cap_mb(self.config.ui.image_cache_mb) {
+            tasks.push(images::trim_task(self.images.disk_dir(), Message::Noop));
+        }
         let active = self.active.clone();
         let sids: Vec<ServerId> = self.servers.keys().cloned().collect();
         let mut effects = Vec::new();
@@ -853,6 +859,8 @@ impl App {
             Message::Calls(m) => self.on_calls(m),
             Message::OpenQuickSwitcher => self.navigate(component::Nav::QuickSwitcher),
             Message::FocusNext(forward) => rustket_ui::widget::focus_cycle(forward),
+            Message::FocusRegion(forward) => self.focus_region(forward),
+            Message::Escape => self.on_escape(),
             Message::SidebarResized(w) => {
                 self.ui_state.sidebar_width = w;
                 self.save_stamp += 1;
@@ -939,6 +947,7 @@ impl App {
                 Task::perform(crate::e2e::files::purge_private_media(true), |()| {
                     Message::Noop
                 }),
+                images::trim_task(self.images.disk_dir(), Message::Noop),
             ]),
             Message::ImageLoaded(sid, generation, url, r) => {
                 // Results of a purged cache (logout, removal) are dropped and
@@ -1506,7 +1515,59 @@ impl App {
         else {
             return Task::none();
         };
-        self.open_room(&sid, &rid)
+        // Keep the newly opened room's row in view.
+        let reveal = s
+            .sidebar
+            .reveal(&rid, &self.config.ui, &self.ui_state.collapsed_sections);
+        Task::batch([self.open_room(&sid, &rid), reveal])
+    }
+
+    /// F6 / Shift+F6 (`crate::focus`).
+    fn focus_region(&self, forward: bool) -> Task<Message> {
+        let room = self
+            .active
+            .as_ref()
+            .and_then(|sid| self.servers.get(sid))
+            .filter(|_| matches!(self.screen, Screen::Server))
+            .and_then(|s| {
+                let rid = s.active_room.as_deref()?;
+                let rv = s.rooms.get(rid)?;
+                let tmid = match rv.panel.kind() {
+                    Some(room::panel::Kind::Thread(t)) => Some(t.as_str()),
+                    _ => None,
+                };
+                Some((rid, tmid))
+            });
+        rustket_ui::widget::focus_region(crate::focus::regions(room), forward)
+    }
+
+    /// Escape no widget took (popovers, dialogs and focused inputs handle
+    /// their own): close the active room's right panel, or the settings page.
+    fn on_escape(&mut self) -> Task<Message> {
+        if !self.modals.is_empty() {
+            return Task::none();
+        }
+        match &self.screen {
+            Screen::Settings(_) => self.on_settings(crate::screens::settings::Message::Close),
+            Screen::Server => {
+                let Some(s) = self.active.as_ref().and_then(|sid| self.servers.get(sid)) else {
+                    return Task::none();
+                };
+                let Some(rid) = s.active_room.clone() else {
+                    return Task::none();
+                };
+                if s.rooms.get(&rid).is_none_or(|rv| rv.panel.kind().is_none()) {
+                    return Task::none();
+                }
+                Task::done(Message::Room(
+                    s.id.clone(),
+                    s.generation,
+                    rid,
+                    room::Message::Panel(room::panel::Message::Close),
+                ))
+            }
+            _ => Task::none(),
+        }
     }
 
     fn on_sidebar(&mut self, sid: ServerId, m: sidebar::Message) -> Task<Message> {
@@ -2594,6 +2655,18 @@ impl App {
             } if !modifiers.command() && !modifiers.alt() => {
                 Some(Message::FocusNext(!modifiers.shift()))
             }
+            iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::F6),
+                modifiers,
+                ..
+            } if !modifiers.command() && !modifiers.alt() => {
+                Some(Message::FocusRegion(!modifiers.shift()))
+            }
+            iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                modifiers,
+                ..
+            } if modifiers.is_empty() => Some(Message::Escape),
             _ => None,
         }));
         subs.push(self.desktop.subscription().map(Message::Desktop));

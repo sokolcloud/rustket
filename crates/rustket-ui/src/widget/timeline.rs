@@ -58,7 +58,7 @@ pub fn reaction_pill<'a, Message: Clone + 'a>(
     reacted_by_me: bool,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
-    button(
+    let pill = button(
         row![
             emoji.into(),
             text(count.to_string())
@@ -70,8 +70,10 @@ pub fn reaction_pill<'a, Message: Clone + 'a>(
     )
     .padding([2, 8])
     .style(style::button_reaction(reacted_by_me))
-    .on_press_maybe(on_press)
-    .into()
+    .on_press_maybe(on_press.clone());
+    super::focus_ring::focus_ring(pill, on_press)
+        .radius(crate::theme::RADIUS_PILL)
+        .into()
 }
 
 /// Unicode emoji text at `size` (16 for reactions, 32 for big-emoji messages).

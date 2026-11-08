@@ -2149,3 +2149,46 @@ async fn orphan_thread_upload_of_a_reopened_room_is_reported() {
         "failed upload of the old thread not reported"
     );
 }
+
+/// Messages a task yields right away (`Task::done`).
+fn ready_outputs(task: iced::Task<Message>) -> Vec<Message> {
+    use futures::{FutureExt as _, StreamExt as _};
+    let mut out = Vec::new();
+    if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+        while let Some(Some(action)) = stream.next().now_or_never() {
+            if let iced_runtime::Action::Output(m) = action {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// Phase 13: an Escape no widget took closes the open room's right panel,
+/// then nothing more; on the settings page it closes the page.
+#[tokio::test]
+async fn escape_closes_the_panel_and_the_settings_page() {
+    use rustket::app::Screen;
+    use rustket::room::panel::{Kind, Message as Pm};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let m = room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Info)),
+    );
+    let _ = app.update(m);
+    assert!(app.servers[&sid].rooms["r1"].panel.kind().is_some());
+    for m in ready_outputs(app.update(Message::Escape)) {
+        let _ = app.update(m);
+    }
+    assert!(app.servers[&sid].rooms["r1"].panel.kind().is_none());
+    assert!(ready_outputs(app.update(Message::Escape)).is_empty());
+    let _ = app.update(Message::Rail(rustket::workspace::rail::Message::Settings));
+    assert!(matches!(app.screen, Screen::Settings(_)));
+    for m in ready_outputs(app.update(Message::Escape)) {
+        let _ = app.update(m);
+    }
+    assert!(matches!(app.screen, Screen::Server));
+}

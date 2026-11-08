@@ -160,6 +160,8 @@ pub struct Tokens {
     pub border: Color,
     pub border_strong: Color,
     pub border_focus: Color,
+    /// Inner line of the keyboard focus ring (contrast on filled widgets).
+    pub focus_ring_inner: Color,
 
     // Interactive backgrounds.
     pub hover_bg: Color,
@@ -269,6 +271,7 @@ pub static LIGHT: Tokens = Tokens {
     border: hex(0xE4E7EA),
     border_strong: hex(0xCBCED1),
     border_focus: BRAND_BLUE,
+    focus_ring_inner: Color::WHITE,
 
     hover_bg: hex(0xF2F3F5),
     pressed_bg: hex(0xE4E7EA),
@@ -325,7 +328,7 @@ pub static DARK: Tokens = Tokens {
     on_primary: Color::WHITE,
     primary_tint: hex(0x1D2D47),
     danger: BRAND_DANGER,
-    danger_hover: hex(0xF13A51),
+    danger_hover: hex(0xD40C26),
     danger_pressed: hex(0xC40B23),
     on_danger: Color::WHITE,
     warning: BRAND_WARNING,
@@ -350,6 +353,7 @@ pub static DARK: Tokens = Tokens {
     border: hex(0x343841),
     border_strong: hex(0x474C55),
     border_focus: hex(0x3A86F7),
+    focus_ring_inner: hex(0x1A1D22),
 
     hover_bg: hex(0x2A2E35),
     pressed_bg: hex(0x30343B),
@@ -584,6 +588,74 @@ mod tests {
                 ("muted badge", t.badge_muted_fg, t.badge_muted),
                 ("text on mention row", t.text_primary, t.highlight_bg),
                 ("mention me on row", t.mention_me_fg, t.highlight_bg),
+            ] {
+                check(t, (name, fg), ("its background", bg), TEXT, &mut failures);
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// WCAG 2.2 AA non-text contrast (1.4.11) for the keyboard focus ring:
+    /// on every surface an interactive widget sits on, one of its two lines
+    /// (focus colour outside, `focus_ring_inner` inside) reaches 3:1 against
+    /// what is around it, also on filled widgets (primary, danger, selected).
+    #[test]
+    fn focus_ring_is_visible_everywhere() {
+        let mut failures = Vec::new();
+        for t in both() {
+            let mut surfaces = text_surfaces(t);
+            surfaces.extend([
+                ("rail", t.surface_rail),
+                ("primary", t.primary),
+                ("primary hover", t.primary_hover),
+                ("danger", t.danger),
+                ("primary tint", t.primary_tint),
+                ("tooltip", t.tooltip_bg),
+            ]);
+            for (name, bg) in surfaces {
+                let outer = contrast_ratio(t.border_focus, bg);
+                let inner = contrast_ratio(t.focus_ring_inner, bg);
+                // The two lines also differ from each other, so the ring
+                // reads as one double line.
+                let between = contrast_ratio(t.border_focus, t.focus_ring_inner);
+                if outer.max(inner) < GRAPHIC || between < GRAPHIC {
+                    failures.push(format!(
+                        "{:?}: ring on {name}: outer {outer:.2}, inner {inner:.2}, between {between:.2}",
+                        t.mode
+                    ));
+                }
+            }
+            // Text inputs show focus with the focus colour as their border.
+            for (name, bg) in [
+                ("room", t.surface_room),
+                ("sidebar", t.surface_sidebar),
+                ("raised", t.surface_raised),
+                ("sunken", t.surface_sunken),
+            ] {
+                check(
+                    t,
+                    ("border_focus", t.border_focus),
+                    (name, bg),
+                    GRAPHIC,
+                    &mut failures,
+                );
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Placeholders, captions and disabled-looking but readable states.
+    #[test]
+    fn secondary_pairs_meet_wcag_aa() {
+        let mut failures = Vec::new();
+        for t in both() {
+            for (name, fg, bg) in [
+                ("on primary pressed", t.on_primary, t.primary_pressed),
+                ("on danger hover", t.on_danger, t.danger_hover),
+                ("on danger pressed", t.on_danger, t.danger_pressed),
+                ("hint on tooltip-free raised", t.text_hint, t.surface_raised),
+                ("link on primary tint", t.link, t.primary_tint),
+                ("danger text on raised", t.danger_text, t.surface_raised),
             ] {
                 check(t, (name, fg), ("its background", bg), TEXT, &mut failures);
             }
