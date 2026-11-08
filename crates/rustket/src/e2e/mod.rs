@@ -104,6 +104,9 @@ pub struct ServerE2e {
     /// Quoted messages fetched from the server (decrypted when possible).
     quotes: HashMap<String, RcMessage>,
     requested_quotes: HashSet<String>,
+    /// Quote fetches that failed, retried after [`QUOTE_RETRY`].
+    failed_quotes: HashMap<String, std::time::Instant>,
+    quotes_in_flight: usize,
     /// [`shown`] epoch of the last pass.
     last_epoch: u64,
 }
@@ -179,6 +182,28 @@ pub enum RoomRequest {
     OpenModal,
 }
 
+/// A localized text for a manager error (the raw text is logged at debug).
+pub fn error_text(e: &rustket_core::e2e::E2eManagerError) -> String {
+    use rustket_core::e2e::E2eManagerError as E;
+    tracing::debug!(error = %e, "end-to-end encryption error");
+    match e {
+        E::Disabled => t!("e2e.err_disabled"),
+        E::NotReady => t!("e2e.err_not_ready"),
+        E::RoomNotReady => t!("e2e.err_room_not_ready"),
+        E::RoomNotEncrypted => t!("e2e.err_room_not_encrypted"),
+        E::Cancelled => t!("e2e.err_cancelled"),
+        E::WrongPassword | E::Crypto(rocketchat::e2e::E2eError::WrongPassword) => {
+            t!("e2e.wrong_password")
+        }
+        E::NoRoomKeyId => t!("e2e.reset_no_key"),
+        E::Crypto(_) => t!("e2e.err_crypto"),
+        E::Rest(r) => return crate::error::user_text(r),
+        E::Secret(_) => t!("e2e.err_secret"),
+        E::Task(_) => t!("e2e.err_internal"),
+    }
+    .into_owned()
+}
+
 fn settings_of(s: &ServerState) -> E2eSettings {
     E2eSettings::from_settings(s.workspace.settings())
 }
@@ -191,8 +216,13 @@ pub fn after_update(
     secrets: Option<&Arc<dyn SecretStore>>,
 ) -> Task<crate::message::Message> {
     let ready = s.session.is_some() && s.credentials.is_some() && s.workspace.last_sync().is_some();
+    let mut purge = Task::none();
     if ready && s.e2e.worker.is_none() {
         start(s, secrets);
+        // Decrypted media left behind by an earlier run.
+        purge = Task::perform(files::purge_private_media(true), |_| {
+            crate::message::Message::Noop
+        });
     } else if let Some(w) = &s.e2e.worker {
         let now = settings_of(s);
         if s.e2e.settings.as_ref() != Some(&now) {
@@ -228,11 +258,18 @@ pub fn after_update(
             }
         }
     }
-    decrypt_pass(s)
+    Task::batch([purge, decrypt_pass(s)])
 }
 
 /// Decrypts shown messages when something changed; fetches quoted messages
 /// that are not loaded.
+/// Quote fetches running at once.
+const MAX_QUOTE_FETCHES: usize = 6;
+/// Delay before a failed quote fetch is tried again.
+const QUOTE_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+/// Fetched quotes kept (the cache starts over beyond that).
+const MAX_QUOTE_CACHE: usize = 1024;
+
 fn decrypt_pass(s: &mut ServerState) -> Task<crate::message::Message> {
     let epoch = shown::current_epoch();
     if s.workspace.pending_changes().is_empty() && epoch == s.e2e.last_epoch {
@@ -245,9 +282,19 @@ fn decrypt_pass(s: &mut ServerState) -> Task<crate::message::Message> {
     };
     let mut tasks = Vec::new();
     for mid in wants {
-        if !s.e2e.requested_quotes.insert(mid.clone()) {
+        if s.e2e.quotes_in_flight >= MAX_QUOTE_FETCHES {
+            break;
+        }
+        if s.e2e.requested_quotes.contains(&mid)
+            || s.e2e
+                .failed_quotes
+                .get(&mid)
+                .is_some_and(|t| t.elapsed() < QUOTE_RETRY)
+        {
             continue;
         }
+        s.e2e.requested_quotes.insert(mid.clone());
+        s.e2e.quotes_in_flight += 1;
         let (sid, generation, rest) = (s.id.clone(), s.generation, rest.clone());
         tasks.push(Task::perform(
             async move {
@@ -325,14 +372,42 @@ pub fn on_event(s: &ServerState, ev: &SessionEvent) {
 /// Explicit logout, `force_logout` or a key reset: stops the manager and
 /// deletes this account's E2E secrets (the private key and a pending
 /// generated passphrase). Call before the server state is reset.
-pub fn forget_secrets(s: &mut ServerState) -> Task<crate::message::Message> {
-    let Some(mgr) = s.e2e.manager().cloned() else {
-        return Task::none();
-    };
-    s.e2e.reset();
-    Task::perform(async move { mgr.logout().await }, |_| {
+/// Without a running manager (offline start, logout before the initial load)
+/// the secrets are deleted directly, for the logged-in user or `user_id`.
+pub fn forget_secrets(
+    s: &mut ServerState,
+    store: Option<&Arc<dyn SecretStore>>,
+    user_id: Option<&str>,
+) -> Task<crate::message::Message> {
+    let purge = Task::perform(files::purge_private_media(false), |_| {
         crate::message::Message::Noop
-    })
+    });
+    if let Some(mgr) = s.e2e.manager().cloned() {
+        s.e2e.reset();
+        let logout = Task::perform(async move { mgr.logout().await }, |_| {
+            crate::message::Message::Noop
+        });
+        return Task::batch([purge, logout]);
+    }
+    s.e2e.reset();
+    let uid = s
+        .credentials
+        .as_ref()
+        .map(|c| c.user_id.clone())
+        .or_else(|| user_id.map(str::to_owned));
+    let (Some(store), Some(uid)) = (store, uid) else {
+        return purge;
+    };
+    let secrets = rustket_core::e2e::E2eSecrets::new(store.clone(), &s.id, &uid);
+    let clear = Task::perform(
+        async move {
+            if let Err(e) = secrets.clear().await {
+                tracing::warn!(error = %e, "could not delete the E2E secrets");
+            }
+        },
+        |_| crate::message::Message::Noop,
+    );
+    Task::batch([purge, clear])
 }
 
 struct Runner {
@@ -407,7 +482,7 @@ fn run(r: &Runner) -> impl iced::futures::Stream<Item = Tagged> + use<> {
                     Input::Load(rooms, subs) => mgr.load(&rooms, &subs).await,
                     Input::Start => {
                         let r = mgr.start().await;
-                        let err = r.err().map(|e| e.to_string());
+                        let err = r.err().map(|e| error_text(&e));
                         let _ = out_work
                             .send((sid.clone(), generation, Message::Started(err)))
                             .await;
@@ -547,7 +622,7 @@ pub fn update(s: &mut ServerState, msg: Message) -> (Task<Message>, Vec<Request>
                     rustket_core::e2e::E2eManagerError::Crypto(
                         rocketchat::e2e::E2eError::WrongPassword,
                     ) => PasswordError::Wrong,
-                    other => PasswordError::Other(other.to_string()),
+                    other => PasswordError::Other(error_text(&other)),
                 }))
             });
             (task, Vec::new())
@@ -607,7 +682,7 @@ pub fn update(s: &mut ServerState, msg: Message) -> (Task<Message>, Vec<Request>
             };
             *busy = true;
             let task = Task::perform(async move { mgr.confirm_passphrase_saved().await }, |r| {
-                Message::Saved(r.map_err(|e| e.to_string()))
+                Message::Saved(r.map_err(|e| error_text(&e)))
             });
             (task, Vec::new())
         }
@@ -643,13 +718,26 @@ pub fn update(s: &mut ServerState, msg: Message) -> (Task<Message>, Vec<Request>
             none
         }
         Message::QuoteFetched(mid, r) => {
+            s.e2e.quotes_in_flight = s.e2e.quotes_in_flight.saturating_sub(1);
+            s.e2e.requested_quotes.remove(&mid);
             match r {
                 Ok(m) => {
+                    if s.e2e.quotes.len() >= MAX_QUOTE_CACHE {
+                        s.e2e.quotes.clear();
+                    }
+                    s.e2e.failed_quotes.remove(&mid);
                     s.e2e.quotes.insert(mid, *m);
-                    shown::keys_changed();
                 }
-                Err(e) => tracing::debug!(error = %e, "quoted message not available"),
+                Err(e) => {
+                    tracing::debug!(error = %e, "quoted message not available");
+                    if s.e2e.failed_quotes.len() >= MAX_QUOTE_CACHE {
+                        s.e2e.failed_quotes.clear();
+                    }
+                    s.e2e.failed_quotes.insert(mid, std::time::Instant::now());
+                }
             }
+            // Another pass: resolved quotes are attached, waiting ones fetched.
+            shown::keys_changed();
             none
         }
     }
@@ -682,6 +770,6 @@ mod tests {
         let (_, req) = update(&mut s, Message::OpenModal);
         assert!(req.is_empty());
         assert!(s.e2e.modal.is_none());
-        let _ = forget_secrets(&mut s);
+        let _ = forget_secrets(&mut s, Some(&store), None);
     }
 }

@@ -116,21 +116,38 @@ pub async fn send_outgoing(
     }
 }
 
-/// The encrypted form of an edit: `None` for a plain edit, `Some(Err)` when
-/// the edit must not be sent (an encrypted message is never edited with
-/// plaintext, §8).
+/// The encrypted form of an edit of `original` (the message as shown when
+/// the edit started): `None` for a plain edit, `Some(Err)` when the edit must
+/// not be sent (an encrypted message is never edited with plaintext, §8).
 pub fn prepare_edit(
     ws: &Workspace,
-    original: Option<&Message>,
+    rid: &str,
+    original: &Message,
     text: &str,
 ) -> Option<Result<OutgoingEncrypted, String>> {
-    let original = original.filter(|m| m.t.as_deref() == Some("e2e"))?;
-    if !super::shown::is_decrypted(original) {
-        return Some(Err(t!("e2e.edit_unreadable").into_owned()));
+    let encrypted = original.t.as_deref() == Some("e2e") || original.content.is_some();
+    if !encrypted {
+        // A plaintext message in an encrypted room is edited like a new
+        // message is sent there (web: `onClientBeforeSendMessage`).
+        return match mode(ws, rid) {
+            Mode::Plain | Mode::Unencrypted => None,
+            Mode::Blocked => Some(Err(blocked_text())),
+            Mode::Encrypt(mgr) => Some(
+                mgr.encrypt_edit(rid, text, None)
+                    .map_err(|e| super::error_text(&e)),
+            ),
+        };
     }
-    Some(match mode(ws, &original.rid) {
+    if let Err(e) = super::room::check_edit(ws, original) {
+        return Some(Err(e));
+    }
+    // A copy from another room never decides how this room is written to.
+    if original.rid != rid {
+        return Some(Err(t!("e2e.edit_unavailable").into_owned()));
+    }
+    Some(match mode(ws, rid) {
         Mode::Encrypt(mgr) => encrypt_edit(&mgr, original, text),
-        _ => Err(blocked_text()),
+        _ => Err(t!("e2e.edit_unavailable").into_owned()),
     })
 }
 
@@ -154,7 +171,7 @@ pub async fn update_message(
 /// Encrypts an outbox message (text, thread fields stay plaintext).
 pub fn encrypt_text(mgr: &E2eManager, m: &Message) -> Result<OutgoingEncrypted, String> {
     mgr.encrypt_outgoing(&m.rid, &m.msg)
-        .map_err(|e| e.to_string())
+        .map_err(|e| super::error_text(&e))
 }
 
 /// Sends an encrypted outbox message (`chat.sendMessage` with `t: 'e2e'`).
@@ -192,7 +209,7 @@ pub fn encrypt_edit(
         return Err(t!("e2e.edit_unreadable").into_owned());
     }
     mgr.encrypt_edit(&original.rid, text, payload.as_ref())
-        .map_err(|e| e.to_string())
+        .map_err(|e| super::error_text(&e))
 }
 
 /// What the upload path does in `rid` (§2.1 `E2E_Enable_Encrypt_Files`).
@@ -255,11 +272,14 @@ pub async fn upload(
     let mut prepared = mgr
         .prepare_upload_async(&rid, name, mime, data)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| super::error_text(&e))?;
     if let Some(alt) = alt.filter(|a| !a.trim().is_empty()) {
         prepared.metadata.alt_text = Some(alt);
-        let meta = serde_json::to_value(&prepared.metadata).map_err(|e| e.to_string())?;
-        prepared.file_content = mgr.encrypt_value(&rid, &meta).map_err(|e| e.to_string())?;
+        let meta = serde_json::to_value(&prepared.metadata)
+            .map_err(|_| t!("e2e.err_internal").into_owned())?;
+        prepared.file_content = mgr
+            .encrypt_value(&rid, &meta)
+            .map_err(|e| super::error_text(&e))?;
     }
     let uploaded: UploadedFile = rest
         .e2e_upload_media(
@@ -281,7 +301,7 @@ pub async fn upload(
     }
     let content = mgr
         .encrypt_payload(&rid, &payload)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| super::error_text(&e))?;
     rest.e2e_confirm_media(
         &rid,
         &uploaded.id,
@@ -357,5 +377,46 @@ mod tests {
             upload_mode(&ws(false, false, false), "g"),
             UploadMode::Plain
         ));
+    }
+
+    #[test]
+    fn edits_never_go_out_as_plaintext() {
+        let e2e = Message {
+            id: "m".into(),
+            rid: "g".into(),
+            t: Some("e2e".into()),
+            content: Some(serde_json::json!({"algorithm": "rc.v2.aes-sha2"})),
+            ..Default::default()
+        };
+        let plain = Message {
+            id: "p".into(),
+            rid: "g".into(),
+            msg: "hello".into(),
+            ..Default::default()
+        };
+        // Key missing, unencrypted messages not allowed: nothing goes out.
+        let blocked = ws(true, false, true);
+        assert!(matches!(
+            prepare_edit(&blocked, "g", &e2e, "x"),
+            Some(Err(_))
+        ));
+        assert!(matches!(
+            prepare_edit(&blocked, "g", &plain, "x"),
+            Some(Err(_))
+        ));
+        // Unencrypted messages allowed: a plaintext message may be edited as
+        // plaintext, an encrypted one (not decrypted here) never.
+        let allowed = ws(true, true, true);
+        assert!(matches!(
+            prepare_edit(&allowed, "g", &e2e, "x"),
+            Some(Err(_))
+        ));
+        assert!(prepare_edit(&allowed, "g", &plain, "x").is_none());
+        // E2E off on the server: encrypted messages stay read-only.
+        let off = ws(false, false, true);
+        assert!(matches!(prepare_edit(&off, "g", &e2e, "x"), Some(Err(_))));
+        assert!(prepare_edit(&off, "g", &plain, "x").is_none());
+        assert!(super::super::room::check_edit(&off, &e2e).is_err());
+        assert!(super::super::room::check_edit(&off, &plain).is_ok());
     }
 }

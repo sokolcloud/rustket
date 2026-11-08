@@ -121,6 +121,15 @@ impl Files {
                 self.reload(ctx)
             }
             Msg::Page(req, r) => {
+                let r = r.map(|mut p| {
+                    crate::e2e::files::process_file_items(
+                        ctx.workspace,
+                        ctx.server,
+                        ctx.rid,
+                        &mut p.items,
+                    );
+                    p
+                });
                 self.list.finish(req, r);
                 Action::none()
             }

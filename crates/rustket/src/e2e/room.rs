@@ -184,8 +184,7 @@ fn error_text(e: &E2eManagerError) -> String {
     match e {
         E2eManagerError::NoRoomKeyId => t!("e2e.reset_no_key").into_owned(),
         E2eManagerError::NotReady => t!("e2e.reset_not_ready").into_owned(),
-        E2eManagerError::Rest(r) => crate::error::user_text(r),
-        other => other.to_string(),
+        other => super::error_text(other),
     }
 }
 
@@ -411,6 +410,14 @@ pub fn composer_hint<'a, M: 'a>(ws: &Workspace, rid: &str) -> Option<Element<'a,
         .then(|| notice(Icon::LockOpen, t!("e2e.composer_unencrypted").into_owned()))
 }
 
+/// Shown while the text starts with `/` in a room where slash commands do
+/// not run (§2.1; the web lists them disabled as "Unavailable in encrypted
+/// channels").
+pub fn slash_hint<'a, M: 'a>(ws: &Workspace, rid: &str, slash: bool) -> Option<Element<'a, M>> {
+    (slash && outgoing::slash_commands_blocked(ws, rid))
+        .then(|| notice(Icon::Lock, t!("e2e.slash_unavailable").into_owned()))
+}
+
 /// The search panel's note for encrypted rooms (the server cannot search
 /// encrypted content, §8).
 pub fn search_hint<'a, M: 'a>(ws: &Workspace, rid: &str) -> Option<Element<'a, M>> {
@@ -441,6 +448,27 @@ fn notice<'a, M: 'a>(ic: Icon, label: String) -> Element<'a, M> {
     .into()
 }
 
+/// Whether `m` is an end-to-end encrypted message.
+pub fn is_encrypted_message(m: &rocketchat::models::Message) -> bool {
+    m.t.as_deref() == Some("e2e") || m.content.is_some()
+}
+
+/// Whether `m` can be edited as far as encryption goes: an encrypted message
+/// only when it is shown decrypted and the room key is ready. The error is
+/// the text for a toast.
+pub fn check_edit(ws: &Workspace, m: &rocketchat::models::Message) -> Result<(), String> {
+    if m.t.as_deref() != Some("e2e") {
+        return Ok(());
+    }
+    if !super::shown::is_decrypted(m) {
+        return Err(t!("e2e.edit_unreadable").into_owned());
+    }
+    match outgoing::mode(ws, &m.rid) {
+        Mode::Encrypt(_) => Ok(()),
+        _ => Err(t!("e2e.edit_unavailable").into_owned()),
+    }
+}
+
 /// Message actions not offered for encrypted messages (§10: copy link; the
 /// web also disables reply-in-DM and forward, which Rustket does not have),
 /// and edits/quotes of messages that are not shown decrypted.
@@ -454,10 +482,10 @@ pub fn filter_actions(
         return;
     }
     let decrypted = super::shown::is_decrypted(m);
-    let can_encrypt = matches!(outgoing::mode(ws, &m.rid), Mode::Encrypt(_));
+    let editable = check_edit(ws, m).is_ok();
     acts.retain(|a| match a {
         Act::CopyLink => false,
-        Act::Edit => decrypted && can_encrypt,
+        Act::Edit => editable,
         Act::Quote | Act::CopyText => decrypted,
         _ => true,
     });

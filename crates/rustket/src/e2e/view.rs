@@ -239,13 +239,37 @@ pub fn plaintext_note<M: 'static>(m: &RcMessage) -> Option<Element<'static, M>> 
 /// A plain `http://` server that is not local: keys and the encrypted key
 /// backup travel over an unprotected connection (§7.1).
 fn insecure_server(s: &ServerState) -> bool {
-    let url = s.url.as_str();
-    let local = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
-        .iter()
-        .any(|p| url.starts_with(p));
-    url.starts_with("http://") && !local
+    insecure_url(s.url.url())
+}
+
+fn insecure_url(url: &url::Url) -> bool {
+    let local = match url.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    url.scheme() == "http" && !local
 }
 
 fn insecure_note<'a>() -> Element<'a, Message> {
     info_banner(BannerKind::Warning, t!("e2e.insecure_server"), None)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insecure_urls() {
+        let u = |s: &str| url::Url::parse(s).unwrap();
+        assert!(!insecure_url(&u("http://localhost:3000")));
+        assert!(!insecure_url(&u("http://127.0.0.2/")));
+        assert!(!insecure_url(&u("http://[::1]:3000")));
+        assert!(!insecure_url(&u("https://chat.example.org")));
+        assert!(insecure_url(&u("http://localhost.example.org")));
+        assert!(insecure_url(&u("http://127.0.0.1.attacker.net")));
+        assert!(insecure_url(&u("http://chat.example.org")));
+    }
 }

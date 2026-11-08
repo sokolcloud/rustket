@@ -101,9 +101,6 @@ room_render.download:
 room_render.jump_to_message:
   en: "Jump to message"
   ru: "Перейти к сообщению"
-room_render.encrypted:
-  en: "This message is end-to-end encrypted"
-  ru: "Это сообщение защищено сквозным шифрованием"
 room_render.role_owner:
   en: "owner"
   ru: "владелец"

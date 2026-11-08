@@ -548,15 +548,15 @@ impl Security {
         if let Some(n) = &self.notice {
             body = body.push(banner(BannerKind::Success, n.clone(), None));
         }
-        if let Some(e2e) = self.e2e.view(ctx) {
-            body = body.push(e2e);
-        }
         if !settings.bool_or("Accounts_TwoFactorAuthentication_Enabled", true) {
             body = body.push(banner(
                 BannerKind::Info,
                 t!("account.tfa_server_disabled"),
                 None,
             ));
+            if let Some(e2e) = self.e2e.view(ctx) {
+                body = body.push(e2e);
+            }
             body = body.push(self.sessions_view());
             return body.into();
         }
@@ -676,6 +676,10 @@ impl Security {
                 );
             }
             body = body.push(section(t!("account.sec_email2fa").into_owned(), c.into()));
+        }
+        // End-to-end encryption comes after two-factor authentication (web).
+        if let Some(e2e) = self.e2e.view(ctx) {
+            body = body.push(e2e);
         }
         body = body.push(self.sessions_view());
         body.into()

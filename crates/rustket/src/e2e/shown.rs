@@ -4,8 +4,9 @@
 //! is drawn: the decrypted `msg` (with an `md` tree parsed here), attachments
 //! and files replace the server values, `content` keeps the envelope (a legacy
 //! v1 ciphertext in `msg` is moved there), and `Message::e2e` gets a marker.
-//! What was processed is recorded per `(rid, _id)` with `_updatedAt`, so a
-//! marker the server sent is never believed and an edit is decrypted again.
+//! Markers carry a per-process nonce (`rustket_core::e2e::shown::stored`), so
+//! a marker the server stored is never believed; what was processed is also
+//! recorded per `(rid, _id)` with `_updatedAt`, so an edit is decrypted again.
 //! Messages that could not be decrypted yet are tried again when keys change
 //! ([`keys_changed`]).
 
@@ -56,6 +57,15 @@ pub fn keys_changed() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 
+/// File keys were dropped from the registry: decrypted messages are
+/// processed again so their attachments are registered again.
+pub fn forget_files() {
+    for s in seen_lock().values_mut() {
+        s.done = false;
+    }
+    keys_changed();
+}
+
 /// The current epoch (see [`keys_changed`]).
 pub fn current_epoch() -> u64 {
     EPOCH.load(Ordering::SeqCst)
@@ -67,11 +77,14 @@ fn updated_ms(m: &Message) -> Option<i64> {
         .map(rocketchat::RcDate::timestamp_millis)
 }
 
-/// The marker of `m` if this app wrote it for exactly this version.
+/// The marker of `m` if this process wrote it (markers carry a per-process
+/// nonce the server cannot know) for this version (when it is recorded).
 pub fn verified_marker(m: &Message) -> Option<&'static str> {
     let marker = mark::marker(m)?;
-    let s = *seen_lock().get(&(m.rid.clone(), m.id.clone()))?;
-    (s.updated == updated_ms(m) && s.marker == marker).then_some(s.marker)
+    match seen_lock().get(&(m.rid.clone(), m.id.clone())) {
+        Some(s) if s.updated != updated_ms(m) => None,
+        _ => Some(marker),
+    }
 }
 
 /// Whether `m` is shown decrypted (verified).
@@ -143,7 +156,7 @@ pub fn process(m: &mut Message, env: &Env<'_>) -> bool {
         Some("message_pinned_e2e") => process_pinned(m, env),
         _ => {
             // A marker on anything else came from the server.
-            if mark::marker(m).is_some() {
+            if mark::has_marker_prefix(m) {
                 m.e2e = None;
                 return true;
             }
@@ -155,7 +168,7 @@ pub fn process(m: &mut Message, env: &Env<'_>) -> bool {
 /// The raw form of a message processed before (for re-decryption).
 pub fn raw_view(m: &Message) -> Message {
     let mut raw = m.clone();
-    if mark::marker(m).is_some() {
+    if mark::has_marker_prefix(m) {
         raw.msg.clear();
         raw.md = None;
         raw.e2e = None;
@@ -167,8 +180,15 @@ fn is_decrypted_marker(marker: &str) -> bool {
     matches!(marker, mark::DECRYPTED | mark::DECRYPTED_PLAINTEXT)
 }
 
+/// Most messages remembered; the table starts over beyond that (processed
+/// copies keep their markers, see [`process_e2e`]).
+const MAX_SEEN: usize = 50_000;
+
 fn record(m: &Message, seen: Seen) {
     let mut table = seen_lock();
+    if table.len() >= MAX_SEEN {
+        table.clear();
+    }
     let key = (m.rid.clone(), m.id.clone());
     // Another copy of this version (a panel list, the thread view) is shown
     // decrypted: keep that record, so its plaintext is never mistaken for a
@@ -189,7 +209,17 @@ fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
     let prior = seen_lock()
         .get(&(m.rid.clone(), m.id.clone()))
         .copied()
-        .filter(|s| s.updated == updated && Some(s.marker) == mark::marker(m));
+        .filter(|s| s.updated == updated && Some(s.marker) == mark::marker(m))
+        .or_else(|| {
+            // Processed by this process, but the record is gone.
+            mark::marker(m).map(|marker| Seen {
+                updated,
+                marker,
+                plain: marker == mark::DECRYPTED_PLAINTEXT,
+                epoch: 0,
+                done: false,
+            })
+        });
     let (result, plain) = match prior {
         Some(s) if s.done || s.epoch == epoch => return false,
         Some(s) => {
@@ -232,8 +262,8 @@ fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
             m.md = (!md.is_empty()).then_some(md);
             if let Some(atts) = &p.attachments {
                 let mut atts = atts.clone();
-                for a in &mut atts {
-                    files::mark_attachment(a, env.server);
+                for (i, a) in atts.iter_mut().enumerate() {
+                    files::mark_attachment(a, env.server, &m.rid, &m.id, i);
                 }
                 m.attachments = Some(atts);
             }
@@ -273,7 +303,7 @@ fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
             }
         }
     };
-    m.e2e = Some(marker.to_owned());
+    mark::set_marker(m, marker);
     record(
         m,
         Seen {
@@ -315,7 +345,7 @@ fn process_pinned(m: &mut Message, env: &Env<'_>) -> bool {
         a.text = Some(text);
         a.md = None;
     }
-    m.e2e = Some(marker.to_owned());
+    mark::set_marker(m, marker);
     record(
         m,
         Seen {
@@ -359,6 +389,10 @@ pub fn quoted_ids(text: &str, site_url: &str, server: &ServerUrl) -> Vec<(String
     out
 }
 
+/// Most quotes resolved per message (the web's default
+/// `Message_QuoteChainLimit` is 2 levels; a message rarely quotes more).
+const MAX_QUOTES: usize = 5;
+
 /// Appends quote attachments for the permalinks in `m.msg` (the server
 /// cannot build them for encrypted text, §7.7). Returns whether every quote
 /// was resolved.
@@ -368,7 +402,7 @@ fn add_quotes(m: &mut Message, env: &Env<'_>) -> bool {
         return true;
     }
     let mut all = true;
-    for (url, id) in links {
+    for (url, id) in links.into_iter().take(MAX_QUOTES) {
         let present = m
             .attachments
             .iter()
@@ -520,7 +554,7 @@ pub fn state(m: &Message) -> Option<State> {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     struct NoQuotes;
@@ -565,6 +599,199 @@ mod tests {
         let mut edited = m.clone();
         edited.updated_at = rocketchat::RcDate::from_millis(2_000);
         assert_eq!(state(&edited), Some(State::Raw));
+    }
+
+    #[test]
+    fn forged_markers_on_redelivered_copies_are_ignored() {
+        let server = ServerUrl::parse("http://localhost:3000").unwrap();
+        let ws = Workspace::new();
+        let env = Env::new(&ws, &server, &NoQuotes);
+        let raw = serde_json::json!({"t": "e2e", "msg": "from the server", "e2e": "rustket:ok+plain",
+            "content": {"algorithm": "rc.v2.aes-sha2", "kid": "k", "iv": "AAAA", "ciphertext": "AAAA"}});
+        let mut first = msg("spoof2", raw.clone());
+        process(&mut first, &env);
+        // The same version arrives again (rooms-changed, a reopened room).
+        let mut again = msg("spoof2", raw);
+        assert_eq!(state(&again), Some(State::Raw));
+        assert!(process(&mut again, &env));
+        assert!(again.msg.is_empty());
+        assert!(again.md.is_none());
+        assert!(!mark::is_decrypted(&again));
+    }
+
+    /// A read-only manager (E2E off, cached key, server unreachable) holding
+    /// a room key for `rid`.
+    pub(crate) async fn manager_with_key(
+        rid: &str,
+    ) -> (E2eManager, rocketchat::e2e::RoomKey, ServerUrl) {
+        use rocketchat::e2e::{RoomKey, UserPublicKey};
+        use rocketchat::models::{Room, RoomType, Subscription};
+        use rustket_core::secrets::SecretStore;
+        let path = format!(
+            "{}/../rocketchat/tests/fixtures/e2e/keychain_pwdv2web.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let kc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let sid = rustket_core::ServerId("s-shown".into());
+        let store = std::sync::Arc::new(rustket_core::secrets::MemoryStore::new());
+        store
+            .set(
+                &rustket_core::e2e::private_key_secret(&sid, "me"),
+                kc["private_key"].as_str().unwrap(),
+            )
+            .unwrap();
+        let server = ServerUrl::parse("http://127.0.0.1:9").unwrap();
+        let tls = crate::session::tls_for(&[]).unwrap();
+        let rest = rocketchat::RestClient::new(server.clone(), &tls).unwrap();
+        let mgr = E2eManager::new(
+            rest,
+            store,
+            &sid,
+            "me",
+            Default::default(),
+            Default::default(),
+        );
+        mgr.start().await.unwrap();
+        let key = RoomKey::generate();
+        let public = UserPublicKey::from_jwk_str(kc["public_key"].as_str().unwrap()).unwrap();
+        mgr.update_room(&Room {
+            id: rid.into(),
+            t: RoomType::Private,
+            encrypted: Some(true),
+            e2e_key_id: Some(key.kid.clone()),
+            ..Default::default()
+        })
+        .await;
+        mgr.update_subscription(&Subscription {
+            id: format!("sub-{rid}"),
+            rid: rid.into(),
+            t: RoomType::Private,
+            e2e_key: Some(key.wrap_for(&public).unwrap()),
+            ..Default::default()
+        })
+        .await;
+        (mgr, key, server)
+    }
+
+    struct OneQuote(Message);
+    impl Quotes for OneQuote {
+        fn get(&self, mid: &str) -> Option<Message> {
+            (self.0.id == mid).then(|| self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn decrypts_in_place_with_files_quotes_and_plaintext_note() {
+        let (mgr, key, server) = manager_with_key("r-dec").await;
+        let enc = |v: Value| key.encrypt_json(&v).unwrap().to_json();
+        let mk = |id: &str, v: Value| {
+            let mut m = msg(id, v);
+            m.rid = "r-dec".into();
+            m
+        };
+        let file_key = rocketchat::e2e::FileKey::generate();
+        let quoted = mk(
+            "q1",
+            serde_json::json!({"t": "e2e", "content": enc(serde_json::json!({"msg": "the *original*"}))}),
+        );
+        let quotes = OneQuote(quoted);
+        let ws = Workspace::new();
+        let mut env = Env::new(&ws, &server, &quotes);
+        env.mgr = Some(mgr.clone());
+        let payload = serde_json::json!({
+            "msg": "see [ ](http://127.0.0.1:9/group/g?msg=q1) *now*",
+            "attachments": [{
+                "title": "a.png",
+                "title_link": "/file-upload/f1/hash#rustket-e2e-0123",
+                "image_url": "/file-upload/f1/hash",
+                "encryption": file_key.to_attachment(),
+            }],
+        });
+        let mut m = mk(
+            "d1",
+            serde_json::json!({"t": "e2e", "msg": "", "md": [{"type": "PARAGRAPH", "value": []}],
+                "content": enc(payload)}),
+        );
+        assert!(process(&mut m, &env));
+        assert_eq!(state(&m), Some(State::Decrypted { plaintext: false }));
+        assert!(m.msg.starts_with("see "));
+        assert!(m.md.as_ref().is_some_and(|md| !md.is_empty()));
+        let atts = m.attachments.as_ref().unwrap();
+        // The file URLs are marked for this message (a payload marker is replaced).
+        assert!(atts[0].image_url.as_deref().is_some_and(files::is_marked));
+        assert!(files::Decryptor::for_url(atts[0].image_url.as_deref().unwrap()).is_some());
+        assert_ne!(
+            atts[0].title_link.as_deref(),
+            Some("http://127.0.0.1:9/file-upload/f1/hash#rustket-e2e-0123")
+        );
+        // The quote is decrypted and attached; the message is done.
+        let quote = atts.iter().find(|a| a.message_link.is_some()).unwrap();
+        assert_eq!(quote.text.as_deref(), Some("the *original*"));
+        assert!(!process(&mut m, &env));
+        keys_changed();
+        assert!(
+            !process(&mut m, &env),
+            "done messages are not processed again"
+        );
+        // The same version again from the server is decrypted again.
+        let mut copy = mk(
+            "d1",
+            serde_json::json!({"t": "e2e", "content": m.content.clone()}),
+        );
+        assert!(process(&mut copy, &env));
+        assert!(is_decrypted(&copy));
+
+        // Plaintext next to the content (§11.14) is flagged.
+        let mut p = mk(
+            "d2",
+            serde_json::json!({"t": "e2e", "msg": "server plaintext",
+                "content": enc(serde_json::json!({"msg": "secret"}))}),
+        );
+        process(&mut p, &env);
+        assert_eq!(p.msg, "secret");
+        assert_eq!(state(&p), Some(State::Decrypted { plaintext: true }));
+    }
+
+    #[tokio::test]
+    async fn unresolved_quotes_are_wanted_and_retried() {
+        let (mgr, key, server) = manager_with_key("r-q").await;
+        let mut ws = Workspace::new();
+        ws.set_e2e(Some(mgr));
+        let content = key
+            .encrypt_json(
+                &serde_json::json!({"msg": "[ ](http://127.0.0.1:9/group/g?msg=missing) hi"}),
+            )
+            .unwrap()
+            .to_json();
+        let mut m = msg("w1", serde_json::json!({"t": "e2e", "content": content}));
+        m.rid = "r-q".into();
+        let map = HashMap::new();
+        let quotes = MapQuotes {
+            map: &map,
+            wants: Default::default(),
+        };
+        let env = Env::new(&ws, &server, &quotes);
+        process(&mut m, &env);
+        assert!(is_decrypted(&m));
+        assert_eq!(quotes.wants.borrow().as_slice(), ["missing".to_owned()]);
+        // Not done: processed again once the quote arrives.
+        let mut q = msg("missing", serde_json::json!({"msg": "plain quoted"}));
+        q.rid = "r-q".into();
+        let map: HashMap<String, Message> = [("missing".to_owned(), q)].into();
+        let quotes = MapQuotes {
+            map: &map,
+            wants: Default::default(),
+        };
+        let env = Env::new(&ws, &server, &quotes);
+        keys_changed();
+        assert!(process(&mut m, &env));
+        assert!(
+            m.attachments
+                .iter()
+                .flatten()
+                .any(|a| a.text.as_deref() == Some("plain quoted"))
+        );
+        assert!(quotes.wants.borrow().is_empty());
     }
 
     #[test]

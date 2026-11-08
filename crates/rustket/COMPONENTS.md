@@ -339,16 +339,20 @@ turns on; `e2e::forget_secrets` on logout / `force_logout`).
 - Encrypted messages are decrypted in place before anything is drawn
   (`e2e::shown`, `Workspace::rewrite_messages`): `msg`/`md`/attachments/files
   hold the plaintext, `content` keeps the envelope, `Message::e2e` a marker
-  (`rustket_core::e2e::shown`) that is only believed for messages the app
-  processed. Use `e2e::shown::is_decrypted(m)` / `state(m)`; the original
+  (`rustket_core::e2e::shown`, carrying a per-process nonce) that is only
+  believed for messages this process processed. Use `e2e::shown::is_decrypted(m)` / `state(m)`; the original
   payload for an edit comes from `e2e::shown::raw_view(m)`. Lists loaded
   outside the workspace (panels) call `e2e::shown::process_list`.
 - The renderer shows placeholders for messages that are not decrypted
   (`e2e::view::placeholder` in `render::message_body_with`).
-- Encrypted file URLs end in `e2e::files::FRAGMENT`; the image loader and
-  downloads decrypt them (`e2e::files`). Never write their bytes to a cache.
+- Encrypted file URLs end in `e2e::files::FRAGMENT` plus a per-message token
+  (`e2e::files::is_marked`); the image loader and downloads decrypt them
+  (`e2e::files`), and a marked URL without a known key is never downloaded
+  as ciphertext. Never write their bytes to a cache. The files panel
+  decrypts upload metadata with `e2e::files::process_file_items`.
 - Sending: `e2e::outgoing::{mode, prepare_send, prepare_edit, upload_mode}`;
-  an encrypted message is never sent or edited as plaintext.
+  an encrypted message is never sent or edited as plaintext (the composer
+  keeps the message being edited and checks `e2e::room::check_edit`).
 - Room UI: `e2e::room` (header key icon, menu entries and dialogs kept by
   `Header`, body replacement, composer notices, `filter_actions`). Room
   components ask for the account modal with `Effect::E2e(RoomRequest)`.

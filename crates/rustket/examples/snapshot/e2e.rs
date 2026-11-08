@@ -431,7 +431,7 @@ async fn shots(
     d.pump_until(
         "encrypted image message",
         Duration::from_secs(60),
-        move |a| image_url(a, &s2, &r2).is_some_and(|u| u.ends_with(rustket::e2e::files::FRAGMENT)),
+        move |a| image_url(a, &s2, &r2).is_some_and(|u| rustket::e2e::files::is_marked(&u)),
     )
     .await;
     // Drawing requests the image; it is downloaded, decrypted and checked.
@@ -455,8 +455,38 @@ async fn shots(
     assert_eq!(f["type"], "application/octet-stream");
     assert_ne!(f["name"], "architecture.png", "file name not leaked");
     assert!(f.get("description").is_none_or(Value::is_null));
+    // The files list decrypts the metadata: real name, type, marked URL.
+    let mut items: Vec<rustket::room::panel::api::FileItem> =
+        serde_json::from_value(files["files"].clone()).expect("file items");
+    rustket::e2e::files::process_file_items(
+        &d.app.servers[sid].workspace,
+        &d.app.servers[sid].url,
+        &rid,
+        &mut items,
+    );
+    assert_eq!(items[0].name, "architecture.png");
+    assert_eq!(items[0].type_group.as_deref(), Some("image"));
+    assert!(
+        items[0]
+            .download_path()
+            .is_some_and(rustket::e2e::files::is_marked)
+    );
     d.settle(Duration::from_secs(1)).await;
     both(d, out, "e3-encrypted-room");
+    d.send(room_msg(
+        d,
+        sid,
+        &rid,
+        room::Message::Header(room::header::Message::MenuPanel(room::panel::Kind::Files)),
+    ));
+    d.settle(Duration::from_secs(2)).await;
+    both(d, out, "e3-files-panel");
+    d.send(room_msg(
+        d,
+        sid,
+        &rid,
+        room::Message::Panel(room::panel::Message::Close),
+    ));
 
     // Room menu: encryption entries, the disable dialog.
     use room::header::Message as Hm;

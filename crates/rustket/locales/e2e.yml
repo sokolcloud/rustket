@@ -191,6 +191,9 @@ e2e.send_blocked:
 e2e.edit_unreadable:
   en: "This encrypted message cannot be edited here"
   ru: "Это зашифрованное сообщение нельзя изменить здесь"
+e2e.edit_unavailable:
+  en: "Encrypted messages can't be edited until the room's encryption key is available"
+  ru: "Зашифрованные сообщения нельзя изменять, пока ключ шифрования комнаты недоступен"
 e2e.composer_locked:
   en: "Enter your E2E password to write in this encrypted room"
   ru: "Введите пароль E2E, чтобы писать в этой зашифрованной комнате"
@@ -278,3 +281,39 @@ e2e.insecure_server:
 e2e.search_hint:
   en: "Encrypted content cannot be searched"
   ru: "Зашифрованное содержимое недоступно для поиска"
+e2e.encrypted_file:
+  en: "Encrypted file"
+  ru: "Зашифрованный файл"
+e2e.file_key_missing:
+  en: "The key of this encrypted file is not available"
+  ru: "Ключ этого зашифрованного файла недоступен"
+e2e.image_too_large:
+  en: "The image is too large"
+  ru: "Изображение слишком большое"
+e2e.err_disabled:
+  en: "End-to-end encryption is disabled on the server"
+  ru: "Сквозное шифрование отключено на сервере"
+e2e.err_not_ready:
+  en: "Your encryption keys are not loaded"
+  ru: "Ваши ключи шифрования не загружены"
+e2e.err_room_not_ready:
+  en: "The room's encryption key is not available"
+  ru: "Ключ шифрования комнаты недоступен"
+e2e.err_room_not_encrypted:
+  en: "Encryption is turned off in this room"
+  ru: "Шифрование в этой комнате выключено"
+e2e.err_cancelled:
+  en: "The operation was cancelled"
+  ru: "Операция отменена"
+e2e.err_crypto:
+  en: "Encryption or decryption failed"
+  ru: "Ошибка шифрования или расшифровки"
+e2e.err_secret:
+  en: "The secret store could not be used"
+  ru: "Не удалось обратиться к хранилищу секретов"
+e2e.err_internal:
+  en: "Something went wrong with end-to-end encryption"
+  ru: "Ошибка сквозного шифрования"
+e2e.slash_unavailable:
+  en: "Slash commands are unavailable in encrypted rooms: this text is sent as an encrypted message"
+  ru: "Команды недоступны в зашифрованных комнатах: этот текст будет отправлен как зашифрованное сообщение"

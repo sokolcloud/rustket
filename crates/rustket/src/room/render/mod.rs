@@ -135,6 +135,10 @@ impl RenderState {
         self.downloads.insert((mid.to_owned(), url.to_owned()), t);
     }
 
+    pub fn clear_transfer(&mut self, mid: &str, url: &str) {
+        self.downloads.remove(&(mid.to_owned(), url.to_owned()));
+    }
+
     pub fn transfer(&self, mid: &str, url: &str) -> Option<&Transfer> {
         self.downloads.get(&(mid.to_owned(), url.to_owned()))
     }

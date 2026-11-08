@@ -278,12 +278,14 @@ pub enum FetchFor {
     Quote,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Editing {
     mid: String,
     original: String,
     /// The text that was in the composer before the edit started.
     stash: String,
+    /// The message as shown when the edit started (encrypted edits need it).
+    message: Box<rocketchat::models::Message>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -686,7 +688,16 @@ impl Composer {
             }
             Message::Fetched(purpose, r) => match r {
                 Ok(m) => match purpose {
-                    FetchFor::Edit => self.start_edit(&m, ctx.workspace),
+                    FetchFor::Edit => {
+                        // Decrypted like every shown message before it is edited.
+                        let mut m = m;
+                        crate::e2e::shown::process_list(
+                            ctx.workspace,
+                            ctx.server,
+                            std::slice::from_mut(&mut m),
+                        );
+                        self.start_edit(&m, ctx.workspace)
+                    }
                     FetchFor::Quote => {
                         self.add_quote(&m);
                         Action::task(self.focus())
@@ -1142,6 +1153,9 @@ impl Composer {
         if !permissions::can_edit_message(ws, m, chrono::Utc::now()) {
             return Action::effect(error_toast(t!("room_composer.cannot_edit").into_owned()));
         }
+        if let Err(e) = crate::e2e::room::check_edit(ws, m) {
+            return Action::effect(error_toast(e));
+        }
         let stash = match self.editing.take() {
             Some(e) => e.stash,
             None => self.content.text(),
@@ -1150,6 +1164,7 @@ impl Composer {
             mid: m.id.clone(),
             original: m.msg.clone(),
             stash,
+            message: Box::new(m.clone()),
         });
         self.popup = None;
         self.picker = None;
@@ -1211,18 +1226,20 @@ impl Composer {
             if text::too_long(&text, max) {
                 return Action::effect(too_long(max));
             }
-            self.cancel_edit();
             if text == ed.original.trim() {
+                self.cancel_edit();
                 return Action::task(self.focus());
             }
             let rid = self.rid.clone();
-            // Encrypted messages are edited encrypted (never with plaintext).
-            let original = find_message(ctx.workspace, &rid, self.tmid.as_deref(), &ed.mid);
-            let enc = match crate::e2e::outgoing::prepare_edit(ctx.workspace, original, &text) {
-                Some(Err(e)) => return Action::effect(error_toast(e)),
-                Some(Ok(enc)) => Some(enc),
-                None => None,
-            };
+            // Encrypted messages are edited encrypted (never with plaintext);
+            // on failure the edit stays open with the text.
+            let enc =
+                match crate::e2e::outgoing::prepare_edit(ctx.workspace, &rid, &ed.message, &text) {
+                    Some(Err(e)) => return Action::effect(error_toast(e)),
+                    Some(Ok(enc)) => Some(enc),
+                    None => None,
+                };
+            self.cancel_edit();
             return Action::task(Task::batch([
                 ctx.rest_task(
                     move |rest| crate::e2e::outgoing::update_message(rest, rid, ed.mid, text, enc),
@@ -1383,6 +1400,13 @@ impl Composer {
         }
         let mut col = column![].spacing(SPACE_1);
         if let Some(h) = crate::e2e::room::composer_hint(ctx.workspace, &self.rid) {
+            col = col.push(h);
+        }
+        let slash = self
+            .content
+            .line(0)
+            .is_some_and(|l| l.text.starts_with('/'));
+        if let Some(h) = crate::e2e::room::slash_hint(ctx.workspace, &self.rid, slash) {
             col = col.push(h);
         }
         if let Some(l) = ctx
@@ -1782,10 +1806,12 @@ fn find_message<'a>(
     tmid: Option<&str>,
     mid: &str,
 ) -> Option<&'a rocketchat::models::Message> {
-    tmid.and_then(|t| ws.thread(t))
+    let thread = tmid.and_then(|t| ws.thread(t));
+    thread
         .and_then(|t| t.get(mid))
         .or_else(|| ws.timeline(rid).and_then(|t| t.get(mid)))
         .map(|i| &i.message)
+        .or_else(|| thread.and_then(|t| t.parent()).filter(|p| p.id == mid))
 }
 
 /// The newest own message the user may edit (Up in an empty composer).
@@ -1807,6 +1833,9 @@ fn last_editable<'a>(
         // The room composer edits room messages, not thread replies shown in the channel.
         .filter(|m| tmid.is_some() || m.tmid.is_none())
         .find(|m| permissions::can_edit_message(ws, m, now))
+        // An encrypted message that cannot be edited stops the search (an
+        // older message is not what the user meant).
+        .filter(|m| crate::e2e::room::check_edit(ws, m).is_ok())
 }
 
 /// Editor state the key bindings depend on.

@@ -156,6 +156,18 @@ impl Viewer {
                     Action::none()
                 }
                 DlEvent::Done(path) => {
+                    if open_after && crate::e2e::files::is_marked(&f.url) {
+                        // Decrypted media is not kept on disk (removed later).
+                        self.render.clear_transfer(&f.mid, &f.url);
+                        return Action::task(Task::perform(
+                            async move {
+                                let r = transfer::open_path(path.clone()).await;
+                                crate::e2e::files::delete_later(path);
+                                r
+                            },
+                            ViewerMsg::Opened,
+                        ));
+                    }
                     self.render
                         .set_transfer(&f.mid, &f.url, Transfer::Done(path.clone()));
                     if open_after {
@@ -240,11 +252,20 @@ impl Viewer {
         ext: Option<&'static str>,
         ctx: &UpdateCtx<'_>,
     ) -> Action<ViewerMsg> {
-        let dir = transfer::media_dir(ctx.images.disk_dir());
+        let mut dir = transfer::media_dir(ctx.images.disk_dir());
+        let mut purge = Task::none();
+        if crate::e2e::files::is_marked(&f.url) {
+            dir = dir.map(|d| crate::e2e::files::private_media_dir(&d));
+            purge = Task::perform(crate::e2e::files::purge_private_media(true), |_| {
+                ViewerMsg::Opened(Ok(()))
+            });
+        }
         match (ext, dir) {
             (Some(ext), Some(dir)) => {
                 let path = transfer::media_path(&dir, ext);
-                self.start_download(f, path, transfer::Target::Private, true, ctx)
+                let mut dl = self.start_download(f, path, transfer::Target::Private, true, ctx);
+                dl.task = Task::batch([purge, dl.task]);
+                dl
             }
             _ => Action::effect(toast_error(
                 t!("room_timeline.unsupported_media").into_owned(),

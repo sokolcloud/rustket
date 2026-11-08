@@ -48,6 +48,9 @@ pub(super) fn discussion_dialog(
                 .and_then(|t| t.get(mid))
                 // A thread root opened in the thread panel only.
                 .or_else(|| ws.thread(mid).and_then(|t| t.get(mid)))
+                // The discussion name is plaintext on the server: never
+                // prefilled from an encrypted message.
+                .filter(|i| !crate::e2e::room::is_encrypted_message(&i.message))
                 .map(|i| crate::room::render::plain_text(&i.message))
                 .unwrap_or_default();
             let excerpt: String = excerpt.chars().take(200).collect();

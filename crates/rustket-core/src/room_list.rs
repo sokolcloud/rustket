@@ -898,7 +898,7 @@ mod tests {
         assert_eq!(p.text, None);
         // Decrypted in place by the app: the plaintext preview.
         e.msg = "hello there".into();
-        e.e2e = Some(crate::e2e::shown::DECRYPTED.into());
+        crate::e2e::shown::set_marker(&mut e, crate::e2e::shown::DECRYPTED);
         let p = preview(&ws, &e, RoomType::Direct, false, false);
         assert_eq!(p.kind, PreviewKind::Text);
         assert_eq!(p.text.as_deref(), Some("hello there"));

@@ -225,6 +225,9 @@ pub struct FileItem {
     pub uploaded_at: Option<RcDate>,
     #[serde(deserialize_with = "lenient::opt")]
     pub user: Option<UserRef>,
+    /// Encrypted metadata of an end-to-end encrypted upload (decrypted by
+    /// `e2e::files::process_file_items`).
+    pub content: Option<serde_json::Value>,
 }
 
 impl FileItem {

@@ -58,4 +58,25 @@ mod tests {
         };
         assert_eq!(prepare(&ws, Box::new(p)).text, "hello");
     }
+
+    #[tokio::test]
+    async fn decrypted_notifications_show_the_text() {
+        let (mgr, key, _) = crate::e2e::shown::tests::manager_with_key("r-n").await;
+        let mut ws = Workspace::new();
+        ws.set_e2e(Some(mgr));
+        let mut n = DesktopNotification {
+            text: "bob:".into(),
+            ..Default::default()
+        };
+        n.payload.rid = "r-n".into();
+        n.payload.message.t = Some("e2e".into());
+        n.payload.message.content = Some(
+            key.encrypt_json(&serde_json::json!({"msg": "hello there"}))
+                .unwrap()
+                .to_json(),
+        );
+        let n = prepare(&ws, Box::new(n));
+        assert_eq!(n.text, "bob: hello there");
+        assert_eq!(n.payload.message.msg, "hello there");
+    }
 }

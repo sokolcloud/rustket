@@ -9,12 +9,14 @@
 
 use rocketchat::models::md::{Block, CodeLine, Emoji, Inline, LinkValue, OneOrMany, Plain, Root};
 
-/// Longest input parsed (longer texts become one plain paragraph per line).
+/// Bytes of inline formatting parsed per message; the lines after that are
+/// plain text.
 const MAX_PARSE_BYTES: usize = 64 * 1024;
 
 /// Parses `text` into an `md` tree (empty for an empty text).
 pub fn parse(text: &str) -> Root {
     let mut out = Vec::new();
+    let mut budget = MAX_PARSE_BYTES;
     let lines: Vec<&str> = text.split('\n').collect();
     let mut i = 0;
     let mut quote: Vec<Block> = Vec::new();
@@ -55,7 +57,7 @@ pub fn parse(text: &str) -> Root {
         if let Some(rest) = line.strip_prefix('>') {
             let rest = rest.strip_prefix(' ').unwrap_or(rest);
             quote.push(Block::Paragraph {
-                value: inlines(rest),
+                value: inlines(rest, &mut budget),
             });
             i += 1;
             continue;
@@ -65,7 +67,7 @@ pub fn parse(text: &str) -> Root {
             out.push(Block::LineBreak);
         } else {
             out.push(Block::Paragraph {
-                value: inlines(line),
+                value: inlines(line, &mut budget),
             });
         }
         i += 1;
@@ -91,10 +93,12 @@ fn text_node(s: &str) -> Inline {
 }
 
 /// Inline nodes of one line.
-fn inlines(line: &str) -> Vec<Inline> {
-    if line.len() > MAX_PARSE_BYTES {
+fn inlines(line: &str, budget: &mut usize) -> Vec<Inline> {
+    if line.len() > *budget {
+        *budget = 0;
         return vec![text_node(line)];
     }
+    *budget -= line.len();
     let mut out = Vec::new();
     parse_inline(line, &mut out, 0);
     merge_text(out)
@@ -123,26 +127,60 @@ fn mention_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '-' | '_' | '.')
 }
 
-/// Byte index of a closing `delim` for an opening one ending at `from`:
-/// non-empty, no space right inside the delimiters, no word character right
-/// after the closing one.
-fn closing(s: &str, from: usize, delim: char) -> Option<usize> {
+/// Byte positions in `s` where `delim` can close a span: no space right
+/// before it, no word character right after it.
+fn closers(s: &str, delim: char) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut prev: Option<char> = None;
+    let mut it = s.char_indices().peekable();
+    while let Some((i, c)) = it.next() {
+        if c == delim
+            && prev.is_some_and(|p| !p.is_whitespace())
+            && !it.peek().is_some_and(|(_, n)| is_word(*n))
+        {
+            out.push(i);
+        }
+        prev = Some(c);
+    }
+    out
+}
+
+/// Byte index of a closing `delim` for an opening one ending at `from`
+/// (non-empty, no space right inside the delimiters), from the precomputed
+/// [`closers`].
+fn closing(s: &str, from: usize, delim: char, closers: &[usize]) -> Option<usize> {
     let rest = &s[from..];
     if rest.starts_with(char::is_whitespace) || rest.starts_with(delim) {
         return None;
     }
-    let mut search = 0;
-    while let Some(off) = rest[search..].find(delim) {
-        let at = search + off;
-        let end = from + at;
-        let before_ok = at > 0 && !rest[..at].ends_with(char::is_whitespace);
-        let after_ok = !s[end + delim.len_utf8()..].starts_with(is_word);
-        if before_ok && after_ok {
-            return Some(end);
-        }
-        search = at + delim.len_utf8();
+    let k = closers.partition_point(|p| *p <= from);
+    closers.get(k).copied()
+}
+
+/// The next occurrence of a pattern at or after a position, for positions
+/// that only grow (amortised linear scanning).
+struct Next {
+    pat: &'static str,
+    /// The last answer: the start of the search and what was found.
+    last: Option<(usize, Option<usize>)>,
+}
+
+impl Next {
+    fn new(pat: &'static str) -> Self {
+        Self { pat, last: None }
     }
-    None
+
+    fn at_or_after(&mut self, s: &str, from: usize) -> Option<usize> {
+        if let Some((start, found)) = self.last
+            && start <= from
+            && found.is_none_or(|f| f >= from)
+        {
+            return found;
+        }
+        let found = s.get(from..)?.find(self.pat).map(|o| from + o);
+        self.last = Some((from, found));
+        found
+    }
 }
 
 /// Length of a URL starting at `s` (`http://` / `https://`), trailing
@@ -155,11 +193,15 @@ fn url_len(s: &str) -> Option<usize> {
     let mut end = s
         .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
         .unwrap_or(s.len());
+    let opens = s[..end].matches('(').count();
+    let mut closes = s[..end].matches(')').count();
     while end > 0 && s[..end].ends_with(['.', ',', ';', ':', '!', '?', ')', ']', '\'']) {
         // Keep a closing parenthesis that belongs to the URL.
-        if s[..end].ends_with(')') && s[..end].matches('(').count() >= s[..end].matches(')').count()
-        {
-            break;
+        if s[..end].ends_with(')') {
+            if opens >= closes {
+                break;
+            }
+            closes -= 1;
         }
         end -= 1;
     }
@@ -167,11 +209,24 @@ fn url_len(s: &str) -> Option<usize> {
     (end > scheme).then_some(end)
 }
 
+/// Longest emoji short code.
+const MAX_EMOJI: usize = 64;
+
 const MAX_DEPTH: usize = 6;
 
 fn parse_inline(s: &str, out: &mut Vec<Inline>, depth: usize) {
     let mut text_start = 0;
     let mut i = 0;
+    let (stars, unders, tildes) = if depth < MAX_DEPTH {
+        (closers(s, '*'), closers(s, '_'), closers(s, '~'))
+    } else {
+        Default::default()
+    };
+    let mut link_sep = Next::new("](");
+    let mut rbracket = Next::new("]");
+    let mut rparen = Next::new(")");
+    // The link target last checked (by the position of its `](`).
+    let mut checked_link: Option<(usize, bool)> = None;
     let push_text = |out: &mut Vec<Inline>, from: usize, to: usize| {
         if to > from {
             out.push(text_node(&s[from..to]));
@@ -197,7 +252,12 @@ fn parse_inline(s: &str, out: &mut Vec<Inline>, depth: usize) {
                 }
             }
             '*' | '_' | '~' if at_boundary && depth < MAX_DEPTH => {
-                if let Some(end) = closing(s, i + 1, c) {
+                let list = match c {
+                    '*' => &stars,
+                    '_' => &unders,
+                    _ => &tildes,
+                };
+                if let Some(end) = closing(s, i + 1, c, list) {
                     let mut inner = Vec::new();
                     parse_inline(&s[i + 1..end], &mut inner, depth + 1);
                     let value = merge_text(inner);
@@ -210,30 +270,36 @@ fn parse_inline(s: &str, out: &mut Vec<Inline>, depth: usize) {
                 }
             }
             '[' => {
-                if let Some(close) = rest.find("](") {
-                    let label = &rest[1..close];
-                    let after = &rest[close + 2..];
-                    if !label.contains(']')
-                        && let Some(paren) = after.find(')')
-                    {
-                        let url = &after[..paren];
-                        if url_len(url) == Some(url.len()) || url.starts_with('/') {
-                            let mut inner = Vec::new();
-                            if depth < MAX_DEPTH {
-                                parse_inline(label, &mut inner, depth + 1);
-                            } else {
-                                inner.push(text_node(label));
-                            }
-                            node = Some((
-                                Inline::Link {
-                                    value: LinkValue {
-                                        src: plain(url),
-                                        label: OneOrMany::Many(merge_text(inner)),
-                                    },
-                                },
-                                close + 2 + paren + 1,
-                            ));
+                if let Some(sep) = link_sep.at_or_after(s, i + 1)
+                    && rbracket.at_or_after(s, i + 1) == Some(sep)
+                    && let Some(paren) = rparen.at_or_after(s, sep + 2)
+                {
+                    let label = &s[i + 1..sep];
+                    let url = &s[sep + 2..paren];
+                    let valid = match checked_link {
+                        Some((at, v)) if at == sep => v,
+                        _ => {
+                            let v = url_len(url) == Some(url.len()) || url.starts_with('/');
+                            checked_link = Some((sep, v));
+                            v
                         }
+                    };
+                    if valid {
+                        let mut inner = Vec::new();
+                        if depth < MAX_DEPTH {
+                            parse_inline(label, &mut inner, depth + 1);
+                        } else {
+                            inner.push(text_node(label));
+                        }
+                        node = Some((
+                            Inline::Link {
+                                value: LinkValue {
+                                    src: plain(url),
+                                    label: OneOrMany::Many(merge_text(inner)),
+                                },
+                            },
+                            paren + 1 - i,
+                        ));
                     }
                 }
             }
@@ -268,10 +334,11 @@ fn parse_inline(s: &str, out: &mut Vec<Inline>, depth: usize) {
                 }
             }
             ':' => {
-                if let Some(end) = rest[1..].find(':') {
+                let window = &rest.as_bytes()[1..rest.len().min(MAX_EMOJI + 2)];
+                if let Some(end) = window.iter().position(|b| *b == b':') {
                     let code = &rest[1..1 + end];
                     if !code.is_empty()
-                        && code.len() <= 64
+                        && code.len() <= MAX_EMOJI
                         && code
                             .chars()
                             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-'))
@@ -307,6 +374,41 @@ fn parse_inline(s: &str, out: &mut Vec<Inline>, depth: usize) {
 mod tests {
     use super::*;
 
+    fn inlines_all(line: &str) -> Vec<Inline> {
+        let mut budget = usize::MAX;
+        inlines(line, &mut budget)
+    }
+
+    #[test]
+    fn hostile_lines_parse_fast() {
+        let lines = [
+            "*. ".repeat(20_000),
+            "*a _b ~c ".repeat(6_000),
+            format!("http://a/{}", ")".repeat(50_000)),
+            "[".repeat(50_000) + "](http://a)",
+            "[a](".repeat(15_000),
+            ":a".repeat(30_000),
+        ];
+        let start = std::time::Instant::now();
+        for l in &lines {
+            parse(l);
+        }
+        // Quadratic scanning took seconds here; linear takes milliseconds.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(matches!(
+            &inlines_all("a [x](http://a.b)")[..],
+            [Inline::PlainText { .. }, Inline::Link { .. }]
+        ));
+        assert!(matches!(
+            &inlines_all("*a* b *c*")[..],
+            [Inline::Bold { .. }, _, Inline::Bold { .. }]
+        ));
+    }
+
     fn text_of(n: &Inline) -> String {
         let mut s = String::new();
         n.plain_text(&mut s);
@@ -336,7 +438,7 @@ mod tests {
 
     #[test]
     fn inline_nodes() {
-        let v = inlines("Hi *bold* _it_ ~s~ `c` @alice #general :smile: https://x.org/a.");
+        let v = inlines_all("Hi *bold* _it_ ~s~ `c` @alice #general :smile: https://x.org/a.");
         let kinds: Vec<&str> = v
             .iter()
             .map(|n| match n {
@@ -367,7 +469,7 @@ mod tests {
 
     #[test]
     fn quote_links_and_plain_cases() {
-        let v = inlines("[ ](http://localhost:3000/group/x?msg=abc) reply");
+        let v = inlines_all("[ ](http://localhost:3000/group/x?msg=abc) reply");
         match &v[0] {
             Inline::Link { value } => {
                 assert_eq!(value.src.value, "http://localhost:3000/group/x?msg=abc");
@@ -377,10 +479,10 @@ mod tests {
             other => panic!("{other:?}"),
         }
         // Not formatting: snake_case, a lone star, e-mail addresses.
-        let v = inlines("snake_case_name 2 * 3 me@example.org");
+        let v = inlines_all("snake_case_name 2 * 3 me@example.org");
         assert_eq!(v.len(), 1, "{v:?}");
         // A label that is not a link stays text.
-        let v = inlines("[x](javascript:alert(1))");
+        let v = inlines_all("[x](javascript:alert(1))");
         assert!(v.iter().all(|n| matches!(n, Inline::PlainText { .. })));
     }
 }

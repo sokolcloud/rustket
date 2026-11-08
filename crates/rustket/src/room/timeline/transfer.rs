@@ -182,6 +182,10 @@ async fn run(
 ) -> Result<(), String> {
     // End-to-end encrypted files are decrypted while they are written.
     let mut e2e = crate::e2e::files::Decryptor::for_url(url);
+    if e2e.is_none() && crate::e2e::files::is_marked(url) {
+        // Never save the ciphertext as if it were the file.
+        return Err(crate::e2e::files::key_missing_text());
+    }
     let url = crate::e2e::files::strip(url).unwrap_or(url);
     let dl = rest.download(url).await.map_err(net)?;
     let total = dl.content_length;

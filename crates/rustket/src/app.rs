@@ -1235,7 +1235,8 @@ impl App {
         if let Some(s) = self.servers.get_mut(sid) {
             // `force_logout` (e.g. an E2E key reset) also drops the E2E secrets.
             if reason.as_deref() == Some("force_logout") {
-                e2e = crate::e2e::forget_secrets(s);
+                let uid = self.config.server(sid).and_then(|e| e.user_id.clone());
+                e2e = crate::e2e::forget_secrets(s, self.secrets.as_ref(), uid.as_deref());
             }
             // The token was rejected: nothing can be sent with it any more.
             s.reset();
@@ -1265,10 +1266,11 @@ impl App {
         // Stop-typing calls of the open rooms; not chained before the
         // logout, which must not wait for a DDP call while the socket is down
         // (the server drops the activity with the connection anyway).
+        let uid = self.config.server(sid).and_then(|e| e.user_id.clone());
         let typing = match self.servers.get_mut(sid) {
             Some(s) => {
                 let t = s.close_rooms().discard();
-                let e2e = crate::e2e::forget_secrets(s);
+                let e2e = crate::e2e::forget_secrets(s, self.secrets.as_ref(), uid.as_deref());
                 s.reset();
                 Task::batch([t, e2e])
             }

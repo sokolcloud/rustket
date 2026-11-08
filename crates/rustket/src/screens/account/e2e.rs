@@ -11,7 +11,9 @@ use rust_i18n::t;
 use rustket_core::e2e::AccountE2eState;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL};
+use rustket_ui::theme::{
+    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL,
+};
 use rustket_ui::widget::{
     BannerKind, ChipKind, banner, chip, danger_button, primary_button, secondary_button, text_field,
 };
@@ -111,7 +113,7 @@ impl E2eSection {
                 let pw = self.new.clone();
                 Action::task(iced::Task::perform(
                     async move { mgr.change_passphrase(&pw).await },
-                    |r| wrap(Msg::Changed(r.map_err(|e| e.to_string()))),
+                    |r| wrap(Msg::Changed(r.map_err(|e| crate::e2e::error_text(&e)))),
                 ))
             }
             Msg::Changed(r) => {
@@ -215,7 +217,11 @@ impl E2eSection {
         }
 
         // Change the passphrase.
-        c = c.push(text(t!("e2e.account_change_title")).size(TEXT_BODY));
+        c = c.push(
+            text(t!("e2e.account_change_title"))
+                .size(TEXT_BODY)
+                .font(FONT_SEMIBOLD),
+        );
         if ready {
             let mismatch = !self.confirm.is_empty() && *self.new != *self.confirm;
             let mut confirm = text_field(t!("e2e.account_confirm_label"), &self.confirm, |v| {
@@ -271,7 +277,11 @@ impl E2eSection {
         }
 
         // Reset the keys.
-        c = c.push(text(t!("e2e.account_reset_title")).size(TEXT_BODY));
+        c = c.push(
+            text(t!("e2e.account_reset_title"))
+                .size(TEXT_BODY)
+                .font(FONT_SEMIBOLD),
+        );
         c = c.push(
             text(t!("e2e.account_reset_help"))
                 .size(TEXT_SMALL)
@@ -298,7 +308,9 @@ impl E2eSection {
                 .spacing(SPACE_2),
             );
         } else {
-            c = c.push(row![danger_button(
+            // Destructive only after the confirmation (web: secondary button
+            // plus a modal).
+            c = c.push(row![secondary_button(
                 t!("e2e.account_reset"),
                 Some(wrap(Msg::AskReset)),
             )]);
