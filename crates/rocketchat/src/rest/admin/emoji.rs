@@ -2,10 +2,10 @@
 
 use serde_json::{Value, json};
 
-use super::{AdminUpload, Page};
+use super::{AdminUpload, Page, paged};
 use crate::error::Result;
 use crate::models::{CustomEmoji, Paginated};
-use crate::rest::{Query, RestClient, paginated};
+use crate::rest::{Query, RestClient};
 
 impl RestClient {
     /// `emoji-custom.all` (`name`: case-insensitive substring).
@@ -19,7 +19,7 @@ impl RestClient {
             q = q.push("name", name);
         }
         let v: Value = self.get("emoji-custom.all", &q).await?;
-        paginated(v, "emojis")
+        paged(v, "emojis", page)
     }
 
     /// `emoji-custom.create` (multipart). `aliases` is comma-separated. The stored

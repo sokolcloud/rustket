@@ -2,11 +2,11 @@
 
 use serde_json::{Value, json};
 
-use super::Page;
+use super::{Page, paged};
 use crate::error::Result;
 use crate::models::Paginated;
 use crate::models::admin::{AdminRoom, AdminRoomType, RoomSettingsUpdate};
-use crate::rest::{Query, RestClient, field, paginated};
+use crate::rest::{Query, RestClient, field};
 
 impl RestClient {
     /// `rooms.adminRooms`. An empty `types` sends all six types (like the web);
@@ -30,7 +30,7 @@ impl RestClient {
             q = q.push("types[]", t.as_str());
         }
         let v: Value = self.get("rooms.adminRooms", &q).await?;
-        paginated(v, "rooms")
+        paged(v, "rooms", page)
     }
 
     /// `rooms.adminRooms.getRoom` (room fields at the top level).

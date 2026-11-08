@@ -9,7 +9,7 @@ use common::{body_json, http_response, json_ok, serve};
 use rocketchat::auth::TwoFactorCode;
 use rocketchat::models::admin::*;
 use rocketchat::models::{Paginated, Role, UpdatedSince};
-use rocketchat::rest::{Page, Sort};
+use rocketchat::rest::admin::{Page, Sort};
 use rocketchat::{Credentials, Error, RestClient, ServerUrl, TlsConfig, TwoFactorMethod};
 use serde_json::{Value, json};
 
@@ -61,8 +61,24 @@ fn private_settings_fixture() {
         .find(|d| d.kind == SettingType::Password)
         .unwrap();
     assert!(pw.is_sensitive());
-    assert!(!format!("{pw:?}").contains("redacted\""));
-    assert!(format!("{pw:?}").contains("<redacted>"));
+    // Custom OAuth secrets are plain strings without `secret: true`.
+    let kc = defs
+        .iter()
+        .find(|d| d.id == "Accounts_OAuth_Custom-Keycloak-secret")
+        .unwrap();
+    assert!(!kc.secret && kc.kind == SettingType::String);
+    assert!(kc.is_sensitive());
+    assert!(
+        !defs
+            .iter()
+            .find(|d| d.id == "LDAP_Enable")
+            .unwrap()
+            .is_sensitive()
+    );
+    // `Debug` never prints values.
+    let mut probe = kc.clone();
+    probe.value = Some(json!("probe-secret-value"));
+    assert!(!format!("{probe:?}").contains("probe-secret-value"));
     // Unknown types and string-or-JSON queries.
     let odd: SettingDef = serde_json::from_value(json!({
         "_id": "x", "type": "fancy", "enableQuery": {"_id": "a", "value": 1},
@@ -107,7 +123,7 @@ fn statistics_fixture() {
     assert!(s.extra.contains_key("os"));
     // Re-serialises everything for "Download info".
     let back = serde_json::to_value(&s).unwrap();
-    assert!(back.get("os").is_some() && back.get("totalUsers").is_some());
+    assert_eq!(back, fixture("statistics.json"));
     // A fresh snapshot has `_updatedAt: null`.
     let mut raw = fixture("statistics.json");
     raw["_updatedAt"] = Value::Null;
@@ -351,4 +367,21 @@ async fn two_factor_headers_and_list_params() {
     ] {
         assert!(first.contains(part), "{part}: {first}");
     }
+}
+
+#[tokio::test]
+async fn users_in_role_page_without_offset_keys() {
+    // `roles.getUsersInRole` answers only `{users, total}`.
+    let (port, _log) = serve(|_| {
+        Some(json_ok(
+            r#"{"users":[{"_id":"u5","username":"e"}],"total":5,"success":true}"#,
+        ))
+    })
+    .await;
+    let p = client(port)
+        .roles_get_users_in_role("user", None, &Page::new(4, 2))
+        .await
+        .unwrap();
+    assert_eq!((p.offset, p.count, p.total, p.raw_len), (4, 1, 5, 1));
+    assert!(!p.has_more());
 }

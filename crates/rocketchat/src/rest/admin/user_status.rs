@@ -2,10 +2,10 @@
 
 use serde_json::{Value, json};
 
-use super::Page;
+use super::{Page, paged};
 use crate::error::Result;
 use crate::models::{CustomUserStatus, Paginated, UserStatus};
-use crate::rest::{Query, RestClient, field, paginated};
+use crate::rest::{Query, RestClient, field};
 
 impl RestClient {
     /// One page of `custom-user-status.list` (`name`: substring filter).
@@ -19,7 +19,7 @@ impl RestClient {
             q = q.push("name", name);
         }
         let v: Value = self.get("custom-user-status.list", &q).await?;
-        paginated(v, "statuses")
+        paged(v, "statuses", page)
     }
 
     pub async fn custom_user_status_create(

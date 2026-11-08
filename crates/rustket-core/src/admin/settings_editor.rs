@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
 
 use rocketchat::RcDate;
 use rocketchat::models::UpdatedSince;
@@ -27,12 +28,34 @@ pub const GROUP_WITHOUT_SECTION_RESET: &str = "Assets";
 
 /// All private settings the user may manage, kept current from
 /// `private-settings/get` (full and delta) and `private-settings-changed` events.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SettingsStore {
     defs: BTreeMap<String, SettingDef>,
     last_updated: Option<RcDate>,
     delta_needed: bool,
+    /// Bumped by every stream event; a delta clears `delta_needed` only if no event
+    /// arrived after its request.
+    event_generation: u64,
     revision: u64,
+}
+
+impl fmt::Debug for SettingsStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SettingsStore")
+            .field("len", &self.defs.len())
+            .field("last_updated", &self.last_updated)
+            .field("delta_needed", &self.delta_needed)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A delta fetch to run: `private-settings/get` with `since` (`None` = full load),
+/// then [`SettingsStore::apply_delta`] with this request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeltaRequest {
+    pub since: Option<RcDate>,
+    pub generation: u64,
 }
 
 impl SettingsStore {
@@ -65,15 +88,19 @@ impl SettingsStore {
         self.defs.insert(d.id.clone(), d);
     }
 
-    /// Applies a delta `private-settings/get([{"$date": since}])`.
-    pub fn apply_delta(&mut self, delta: UpdatedSince<SettingDef>) {
+    /// Applies the answer to `request` (`private-settings/get([{"$date": since}])`).
+    /// Events that arrived while it was in flight keep the delta flag set, since the
+    /// server may have run the query before them.
+    pub fn apply_delta(&mut self, request: DeltaRequest, delta: UpdatedSince<SettingDef>) {
         for d in delta.update {
             self.insert(d);
         }
         for r in delta.remove {
             self.defs.remove(&r.id);
         }
-        self.delta_needed = false;
+        if request.generation == self.event_generation {
+            self.delta_needed = false;
+        }
         self.revision += 1;
     }
 
@@ -95,11 +122,15 @@ impl SettingsStore {
             self.revision += 1;
         }
         self.delta_needed = true;
+        self.event_generation += 1;
     }
 
-    /// Whether a delta fetch should run, and the date to pass (`None` = full load).
-    pub fn delta_request(&self) -> Option<Option<RcDate>> {
-        self.delta_needed.then_some(self.last_updated)
+    /// The delta fetch to run, if any.
+    pub fn delta_request(&self) -> Option<DeltaRequest> {
+        self.delta_needed.then_some(DeltaRequest {
+            since: self.last_updated,
+            generation: self.event_generation,
+        })
     }
 
     /// Optimistically applies a successful save (the stream confirms it later).
@@ -337,7 +368,8 @@ fn compare_settings(a: &SettingDef, b: &SettingDef) -> Ordering {
 pub struct EditContext {
     /// `edit-privileged-setting`.
     pub can_edit_all: bool,
-    /// Settings with a granted `change-setting-<id>` permission.
+    /// Settings with a granted `change-setting-<id>` permission, filled only with
+    /// `manage-selected-settings` (the server requires both, `saveSettingsBulk.ts`).
     pub editable_ids: HashSet<String>,
     pub has_license: bool,
     pub active_modules: Vec<String>,
@@ -346,13 +378,16 @@ pub struct EditContext {
 impl EditContext {
     pub fn from_workspace(ws: &Workspace, license: Option<&LicenseInfo>) -> Self {
         let can_edit_all = has_permission(ws, "edit-privileged-setting", None);
-        let editable_ids = ws
-            .permissions()
-            .keys()
-            .filter_map(|p| p.strip_prefix("change-setting-"))
-            .filter(|id| has_permission(ws, &format!("change-setting-{id}"), None))
-            .map(str::to_owned)
-            .collect();
+        let editable_ids = if has_permission(ws, "manage-selected-settings", None) {
+            ws.permissions()
+                .keys()
+                .filter_map(|p| p.strip_prefix("change-setting-"))
+                .filter(|id| has_permission(ws, &format!("change-setting-{id}"), None))
+                .map(str::to_owned)
+                .collect()
+        } else {
+            HashSet::new()
+        };
         Self {
             can_edit_all,
             editable_ids,
@@ -393,7 +428,7 @@ impl EditContext {
     }
 }
 
-/// A client-side validation failure; `i18n_key` is a server translation key.
+/// A client-side validation failure; `i18n_key` is a Rustket (rust-i18n) key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingError {
     /// `code` setting with `application/json` that does not parse.
@@ -407,16 +442,25 @@ pub enum SettingError {
 }
 
 impl SettingError {
+    /// Rustket translation key (en + ru in the UI locale files); `OutOfRange`
+    /// takes the `min`/`max` arguments, use `..._min`/`..._max` variants when only
+    /// one bound is set.
     pub fn i18n_key(&self) -> &'static str {
         match self {
-            Self::InvalidJson => "Invalid_JSON",
-            Self::NotInteger | Self::OutOfRange { .. } => "error-invalid-setting-value",
-            Self::WrongType => "error-invalid-setting-value",
+            Self::InvalidJson => "admin.settings.error.invalid_json",
+            Self::NotInteger => "admin.settings.error.not_integer",
+            Self::OutOfRange {
+                min: Some(_),
+                max: Some(_),
+            } => "admin.settings.error.out_of_range",
+            Self::OutOfRange { min: Some(_), .. } => "admin.settings.error.out_of_range_min",
+            Self::OutOfRange { max: Some(_), .. } => "admin.settings.error.out_of_range_max",
+            Self::OutOfRange { .. } | Self::WrongType => "admin.settings.error.wrong_type",
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 struct Edit {
     value: Value,
     editor: Option<String>,
@@ -425,11 +469,22 @@ struct Edit {
     base_editor: Option<String>,
 }
 
-/// Unsaved edits of one group page.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// Unsaved edits of one group page. `Debug` prints ids only (values may be secrets).
+#[derive(Clone, PartialEq, Default)]
 pub struct EditSession {
     pub group: String,
     edits: HashMap<String, Edit>,
+}
+
+impl fmt::Debug for EditSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut ids: Vec<&String> = self.edits.keys().collect();
+        ids.sort();
+        f.debug_struct("EditSession")
+            .field("group", &self.group)
+            .field("edited_ids", &ids)
+            .finish()
+    }
 }
 
 impl EditSession {
@@ -580,7 +635,10 @@ impl EditSession {
             && store.get(id).is_some_and(|d| {
                 !matches!(
                     d.kind,
-                    SettingType::Action | SettingType::Asset | SettingType::Group
+                    SettingType::Action
+                        | SettingType::Asset
+                        | SettingType::Group
+                        | SettingType::Unknown(_)
                 )
             })
     }
@@ -665,6 +723,20 @@ impl EditSession {
             .collect();
         v.sort();
         v
+    }
+
+    /// After a successful save of `changes` (call after
+    /// [`SettingsStore::apply_saved`]): edits made while the save was in flight are
+    /// rebased onto the saved values, so the own save is not a remote conflict; edits
+    /// equal to the saved state are dropped.
+    pub fn apply_saved(&mut self, store: &SettingsStore, changes: &[SettingChange]) {
+        for c in changes {
+            if let (Some(e), Some(d)) = (self.edits.get_mut(&c.id), store.get(&c.id)) {
+                e.base_value = d.value.clone();
+                e.base_editor = d.editor.clone();
+            }
+        }
+        self.prune(store);
     }
 
     /// Keeps the local edit of `id` over a remote change.
@@ -1130,10 +1202,16 @@ mod tests {
         let mut port = s.get("LDAP_Port").unwrap().clone();
         port.value = Some(json!(2389));
         port.updated_at = RcDate::from_millis(4_000_000_000_000);
-        s.apply_delta(UpdatedSince {
-            update: vec![port],
-            ..UpdatedSince::default()
-        });
+        s.apply_delta(
+            DeltaRequest {
+                since: None,
+                generation: 0,
+            },
+            UpdatedSince {
+                update: vec![port],
+                ..UpdatedSince::default()
+            },
+        );
         assert_eq!(e.remote_conflicts(&s), vec!["LDAP_Port".to_owned()]);
         assert_eq!(e.effective(&s, "LDAP_Port"), Some(&json!(1389)));
         e.keep_mine(&s, "LDAP_Port");
@@ -1143,8 +1221,67 @@ mod tests {
         // A save that is echoed back prunes the edits.
         let changes = e.change_set(&s);
         s.apply_saved(&changes);
-        e.prune(&s);
+        e.apply_saved(&s, &changes);
         assert!(!e.is_dirty(&s));
+    }
+
+    #[test]
+    fn edits_during_save_are_not_conflicts() {
+        let mut s = store();
+        let mut e = EditSession::new("LDAP");
+        e.set_value(&s, "LDAP_Host", json!("one"));
+        let changes = e.change_set(&s);
+        // Edited again while the save is in flight.
+        e.set_value(&s, "LDAP_Host", json!("two"));
+        s.apply_saved(&changes);
+        e.apply_saved(&s, &changes);
+        assert!(e.remote_conflicts(&s).is_empty());
+        assert!(e.is_changed(&s, "LDAP_Host"));
+        assert_eq!(e.effective(&s, "LDAP_Host"), Some(&json!("two")));
+    }
+
+    #[test]
+    fn unknown_types_are_read_only() {
+        let mut d = store().get("LDAP_Host").unwrap().clone();
+        d.kind = SettingType::Unknown("future".into());
+        d.package_value = Some(json!("default"));
+        d.value = Some(json!("other"));
+        let s = SettingsStore::new(vec![d]);
+        let e = EditSession::new("LDAP");
+        let admin = EditContext::admin();
+        assert!(!e.is_editable(&s, &admin, "LDAP_Host"));
+        assert!(!e.can_reset(&s, &admin, "LDAP_Host"));
+    }
+
+    #[test]
+    fn debug_prints_no_values() {
+        let s = store();
+        let mut e = EditSession::new("LDAP");
+        e.set_value(&s, "LDAP_Authentication_Password", json!("hunter2-typed"));
+        let dbg = format!("{e:?} {s:?} {:?}", s.get("LDAP_Authentication_Password"));
+        assert!(!dbg.contains("hunter2-typed"));
+        assert!(dbg.contains("LDAP_Authentication_Password"));
+    }
+
+    #[test]
+    fn error_keys_are_rustket_keys() {
+        assert_eq!(
+            SettingError::OutOfRange {
+                min: Some(1),
+                max: Some(5)
+            }
+            .i18n_key(),
+            "admin.settings.error.out_of_range"
+        );
+        assert!(
+            [
+                SettingError::InvalidJson,
+                SettingError::NotInteger,
+                SettingError::WrongType
+            ]
+            .iter()
+            .all(|e| e.i18n_key().starts_with("admin.settings.error."))
+        );
     }
 
     #[test]
@@ -1158,8 +1295,28 @@ mod tests {
         .unwrap();
         s.apply_stream_event(action, patch);
         assert_eq!(s.value("LDAP_Host"), Some(&json!("x.example")));
-        assert_eq!(s.delta_request(), Some(s.last_updated()));
-        s.apply_delta(UpdatedSince::default());
+        let req = s.delta_request().unwrap();
+        assert_eq!(req.since, s.last_updated());
+        s.apply_delta(req, UpdatedSince::default());
+        assert_eq!(s.delta_request(), None);
+
+        // An event while the delta is in flight keeps the flag set.
+        let (a, p) = SettingPatch::from_stream_args(&[
+            json!("updated"),
+            json!({"_id": "LDAP_Host", "value": "y.example"}),
+        ])
+        .unwrap();
+        s.apply_stream_event(a, p);
+        let d1 = s.delta_request().unwrap();
+        let (a, p) = SettingPatch::from_stream_args(&[
+            json!("inserted"),
+            json!({"_id": "Accounts_OAuth_Custom-New", "value": ""}),
+        ])
+        .unwrap();
+        s.apply_stream_event(a, p);
+        s.apply_delta(d1, UpdatedSince::default());
+        let d2 = s.delta_request().unwrap();
+        s.apply_delta(d2, UpdatedSince::default());
         assert_eq!(s.delta_request(), None);
         // EE settings are not merged from the (license-masked) event.
         let ee = s.iter().find(|d| d.enterprise).unwrap().id.clone();
@@ -1195,8 +1352,21 @@ mod tests {
                 updated_at: None,
             },
         );
+        // `change-setting-*` alone is not enough: the server also requires
+        // `manage-selected-settings`.
         let ctx = EditContext::from_workspace(&ws, None);
         assert!(!ctx.can_edit_all);
+        assert!(!ctx.can_edit("LDAP_Enable"));
+        assert!(ctx.is_read_only());
+        ws.apply_permission(
+            Change::Inserted,
+            Permission {
+                id: "manage-selected-settings".into(),
+                roles: vec!["user".into()],
+                updated_at: None,
+            },
+        );
+        let ctx = EditContext::from_workspace(&ws, None);
         assert!(ctx.can_edit("LDAP_Enable"));
         assert!(!ctx.can_edit("LDAP_Host"));
     }

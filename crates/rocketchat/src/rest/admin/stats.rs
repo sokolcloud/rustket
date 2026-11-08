@@ -2,13 +2,13 @@
 
 use serde_json::Value;
 
-use super::Page;
+use super::{Page, paged};
 use crate::error::Result;
 use crate::models::admin::{
     CloudRegistrationStatus, Instance, LicenseInfo, MaxActiveUsers, Statistics,
 };
 use crate::models::{Paginated, ServerInfo};
-use crate::rest::{Query, RestClient, field, paginated};
+use crate::rest::{Query, RestClient, field};
 
 impl RestClient {
     /// `GET /api/info` with the auth token (the full build info needs it).
@@ -32,7 +32,7 @@ impl RestClient {
         let v: Value = self
             .get("statistics.list", &page.apply(Query::new()))
             .await?;
-        paginated(v, "statistics")
+        paged(v, "statistics", page)
     }
 
     pub async fn instances_get(&self) -> Result<Vec<Instance>> {
@@ -41,7 +41,7 @@ impl RestClient {
     }
 
     /// `licenses.info`; `load_values` adds current usage to each limit.
-    pub async fn licenses_info(&self, load_values: bool) -> Result<LicenseInfo> {
+    pub async fn admin_licenses_info(&self, load_values: bool) -> Result<LicenseInfo> {
         let q = if load_values {
             Query::new().push("loadValues", true)
         } else {

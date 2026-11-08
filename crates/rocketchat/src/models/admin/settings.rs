@@ -276,9 +276,11 @@ fn sorter<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
 }
 
 impl SettingDef {
-    /// Password-type or `secret: true`: never log or persist the value.
+    /// Password-type, `secret: true`, or an id that names a secret (custom OAuth
+    /// secrets are plain `string` settings without `secret`): never log or persist
+    /// the value.
     pub fn is_sensitive(&self) -> bool {
-        self.secret || self.kind == SettingType::Password
+        self.secret || self.kind == SettingType::Password || is_sensitive_id(&self.id)
     }
 
     pub fn is_group(&self) -> bool {
@@ -322,13 +324,26 @@ impl fmt::Debug for SettingDef {
             .field("kind", &self.kind)
             .field("group", &self.group)
             .field("section", &self.section);
-        if self.is_sensitive() {
-            d.field("value", &"<redacted>");
-        } else {
-            d.field("value", &self.value);
-        }
+        // Values are never printed: not every secret is marked as one.
         d.finish_non_exhaustive()
     }
+}
+
+/// Setting ids whose value is a credential by naming convention
+/// (`Accounts_OAuth_Custom-X-secret`, `…_Password`, `…_Token`, `…_Key`).
+pub fn is_sensitive_id(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    [
+        "secret",
+        "password",
+        "token",
+        "_key",
+        "-key",
+        "privatekey",
+        "apikey",
+    ]
+    .iter()
+    .any(|s| lower.ends_with(s))
 }
 
 /// Decodes the result of `private-settings/get` without a date (a plain array);

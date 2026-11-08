@@ -3,11 +3,11 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{AdminUpload, Page};
+use super::{AdminUpload, Page, paged};
 use crate::error::Result;
 use crate::models::Paginated;
 use crate::models::admin::CustomSound;
-use crate::rest::{Query, RestClient, field, paginated};
+use crate::rest::{Query, RestClient, field};
 
 /// Maximum size of a custom sound (5 MiB).
 pub const MAX_SOUND_BYTES: u64 = 5_242_880;
@@ -36,7 +36,7 @@ impl RestClient {
             q = q.push("name", name);
         }
         let v: Value = self.get("custom-sounds.list", &q).await?;
-        paginated(v, "sounds")
+        paged(v, "sounds", page)
     }
 
     pub async fn custom_sound_get(&self, id: &str) -> Result<CustomSound> {

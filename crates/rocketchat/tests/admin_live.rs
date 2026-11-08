@@ -13,7 +13,8 @@ use rocketchat::auth::TwoFactorCode;
 use rocketchat::models::UserStatus;
 use rocketchat::models::admin::*;
 use rocketchat::rest::admin::ModerationFilter;
-use rocketchat::rest::{AdminUpload, CreateRoom, Page, Sort, UserLookup};
+use rocketchat::rest::admin::{AdminUpload, Page, Sort};
+use rocketchat::rest::{CreateRoom, UserLookup};
 use rocketchat::{Error, RcDate, RestClient, ServerUrl, TlsConfig};
 use serde_json::json;
 
@@ -118,7 +119,7 @@ async fn admin_read_only_endpoints() {
             let list = c.statistics_list(&Page::new(0, 1)).await.unwrap();
             assert!(list.total >= 1);
             assert!(!c.instances_get().await.unwrap().is_empty());
-            let lic = c.licenses_info(true).await.unwrap();
+            let lic = c.admin_licenses_info(true).await.unwrap();
             assert!(lic.limits.contains_key("activeUsers"));
             c.licenses_max_active_users().await.unwrap();
             c.cloud_registration_status().await.unwrap();
@@ -223,6 +224,20 @@ async fn admin_read_only_endpoints() {
                     .iter()
                     .any(|u| u.username.as_deref() == Some("admin"))
             );
+            // The endpoint omits `offset`/`count`: the last page must end paging.
+            let all = c
+                .roles_get_users_in_role("user", None, &Page::new(0, 1))
+                .await
+                .unwrap();
+            if all.total > 1 {
+                let last = c
+                    .roles_get_users_in_role("user", None, &Page::new(all.total - 1, 1))
+                    .await
+                    .unwrap();
+                assert_eq!(last.offset, all.total - 1);
+                assert_eq!(last.count, last.raw_len as u64);
+                assert!(!last.has_more());
+            }
 
             // Full private settings decode completely.
             let raw = c
@@ -313,16 +328,9 @@ async fn admin_settings_write_path_without_writing() {
                 c.save_settings(&changes, Some(&wrong)).await,
                 Err(Error::TwoFactorInvalid(_))
             ));
-            // An unknown id passes the checks and writes nothing.
-            c.save_settings(&changes, Some(&password_code()))
-                .await
-                .unwrap();
+            // A successful save is not tested even for an unknown id: the server
+            // records a `settings.changed` audit event for every item it accepts.
             assert!(c.setting_value(&id).await.is_err());
-            // Asked again (no "remember" for the bulk save).
-            assert!(matches!(
-                c.save_settings(&changes, None).await,
-                Err(Error::TwoFactorRequired(_))
-            ));
             // An empty change set is not sent at all.
             c.save_settings(&[], None).await.unwrap();
         },

@@ -3,11 +3,11 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::Page;
+use super::{Page, paged};
 use crate::error::Result;
 use crate::models::Paginated;
 use crate::models::admin::EmailInbox;
-use crate::rest::{Query, RestClient, paginated};
+use crate::rest::{Query, RestClient};
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -27,7 +27,7 @@ impl RestClient {
         let v: Value = self
             .get("email-inbox.list", &page.apply(Query::new()))
             .await?;
-        paginated(v, "emailInboxes")
+        paged(v, "emailInboxes", page)
     }
 
     /// Inbox fields at the top level; a missing id answers HTTP 404.

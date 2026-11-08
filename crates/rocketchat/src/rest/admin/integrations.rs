@@ -2,11 +2,11 @@
 
 use serde_json::{Value, json};
 
-use super::Page;
+use super::{Page, paged};
 use crate::error::Result;
 use crate::models::Paginated;
 use crate::models::admin::{Integration, IntegrationHistory, IntegrationParams, IntegrationType};
-use crate::rest::{Query, RestClient, field, paginated};
+use crate::rest::{Query, RestClient, field};
 
 impl RestClient {
     /// `integrations.list` (`name`: case-insensitive substring; `kind: None` = both).
@@ -24,7 +24,7 @@ impl RestClient {
             q = q.push("type", k.as_str());
         }
         let v: Value = self.get("integrations.list", &q).await?;
-        paginated(v, "integrations")
+        paged(v, "integrations", page)
     }
 
     pub async fn integration_get(&self, id: &str) -> Result<Integration> {
@@ -74,7 +74,7 @@ impl RestClient {
                 &page.apply(Query::new().push("id", id)),
             )
             .await?;
-        paginated(v, "history")
+        paged(v, "history", page)
     }
 
     /// Clears the history (no stream event follows; refetch).

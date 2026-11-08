@@ -11,7 +11,6 @@ mod misc;
 mod rooms;
 mod users;
 
-pub use admin::{AdminUpload, Page, Sort};
 pub use auth::LoginRequest;
 pub use auth::{LdapLogin, LoginResult};
 /// Byte buffer type of `UploadSource` (re-exported so callers need no `bytes` dependency).

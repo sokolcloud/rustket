@@ -17,67 +17,87 @@ pub struct Statistics {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// `null` in a freshly generated snapshot (`refresh=true`).
-    #[serde(rename = "_updatedAt", deserialize_with = "lenient::opt")]
+    #[serde(
+        rename = "_updatedAt",
+        deserialize_with = "lenient::opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub updated_at: Option<RcDate>,
-    #[serde(deserialize_with = "lenient::opt")]
+    #[serde(
+        deserialize_with = "lenient::opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub created_at: Option<RcDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub unique_id: Option<String>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub online_users: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub busy_users: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub away_users: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub offline_users: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_users: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_connected_users: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub active_users: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub active_guests: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub non_active_users: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub app_users: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub uploads_total: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub uploads_total_size: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_channels: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_private_groups: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_direct: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_discussions: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_livechat: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_rooms: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_channel_messages: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_private_group_messages: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_direct_messages: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_discussions_messages: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_livechat_messages: Option<u64>,
-    #[serde(deserialize_with = "count")]
+    #[serde(deserialize_with = "count", skip_serializing_if = "Option::is_none")]
     pub total_messages: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mongo_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mongo_storage_engine: Option<String>,
-    #[serde(deserialize_with = "lenient::opt")]
+    #[serde(
+        deserialize_with = "lenient::opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub process: Option<StatisticsProcess>,
-    #[serde(deserialize_with = "lenient::opt")]
+    #[serde(
+        deserialize_with = "lenient::opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub migration: Option<StatisticsMigration>,
-    #[serde(deserialize_with = "lenient::opt")]
+    #[serde(
+        deserialize_with = "lenient::opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub apps: Option<StatisticsApps>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -94,29 +114,50 @@ fn count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct StatisticsProcess {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub node_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime: Option<f64>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct StatisticsMigration {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locked: Option<bool>,
-    #[serde(deserialize_with = "lenient::opt")]
+    #[serde(
+        deserialize_with = "lenient::opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub locked_at: Option<RcDate>,
-    #[serde(deserialize_with = "lenient::opt")]
+    #[serde(
+        deserialize_with = "lenient::opt",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub build_at: Option<RcDate>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct StatisticsApps {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub engine_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total_installed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total_active: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total_failed: Option<u64>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// Entry of `instances.get`.

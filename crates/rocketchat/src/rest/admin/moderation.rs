@@ -3,14 +3,14 @@
 
 use serde_json::{Value, json};
 
-use super::Page;
+use super::{Page, paged};
 use crate::RcDate;
 use crate::error::Result;
 use crate::models::Paginated;
 use crate::models::admin::{
     ModerationReport, ReportedMessagesRow, UserReportedMessages, UserReportsByUser, UserReportsRow,
 };
-use crate::rest::{Query, RestClient, field, paginated};
+use crate::rest::{Query, RestClient, field};
 
 /// Date range and search text of the report lists.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -55,7 +55,7 @@ impl RestClient {
                 &filter.apply(page.apply(Query::new())),
             )
             .await?;
-        paginated(v, "reports")
+        paged(v, "reports", page)
     }
 
     /// Tab "Users": reported users.
@@ -70,7 +70,7 @@ impl RestClient {
                 &filter.apply(page.apply(Query::new())),
             )
             .await?;
-        paginated(v, "reports")
+        paged(v, "reports", page)
     }
 
     pub async fn moderation_user_reported_messages(
@@ -108,7 +108,7 @@ impl RestClient {
                 &page.apply(Query::new().push("msgId", msg_id)),
             )
             .await?;
-        paginated(v, "reports")
+        paged(v, "reports", page)
     }
 
     pub async fn moderation_report_info(

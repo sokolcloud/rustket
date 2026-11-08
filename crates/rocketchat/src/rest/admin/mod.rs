@@ -101,6 +101,26 @@ impl Page {
     }
 }
 
+/// [`crate::rest::paginated`] that falls back to the request's paging when the
+/// response lacks `offset`/`count` (e.g. `roles.getUsersInRole` answers only
+/// `{users, total}`).
+pub(crate) fn paged<T: serde::de::DeserializeOwned>(
+    v: serde_json::Value,
+    key: &str,
+    page: &Page,
+) -> crate::Result<crate::models::Paginated<T>> {
+    let has = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).is_some();
+    let (has_offset, has_count) = (has("offset"), has("count"));
+    let mut p = crate::rest::paginated(v, key)?;
+    if !has_offset {
+        p.offset = page.offset;
+    }
+    if !has_count {
+        p.count = p.raw_len as u64;
+    }
+    Ok(p)
+}
+
 /// A file for an admin multipart upload (emoji, sound, asset, avatar). Emoji take
 /// their extension from `mime`, sounds from the extension of `filename`
 /// (docs/admin.md §2.4).

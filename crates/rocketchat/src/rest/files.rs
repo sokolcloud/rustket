@@ -270,7 +270,7 @@ impl RestClient {
         &self,
         path: &str,
         fields: Vec<(&'static str, String)>,
-        file: Option<(&'static str, super::AdminUpload)>,
+        file: Option<(&'static str, super::admin::AdminUpload)>,
         two_factor: Option<&crate::auth::TwoFactorCode>,
     ) -> Result<Value> {
         let start = Instant::now();

@@ -4,12 +4,12 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::Page;
+use super::{Page, paged};
 use crate::RcDate;
 use crate::error::Result;
 use crate::models::admin::{PermissionDef, RoleParams, UserInRole};
 use crate::models::{Paginated, Role, UpdatedSince};
-use crate::rest::{Query, RestClient, field, paginated};
+use crate::rest::{Query, RestClient, field};
 
 #[derive(Deserialize)]
 struct RolesSync {
@@ -101,7 +101,7 @@ impl RestClient {
     ) -> Result<Paginated<UserInRole>> {
         let q = page.apply(Query::new().push("role", role).opt("roomId", room_id));
         let v: Value = self.get("roles.getUsersInRole", &q).await?;
-        paginated(v, "users")
+        paged(v, "users", page)
     }
 
     /// `roles.addUserToRole` (8.9 takes `roleId`).

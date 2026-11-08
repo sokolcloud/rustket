@@ -3,12 +3,12 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{AdminUpload, Page};
+use super::{AdminUpload, Page, paged};
 use crate::auth::TwoFactorCode;
 use crate::error::Result;
 use crate::models::Paginated;
 use crate::models::admin::{ActiveStatusResult, AdminUser, NewUser, UserUpdate, UsersFilter};
-use crate::rest::{Query, RestClient, UserLookup, field, paginated};
+use crate::rest::{Query, RestClient, UserLookup, field};
 
 #[derive(Deserialize)]
 struct SmtpCheck {
@@ -46,7 +46,7 @@ impl RestClient {
             q = q.push("roles[]", r);
         }
         let v: Value = self.get("users.listByStatus", &q).await?;
-        paginated(v, "users")
+        paged(v, "users", page)
     }
 
     /// `users.info` with the user's rooms (`includeUserRooms`).

@@ -338,8 +338,9 @@ impl IntegrationParams {
     }
 }
 
-/// Entry of `integrations.history` (outgoing webhooks).
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// Entry of `integrations.history` (outgoing webhooks). The payloads carry the
+/// webhook token, so `Debug` omits them.
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct IntegrationHistory {
     #[serde(rename = "_id")]
@@ -362,4 +363,16 @@ pub struct IntegrationHistory {
     pub created_at: Option<RcDate>,
     #[serde(rename = "_updatedAt", deserialize_with = "lenient::opt")]
     pub updated_at: Option<RcDate>,
+}
+
+impl fmt::Debug for IntegrationHistory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IntegrationHistory")
+            .field("id", &self.id)
+            .field("step", &self.step)
+            .field("event", &self.event)
+            .field("finished", &self.finished)
+            .field("created_at", &self.created_at)
+            .finish_non_exhaustive()
+    }
 }
