@@ -7,6 +7,7 @@ mod apps;
 mod auth;
 mod e2e;
 mod files;
+mod livechat;
 mod messages;
 mod misc;
 mod rooms;
@@ -22,6 +23,9 @@ pub use e2e::{
     SuggestedOldKey, UserPublicKeyEntry,
 };
 pub use files::{Download, ProgressFn, UploadRequest, UploadSource};
+pub use livechat::{
+    AgentQuery, CannedResponseQuery, DepartmentQuery, LivechatPage, LivechatRoomsQuery,
+};
 pub use messages::{HistoryCursor, HistoryOptions};
 pub use rooms::{CreateRoom, RoomMembersOptions};
 pub use users::UserLookup;

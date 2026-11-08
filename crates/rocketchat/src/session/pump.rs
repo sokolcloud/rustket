@@ -32,6 +32,9 @@ pub(super) fn is_session_stream(collection: &str) -> bool {
             | streams::NOTIFY_ALL
             | streams::NOTIFY_ROOM
             | streams::ROLES
+            | streams::INQUIRY_QUEUE
+            | streams::CANNED_RESPONSES
+            | streams::ROOM_DATA
     )
 }
 

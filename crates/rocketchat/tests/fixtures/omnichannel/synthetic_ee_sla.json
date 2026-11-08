@@ -1,0 +1,10 @@
+{
+  "sla": [
+    {"_id": "s1", "name": "Gold", "description": "Fast lane", "dueTimeInMinutes": 15, "_updatedAt": "2026-11-01T10:00:00.000Z"},
+    {"_id": "s2", "name": "Bronze", "dueTimeInMinutes": "120"}
+  ],
+  "count": 2,
+  "offset": 0,
+  "total": 2,
+  "success": true
+}

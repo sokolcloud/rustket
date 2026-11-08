@@ -1,0 +1,23 @@
+{
+  "count": 1,
+  "history": [
+    {
+      "comment": "to queue",
+      "nextDepartment": {
+        "_id": "6aefb685ff2338a3f2a2f259",
+        "name": "omnicap-dept-1794094719964"
+      },
+      "scope": "department",
+      "transferredBy": {
+        "_id": "6aef49d4f7fd7082521174fb",
+        "name": "Admin",
+        "userType": "user",
+        "username": "admin"
+      },
+      "ts": "2026-11-07T23:38:48.090Z"
+    }
+  ],
+  "offset": 0,
+  "success": true,
+  "total": 1
+}

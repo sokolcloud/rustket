@@ -1,0 +1,8 @@
+{
+  "details": {
+    "method": "livechat:takeInquiry"
+  },
+  "error": "Inquiry not found [error-not-found]",
+  "errorType": "error-not-found",
+  "success": false
+}

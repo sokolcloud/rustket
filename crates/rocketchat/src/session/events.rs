@@ -32,6 +32,13 @@ pub mod streams {
     /// edited messages of every room the user can access: joined rooms *and* public
     /// channels the user never joined (see [`SessionEvent::Message`]).
     pub const MY_MESSAGES: &str = "__my_messages__";
+    /// Omnichannel queue: keys `public`, `agent/{uid}`, `department/{id}`
+    /// (subscribed on demand with `Session::watch_streams`).
+    pub const INQUIRY_QUEUE: &str = "stream-livechat-inquiry-queue-observer";
+    /// EE canned responses: key `canned-responses`.
+    pub const CANNED_RESPONSES: &str = "stream-canned-responses";
+    /// Full room document on every change; key = rid.
+    pub const ROOM_DATA: &str = "stream-room-data";
 }
 
 /// Connection state of a [`Session`](super::Session).

@@ -1,0 +1,90 @@
+{
+  "count": 50,
+  "messages": [
+    {
+      "_id": "Lun3EYXeqZBETvinX",
+      "_updatedAt": "2026-11-07T23:38:44.425Z",
+      "alias": "Omnicap Visitor 1794094719964",
+      "channels": [],
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "Hello from omnicap"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "msg": "Hello from omnicap",
+      "rid": "CS2PFviwDBkDoQDWP",
+      "token": "omnicap-vt-1794094719964",
+      "ts": "2026-11-07T23:38:44.416Z",
+      "u": {
+        "_id": "6aefb684ff2338a3f2a2f251",
+        "name": "Omnicap Visitor 1794094719964",
+        "username": "guest-8"
+      },
+      "urls": []
+    },
+    {
+      "_id": "kMjJnS9iyy9GXrRnn",
+      "_updatedAt": "2026-11-07T23:38:52.808Z",
+      "alias": "Omnicap Visitor 1794094719964",
+      "channels": [],
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "Visitor second message"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "msg": "Visitor second message",
+      "rid": "CS2PFviwDBkDoQDWP",
+      "token": "omnicap-vt-1794094719964",
+      "ts": "2026-11-07T23:38:52.798Z",
+      "u": {
+        "_id": "6aefb684ff2338a3f2a2f251",
+        "name": "Omnicap Visitor 1794094719964",
+        "username": "guest-8"
+      },
+      "urls": []
+    },
+    {
+      "_id": "gbgQhPY8WfumczbE9",
+      "_updatedAt": "2026-11-07T23:38:52.865Z",
+      "channels": [],
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "Agent reply"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "msg": "Agent reply",
+      "rid": "CS2PFviwDBkDoQDWP",
+      "ts": "2026-11-07T23:38:52.851Z",
+      "u": {
+        "_id": "ufKsmnbWJrX2vfR3i",
+        "name": "Omni Cap 1794094719964",
+        "username": "omnicap-a-1794094719964"
+      },
+      "urls": []
+    }
+  ],
+  "offset": 0,
+  "success": true,
+  "total": 3
+}

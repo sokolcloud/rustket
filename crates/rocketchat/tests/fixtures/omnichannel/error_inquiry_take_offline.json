@@ -1,0 +1,8 @@
+{
+  "details": {
+    "method": "livechat:takeInquiry"
+  },
+  "error": "Agent status is offline or Omnichannel service is not active [error-agent-status-service-offline]",
+  "errorType": "error-agent-status-service-offline",
+  "success": false
+}

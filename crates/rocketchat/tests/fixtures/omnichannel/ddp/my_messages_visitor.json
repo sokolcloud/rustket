@@ -1,0 +1,46 @@
+{
+  "collection": "stream-room-messages",
+  "fields": {
+    "args": [
+      {
+        "_id": "Lun3EYXeqZBETvinX",
+        "_updatedAt": {
+          "$date": 1794094724425
+        },
+        "alias": "Omnicap Visitor 1794094719964",
+        "channels": [],
+        "md": [
+          {
+            "type": "PARAGRAPH",
+            "value": [
+              {
+                "type": "PLAIN_TEXT",
+                "value": "Hello from omnicap"
+              }
+            ]
+          }
+        ],
+        "mentions": [],
+        "msg": "Hello from omnicap",
+        "rid": "CS2PFviwDBkDoQDWP",
+        "token": "omnicap-vt-1794094719964",
+        "ts": {
+          "$date": 1794094724416
+        },
+        "u": {
+          "_id": "6aefb684ff2338a3f2a2f251",
+          "name": "Omnicap Visitor 1794094719964",
+          "username": "guest-8"
+        },
+        "urls": []
+      },
+      {
+        "roomParticipant": true,
+        "roomType": "l"
+      }
+    ],
+    "eventName": "__my_messages__"
+  },
+  "id": "id",
+  "msg": "changed"
+}

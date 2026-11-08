@@ -1,0 +1,19 @@
+{
+  "collection": "stream-notify-user",
+  "fields": {
+    "args": [
+      {
+        "diff": {
+          "livechatStatusSystemModified": false,
+          "statusLivechat": "available"
+        },
+        "id": "ufKsmnbWJrX2vfR3i",
+        "type": "updated",
+        "unset": {}
+      }
+    ],
+    "eventName": "ufKsmnbWJrX2vfR3i/userData"
+  },
+  "id": "id",
+  "msg": "changed"
+}

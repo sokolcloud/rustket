@@ -1,0 +1,23 @@
+{
+  "channels": [
+    {
+      "blocked": false,
+      "details": {
+        "type": "api"
+      },
+      "lastChat": {
+        "_id": "CS2PFviwDBkDoQDWP",
+        "ts": "2026-11-07T23:38:44.343Z"
+      },
+      "name": "api",
+      "verified": false,
+      "visitor": {
+        "source": {
+          "type": "api"
+        },
+        "visitorId": "6aefb684ff2338a3f2a2f251"
+      }
+    }
+  ],
+  "success": true
+}

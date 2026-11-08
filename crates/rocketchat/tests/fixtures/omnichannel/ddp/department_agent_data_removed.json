@@ -1,0 +1,16 @@
+{
+  "collection": "stream-notify-user",
+  "fields": {
+    "args": [
+      {
+        "_id": "6aefb685ff2338a3f2a2f25a",
+        "action": "removed",
+        "agentId": "ufKsmnbWJrX2vfR3i",
+        "departmentId": "6aefb685ff2338a3f2a2f259"
+      }
+    ],
+    "eventName": "ufKsmnbWJrX2vfR3i/departmentAgentData"
+  },
+  "id": "id",
+  "msg": "changed"
+}

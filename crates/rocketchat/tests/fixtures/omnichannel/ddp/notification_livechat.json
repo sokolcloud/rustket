@@ -1,0 +1,28 @@
+{
+  "collection": "stream-notify-user",
+  "fields": {
+    "args": [
+      {
+        "payload": {
+          "_id": "Lun3EYXeqZBETvinX",
+          "message": {
+            "msg": "Hello from omnicap"
+          },
+          "name": "Omnicap Visitor 1794094719964",
+          "rid": "CS2PFviwDBkDoQDWP",
+          "sender": {
+            "_id": "6aefb684ff2338a3f2a2f251",
+            "name": "Omnicap Visitor 1794094719964",
+            "username": "guest-8"
+          },
+          "type": "l"
+        },
+        "text": "Hello from omnicap",
+        "title": "[Omnichannel] Omnicap Visitor 1794094719964"
+      }
+    ],
+    "eventName": "ufKsmnbWJrX2vfR3i/notification"
+  },
+  "id": "id",
+  "msg": "changed"
+}

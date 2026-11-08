@@ -1,0 +1,12 @@
+{
+  "config": {
+    "autoAssignAgent": true,
+    "enableTriggerAction": true,
+    "previewRoom": false,
+    "returnQueue": false,
+    "showConnecting": false,
+    "showQueue": false,
+    "showQueueLink": true
+  },
+  "success": true
+}

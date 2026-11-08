@@ -1,0 +1,28 @@
+{
+  "count": 1,
+  "history": [
+    {
+      "_id": "CS2PFviwDBkDoQDWP",
+      "fname": "Omnicap Visitor 1794094719964",
+      "msgs": 12,
+      "servedBy": {
+        "_id": "ufKsmnbWJrX2vfR3i",
+        "ts": "2026-11-07T23:38:49.951Z",
+        "username": "omnicap-a-1794094719964"
+      },
+      "ts": "2026-11-07T23:38:44.328Z",
+      "v": {
+        "_id": "6aefb684ff2338a3f2a2f251",
+        "activity": [
+          "2026-11"
+        ],
+        "lastMessageTs": "2026-11-07T23:38:52.798Z",
+        "status": "online",
+        "username": "guest-8"
+      }
+    }
+  ],
+  "offset": 0,
+  "success": true,
+  "total": 1
+}

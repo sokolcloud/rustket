@@ -1,0 +1,70 @@
+{
+  "room": {
+    "_enforceSingleRoom": true,
+    "_id": "CS2PFviwDBkDoQDWP",
+    "_updatedAt": "2026-11-07T23:38:44.453Z",
+    "cl": false,
+    "contactId": "6aefb684ff2338a3f2a2f252",
+    "estimatedWaitingTimeQueue": 9999999,
+    "fname": "Omnicap Visitor 1794094719964",
+    "lastMessage": {
+      "_id": "Lun3EYXeqZBETvinX",
+      "_updatedAt": "2026-11-07T23:38:44.425Z",
+      "alias": "Omnicap Visitor 1794094719964",
+      "channels": [],
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "Hello from omnicap"
+            }
+          ]
+        }
+      ],
+      "mentions": [],
+      "msg": "Hello from omnicap",
+      "rid": "CS2PFviwDBkDoQDWP",
+      "token": "omnicap-vt-1794094719964",
+      "ts": "2026-11-07T23:38:44.416Z",
+      "u": {
+        "_id": "6aefb684ff2338a3f2a2f251",
+        "name": "Omnicap Visitor 1794094719964",
+        "username": "guest-8"
+      },
+      "urls": []
+    },
+    "lm": "2026-11-07T23:38:44.416Z",
+    "metrics": {
+      "v": {
+        "lq": "2026-11-07T23:38:44.416Z"
+      }
+    },
+    "msgs": 5,
+    "open": true,
+    "priorityWeight": 99,
+    "queuedAt": "2026-11-07T23:38:44.328Z",
+    "servedBy": {
+      "_id": "ufKsmnbWJrX2vfR3i",
+      "ts": "2026-11-07T23:38:44.385Z",
+      "username": "omnicap-a-1794094719964"
+    },
+    "source": {
+      "type": "api"
+    },
+    "t": "l",
+    "ts": "2026-11-07T23:38:44.328Z",
+    "usersCount": 2,
+    "v": {
+      "_id": "6aefb684ff2338a3f2a2f251",
+      "lastMessageTs": "2026-11-07T23:38:44.416Z",
+      "status": "online",
+      "token": "omnicap-vt-1794094719964",
+      "username": "guest-8"
+    },
+    "verified": false,
+    "waitingResponse": true
+  },
+  "success": true
+}

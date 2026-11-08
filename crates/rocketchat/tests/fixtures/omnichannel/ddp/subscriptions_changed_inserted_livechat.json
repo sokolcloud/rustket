@@ -1,0 +1,42 @@
+{
+  "collection": "stream-notify-user",
+  "fields": {
+    "args": [
+      "inserted",
+      {
+        "_id": "6aefb684ff2338a3f2a2f255",
+        "_updatedAt": {
+          "$date": 1794094724380
+        },
+        "alert": true,
+        "desktopNotifications": "all",
+        "emailNotifications": "all",
+        "fname": "Omnicap Visitor 1794094719964",
+        "groupMentions": 0,
+        "mobilePushNotifications": "all",
+        "name": "Omnicap Visitor 1794094719964",
+        "open": true,
+        "rid": "CS2PFviwDBkDoQDWP",
+        "t": "l",
+        "ts": {
+          "$date": 1794094724380
+        },
+        "u": {
+          "_id": "ufKsmnbWJrX2vfR3i",
+          "username": "omnicap-a-1794094719964"
+        },
+        "unread": 1,
+        "userMentions": 1,
+        "v": {
+          "_id": "6aefb684ff2338a3f2a2f251",
+          "status": "online",
+          "token": "omnicap-vt-1794094719964",
+          "username": "guest-8"
+        }
+      }
+    ],
+    "eventName": "ufKsmnbWJrX2vfR3i/subscriptions-changed"
+  },
+  "id": "id",
+  "msg": "changed"
+}

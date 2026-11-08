@@ -1,0 +1,18 @@
+{
+  "department": {
+    "_id": "6aefb685ff2338a3f2a2f259",
+    "_updatedAt": "2026-11-07T23:38:46.000Z",
+    "allowReceiveForwardOffline": true,
+    "chatClosingTags": [
+      "dept-tag"
+    ],
+    "email": "omnicap-dept-1794094719964@example.com",
+    "enabled": true,
+    "name": "omnicap-dept-1794094719964",
+    "numAgents": 1,
+    "requestTagBeforeClosingChat": false,
+    "showOnOfflineForm": false,
+    "showOnRegistration": true
+  },
+  "success": true
+}

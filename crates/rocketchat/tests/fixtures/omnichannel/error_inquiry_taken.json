@@ -1,0 +1,8 @@
+{
+  "details": {
+    "method": "livechat:takeInquiry"
+  },
+  "error": "Inquiry already taken [error-inquiry-taken]",
+  "errorType": "error-inquiry-taken",
+  "success": false
+}

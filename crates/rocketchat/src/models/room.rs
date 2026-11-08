@@ -121,6 +121,85 @@ pub struct Room {
     pub on_hold: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<Value>,
+    // Omnichannel, typed (docs/omnichannel.md §1.2). Typed views of `v`,
+    // `served_by` and `source`: `Room::visitor()` etc. in `omnichannel.rs`.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt_vec"
+    )]
+    pub tags: Option<Vec<String>>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub queued_at: Option<RcDate>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub closed_at: Option<RcDate>,
+    /// `user` or `visitor`.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub closer: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub closed_by: Option<UserRef>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub waiting_response: Option<bool>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub response_by: Option<super::ResponseBy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub livechat_data: Option<Value>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub contact_id: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub priority_id: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub priority_weight: Option<i64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub sla_id: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub estimated_waiting_time_queue: Option<i64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub verified: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_request: Option<Value>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub pdf_transcript_file_id: Option<String>,
 }
 
 impl Room {

@@ -1,0 +1,4 @@
+{
+  "error": "User does not have the permissions required for this action [error-unauthorized]",
+  "success": false
+}

@@ -11,6 +11,7 @@ pub mod config;
 pub mod e2e;
 pub mod emoji;
 pub mod notify;
+pub mod omnichannel;
 pub mod permissions;
 pub mod presence;
 pub mod room_list;

@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "visitor": {
+    "_id": "6aefb684ff2338a3f2a2f251",
+    "_updatedAt": "2026-11-07T23:38:44.294Z",
+    "host": "localhost:3000",
+    "ip": null,
+    "name": "Omnicap Visitor 1794094719964",
+    "phone": [
+      {
+        "phoneNumber": "+15554719964"
+      }
+    ],
+    "status": "online",
+    "token": "omnicap-vt-1794094719964",
+    "ts": "2026-11-07T23:38:44.294Z",
+    "userAgent": "Python-urllib/3.12",
+    "username": "guest-8",
+    "visitorEmails": [
+      {
+        "address": "omnicap-v-1794094719964@example.com"
+      }
+    ]
+  }
+}

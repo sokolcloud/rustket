@@ -1,0 +1,133 @@
+{
+  "collection": "stream-notify-user",
+  "fields": {
+    "args": [
+      "updated",
+      {
+        "_enforceSingleRoom": true,
+        "_id": "CS2PFviwDBkDoQDWP",
+        "_updatedAt": {
+          "$date": 1794094733994
+        },
+        "cl": false,
+        "contactId": "6aefb684ff2338a3f2a2f252",
+        "departmentId": "6aefb685ff2338a3f2a2f259",
+        "estimatedWaitingTimeQueue": 9999999,
+        "fname": "Omnicap Visitor 1794094719964",
+        "lastMessage": {
+          "_id": "gbgQhPY8WfumczbE9",
+          "_updatedAt": {
+            "$date": 1794094732865
+          },
+          "channels": [],
+          "md": [
+            {
+              "type": "PARAGRAPH",
+              "value": [
+                {
+                  "type": "PLAIN_TEXT",
+                  "value": "Agent reply"
+                }
+              ]
+            }
+          ],
+          "mentions": [],
+          "msg": "Agent reply",
+          "rid": "CS2PFviwDBkDoQDWP",
+          "ts": {
+            "$date": 1794094732851
+          },
+          "u": {
+            "_id": "ufKsmnbWJrX2vfR3i",
+            "name": "Omni Cap 1794094719964",
+            "username": "omnicap-a-1794094719964"
+          },
+          "urls": []
+        },
+        "lm": {
+          "$date": 1794094732851
+        },
+        "metrics": {
+          "reaction": {
+            "fd": {
+              "$date": 1794094732886
+            },
+            "ft": 2.935,
+            "tt": 2.935
+          },
+          "response": {
+            "avg": 8.47,
+            "fd": {
+              "$date": 1794094732886
+            },
+            "ft": 8.47,
+            "total": 1,
+            "tt": 8.47
+          },
+          "servedBy": {
+            "lr": {
+              "$date": 1794094732851
+            }
+          },
+          "v": {
+            "lq": {
+              "$date": 1794094724416
+            }
+          }
+        },
+        "msgs": 12,
+        "open": true,
+        "priorityWeight": 99,
+        "queuedAt": {
+          "$date": 1794094728133
+        },
+        "responseBy": {
+          "_id": "ufKsmnbWJrX2vfR3i",
+          "firstResponseTs": {
+            "$date": 1794094732851
+          },
+          "lastMessageTs": {
+            "$date": 1794094732851
+          },
+          "username": "omnicap-a-1794094719964"
+        },
+        "servedBy": {
+          "_id": "ufKsmnbWJrX2vfR3i",
+          "ts": {
+            "$date": 1794094729951
+          },
+          "username": "omnicap-a-1794094719964"
+        },
+        "source": {
+          "type": "api"
+        },
+        "t": "l",
+        "tags": [
+          "alpha",
+          "beta"
+        ],
+        "topic": "Omnicap topic",
+        "ts": {
+          "$date": 1794094724328
+        },
+        "usersCount": 2,
+        "v": {
+          "_id": "6aefb684ff2338a3f2a2f251",
+          "activity": [
+            "2026-11"
+          ],
+          "lastMessageTs": {
+            "$date": 1794094732798
+          },
+          "status": "online",
+          "token": "omnicap-vt-1794094719964",
+          "username": "guest-8"
+        },
+        "verified": false
+      }
+    ],
+    "eventName": "ufKsmnbWJrX2vfR3i/rooms-changed"
+  },
+  "id": "id",
+  "msg": "changed"
+}

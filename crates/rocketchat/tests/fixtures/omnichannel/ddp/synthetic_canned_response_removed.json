@@ -1,0 +1,14 @@
+{
+  "collection": "stream-canned-responses",
+  "fields": {
+    "args": [
+      {
+        "_id": "cr1",
+        "type": "removed"
+      }
+    ],
+    "eventName": "canned-responses"
+  },
+  "id": "id",
+  "msg": "changed"
+}

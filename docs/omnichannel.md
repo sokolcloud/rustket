@@ -359,6 +359,16 @@ Meaning for the client:
   on `dispatchInquiryQueued` → `saveQueueInquiry` to re-queue, which returns early when
   `autoAssignAgent` (`RoutingManager.ts:176`, `Helper.ts:412-438`) **[code]**.
 
+Further **[live]** observations (2026-11-08, implementation run): when a department member
+turns `available` while an inquiry of that department is `queued`, the server assigns it to that
+agent at once (the agent got `subscriptions-changed inserted` right after `agent.status`), so a
+`take` by the same agent then fails with `error-inquiry-taken`. While no agent is routable,
+`GET livechat/room?token=` (opening a chat) answers 400 `{"error":"Sorry, no online agents
+[no-agent-online]","errorType":"no-agent-online"}` (`Livechat_accept_chats_with_no_agents` false).
+With exactly one department on the server, a chat opened by a visitor without a department got
+that department's `departmentId` anyway (forwarding it to "its" department then fails with
+`error-forwarding-chat-same-department`).
+
 Auto_Selection picks, among routable agents (§3.2, minus locked ones), the one with the lowest
 `users.livechatCount`, ties by `username` (`Users.getNextAgent`,
 `RC:packages/models/src/models/Users.ts:1925`); per department the lowest
@@ -476,7 +486,8 @@ user's department membership (`listeners.module.ts:426`). Payload **[live]** (de
 `[{"action":"inserted"|"updated"|"removed","_id":"…","agentId":"…","departmentId":"…", …}]`.
 The web client simply re-runs the queue initialisation (`OmnichannelProvider.tsx:128`). The
 subscription itself is accepted for a plain non-agent user too (re-checked **[live]**).
-UNVERIFIED: the double delivery was seen once (not re-checked); the listener emits once per
+Re-checked **[live]** 2026-11-08: adding the agent to a new department delivered `inserted`
+twice, removing it delivered `removed` once. The listener emits once per
 `watch.livechatDepartmentAgents` event, so it probably reflects two DB writes — dedupe/re-init
 idempotently either way.
 
@@ -1054,9 +1065,14 @@ Endpoints (`RC:apps/meteor/ee/server/api/v1/canned-responses.ts`,
 Stream `stream-canned-responses`, key `canned-responses` (read: setting on + perm
 `view-canned-responses`): args `[{type:"changed", ...response}]`, `[{type:"removed", _id}]`,
 optionally a second arg `{agentsId: [uid…]}` (department membership changes) — ignore the event
-when `agentsId` is present and does not contain me. The server broadcasts **every** saved
-response, including other users' `user` scope ones, so filter with the visibility rule above
-before inserting (the web client does not).
+when `agentsId` is present and does not contain me, and trust it when it does (it is sent
+before the client could know about the new membership). The server broadcasts **every** saved
+response, including other users' `user` scope ones, so filter broadcasts (no `agentsId`) with
+the visibility rule above before inserting (the web client does not). "Departments the user
+belongs to" on the server is `getDepartmentsWhichUserCanAccess(uid, includeDisabled=true)`:
+disabled departments and, for monitors, the departments of their units count; so do not
+re-filter the REST list, and for broadcasts use all agent departments (not only enabled ones)
+plus the departments seen in the REST list.
 
 Composer `!` popup (`views/room/providers/ComposerPopupProvider.tsx:364-392`,
 `views/room/composer/hooks/useComposerBoxPopup.ts:99`):
@@ -1324,6 +1340,67 @@ Session (`src/session`):
 - `room_list.rs` — new section kinds (§6).
 - `permissions.rs` — constants for §20.
 
+### 22.2a As implemented (library round, 2026-11-08)
+
+Deviations from §22.1/§22.2, forced by keeping `crates/rustket` source-compatible:
+
+- REST lives in `crates/rocketchat/src/rest/livechat.rs`, methods prefixed `livechat_` /
+  `omnichannel_` / `canned_response(s)` (e.g. `livechat_agent_status`, `livechat_inquiries_queued`,
+  `livechat_take_inquiry`, `livechat_close_chat`, `omnichannel_contact`), filters as
+  `rest::{LivechatPage, DepartmentQuery, AgentQuery, LivechatRoomsQuery, CannedResponseQuery}`.
+  There is no `Error::EnterpriseOnly` variant (kept out to avoid touching every `Error`
+  producer; the UI only uses `matches!` and a wildcard arm, so adding one later is
+  non-breaking): use `Error::is_enterprise_only()` (requires `error-action-not-allowed` *and*
+  the "enterprise feature" text — the bare code is also a plain permission refusal, e.g.
+  `chat.update`, settings, `saveRoomSettings`) and `Error::livechat_error_code()` (`errorType`, else the
+  trailing `[code]` of `error`, else `error` itself — several endpoints send only
+  `{"error": "error-comment-is-required"}` or `"Agent not found"`).
+- `Room.v` / `served_by` / `source` stay `Option<Value>`; typed views are
+  `Room::visitor()`, `Room::served_by_agent()`, `Room::omnichannel_source()`. The other §22.1
+  fields were added as typed fields (`response_by` is `ResponseBy`, `metrics`/`livechat_data`/
+  `transcript_request` stay `Value`; also `estimated_waiting_time_queue`, `pdf_transcript_file_id`).
+- No new `SessionEvent` variants (the UI matches the enum exhaustively). Omnichannel stream
+  data arrives as `SessionEvent::Unknown` and `SessionEvent::omnichannel()` decodes it into
+  `session::OmnichannelEvent { InquiryQueue, DepartmentAgentChanged, CannedResponseChanged,
+  CannedResponseRemoved, PriorityChanged, RoomData }`; `SessionEvent::agent_status()` reads
+  `statusLivechat` from `UserData`. `departmentAgentData` and `omnichannel.priority-changed`
+  were added to the global subscriptions (the latter is accepted on CE **[live]**).
+- On-demand streams: `Session::watch_streams(&[(stream, key)]) -> StreamWatch` with helpers
+  `inquiry_queue_subscriptions(uid, departments)`, `canned_responses_subscription()`,
+  `room_data_subscription(rid)`; `not-allowed` is final (`StreamWatch::refused()`).
+- Rid-less queue notifications: `NotificationPayload::room_id()` (`None` for `""`) and
+  `NotificationPayload::is_queued_inquiry()`; `rid` stays a `String`.
+- `rustket-core::omnichannel::room_list` does not change `room_list::SectionKind`: it provides
+  `OmnichannelSectionKind { Queued, Open, OnHold }`, `queue_section` and `split_section` (splits
+  the existing `SectionKind::Omnichannel` section), plus row decorations.
+- `OmnichannelState` is standalone (not inside `Workspace`): the UI stores REST results in it
+  and calls `recompute_update(&Workspace)` (or `recompute`) after `apply_me` and after
+  settings/permissions/roles changes; both it and `apply_event(&SessionEvent)` return an
+  `OmnichannelUpdate` (`reinit_queue`, `refetch_routing` — also when omnichannel becomes
+  accessible or `Livechat_enabled` changes —, `refetch_license`, `refetch_canned` — department
+  membership or canned context changed —, `refetch_priorities`, `queue_grew` — the displayed,
+  capped queue got longer —, `reread_me`).
+- Agent availability: a `/me` applied after the last `userData` wins even when it equals the
+  previous `/me` (`Workspace::me_generation()` counts `apply_me` calls); `userData`
+  `statusLivechat` is recorded even while the user is not an agent yet. Role/permission
+  changes no longer re-initialise the queue by themselves; only a `wants_queue` transition does.
+- Queue snapshot: `InquiryQueue::begin_snapshot()` before requesting `queuedForUser`, then
+  `apply_snapshot(token, list)` re-applies the stream events received meanwhile (the web
+  client merges for the same reason); superseded tokens and tokens abandoned by `clear()`
+  are ignored. `replace(list)` = both at once.
+- Departments: `livechat/agents/{uid}/departments` is loaded *without*
+  `enabledDepartmentsOnly` whenever `wants_departments()` (queue or canned responses); the
+  queue filter uses the enabled ones, canned responses all of them.
+- Canned responses: the `canned-responses.get` list is trusted as is (the server's rule uses
+  disabled departments and monitor units the client does not know); targeted stream events
+  (`agentsId` present) are applied when they name the user; broadcasts are filtered with the
+  rule, counting departments seen in the last REST list as the user's.
+- `quick_actions(ws, omni, room, sub, month)` takes the room document, so closed rooms and
+  unsubscribed chats from `rooms.info` work; `take_block` blocks only on `offline`.
+- Pagination type is `rest::LivechatPage` (not `Page`, to avoid clashing with other areas).
+- `livechat_agent_status(Some(AgentStatus::Unknown))` fails with `Error::Protocol` instead
+  of sending `{}` (which toggles).
+
 ### 22.3 `crates/rustket` (UI)
 
 - New component area `src/omnichannel/` (own locale file `omnichannel.yml`):
@@ -1359,9 +1436,21 @@ Session (`src/session`):
   `livechat/rooms.delete {roomId}` (closed rooms only), `DELETE livechat/visitor/{token}` (also
   removes the contact), `DELETE livechat/users/agent/{id}`, `users.delete`. `livechat/visitor` and
   `livechat/room` declare a 5 req/60 s route limit (`visitor.ts`, `room.ts`); keep tests frugal.
-- Do not create departments in tests: CE allows one department and
-  `Omnichannel_enable_department_removal = false` makes them undeletable without changing a
-  global setting (see §24).
+- Departments in tests: CE allows one department and `Omnichannel_enable_department_removal =
+  false` makes them undeletable. The live test (`crates/rocketchat/tests/omnichannel_live.rs`)
+  creates one only when `isDepartmentCreationAvailable` is true (otherwise it prints a note and
+  returns without testing anything) and deletes it at the end,
+  enabling department removal just for the delete (settings writes need `x-2fa-method:
+  password` + the SHA-256 hex of the admin password) and turning it off again (see §24).
+  `POST livechat/department` rejects `username` in `agents[]` entries (`must NOT have
+  additional properties`; only `agentId`, `count`, `order`), while
+  `POST livechat/department/{id}/agents` requires `{agentId, username}` **[live]**.
+- Queue path that works under Auto_Selection **[live]**: open the chat while agent A is
+  available (A serves it), create the department with A and `allowReceiveForwardOffline: true`,
+  set A `not-available`, forward the room to the department as admin → inquiry `queued` in the
+  department (A sees it in `queuedForUser`, a non-member does not); a second available agent B
+  who is **not** a member can then `inquiries.take` it (B taking while `not-available` →
+  `error-agent-status-service-offline`).
 - The dev server is shared with other agents' live tests (throwaway users joining `GENERAL` were
   visible during the 2026-11-08 run). Under Auto_Selection a new chat goes to *any* routable
   agent, so before asserting, check `livechat/users/agent?onlyAvailable=true&showIdleAgents=false`
@@ -1392,7 +1481,6 @@ Session (`src/session`):
 - Forward to an online department (delegation path), fallback departments, and forward with both
   `departmentId` and `userId`.
 - UNVERIFIED: removal of joined managers' subscriptions (+ `ul`) on transfer / return to queue (code only).
-- UNVERIFIED: double delivery of `departmentAgentData` (seen once, not re-checked).
 - UNVERIFIED: `isDepartmentCreationAvailable` rule (package `@rocket.chat/omni-core` is not in `.ref/`) and the
   PDF transcript delivery (worker not in `.ref/`).
 - UNVERIFIED: the body of `useLicenseBase`/`useLicense` (`@rocket.chat/ui-client`) is not in `.ref/`;

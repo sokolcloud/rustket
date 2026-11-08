@@ -1,0 +1,16 @@
+{
+  "departments": [
+    {
+      "_id": "6aefb685ff2338a3f2a2f25a",
+      "_updatedAt": "2026-11-07T23:38:45.993Z",
+      "agentId": "ufKsmnbWJrX2vfR3i",
+      "count": 0,
+      "departmentEnabled": true,
+      "departmentId": "6aefb685ff2338a3f2a2f259",
+      "departmentName": "omnicap-dept-1794094719964",
+      "order": 0,
+      "username": "omnicap-a-1794094719964"
+    }
+  ],
+  "success": true
+}

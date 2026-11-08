@@ -172,6 +172,41 @@ pub struct Message {
     pub unread: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temp: Option<bool>,
+    // Omnichannel (docs/omnichannel.md §18).
+    /// Visitor token: present on messages sent by an omnichannel visitor.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub token: Option<String>,
+    /// `livechat_transfer_history`.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub transfer_data: Option<super::TransferData>,
+    /// `omnichannel_placed_chat_on_hold` / `omnichannel_on_hold_chat_resumed`.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub comment: Option<String>,
+    /// `livechat-close`.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub transcript_requested: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority_data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sla_data: Option<Value>,
+    /// `livechat_navigation_history`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navigation: Option<Value>,
+    /// `livechat_transcript_history`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_data: Option<Value>,
 }
 
 impl Message {
