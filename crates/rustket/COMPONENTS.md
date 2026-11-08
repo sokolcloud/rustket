@@ -182,7 +182,8 @@ Return them in `Action { task, effects }` (`Action::none()`,
 | `Toast(BannerKind, title, body)` | App | transient notification (strings already translated) |
 | `OpenRoom(rid)` | App | switch to another room of the same server |
 | `LoadOlder` | RoomView | load the next older history page (`HistoryCursor`); the timeline sees the result through `on_changes` (`changes.timelines`) |
-| `MarkRead` | RoomView | `subscriptions.read` (deduplicated) |
+| `MarkRead` | RoomView | automatic `subscriptions.read {rid}` (unread threads stay), only while the room is readable; one request at a time, a mark asked for meanwhile runs after it |
+| `MarkAllRead` | RoomView | the explicit "Mark as read": `subscriptions.read {rid, readThreads}` |
 | `OpenPanel(Kind)` / `ClosePanel` | RoomView | right panel; opening the shown kind toggles it closed |
 | `OpenUrl(url)` | App | external browser; only absolute `http`, `https`, `mailto` URLs (others are refused) |
 | `RecentEmoji(key)` | App | an emoji was used (picker): pushed to `AppConfig::recent_emoji` and saved |
@@ -261,9 +262,20 @@ its thread is closed included).
 - The automatic read mark of the focused room (`RoomView::wants_auto_read`)
   runs only for messages from others newer than what was seen (last read
   mark, history loaded after the open's read mark, the server's `ls` of a
-  read room), or when only `alert` is set (followed-thread replies), so an
+  read room), or when only `alert` is set without unread threads, so an
   unread mark made elsewhere is not undone. Own and pending messages never
-  count.
+  count. It runs only while the room is readable (`RoomView::readable`):
+  the app sets `RoomView::set_visible` after every update (window focused,
+  server active, `Screen::Server`, no contact center or app dialog, the
+  server's active room); the timeline must be at the bottom, not under the
+  E2E cover or an expanded thread. Opening a room marks it once it is
+  readable; becoming readable again catches up. The open thread reads
+  itself only while visible (`Thread::set_visible`).
+- Uploads live in a registry (`room::upload`) and outlive room and thread
+  views; results for a view that is gone go through `room::orphan_result`
+  / `composer::orphan_result` (failed upload: toast; failed thread reply:
+  marked failed).
+
 - `ServerState::close_rooms` closes the room views and returns their
   stop-typing task; `ServerState::reset` (unchanged signature) drops them
   silently.

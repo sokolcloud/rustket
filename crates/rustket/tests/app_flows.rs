@@ -1559,8 +1559,34 @@ async fn unread_elsewhere_after_own_message_is_kept() {
     assert!(unread_elsewhere_wants_read(&mut app, &sid, T0 + 61));
 }
 
-/// A reply in a followed thread only sets `alert` (it is not in the room
-/// timeline): the open, focused room clears it.
+/// A reply in a followed thread sets `alert` and `tunread` (it is not in the
+/// room timeline): the automatic read mark leaves it to the thread, like the
+/// web (`subscriptions.read` without `readThreads` keeps that alert, so
+/// marking it would only loop).
+#[tokio::test]
+async fn thread_reply_alert_is_kept_for_the_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let read_done =
+        |app: &App| room_msg(app, &sid, "r1", rustket::room::Message::MarkedRead(Ok(())));
+    let _ = app.update(read_done(&app));
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 11);
+    let _ = app.update(read_done(&app));
+    set_unread(&mut app, &sid, "r1", 0, T0 + 12);
+    let mut reply = rc_msg("t1", "r1", T0 + 20, "B");
+    reply.tmid = Some("p1".into());
+    deliver(&mut app, &sid, reply);
+    let mut alerted = sub("r1", "A", 0, T0 + 21);
+    alerted.alert = true;
+    alerted.tunread = Some(vec!["p1".into()]);
+    let s = app.servers.get_mut(&sid).unwrap();
+    s.workspace
+        .apply_subscription(rustket_core::Change::Updated, alerted);
+    assert!(!s.rooms["r1"].wants_auto_read(&s.workspace));
+}
+
+/// An alert without unread threads is still cleared by the open room.
 #[tokio::test]
 async fn thread_reply_alert_is_cleared() {
     let dir = tempfile::tempdir().unwrap();
@@ -1702,4 +1728,301 @@ async fn create_discussion_inside_a_discussion_uses_parent() {
     assert_eq!((prid.as_str(), pmid.as_deref()), ("r1", Some("m1")));
     // The name is prefilled from the message, as in the web client.
     assert_eq!(name, "text m1");
+}
+
+// --- read state and sending (review round) ---------------------------------------------
+
+/// Outputs of a task within `ms` (tasks that never end are cut off). Runs
+/// its own runtime: call from a plain `#[test]`.
+fn outputs_within(task: iced::Task<Message>, ms: u64) -> Vec<Message> {
+    use futures::StreamExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async move {
+        let mut out = Vec::new();
+        let deadline = tokio::time::sleep(std::time::Duration::from_millis(ms));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => break,
+                next = stream.next() => match next {
+                    Some(iced_runtime::Action::Output(m)) => out.push(m),
+                    Some(_) => {}
+                    None => break,
+                },
+            }
+        }
+        out
+    })
+}
+
+fn marked_read(outs: &[Message], sid: &ServerId, rid: &str) -> bool {
+    outs.iter().any(|m| {
+        matches!(m, Message::Room(s, _, r, rustket::room::Message::MarkedRead(_)) if s == sid && r == rid)
+    })
+}
+
+/// Review: the room hidden behind the Directory, Settings, Account or
+/// Administration page was marked read when messages arrived or the window
+/// was focused; it is marked once the room is shown again.
+#[tokio::test]
+async fn hidden_room_is_marked_read_only_when_shown_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let read_done =
+        |app: &App| room_msg(app, &sid, "r1", rustket::room::Message::MarkedRead(Ok(())));
+    let _ = app.update(read_done(&app));
+    let wants = |app: &App| {
+        let s = &app.servers[&sid];
+        s.rooms["r1"].wants_auto_read(&s.workspace)
+    };
+    // Directory page: not read.
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Directory));
+    deliver(&mut app, &sid, rc_msg("m1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 11);
+    assert!(
+        wants(&app),
+        "room behind the Directory page was marked read"
+    );
+    // Settings page and a window focus: still not read.
+    let _ = app.update(Message::Rail(rustket::workspace::rail::Message::Settings));
+    let _ = app.update(Message::WindowFocused(false));
+    deliver(&mut app, &sid, rc_msg("m2", "r1", T0 + 20, "B"));
+    set_unread(&mut app, &sid, "r1", 2, T0 + 21);
+    let _ = app.update(Message::WindowFocused(true));
+    assert!(
+        wants(&app),
+        "focusing on the Settings page marked the room read"
+    );
+    // Back to the server view: read now.
+    let _ = app.update(Message::Rail(rustket::workspace::rail::Message::Select(
+        sid.clone(),
+    )));
+    assert!(!wants(&app), "read once shown");
+    let _ = app.update(read_done(&app));
+    // In the background: kept until the window is focused again.
+    let _ = app.update(Message::WindowFocused(false));
+    deliver(&mut app, &sid, rc_msg("m3", "r1", T0 + 30, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 31);
+    assert!(wants(&app));
+    let _ = app.update(Message::WindowFocused(true));
+    assert!(!wants(&app));
+}
+
+/// Review: at startup the last room of a server in the background was
+/// opened and marked read; it opens (and is read) when that server is shown.
+#[test]
+fn background_servers_last_room_waits_for_the_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = AppConfig::default();
+    let mut e1 = ServerEntry::new(SERVER, "One");
+    e1.user_id = Some("A".into());
+    let s1 = cfg.add_server(e1);
+    let mut e2 = ServerEntry::new("http://127.0.0.1:3000", "Two");
+    e2.user_id = Some("B".into());
+    e2.last_room = Some("x1".into());
+    let s2 = cfg.add_server(e2);
+    cfg.save(dir.path()).unwrap();
+    let (mut app, _t) = App::new(Flags {
+        config_dir: Some(dir.path().to_owned()),
+        cache_dir: Some(dir.path().join("cache")),
+        secrets: SecretsMode::Memory,
+        ..Flags::default()
+    });
+    let store = Arc::new(MemoryStore::new());
+    store
+        .set(&rustket_core::secrets::secret_key(&s1, "A"), "tA")
+        .unwrap();
+    store
+        .set(&rustket_core::secrets::secret_key(&s2, "B"), "tB")
+        .unwrap();
+    boot(
+        &mut app,
+        vec![
+            (s1.clone(), Some("tA".into())),
+            (s2.clone(), Some("tB".into())),
+        ],
+        store,
+    );
+    assert_eq!(app.active.as_ref(), Some(&s1));
+    let me = user("B", "bob");
+    let m = ev(
+        &app,
+        &s2,
+        SessionEvent::Ready {
+            me: Box::new(me.clone()),
+        },
+    );
+    let _ = app.update(m);
+    let m = loaded(&app, &s2, initial(me, &[("x1", 3)]));
+    let task = app.update(m);
+    assert!(!app.servers[&s2].rooms.contains_key("x1"));
+    assert!(!marked_read(&outputs_within(task, 1000), &s2, "x1"));
+    // Shown: opened and read.
+    let task = app.update(Message::Rail(rustket::workspace::rail::Message::Select(
+        s2.clone(),
+    )));
+    assert!(app.servers[&s2].rooms.contains_key("x1"));
+    assert!(marked_read(&outputs_within(task, 1000), &s2, "x1"));
+}
+
+/// Review: a thread reply that failed after its panel was closed stayed
+/// "sending" forever.
+#[tokio::test]
+async fn failed_reply_of_a_closed_thread_is_marked_failed() {
+    use rustket::room::panel::{BodyMsg, Kind, Message as Pm, thread};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    let m = room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Thread("p1".into()))),
+    );
+    let _ = app.update(m);
+    let g = app.servers[&sid].rooms["r1"].panel.generation();
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Activate(g)),
+    ));
+    let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+    let reply = ws.new_local_message("r1", "a reply", Some("p1"), false);
+    ws.add_pending(reply.clone());
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Close),
+    ));
+    let failed = Err(Failure::from(rocketchat::Error::Unauthorized {
+        message: None,
+        code: None,
+    }));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Body(
+            g,
+            BodyMsg::Thread(thread::Msg::Composer(
+                rustket::room::composer::Message::Sent(reply.id.clone(), failed),
+            )),
+        )),
+    ));
+    let pending = app.servers[&sid].workspace.pending_messages("r1");
+    let item = pending.iter().find(|i| i.message.id == reply.id).unwrap();
+    assert!(
+        matches!(
+            item.state,
+            rustket_core::timeline::DeliveryState::Failed { .. }
+        ),
+        "{:?}",
+        item.state
+    );
+}
+
+/// Review: an upload whose room view was closed was lost without a word;
+/// its failure is reported.
+#[tokio::test]
+async fn failed_upload_of_a_closed_room_is_reported() {
+    use rustket::room::composer::Message as Cm;
+    use rustket::room::upload::Message as Um;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let failed = Err(Failure::from(rocketchat::Error::Unauthorized {
+        message: None,
+        code: None,
+    }));
+    let before = app.toasts.len();
+    // r2 is not open.
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r2",
+        rustket::room::Message::Composer(Cm::Upload(Um::Done(7, "clip.mp4".into(), failed))),
+    ));
+    assert_eq!(app.toasts.len(), before + 1);
+    assert!(app.toasts.last().unwrap().title.contains("clip.mp4"));
+}
+
+/// Review: dropped files went to the hidden room's composer on other pages
+/// and to the room composer while a thread was open.
+#[test]
+fn dropped_files_go_to_the_shown_composer() {
+    use rustket::room::panel::{BodyMsg, Kind, Message as Pm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, b"hello").unwrap();
+    let dropped = |outs: &[Message]| {
+        outs.iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    Message::Room(_, _, _, rustket::room::Message::FilesDropped(_))
+                )
+            })
+            .count()
+    };
+    let _ = app.update(Message::Rail(rustket::workspace::rail::Message::Settings));
+    let outs = outputs_within(app.update(Message::FileDropped(file.clone())), 300);
+    assert_eq!(dropped(&outs), 0, "no room on screen");
+    let _ = app.update(Message::Rail(rustket::workspace::rail::Message::Select(
+        sid.clone(),
+    )));
+    // A thread is open: its composer takes the files.
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Thread("p1".into()))),
+    ));
+    let g = app.servers[&sid].rooms["r1"].panel.generation();
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Activate(g)),
+    ));
+    let outs = outputs_within(app.update(Message::FileDropped(file)), 300);
+    assert_eq!(dropped(&outs), 1);
+    let m = outs
+        .into_iter()
+        .find(|m| {
+            matches!(
+                m,
+                Message::Room(_, _, _, rustket::room::Message::FilesDropped(_))
+            )
+        })
+        .unwrap();
+    let outs = outputs_within(app.update(m), 2000);
+    assert!(
+        outs.iter().any(|m| matches!(
+            m,
+            Message::Room(
+                _,
+                _,
+                _,
+                rustket::room::Message::Panel(Pm::Body(_, BodyMsg::Thread(_)))
+            )
+        )),
+        "to the thread composer"
+    );
+    assert!(
+        !app.servers[&sid].rooms["r1"]
+            .composer
+            .is_upload_dialog_open()
+    );
 }

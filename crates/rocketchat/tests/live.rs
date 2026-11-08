@@ -472,7 +472,7 @@ async fn message_lifecycle() {
 
     a.unpin_message(&sent.id).await.unwrap();
     a.unstar_message(&sent.id).await.unwrap();
-    b.subscriptions_read(&room.id).await.unwrap();
+    b.subscriptions_read(&room.id, true).await.unwrap();
     a.delete_message(&room.id, &reply.id).await.unwrap();
     let sync = a.chat_sync_messages(&room.id, start).await.unwrap();
     assert!(sync.deleted.iter().any(|d| d.id == reply.id));
@@ -480,6 +480,47 @@ async fn message_lifecycle() {
 
     let err = a.get_message("doesnotexist").await.unwrap_err();
     assert!(matches!(err, Error::Api { .. }), "{err:?}");
+    a.rooms_delete(&room.id).await.unwrap();
+}
+
+/// The automatic read mark (`subscriptions.read {rid}`, like the web's
+/// `ReadStateManager`) leaves unread threads and their alert; only the
+/// explicit "Mark as read" (`readThreads`) clears them.
+#[tokio::test]
+async fn read_mark_keeps_unread_threads_unless_asked() {
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let b = login(&s, "bob").await;
+    let room = a
+        .channels_create(&CreateRoom {
+            members: vec!["bob".into()],
+            ..CreateRoom::new(unique("readthreads"))
+        })
+        .await
+        .unwrap();
+    let parent = a
+        .send_message(&OutgoingMessage::new(&room.id, "parent"))
+        .await
+        .unwrap();
+    a.subscriptions_read(&room.id, false).await.unwrap();
+    b.send_message(&OutgoingMessage::new(&room.id, "reply").in_thread(&parent.id, false))
+        .await
+        .unwrap();
+    let mut sub = a.subscriptions_get_one(&room.id).await.unwrap();
+    for _ in 0..20 {
+        if sub.has_unread_threads() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        sub = a.subscriptions_get_one(&room.id).await.unwrap();
+    }
+    assert!(sub.alert && sub.has_unread_threads(), "{sub:?}");
+    a.subscriptions_read(&room.id, false).await.unwrap();
+    let sub = a.subscriptions_get_one(&room.id).await.unwrap();
+    assert!(sub.alert && sub.has_unread_threads(), "{sub:?}");
+    a.subscriptions_read(&room.id, true).await.unwrap();
+    let sub = a.subscriptions_get_one(&room.id).await.unwrap();
+    assert!(!sub.alert && !sub.has_unread_threads(), "{sub:?}");
     a.rooms_delete(&room.id).await.unwrap();
 }
 

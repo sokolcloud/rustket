@@ -245,6 +245,8 @@ impl App {
         } else {
             crate::desktop::Desktop::new()
         };
+        // A window that starts hidden may never report losing the focus.
+        let focused = !(flags.desktop && config.ui.start_minimized);
         crate::room::emoji_picker::set_recent(&config.recent_emoji);
         let ui_state = config_dir.as_deref().map(UiState::load).unwrap_or_default();
         let writer = config_dir.clone().and_then(ConfigWriter::spawn);
@@ -282,7 +284,7 @@ impl App {
             modals: Vec::new(),
             images: Images::new(cache_dir),
             system_mode: None,
-            focused: true,
+            focused,
             handler_registered: false,
             listener: flags.listener.clone(),
             queued_links: flags.urls.clone(),
@@ -611,10 +613,39 @@ impl App {
         Task::batch([task, after, confirm, unread])
     }
 
+    /// Tells every room view whether it is on screen: the window is
+    /// focused, its server is active and the server view is shown (not a
+    /// page such as Settings or Administration, the contact center or a
+    /// dialog over it) and it is the server's active room. A room that
+    /// becomes readable catches up on its read mark (`RoomView::set_visible`).
+    fn sync_room_visibility(&mut self) -> Task<Message> {
+        let shown = self.focused && matches!(self.screen, Screen::Server) && self.modals.is_empty();
+        let mut tasks = Vec::new();
+        for (sid, s) in self.servers.iter_mut() {
+            let server_shown =
+                shown && self.active.as_ref() == Some(sid) && s.omni.contact_center.is_none();
+            let epoch = s.generation;
+            for (rid, rv) in s.rooms.iter_mut() {
+                let visible = server_shown && s.active_room.as_deref() == Some(rid.as_str());
+                let mut ctx = UpdateCtx {
+                    server_id: &s.id,
+                    server: &s.url,
+                    rid,
+                    workspace: &mut s.workspace,
+                    session: s.session.as_ref(),
+                    images: &self.images,
+                    prefs: &self.config.ui,
+                };
+                let task = rv.set_visible(visible, &mut ctx);
+                tasks.push(Self::room_task(sid, epoch, rid, task));
+            }
+        }
+        Task::batch(tasks)
+    }
+
     /// Applies pending workspace changes to derived views and fetches wanted images.
     fn after_update(&mut self) -> Task<Message> {
-        let mut tasks = Vec::new();
-        let focused = self.focused;
+        let mut tasks = vec![self.sync_room_visibility()];
         let active = self.active.clone();
         let sids: Vec<ServerId> = self.servers.keys().cloned().collect();
         let mut effects = Vec::new();
@@ -656,8 +687,6 @@ impl App {
                     e.last_room = None;
                 }
             }
-            let is_active_server = active.as_ref() == Some(&sid);
-            let active_room = s.active_room.clone();
             let epoch = s.generation;
             for (rid, rv) in s.rooms.iter_mut() {
                 let mut ctx = UpdateCtx {
@@ -670,22 +699,16 @@ impl App {
                     prefs: &self.config.ui,
                 };
                 let mut action = rv.on_changes(&changes, &mut ctx);
-                // Mark the focused room read when new messages arrive (not
-                // when it was marked unread elsewhere).
-                if is_active_server
-                    && focused
-                    && active_room.as_deref() == Some(rid.as_str())
-                    && (changes.rooms.contains(rid) || changes.timelines.contains(rid))
+                // Mark the room read when new messages arrive while it is
+                // readable (not when it was marked unread elsewhere) ...
+                if (changes.rooms.contains(rid) || changes.timelines.contains(rid))
                     && rv.wants_auto_read(ctx.workspace)
                 {
                     action.task = Task::batch([action.task, rv.mark_read(&ctx)]);
                 }
-                // ... and its open thread (`tunread`) when new replies arrive.
-                if is_active_server
-                    && focused
-                    && active_room.as_deref() == Some(rid.as_str())
-                    && changes.rooms.contains(rid)
-                {
+                // ... and its open thread (`tunread`) when new replies arrive
+                // while it is shown.
+                if rv.is_visible() && changes.rooms.contains(rid) {
                     action.task = Task::batch([action.task, rv.mark_thread_read(&ctx)]);
                 }
                 tasks.push(Self::room_task(&sid, epoch, rid, action.task));
@@ -771,9 +794,7 @@ impl App {
                     .desktop
                     .on_focus_changed(f, &self.config.ui)
                     .map(Message::Desktop);
-                if f {
-                    return Task::batch([desktop, self.mark_active_room_read()]);
-                }
+                // The room read mark follows in `sync_room_visibility`.
                 desktop
             }
             Message::Tick => {
@@ -1085,6 +1106,18 @@ impl App {
         }
         self.active = Some(sid.clone());
         self.screen = Screen::Server;
+        // Its last room, not opened while the server was in the background.
+        if let Some(s) = self.servers.get(&sid)
+            && s.active_room.is_none()
+            && s.pending_room.is_none()
+            && let Some(rid) = self
+                .config
+                .server(&sid)
+                .and_then(|e| e.last_room.clone())
+                .filter(|r| s.workspace.room(r).is_some())
+        {
+            tasks.push(self.open_room(&sid, &rid));
+        }
         if self.config.active_server.as_ref() != Some(&sid) {
             self.config.active_server = Some(sid);
             tasks.push(self.save_config());
@@ -1456,41 +1489,6 @@ impl App {
         Task::batch(closed)
     }
 
-    fn mark_active_room_read(&mut self) -> Task<Message> {
-        let Some(sid) = self.active.clone() else {
-            return Task::none();
-        };
-        let Some(s) = self.servers.get_mut(&sid) else {
-            return Task::none();
-        };
-        let Some(rid) = s.active_room.clone() else {
-            return Task::none();
-        };
-        let epoch = s.generation;
-        let Some(rv) = s.rooms.get_mut(&rid) else {
-            return Task::none();
-        };
-        // The room read mark only when wanted (an unread mark made by the
-        // user stays); the open thread is checked on its own (`tunread`).
-        let unread = rv.wants_auto_read(&s.workspace);
-        let ctx = UpdateCtx {
-            server_id: &s.id,
-            server: &s.url,
-            rid: &rid,
-            workspace: &mut s.workspace,
-            session: s.session.as_ref(),
-            images: &self.images,
-            prefs: &self.config.ui,
-        };
-        let thread = rv.mark_thread_read(&ctx);
-        let t = if unread {
-            rv.mark_read(&ctx)
-        } else {
-            Task::none()
-        };
-        Self::room_task(&sid, epoch, &rid, Task::batch([t, thread]))
-    }
-
     fn on_room(
         &mut self,
         sid: ServerId,
@@ -1505,7 +1503,10 @@ impl App {
             return Task::none();
         }
         let Some(rv) = s.rooms.get_mut(&rid) else {
-            return Task::none();
+            // Uploads and thread replies outlive the room view: their
+            // results still settle (a failed upload becomes a toast).
+            let effects = room::orphan_result(m, &mut s.workspace);
+            return self.handle_effects(&sid, &rid, effects);
         };
         let mut ctx = UpdateCtx {
             server_id: &s.id,
@@ -1590,6 +1591,7 @@ impl App {
                 // Handled by RoomView.
                 room::Effect::LoadOlder
                 | room::Effect::MarkRead
+                | room::Effect::MarkAllRead
                 | room::Effect::OpenPanel(_)
                 | room::Effect::ClosePanel
                 | room::Effect::ShowMessage(_)
@@ -1659,14 +1661,22 @@ impl App {
         Task::batch([a, nav])
     }
 
-    /// Hands a dropped file to the composer of the active room.
+    /// Hands a dropped file to the shown room (its open thread, else the
+    /// room composer). Nothing happens while no room is shown (another
+    /// page, the contact center or a dialog is on screen).
     fn route_file_drop(&mut self, path: std::path::PathBuf) -> Task<Message> {
+        if !matches!(self.screen, Screen::Server) || !self.modals.is_empty() {
+            return Task::none();
+        }
         let Some(sid) = self.active.clone() else {
             return Task::none();
         };
         let Some(s) = self.servers.get(&sid) else {
             return Task::none();
         };
+        if s.omni.contact_center.is_some() {
+            return Task::none();
+        }
         let Some(rid) = s.active_room.clone().filter(|r| s.rooms.contains_key(r)) else {
             return Task::none();
         };
@@ -1674,7 +1684,7 @@ impl App {
             sid,
             s.generation,
             rid,
-            room::Message::Composer(room::composer::Message::FilesDropped(vec![path])),
+            room::Message::FilesDropped(vec![path]),
         ))
     }
 
@@ -1729,7 +1739,11 @@ impl App {
                     let name = s.name.clone();
                     let server_active =
                         self.active.as_ref() == Some(&sid) && matches!(self.screen, Screen::Server);
-                    let focused_rid = s.active_room.as_deref();
+                    // The contact center replaces the room area: no room is shown.
+                    let focused_rid = s
+                        .active_room
+                        .as_deref()
+                        .filter(|_| s.omni.contact_center.is_none());
                     let focused_tmid =
                         focused_rid.and_then(|rid| s.rooms.get(rid)).and_then(|rv| {
                             match rv.panel.kind() {
@@ -1941,10 +1955,13 @@ impl App {
         let Some(s) = self.servers.get_mut(&sid) else {
             return Task::batch(tasks);
         };
-        // A queued room link wins over the last room.
+        // A queued room link wins over the last room. The last room of a
+        // server in the background opens when that server is shown
+        // (`activate`).
         if let Some((rid, path, _)) = s.pending_room.take() {
             tasks.push(self.open_room_link(&sid, rid, path));
         } else if s.active_room.is_none()
+            && self.active.as_ref() == Some(&sid)
             && let Some(rid) = last_room.filter(|r| s.workspace.room(r).is_some())
         {
             tasks.push(self.open_room(&sid, &rid));

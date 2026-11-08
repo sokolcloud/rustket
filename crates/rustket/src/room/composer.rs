@@ -484,14 +484,8 @@ impl Composer {
     }
 
     fn apply_sent(&self, id: &str, r: Res<Box<rocketchat::models::Message>>, ws: &mut Workspace) {
-        match r {
-            Ok(m) => ws.apply_message(*m),
-            Err(e) => {
-                tracing::warn!(error = %e, "chat.sendMessage failed");
-                let tmid = self.pending_tmid(ws, id);
-                ws.mark_pending_failed(&self.rid, tmid.as_deref(), id, &e.user_text());
-            }
-        }
+        let tmid = self.pending_tmid(ws, id);
+        apply_send_result(ws, &self.rid, tmid.as_deref(), id, r);
     }
 
     // --- text helpers -----------------------------------------------------------
@@ -1272,6 +1266,23 @@ impl Composer {
         let is_command = self.quotes.is_empty()
             && text::parse_slash(&text).is_some()
             && !crate::e2e::outgoing::slash_commands_blocked(ctx.workspace, &self.rid);
+        if is_command
+            && let Some((name, _)) = text::parse_slash(&text)
+            && let Some(list) = cached_commands(ctx.server_id)
+            && !list.iter().any(|c| c.command == name)
+            && !ctx
+                .workspace
+                .settings()
+                .bool_or("Message_AllowUnrecognizedSlashCommand", false)
+        {
+            // Like the web: an unknown command is not posted (it may carry
+            // private parameters); the text stays for a fix.
+            return Action::effect(Effect::Toast(
+                BannerKind::Warning,
+                t!("room_composer.no_such_command", command = name).into_owned(),
+                String::new(),
+            ));
+        }
         if is_command && cached_commands(ctx.server_id).is_none() {
             // The text stays in the editor until the command list is known.
             if self.commands_loading {
@@ -1435,7 +1446,10 @@ impl Composer {
                     .into(),
             );
         }
-        if let Some(t) = self.uploads.transfers_view() {
+        if let Some(t) =
+            self.uploads
+                .transfers_view(ctx.server_id.as_str(), &self.rid, self.tmid.as_deref())
+        {
             bars.push(t.map(Message::Upload));
         }
         if let Some(e) = &self.editing {
@@ -1825,6 +1839,44 @@ fn fetch(ctx: &UpdateCtx<'_>, mid: String, purpose: FetchFor) -> Task<Message> {
     )
 }
 
+/// Applies a `chat.sendMessage` result to the outbox message `id` (reply
+/// in thread `tmid`).
+fn apply_send_result(
+    ws: &mut Workspace,
+    rid: &str,
+    tmid: Option<&str>,
+    id: &str,
+    r: Res<Box<rocketchat::models::Message>>,
+) {
+    match r {
+        Ok(m) => ws.apply_message(*m),
+        Err(e) => {
+            tracing::warn!(error = %e, "chat.sendMessage failed");
+            ws.mark_pending_failed(rid, tmid, id, &e.user_text());
+        }
+    }
+}
+
+/// Results for a composer that is gone (a thread view closed or replaced,
+/// or the room closed, while a reply or an upload was running): the reply
+/// settles in the workspace, the upload reports its outcome.
+pub fn orphan_result(m: Message, server: &ServerId, rid: &str, ws: &mut Workspace) -> Vec<Effect> {
+    match m {
+        Message::Sent(id, r) => {
+            outbox_forget(server, &id);
+            let tmid = ws
+                .pending_messages(rid)
+                .into_iter()
+                .find(|i| i.message.id == id)
+                .and_then(|i| i.message.tmid.clone());
+            apply_send_result(ws, rid, tmid.as_deref(), &id, r);
+            Vec::new()
+        }
+        Message::Upload(u) => upload::orphan_result(u, ws).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Sends an outbox message. The result is recorded in `OUTBOX` when the
 /// request finishes, even if the room was closed meanwhile.
 fn send_task(ctx: &UpdateCtx<'_>, m: rocketchat::models::Message) -> Task<Message> {
@@ -1884,7 +1936,10 @@ fn last_editable<'a>(
         .filter(|m| m.u.id == me)
         // The room composer edits room messages, not thread replies shown in the channel.
         .filter(|m| tmid.is_some() || m.tmid.is_none())
-        .find(|m| permissions::can_edit_message(ws, m, now))
+        // A message still being sent stops the search: the user means the
+        // one just sent, not an older one (editable once delivered).
+        .find(|m| m.temp == Some(true) || permissions::can_edit_message(ws, m, now))
+        .filter(|m| m.temp != Some(true))
         // An encrypted message that cannot be edited stops the search (an
         // older message is not what the user meant).
         .filter(|m| crate::e2e::room::check_edit(ws, m).is_ok())

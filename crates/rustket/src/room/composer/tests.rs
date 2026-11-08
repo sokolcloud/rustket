@@ -431,8 +431,10 @@ fn user_autocomplete_uses_cached_members_and_drops_stale_results() {
     assert_eq!(c.text(), "@alfred ");
 }
 
+/// Unknown commands are not posted unless the server allows it
+/// (`Message_AllowUnrecognizedSlashCommand`, default off, like the web).
 #[test]
-fn slash_commands_run_known_and_send_unknown() {
+fn slash_commands_run_known_and_refuse_unknown() {
     let mut env = Env::new("t-slash");
     store_commands(
         &env.sid,
@@ -454,6 +456,24 @@ fn slash_commands_run_known_and_send_unknown() {
     assert_eq!(c.text(), "");
     // `commands.run` is handed to the UIKit controller (app level).
     assert!(runs_command(&a.effects, "leave"));
+    type_text(&mut c, &mut env, "/remnd me about card 4111");
+    let a = c.update(Message::Send, &mut env.ctx());
+    assert!(env.ws.pending_messages("R1").is_empty(), "not posted");
+    assert_eq!(c.text(), "/remnd me about card 4111", "kept for a fix");
+    assert!(
+        a.effects
+            .iter()
+            .any(|e| matches!(e, Effect::Toast(_, title, _) if title.contains("/remnd")))
+    );
+    c.content = text_editor::Content::new();
+    env.ws.apply_setting(
+        rustket_core::Change::Updated,
+        rocketchat::models::Setting {
+            id: "Message_AllowUnrecognizedSlashCommand".into(),
+            value: serde_json::json!(true),
+            ..Default::default()
+        },
+    );
     type_text(&mut c, &mut env, "/shrug me");
     let a = c.update(Message::Send, &mut env.ctx());
     assert_eq!(env.ws.pending_messages("R1")[0].message.msg, "/shrug me");
@@ -753,6 +773,28 @@ fn escape_with_an_empty_popup_cancels_the_edit() {
     assert!(c.popup.is_some() && c.popup_items().is_empty());
     let _ = c.update(Message::Cancel, &mut env.ctx());
     assert!(!c.is_editing());
+}
+
+/// Review: Up right after sending edited the previous own message (the
+/// just-sent one is still pending and cannot be edited yet).
+#[test]
+fn up_right_after_sending_does_not_edit_an_older_message() {
+    let mut env = Env::new("t-up-pending");
+    env.ws.apply_message(msg("OLD", "me", "older message"));
+    let mut c = Composer::new("R1");
+    type_text(&mut c, &mut env, "helo wrld");
+    let _ = c.update(Message::Send, &mut env.ctx());
+    let pending = env.ws.pending_messages("R1")[0].message.clone();
+    let _ = c.update(Message::EditLast, &mut env.ctx());
+    assert_eq!(c.editing_mid(), None, "not the older message");
+    // Delivered: now it is the one edited.
+    let mut sent = pending.clone();
+    sent.temp = None;
+    sent.ts = Some(RcDate::now());
+    sent.updated_at = Some(RcDate::now());
+    env.ws.apply_message(sent);
+    let _ = c.update(Message::EditLast, &mut env.ctx());
+    assert_eq!(c.editing_mid(), Some(pending.id.as_str()));
 }
 
 #[test]

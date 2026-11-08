@@ -107,6 +107,12 @@ impl Timeline {
         iced::widget::operation::snap_to(self.scroll_id.clone(), RelativeOffset::START)
     }
 
+    /// The view follows the newest messages (not scrolled up, frozen or
+    /// held at a jumped-to message).
+    pub fn at_bottom(&self) -> bool {
+        self.follow.at_bottom
+    }
+
     /// The jumped-to message, if one is highlighted.
     pub fn selected(&self) -> Option<&str> {
         self.selected.as_ref().map(|(m, _)| m.as_str())
@@ -290,7 +296,7 @@ impl Timeline {
         Action::none()
     }
 
-    /// Window focus is handled by the app (`mark_active_room_read`), which
+    /// Window focus is handled by the app (`RoomView::set_visible`), which
     /// knows which server and room are visible.
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::none()

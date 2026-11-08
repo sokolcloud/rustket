@@ -1424,6 +1424,19 @@ impl Workspace {
         &self.timelines[rid]
     }
 
+    /// Moves the unread divider of an open room to the subscription's
+    /// current `ls` (the room became unread while nobody looked at it).
+    pub fn refresh_unread_since(&mut self, rid: &str) {
+        let ls = self.subscription(rid).and_then(|s| s.ls);
+        let Some(t) = self.timelines.get_mut(rid) else {
+            return;
+        };
+        if t.unread_since() != ls {
+            t.set_unread_since(ls);
+            self.mark_timeline(rid);
+        }
+    }
+
     /// Reloads a room's history from scratch (e.g. `MessagesImported`): the
     /// open room and thread timelines keep only pending messages and the next
     /// `begin_load_older` / `begin_load_thread` starts over.
@@ -1955,6 +1968,28 @@ mod tests {
         ws.apply_subscription(Change::Removed, sub("r1", "one", RoomType::Channel));
         assert!(ws.room("r1").is_none());
         assert!(ws.timeline("r1").is_none());
+    }
+
+    #[test]
+    fn unread_divider_follows_ls_on_request() {
+        let mut ws = Workspace::new();
+        let mut s = sub("r1", "one", RoomType::Channel);
+        s.ls = Some(ts(1000));
+        ws.apply_subscription(Change::Inserted, s.clone());
+        ws.open_room("r1");
+        ws.take_changes();
+        // A newer `ls` alone leaves the divider captured at open.
+        s.ls = Some(ts(5000));
+        ws.apply_subscription(Change::Updated, s);
+        ws.take_changes();
+        assert_eq!(ws.timeline("r1").unwrap().unread_since(), Some(ts(1000)));
+        ws.refresh_unread_since("r1");
+        assert_eq!(ws.timeline("r1").unwrap().unread_since(), Some(ts(5000)));
+        assert!(ws.take_changes().timelines.contains("r1"));
+        // Unchanged: no mark; closed rooms are ignored.
+        ws.refresh_unread_since("r1");
+        assert!(ws.take_changes().is_empty());
+        ws.refresh_unread_since("unknown");
     }
 
     #[test]

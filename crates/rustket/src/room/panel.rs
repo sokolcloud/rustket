@@ -220,6 +220,8 @@ pub struct Panel {
     retired: Vec<Body>,
     /// The thread view was expanded last (new threads open the same way).
     thread_expanded: bool,
+    /// The room is on screen (a thread reads itself only then).
+    visible: bool,
 }
 
 fn wrap<M: Send + 'static>(generation: u64, a: Action<M>, f: fn(M) -> BodyMsg) -> Action<Message> {
@@ -239,6 +241,16 @@ impl Panel {
             stash: None,
             retired: Vec::new(),
             thread_expanded: false,
+            visible: false,
+        }
+    }
+
+    /// Whether the room is on screen; the open thread marks itself read
+    /// only then.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+        if let Some(Body::Thread(t)) = &mut self.body {
+            t.set_visible(visible);
         }
     }
 
@@ -295,10 +307,41 @@ impl Panel {
         }
     }
 
-    /// Highlights reply `mid` in the open thread once it is loaded.
-    pub fn focus_thread_reply(&mut self, mid: &str) {
-        if let Some(Body::Thread(t)) = &mut self.body {
-            t.set_focus(Some(mid.to_owned()));
+    /// Scrolls to and highlights reply `mid` in the open thread: right away
+    /// when the thread is loaded, else once its pages arrive.
+    pub fn focus_thread_reply(&mut self, mid: &str, ctx: &mut UpdateCtx<'_>) -> Task<Message> {
+        let g = self.generation;
+        match &mut self.body {
+            // Opened just now: its first page reveals the reply.
+            Some(Body::Thread(t)) if self.pending.is_some() => {
+                t.set_focus(Some(mid.to_owned()));
+                Task::none()
+            }
+            Some(Body::Thread(t)) => t
+                .focus_reply(mid, ctx)
+                .map(move |m| Message::Body(g, BodyMsg::Thread(m))),
+            _ => Task::none(),
+        }
+    }
+
+    /// Hands dropped files to the open thread's composer; `None` when no
+    /// thread is shown.
+    pub fn thread_files_dropped(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        ctx: &mut UpdateCtx<'_>,
+    ) -> Option<Action<Message>> {
+        if self.pending.is_some() {
+            return None;
+        }
+        let g = self.generation;
+        match &mut self.body {
+            Some(Body::Thread(t)) => Some(wrap(
+                g,
+                t.files_dropped(paths.to_vec(), ctx),
+                BodyMsg::Thread,
+            )),
+            _ => None,
         }
     }
 
@@ -396,6 +439,7 @@ impl Panel {
         let mut body = Body::new(&kind, &self.rid);
         if let Body::Thread(t) = &mut body {
             t.set_expanded(self.thread_expanded);
+            t.set_visible(self.visible);
         }
         self.body = Some(body);
         self.open = Some(kind);
@@ -496,7 +540,8 @@ impl Panel {
                 self.activate(ctx)
             }
             Message::Body(g, m) => {
-                if g == self.generation {
+                // A closed panel keeps its generation: its results are orphans.
+                if g == self.generation && self.body.is_some() {
                     let a = Self::update_body(self.body.as_mut(), g, m, ctx);
                     if let Some(Body::Thread(t)) = &self.body {
                         self.thread_expanded = t.expanded();
@@ -508,7 +553,19 @@ impl Panel {
                     Some(st) if st.generation == g => {
                         Self::update_body(Some(&mut st.body), g, m, ctx)
                     }
-                    _ => Action::none(),
+                    // Sends and uploads of a thread view that is gone still
+                    // settle (failed reply, upload result).
+                    _ => match m {
+                        BodyMsg::Thread(thread::Msg::Composer(c)) => {
+                            Action::effects(crate::room::composer::orphan_result(
+                                c,
+                                ctx.server_id,
+                                &self.rid,
+                                ctx.workspace,
+                            ))
+                        }
+                        _ => Action::none(),
+                    },
                 }
             }
         }

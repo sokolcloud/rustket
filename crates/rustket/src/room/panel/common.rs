@@ -79,7 +79,7 @@ impl RoomAction {
     pub async fn run(self, rest: RestClient, rid: String) -> rocketchat::Result<()> {
         match self {
             Self::Favorite(f) => rest.rooms_favorite(&rid, f).await,
-            Self::MarkRead => rest.subscriptions_read(&rid).await,
+            Self::MarkRead => rest.subscriptions_read(&rid, true).await,
             Self::Hide => rest.rooms_hide(&rid).await,
             Self::Leave => rest.rooms_leave(&rid).await,
             Self::Delete => rest.rooms_delete(&rid).await,
