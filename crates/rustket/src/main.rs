@@ -126,6 +126,7 @@ fn main() -> iced::Result {
         .window(iced::window::Settings {
             icon: rustket::desktop::icon::window_icon(),
             decorations,
+            min_size: Some(rustket::workspace::titlebar::MIN_WINDOW_SIZE),
             platform_specific: iced::window::settings::PlatformSpecific {
                 application_id: "rustket".into(),
                 ..Default::default()

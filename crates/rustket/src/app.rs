@@ -343,7 +343,13 @@ impl App {
             true,
             Message::Noop,
         );
-        (app, Task::batch([open, theme, handler, media]))
+        // The window manager may map the window maximized.
+        let maximized = if app.custom_chrome() {
+            query_maximized()
+        } else {
+            Task::none()
+        };
+        (app, Task::batch([open, theme, handler, media, maximized]))
     }
 
     // --- helpers ---------------------------------------------------------------
@@ -2536,22 +2542,24 @@ impl App {
             return Task::none();
         }
         self.decorated = self.config.ui.system_title_bar;
-        window::latest().and_then(window::toggle_decorations)
+        let toggle = window::latest().and_then(window::toggle_decorations);
+        if self.decorated {
+            return toggle;
+        }
+        // Maximize changes made under the system frame went unnoticed.
+        toggle.chain(query_maximized())
     }
 
     fn on_title_bar(&mut self, m: crate::workspace::titlebar::Message) -> Task<Message> {
-        use crate::workspace::titlebar::{Message as Tm, Outcome, WindowOp};
+        use crate::workspace::titlebar::{Outcome, WindowOp};
         match self.titlebar.update(m, Instant::now()) {
             Outcome::None => Task::none(),
             Outcome::Rail(m) => Task::done(Message::Rail(m)),
-            Outcome::QueryMaximized => window::latest().and_then(|id| {
-                window::is_maximized(id).map(|m| Message::TitleBar(Tm::Maximized(m)))
-            }),
+            Outcome::QueryMaximized => query_maximized(),
             Outcome::Window(op) => window::latest().and_then(move |id| match op {
                 WindowOp::Drag => window::drag(id),
                 WindowOp::ToggleMaximize => window::toggle_maximize(id),
                 WindowOp::Minimize => window::minimize(id, true),
-                WindowOp::SystemMenu => window::show_system_menu(id),
                 WindowOp::Resize(d) => window::drag_resize(id, d),
                 WindowOp::Close => Task::done(Message::CloseRequested(id)),
             }),
@@ -2625,6 +2633,7 @@ impl App {
                 window::resize_events()
                     .map(|_| Message::TitleBar(crate::workspace::titlebar::Message::Resized)),
             );
+            subs.push(self.titlebar.subscription().map(Message::TitleBar));
         }
         // Files dropped onto the window go to the active composer.
         subs.push(iced::event::listen_with(
@@ -2709,6 +2718,13 @@ fn handler_executable() -> Result<(PathBuf, Vec<String>), String> {
     let appdir = std::env::var_os("APPDIR");
     url_handler::handler_executable(&current, appimage.as_deref(), appdir.as_deref())
         .map_err(|e| e.to_string())
+}
+
+/// Reads the window's maximize state into the custom title bar.
+fn query_maximized() -> Task<Message> {
+    use crate::workspace::titlebar::Message as Tm;
+    window::latest()
+        .and_then(|id| window::is_maximized(id).map(|m| Message::TitleBar(Tm::Maximized(m))))
 }
 
 fn query_handler_task() -> Task<Message> {

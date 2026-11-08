@@ -10,15 +10,15 @@ use std::time::{Duration, Instant};
 use iced::widget::scrollable::{Direction as ScrollDirection, Scrollbar};
 use iced::widget::{Row, column, container, mouse_area, row, scrollable, space, text};
 use iced::window::Direction;
-use iced::{Alignment, Element, Length, Point};
+use iced::{Alignment, Element, Length, Point, Subscription, mouse};
 use rust_i18n::t;
 use rustket_core::config::{AppConfig, CONFIG_FILE};
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, TEXT_SMALL};
 use rustket_ui::widget::{
-    TITLE_BAR_HEIGHT, TITLE_BAR_ITEM, WindowControlLabels, divider, title_bar_button,
-    title_bar_workspace, window_controls,
+    MenuEntry, MenuItem, TITLE_BAR_HEIGHT, TITLE_BAR_ITEM, WindowControlLabels, context_menu,
+    divider, title_bar_button, title_bar_workspace, window_controls,
 };
 
 use super::rail::{self, RailEntry};
@@ -29,6 +29,11 @@ pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const DRAG_THRESHOLD: f32 = 4.0;
 /// Room for about a dozen workspaces; more scroll horizontally.
 pub const WORKSPACES_MAX_WIDTH: f32 = TITLE_BAR_ITEM * 12.0;
+/// Empty bar after the workspaces that always stays free to drag by.
+pub const DRAG_RESERVE: f32 = 48.0;
+/// Smallest window size: the window controls, the gear, a few workspaces and
+/// the drag reserve fit in the title bar.
+pub const MIN_WINDOW_SIZE: iced::Size = iced::Size::new(480.0, 400.0);
 
 /// The saved `system_title_bar` preference, read without side effects like
 /// `renderer::saved_hardware_acceleration`; any error yields the default.
@@ -46,12 +51,12 @@ pub enum Message {
     Rail(rail::Message),
     /// Left button pressed on empty title-bar space.
     Press,
-    /// Pointer moved over the title bar while pressed.
+    /// Pointer moved anywhere in the window while pressed ([`drag_events`]).
     Move(Point),
+    /// Left button released anywhere in the window while pressed.
     Release,
-    Exit,
-    /// Right button on empty title-bar space.
-    SystemMenu,
+    /// A press on a workspace item that is inert under a modal.
+    Inert,
     Minimize,
     ToggleMaximize,
     Close,
@@ -68,7 +73,6 @@ pub enum WindowOp {
     Drag,
     ToggleMaximize,
     Minimize,
-    SystemMenu,
     Resize(Direction),
     /// Through the app's close-request path (close to tray, config flush,
     /// unsaved-changes guard).
@@ -96,9 +100,27 @@ pub struct TitleBar {
 }
 
 impl TitleBar {
-    /// Pointer moves are only reported while a press may become a drag.
+    /// Pointer moves are only listened to while a press may become a drag.
     pub fn tracking(&self) -> bool {
         self.pressed.is_some()
+    }
+
+    /// Window-wide pointer moves and the release while [`Self::tracking`]: a
+    /// quick flick leaves the 40 px bar before the drag threshold is reached,
+    /// and the pointer stays grabbed by the window meanwhile.
+    pub fn subscription(&self) -> Subscription<Message> {
+        if !self.tracking() {
+            return Subscription::none();
+        }
+        iced::event::listen_with(|event, _status, _id| match event {
+            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                Some(Message::Move(position))
+            }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                Some(Message::Release)
+            }
+            _ => None,
+        })
     }
 
     pub fn update(&mut self, msg: Message, now: Instant) -> Outcome {
@@ -131,15 +153,11 @@ impl TitleBar {
                 }
                 _ => Outcome::None,
             },
-            Message::Release | Message::Exit => {
+            Message::Release => {
                 self.pressed = None;
                 Outcome::None
             }
-            Message::SystemMenu => {
-                self.pressed = None;
-                self.last_press = None;
-                Outcome::Window(WindowOp::SystemMenu)
-            }
+            Message::Inert => Outcome::None,
             Message::Minimize => Outcome::Window(WindowOp::Minimize),
             Message::ToggleMaximize => Outcome::Window(WindowOp::ToggleMaximize),
             Message::Close => Outcome::Window(WindowOp::Close),
@@ -163,13 +181,22 @@ pub struct View {
     pub title: String,
     pub maximized: bool,
     /// `false` while a modal covers the window: workspace, add and settings
-    /// buttons are inert; dragging and the window controls still work.
+    /// buttons are inert (their presses do nothing, not even start a drag);
+    /// dragging and the window controls still work.
     pub interactive: bool,
-    pub tracking: bool,
 }
 
 pub fn view<'a>(v: View) -> Element<'a, Message> {
     let on = |m: rail::Message| v.interactive.then_some(Message::Rail(m));
+    // Inert items swallow their presses instead of passing them to the bar.
+    let guard = |e: Element<'a, Message>| -> Element<'a, Message> {
+        let area = mouse_area(e);
+        if v.interactive {
+            area.into()
+        } else {
+            area.on_press(Message::Inert).into()
+        }
+    };
     let items = v.entries.into_iter().map(|e| {
         let badge = rail::badge(e.unread);
         title_bar_workspace(
@@ -193,49 +220,84 @@ pub fn view<'a>(v: View) -> Element<'a, Message> {
             .padding(iced::Padding::ZERO.left(SPACE_1)),
         );
     }
-    let workspaces = container(
+    let workspaces = container(guard(
         scrollable(list)
             .direction(ScrollDirection::Horizontal(
                 Scrollbar::new().width(3).scroller_width(3).margin(0),
             ))
-            .style(style::scrollable),
-    )
-    .max_width(WORKSPACES_MAX_WIDTH);
-    let title = container(
-        text(v.title)
-            .size(TEXT_SMALL)
-            .style(style::text_secondary)
-            .wrapping(text::Wrapping::None),
-    )
-    .center_x(Length::Fill)
-    .center_y(Length::Fill)
-    .clip(true);
+            .style(style::scrollable)
+            .into(),
+    ))
+    .padding(iced::Padding::ZERO.right(DRAG_RESERVE))
+    .max_width(WORKSPACES_MAX_WIDTH + DRAG_RESERVE);
+    let labels = || WindowControlLabels {
+        minimize: t!("titlebar.minimize").into_owned(),
+        maximize: t!("titlebar.maximize").into_owned(),
+        restore: t!("titlebar.restore").into_owned(),
+        close: t!("titlebar.close").into_owned(),
+    };
+    // The window menu (winit's system menu is a no-op on X11).
+    let menu_labels = labels();
+    let window_menu = vec![
+        MenuEntry::from(MenuItem::new(menu_labels.minimize, Message::Minimize).icon(Icon::Minus)),
+        MenuItem::new(
+            if v.maximized {
+                menu_labels.restore
+            } else {
+                menu_labels.maximize
+            },
+            Message::ToggleMaximize,
+        )
+        .icon(if v.maximized {
+            Icon::Copy
+        } else {
+            Icon::Square
+        })
+        .into(),
+        MenuEntry::Separator,
+        MenuItem::new(menu_labels.close, Message::Close)
+            .icon(Icon::X)
+            .into(),
+    ];
+    let title = context_menu(
+        container(
+            text(v.title)
+                .size(TEXT_SMALL)
+                .style(style::text_secondary)
+                .wrapping(text::Wrapping::None),
+        )
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .clip(true),
+        window_menu,
+    );
+    // Workspaces and title share what the controls leave: the workspaces
+    // scroll instead of pushing the controls off a narrow window, and
+    // `DRAG_RESERVE` after them stays free to move the window by.
+    let middle = row![workspaces, title]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(Alignment::Center);
     let gear: Element<'a, Message> = if v.workspace_buttons {
-        title_bar_button(
+        guard(title_bar_button(
             Icon::Settings,
             t!("rail.settings"),
             v.settings_active,
             on(rail::Message::Settings),
-        )
+        ))
     } else {
-        space().into()
+        guard(space().into())
     };
     let controls = window_controls(
         v.maximized,
-        WindowControlLabels {
-            minimize: t!("titlebar.minimize").into_owned(),
-            maximize: t!("titlebar.maximize").into_owned(),
-            restore: t!("titlebar.restore").into_owned(),
-            close: t!("titlebar.close").into_owned(),
-        },
+        labels(),
         Message::Minimize,
         Message::ToggleMaximize,
         Message::Close,
     );
     let bar = row![
         space().width(SPACE_1),
-        workspaces,
-        title,
+        middle,
         gear,
         space().width(SPACE_2),
         controls,
@@ -243,14 +305,7 @@ pub fn view<'a>(v: View) -> Element<'a, Message> {
     .height(TITLE_BAR_HEIGHT)
     .align_y(Alignment::Center);
     // Buttons capture their presses; the rest of the bar moves the window.
-    let mut area = mouse_area(bar)
-        .on_press(Message::Press)
-        .on_release(Message::Release)
-        .on_right_press(Message::SystemMenu)
-        .on_exit(Message::Exit);
-    if v.tracking {
-        area = area.on_move(Message::Move);
-    }
+    let area = mouse_area(bar).on_press(Message::Press);
     container(column![area, divider()])
         .width(Length::Fill)
         .style(style::container_rail)
@@ -269,7 +324,6 @@ mod tests {
             Outcome::Window(WindowOp::Drag) => Some("drag"),
             Outcome::Window(WindowOp::ToggleMaximize) => Some("max"),
             Outcome::Window(WindowOp::Minimize) => Some("min"),
-            Outcome::Window(WindowOp::SystemMenu) => Some("menu"),
             Outcome::Window(WindowOp::Resize(_)) => Some("resize"),
             Outcome::Window(WindowOp::Close) => Some("close"),
             Outcome::QueryMaximized => Some("query"),
@@ -350,15 +404,23 @@ mod tests {
         );
     }
 
+    /// Moves come window-wide while pressed, so a flick off the bar (here to
+    /// y = 3, then above the window) still starts the move.
     #[test]
-    fn exit_and_system_menu_cancel_the_press() {
+    fn a_flick_off_the_bar_drags() {
         let mut tb = TitleBar::default();
         let t0 = Instant::now();
-        tb.update(Message::Press, t0);
-        tb.update(Message::Exit, t0);
         assert!(!tb.tracking());
-        tb.update(Message::Press, t0 + Duration::from_secs(1));
-        assert_eq!(op(tb.update(Message::SystemMenu, t0)), Some("menu"));
+        tb.update(Message::Press, t0);
+        assert!(tb.tracking());
+        tb.update(Message::Move(Point::new(511.0, 11.0)), t0);
+        assert_eq!(
+            op(tb.update(Message::Move(Point::new(511.0, -20.0)), t0)),
+            Some("drag")
+        );
+        assert!(!tb.tracking());
+        // An inert item's press is neither a click nor a drag.
+        assert_eq!(op(tb.update(Message::Inert, t0)), None);
         assert!(!tb.tracking());
     }
 
@@ -408,41 +470,37 @@ mod tests {
         }
     }
 
-    /// Workspaces coming, going and changing badges only change the title
-    /// bar's own subtree.
+    /// Badges, the signed-out marker, a modal (inert items), maximizing and
+    /// workspaces coming and going keep the workspace row's scroll state.
     #[test]
-    fn title_bar_root_keeps_its_shape() {
+    fn title_bar_keeps_its_scroll_state() {
+        use crate::tree_probe::{assert_kept, scrollable_tag};
         use iced::advanced::widget::Tree;
-        let view_of = |entries, interactive, tracking| -> Element<'static, Message> {
+        let view_of = |entries, interactive, maximized| -> Element<'static, Message> {
             view(View {
                 entries,
                 workspace_buttons: true,
                 settings_active: false,
                 title: "Rustket".into(),
-                maximized: false,
+                maximized,
                 interactive,
-                tracking,
             })
         };
-        let a = view_of(vec![entry(0, (0, 0), false)], true, false);
+        let a = view_of(
+            vec![entry(0, (0, 0), false), entry(1, (0, 0), false)],
+            true,
+            false,
+        );
         let b = view_of(
-            vec![
-                entry(0, (3, 2), false),
-                entry(1, (1, 0), true),
-                entry(2, (0, 0), false),
-            ],
+            vec![entry(0, (3, 2), false), entry(1, (1, 0), true)],
             false,
             true,
         );
+        let c = view_of(vec![entry(0, (0, 0), false)], true, false);
         let mut tree = Tree::new(a.as_widget());
-        tree.diff(b.as_widget());
-        assert!(crate::tree_probe::tags_match(
-            &tree,
-            &Tree::new(b.as_widget())
-        ));
-        let (ta, tb) = (Tree::new(a.as_widget()), Tree::new(b.as_widget()));
-        assert_eq!(ta.tag, tb.tag);
-        assert_eq!(ta.children.len(), tb.children.len());
+        assert_kept(&mut tree, &b, scrollable_tag(), "badges, modal, maximized");
+        assert_kept(&mut tree, &c, scrollable_tag(), "workspace removed");
+        assert_kept(&mut tree, &a, scrollable_tag(), "workspace added");
     }
 
     // --- in the app ------------------------------------------------------------
@@ -513,6 +571,20 @@ mod tests {
             prefs: &app.config.ui,
         };
         let (rv, _) = crate::room::RoomView::open(&mut ctx);
+        for (i, text) in ["one", "two"].iter().enumerate() {
+            s.workspace.apply_message(rocketchat::models::Message {
+                id: format!("m{i}"),
+                rid: "R1".into(),
+                msg: (*text).into(),
+                ts: rocketchat::RcDate::from_millis(1_000_000 + i as i64 * 1000),
+                u: UserRef {
+                    id: "alice".into(),
+                    username: Some("alice".into()),
+                    name: None,
+                },
+                ..Default::default()
+            });
+        }
         s.rooms.insert("R1".into(), rv);
         s.active_room = Some("R1".into());
         app.active = Some(sid);
@@ -538,14 +610,21 @@ mod tests {
 
     /// Servers, badges and the signed-out marker changing in the title bar,
     /// a modal covering the window and the window being maximized keep the
-    /// room's timeline and composer state.
+    /// state of every scrollable (title bar, sidebar, timeline) and of the
+    /// composer.
     #[test]
     fn room_trees_survive_title_bar_changes() {
-        use crate::tree_probe::{assert_first_kept, scrollable_tag, text_editor_tag};
+        use crate::tree_probe::{
+            assert_first_kept, assert_kept, scrollable_tag, states, text_editor_tag,
+        };
         use iced::advanced::widget::Tree;
         let mut app = app();
         let (sc, ed) = (scrollable_tag(), text_editor_tag());
         let mut tree = Tree::new(app.view().as_widget());
+        // The title bar's workspace row, the room list and the timeline (at
+        // least).
+        let base = states(&tree, sc).len();
+        assert!(base >= 3, "{:?}", states(&tree, sc));
         let first = app.active.clone().unwrap();
         type Step = (&'static str, Box<dyn Fn(&mut App)>);
         let steps: Vec<Step> = vec![
@@ -606,8 +685,9 @@ mod tests {
         for (step, change) in steps {
             change(&mut app);
             let view = app.view();
-            assert_first_kept(&mut tree, &view, sc, 1, step);
-            assert_first_kept(&mut tree, &view, ed, 1, step);
+            // The dialog's own scrollable (last, in the layer) comes and goes.
+            assert_first_kept(&mut tree, &view, sc, base, step);
+            assert_kept(&mut tree, &view, ed, step);
         }
     }
 
@@ -650,8 +730,9 @@ mod tests {
     }
 
     /// At 1024 px the window controls, the gear and the workspaces are where
-    /// they belong, the empty middle moves the window and a modal leaves the
-    /// window controls working.
+    /// they belong, the empty middle moves the window, and under a modal the
+    /// window controls, the drag area and the edges work while the
+    /// workspaces are inert.
     #[test]
     fn layout_at_1024() {
         let mut app = app();
@@ -661,23 +742,23 @@ mod tests {
         let y = TITLE_BAR_HEIGHT / 2.0;
         let has = |out: &[String], what: &str| out.iter().any(|m| m.contains(what));
         let close = click(&app, w, Point::new(w - 1.0 - 22.0, y));
-        assert!(has(&close, "Close"), "{close:?}");
+        assert_eq!(close, ["TitleBar(Close)"]);
         let max = click(&app, w, Point::new(w - 1.0 - 44.0 - 22.0, y));
-        assert!(has(&max, "ToggleMaximize"), "{max:?}");
+        assert_eq!(max, ["TitleBar(ToggleMaximize)"]);
         let gear = click(&app, w, Point::new(w - 1.0 - 132.0 - 8.0 - 16.0, y));
-        assert!(has(&gear, "Settings"), "{gear:?}");
+        assert_eq!(gear, ["TitleBar(Rail(Settings))"]);
         let ws = click(&app, w, Point::new(1.0 + 4.0 + TITLE_BAR_ITEM * 1.5, y));
-        assert!(has(&ws, "Select"), "{ws:?}");
+        assert!(has(&ws, "TitleBar(Rail(Select("), "{ws:?}");
         let add = click(
             &app,
             w,
             Point::new(1.0 + 4.0 + TITLE_BAR_ITEM * 3.0 + 20.0, y),
         );
-        assert!(has(&add, "Add"), "{add:?}");
+        assert_eq!(add, ["TitleBar(Rail(Add))"]);
         let middle = click(&app, w, Point::new(w / 2.0, y));
-        assert!(has(&middle, "Press"), "{middle:?}");
+        assert_eq!(middle, ["TitleBar(Press)"]);
         let edge = click(&app, w, Point::new(w / 2.0, 1.0));
-        assert!(has(&edge, "Resize(North)"), "{edge:?}");
+        assert_eq!(edge, ["TitleBar(Resize(North))"]);
         // Below the bar: the room, not the title bar.
         let room = click(&app, w, Point::new(w / 2.0, 300.0));
         assert!(!has(&room, "TitleBar"), "{room:?}");
@@ -685,9 +766,42 @@ mod tests {
         let sid = app.active.clone().unwrap();
         app.modals.push(Modal::ConfirmRemove(sid));
         let ws = click(&app, w, Point::new(1.0 + 4.0 + TITLE_BAR_ITEM * 1.5, y));
-        assert!(!has(&ws, "Select"), "inert under a modal: {ws:?}");
+        assert_eq!(ws, ["TitleBar(Inert)"], "inert under a modal");
         let close = click(&app, w, Point::new(w - 1.0 - 22.0, y));
-        assert!(has(&close, "Close"), "{close:?}");
+        assert_eq!(close, ["TitleBar(Close)"]);
+        let max = click(&app, w, Point::new(w - 1.0 - 44.0 - 22.0, y));
+        assert_eq!(max, ["TitleBar(ToggleMaximize)"]);
+        let middle = click(&app, w, Point::new(w / 2.0, y));
+        assert_eq!(middle, ["TitleBar(Press)"]);
+        let edge = click(&app, w, Point::new(w - 1.0, 400.0));
+        assert_eq!(edge, ["TitleBar(Resize(East))"]);
+        // The backdrop still dismisses.
+        let backdrop = click(&app, w, Point::new(40.0, 600.0));
+        assert_eq!(backdrop, ["CloseModal"]);
+    }
+
+    /// With many workspaces in a narrow window the workspaces scroll: the
+    /// window controls stay in place and some bar is left to drag by.
+    #[test]
+    fn narrow_window_keeps_the_controls() {
+        let mut app = app();
+        for i in 1..14 {
+            add_server(&mut app, &format!("S{i}"), i, true);
+        }
+        let w = MIN_WINDOW_SIZE.width;
+        let y = TITLE_BAR_HEIGHT / 2.0;
+        let close = click(&app, w, Point::new(w - 1.0 - 22.0, y));
+        assert_eq!(close, ["TitleBar(Close)"]);
+        let min = click(&app, w, Point::new(w - 1.0 - 132.0 + 22.0, y));
+        assert_eq!(min, ["TitleBar(Minimize)"]);
+        let gear = click(&app, w, Point::new(w - 1.0 - 132.0 - 8.0 - 16.0, y));
+        assert_eq!(gear, ["TitleBar(Rail(Settings))"]);
+        let drag = click(
+            &app,
+            w,
+            Point::new(w - 1.0 - 132.0 - 8.0 - 32.0 - DRAG_RESERVE / 2.0, y),
+        );
+        assert_eq!(drag, ["TitleBar(Press)"]);
     }
 
     /// With the system title bar the left rail is back and the custom title

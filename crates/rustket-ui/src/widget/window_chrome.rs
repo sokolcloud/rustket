@@ -2,9 +2,16 @@
 //! items, window control buttons, and the frame with invisible resize edges
 //! around an undecorated window.
 
+use iced::advanced::layout::{self, Layout};
+use iced::advanced::overlay;
+use iced::advanced::renderer;
+use iced::advanced::widget::{Operation, Tree, Widget, tree};
+use iced::advanced::{Clipboard, Shell};
 use iced::widget::{button, column, container, mouse_area, row, space, stack};
 use iced::window::Direction;
-use iced::{Alignment, Element, Length, Theme, border, mouse};
+use iced::{
+    Alignment, Element, Event, Length, Rectangle, Size, Theme, Vector, border, mouse, touch,
+};
 
 use super::avatar::{AvatarShape, AvatarSource, face};
 use super::badge::{BadgeKind, badge, dot};
@@ -237,11 +244,18 @@ pub fn resize_cursor(direction: Direction) -> mouse::Interaction {
     }
 }
 
-/// An undecorated window's frame: `content` inside a 1 px border (none while
-/// maximized) under invisible resize edges and corners that report the
-/// pressed direction. While maximized the edges do nothing; the tree keeps
-/// its shape either way.
+/// An undecorated window's frame: `title` above `content` inside a 1 px
+/// border (none while maximized), with invisible resize edges and corners
+/// that report the pressed direction. While maximized the edges do nothing;
+/// the tree keeps its shape either way.
+///
+/// The top edge and the corner grips lie above the title bar; the side and
+/// bottom edges lie under `content`, so a widget there that takes the press
+/// or shows a cursor (a scrollbar, a button) wins and the edge only gets
+/// presses on inert areas. Modals in `content` cover `content` only: the
+/// title bar and the edges keep working while one is open.
 pub fn window_frame<'a, Message: Clone + 'a>(
+    title: Element<'a, Message>,
     content: Element<'a, Message>,
     maximized: bool,
     on_resize: impl Fn(Direction) -> Message + 'a,
@@ -259,24 +273,32 @@ pub fn window_frame<'a, Message: Clone + 'a>(
     let e = Length::Fixed(RESIZE_EDGE);
     let corner = Length::Fixed(RESIZE_CORNER);
     let side_corner = Length::Fixed(RESIZE_CORNER - RESIZE_EDGE);
-    let side = |top: Direction, mid: Direction, bottom: Direction| {
-        column![
-            edge(top, e, side_corner),
-            edge(mid, e, Length::Fill),
-            edge(bottom, e, side_corner),
-        ]
-        .height(Length::Fill)
-    };
-    let edges = column![
+    let top_edges = column![
         row![
             edge(Direction::NorthWest, corner, e),
             edge(Direction::North, Length::Fill, e),
             edge(Direction::NorthEast, corner, e),
         ],
         row![
-            side(Direction::NorthWest, Direction::West, Direction::SouthWest),
+            edge(Direction::NorthWest, e, side_corner),
+            space().width(Length::Fill),
+            edge(Direction::NorthEast, e, side_corner),
+        ],
+    ]
+    .width(Length::Fill);
+    let side = |mid: Direction, bottom: Direction| {
+        column![
+            space().width(e).height(Length::Fixed(RESIZE_CORNER)),
+            edge(mid, e, Length::Fill),
+            edge(bottom, e, side_corner),
+        ]
+        .height(Length::Fill)
+    };
+    let lower_edges = column![
+        row![
+            side(Direction::West, Direction::SouthWest),
             space().width(Length::Fill).height(Length::Fill),
-            side(Direction::NorthEast, Direction::East, Direction::SouthEast),
+            side(Direction::East, Direction::SouthEast),
         ]
         .height(Length::Fill),
         row![
@@ -285,7 +307,7 @@ pub fn window_frame<'a, Message: Clone + 'a>(
             edge(Direction::SouthEast, corner, e),
         ],
     ];
-    let framed = container(content)
+    let framed = container(column![title, scope(content, Scope::Viewport)])
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(if maximized { 0 } else { 1 })
@@ -297,10 +319,295 @@ pub fn window_frame<'a, Message: Clone + 'a>(
                 ..container::Style::default()
             }
         });
-    stack![framed, edges]
+    let frame = stack![lower_edges, framed, top_edges]
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+    scope(
+        frame.into(),
+        Scope::EdgeGuard(if maximized { 0.0 } else { RESIZE_EDGE }),
+    )
+}
+
+/// What a [`ScopeWidget`] changes for the overlays of its content.
+#[derive(Debug, Clone, Copy)]
+enum Scope {
+    /// Overlays get the widget's own bounds as their viewport: a modal
+    /// covers this area, not the whole window.
+    Viewport,
+    /// Pointer input within this many px of the widget's edges (the resize
+    /// edges) is left to the base: presses never reach the overlays there.
+    EdgeGuard(f32),
+}
+
+fn scope<'a, Message: Clone + 'a>(
+    content: Element<'a, Message>,
+    scope: Scope,
+) -> Element<'a, Message> {
+    Element::new(ScopeWidget { content, scope })
+}
+
+/// Transparent wrapper: everything goes to `content`; only its overlays are
+/// adjusted (see [`Scope`]).
+struct ScopeWidget<'a, Message> {
+    content: Element<'a, Message>,
+    scope: Scope,
+}
+
+impl<'a, Message: Clone + 'a> Widget<Message, Theme, iced::Renderer> for ScopeWidget<'a, Message> {
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn tag(&self) -> tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget_mut().update(
+            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        let bounds = layout.bounds() + translation;
+        match self.scope {
+            Scope::Viewport => {
+                let area = bounds.intersection(viewport).unwrap_or(bounds);
+                self.content
+                    .as_widget_mut()
+                    .overlay(tree, layout, renderer, &area, translation)
+            }
+            Scope::EdgeGuard(thickness) => {
+                let inner = self.content.as_widget_mut().overlay(
+                    tree,
+                    layout,
+                    renderer,
+                    viewport,
+                    translation,
+                )?;
+                if thickness <= 0.0 {
+                    return Some(inner);
+                }
+                Some(overlay::Element::new(Box::new(EdgeFilter {
+                    inner,
+                    window: bounds,
+                    thickness,
+                })))
+            }
+        }
+    }
+}
+
+/// Keeps overlays (an open modal) off the resize edges: presses there go to
+/// the base, other pointer events reach the overlays without a cursor and
+/// without capturing.
+struct EdgeFilter<'b, Message> {
+    inner: overlay::Element<'b, Message, Theme, iced::Renderer>,
+    window: Rectangle,
+    thickness: f32,
+}
+
+impl<Message> EdgeFilter<'_, Message> {
+    fn on_edge(&self, cursor: mouse::Cursor) -> bool {
+        let inside = self.window.shrink(self.thickness);
+        cursor
+            .position()
+            .is_some_and(|p| self.window.contains(p) && !inside.contains(p))
+    }
+}
+
+impl<Message> overlay::Overlay<Message, Theme, iced::Renderer> for EdgeFilter<'_, Message> {
+    fn layout(&mut self, renderer: &iced::Renderer, bounds: Size) -> layout::Node {
+        self.inner.as_overlay_mut().layout(renderer, bounds)
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) {
+        let cursor = if self.on_edge(cursor) {
+            mouse::Cursor::Unavailable
+        } else {
+            cursor
+        };
+        self.inner
+            .as_overlay()
+            .draw(renderer, theme, style, layout, cursor);
+    }
+
+    fn operate(
+        &mut self,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.inner
+            .as_overlay_mut()
+            .operate(layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let pointer = matches!(event, Event::Mouse(_) | Event::Touch(_));
+        if !pointer || !self.on_edge(cursor) {
+            self.inner
+                .as_overlay_mut()
+                .update(event, layout, cursor, renderer, clipboard, shell);
+            return;
+        }
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(_))
+                | Event::Touch(touch::Event::FingerPressed { .. })
+        ) {
+            return;
+        }
+        // Moves and releases still end hovers and presses in the overlays.
+        let mut messages = Vec::new();
+        let mut inner_shell = Shell::new(&mut messages);
+        self.inner.as_overlay_mut().update(
+            event,
+            layout,
+            mouse::Cursor::Unavailable,
+            renderer,
+            clipboard,
+            &mut inner_shell,
+        );
+        let layout_invalid = inner_shell.is_layout_invalid();
+        let widgets_invalid = inner_shell.are_widgets_invalid();
+        let redraw = inner_shell.redraw_request();
+        drop(inner_shell);
+        for m in messages {
+            shell.publish(m);
+        }
+        if layout_invalid {
+            shell.invalidate_layout();
+        }
+        if widgets_invalid {
+            shell.invalidate_widgets();
+        }
+        shell.request_redraw_at(redraw);
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        if self.on_edge(cursor) {
+            mouse::Interaction::None
+        } else {
+            self.inner
+                .as_overlay()
+                .mouse_interaction(layout, cursor, renderer)
+        }
+    }
+
+    fn overlay<'c>(
+        &'c mut self,
+        layout: Layout<'c>,
+        renderer: &iced::Renderer,
+    ) -> Option<overlay::Element<'c, Message, Theme, iced::Renderer>> {
+        self.inner.as_overlay_mut().overlay(layout, renderer)
+    }
+
+    fn index(&self) -> f32 {
+        self.inner.as_overlay().index()
+    }
 }
 
 #[cfg(test)]
@@ -316,7 +623,10 @@ mod tests {
     #[derive(Debug, Clone)]
     enum Msg {
         Resize(Direction),
+        Title,
         Content,
+        Bar,
+        Dismiss,
     }
 
     fn renderer() -> iced::Renderer {
@@ -326,20 +636,29 @@ mod tests {
         ))
     }
 
-    fn frame(maximized: bool) -> Element<'static, Msg> {
-        let content = button(space().width(Length::Fill).height(Length::Fill))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .on_press(Msg::Content);
-        window_frame(content.into(), maximized, Msg::Resize)
+    /// 400 x 300: a 40 px title, a 50 px button in the middle of the content
+    /// and a 10 x 100 "scrollbar" button at the top right of the content.
+    fn frame(maximized: bool, modal: bool) -> Element<'static, Msg> {
+        let title = mouse_area(space().width(Length::Fill).height(40)).on_press(Msg::Title);
+        let content = row![
+            container(button(space().width(50).height(50)).on_press(Msg::Content))
+                .center(Length::Fill),
+            iced::widget::column![
+                button(space().width(10).height(100)).on_press(Msg::Bar),
+                space().height(Length::Fill),
+            ],
+        ];
+        let dialog: Element<'static, Msg> = container(space().width(60).height(40)).into();
+        let content = crate::widget::modal(content, modal.then_some(dialog), Some(Msg::Dismiss));
+        window_frame(title.into(), content, maximized, Msg::Resize)
     }
 
     /// Messages (as `Debug` text: `Direction` has no `PartialEq`) and the
     /// cursor after a click at `at`.
-    fn click(maximized: bool, at: Point) -> (Vec<String>, mouse::Interaction) {
+    fn click(maximized: bool, modal: bool, at: Point) -> (Vec<String>, mouse::Interaction) {
         let mut r = renderer();
         let mut ui = UserInterface::build(
-            frame(maximized),
+            frame(maximized, modal),
             Size::new(400.0, 300.0),
             Cache::default(),
             &mut r,
@@ -369,48 +688,75 @@ mod tests {
         fn write(&mut self, _: iced::advanced::clipboard::Kind, _: String) {}
     }
 
+    fn resize(d: Direction) -> Vec<String> {
+        vec![format!("{:?}", Msg::Resize(d))]
+    }
+
     #[test]
-    fn edges_resize_and_the_middle_reaches_the_content() {
-        let cases = [
-            (Point::new(200.0, 1.0), Direction::North),
-            (Point::new(200.0, 298.0), Direction::South),
-            (Point::new(1.0, 150.0), Direction::West),
-            (Point::new(398.0, 150.0), Direction::East),
-            (Point::new(2.0, 2.0), Direction::NorthWest),
-            (Point::new(10.0, 2.0), Direction::NorthWest),
-            (Point::new(2.0, 10.0), Direction::NorthWest),
-            (Point::new(397.0, 2.0), Direction::NorthEast),
-            (Point::new(2.0, 297.0), Direction::SouthWest),
-            (Point::new(397.0, 297.0), Direction::SouthEast),
-        ];
-        for (at, d) in cases {
-            let (out, cursor) = click(false, at);
-            assert_eq!(out, vec![format!("{:?}", Msg::Resize(d))], "{at:?}");
-            assert_eq!(cursor, resize_cursor(d), "{at:?}");
+    fn edges_resize_on_inert_areas_only() {
+        for modal in [false, true] {
+            let cases = [
+                (Point::new(200.0, 1.0), Direction::North),
+                (Point::new(200.0, 298.0), Direction::South),
+                (Point::new(1.0, 150.0), Direction::West),
+                (Point::new(398.0, 250.0), Direction::East),
+                (Point::new(2.0, 2.0), Direction::NorthWest),
+                (Point::new(10.0, 2.0), Direction::NorthWest),
+                (Point::new(2.0, 10.0), Direction::NorthWest),
+                (Point::new(397.0, 2.0), Direction::NorthEast),
+                (Point::new(2.0, 297.0), Direction::SouthWest),
+                (Point::new(397.0, 297.0), Direction::SouthEast),
+            ];
+            for (at, d) in cases {
+                let (out, cursor) = click(false, modal, at);
+                assert_eq!(out, resize(d), "{at:?}, modal {modal}");
+                assert_eq!(cursor, resize_cursor(d), "{at:?}, modal {modal}");
+            }
+            // The title bar below the top edge, also under a modal.
+            let (out, _) = click(false, modal, Point::new(200.0, 20.0));
+            assert_eq!(out, vec!["Title"], "modal {modal}");
+            let (out, _) = click(false, modal, Point::new(1.0, 20.0));
+            assert_eq!(out, vec!["Title"], "modal {modal}");
         }
-        let (out, _) = click(false, Point::new(200.0, 150.0));
+        // Content that takes the press wins over the edge under it.
+        let (out, _) = click(false, false, Point::new(398.0, 100.0));
+        assert_eq!(out, vec!["Bar"]);
+        let (out, _) = click(false, false, Point::new(195.0, 170.0));
         assert_eq!(out, vec!["Content"]);
+    }
+
+    #[test]
+    fn a_modal_covers_the_content_only() {
+        let (out, _) = click(false, true, Point::new(195.0, 170.0));
+        assert!(out.is_empty(), "the dialog takes it: {out:?}");
+        let (out, _) = click(false, true, Point::new(60.0, 250.0));
+        assert_eq!(out, vec!["Dismiss"]);
+        let (out, _) = click(true, true, Point::new(200.0, 1.0));
+        assert_eq!(out, vec!["Title"]);
     }
 
     #[test]
     fn maximized_edges_pass_clicks_through() {
-        let (out, _) = click(true, Point::new(200.0, 1.0));
-        assert_eq!(out, vec!["Content"]);
+        let (out, _) = click(true, false, Point::new(200.0, 1.0));
+        assert_eq!(out, vec!["Title"]);
+        let (out, _) = click(true, false, Point::new(0.0, 150.0));
+        assert!(out.is_empty(), "{out:?}");
     }
 
     #[test]
     fn maximizing_keeps_the_tree_shape() {
-        let a = frame(false);
-        let b = frame(true);
-        let mut tree = Tree::new(a.as_widget());
-        tree.diff(b.as_widget());
-        let fresh = Tree::new(b.as_widget());
         fn same(a: &Tree, b: &Tree) -> bool {
             a.tag == b.tag
                 && a.children.len() == b.children.len()
                 && a.children.iter().zip(&b.children).all(|(a, b)| same(a, b))
         }
-        assert!(same(&tree, &fresh));
+        let (a, b) = (frame(false, false), frame(true, false));
+        assert!(same(&Tree::new(a.as_widget()), &Tree::new(b.as_widget())));
+        let other: Element<'static, Msg> = iced::widget::column![space()].into();
+        assert!(!same(
+            &Tree::new(a.as_widget()),
+            &Tree::new(other.as_widget())
+        ));
     }
 
     #[test]

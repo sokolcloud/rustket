@@ -100,10 +100,11 @@ impl App {
         if !self.custom_chrome() {
             return content;
         }
-        // The title bar stays above the app's layers so the window can be
-        // moved and closed with a modal open.
+        // Modals cover `content` only: the window can be moved, resized and
+        // closed with one open.
         window_frame(
-            column![self.title_bar(!blocked), content].into(),
+            self.title_bar(!blocked),
+            content,
             self.titlebar.maximized,
             |d| Message::TitleBar(titlebar::Message::Resize(d)),
         )
@@ -132,7 +133,6 @@ impl App {
             title: self.title(),
             maximized: self.titlebar.maximized,
             interactive,
-            tracking: self.titlebar.tracking(),
         })
         .map(Message::TitleBar)
     }
