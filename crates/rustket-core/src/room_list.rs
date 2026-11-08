@@ -312,7 +312,9 @@ pub fn preview(
     let author = (!own && (room_type != RoomType::Direct || group_dm))
         .then_some(author_name)
         .flatten();
-    let (kind, key, text): (PreviewKind, String, Option<String>) = if m.is_encrypted() {
+    // Decrypted in place by the app: shown like any other message.
+    let encrypted = m.is_encrypted() && !crate::e2e::shown::is_decrypted(m);
+    let (kind, key, text): (PreviewKind, String, Option<String>) = if encrypted {
         (PreviewKind::Encrypted, "preview.encrypted".into(), None)
     } else if m.is_system() {
         let t = m.t.clone().unwrap_or_default();
@@ -894,6 +896,12 @@ mod tests {
         let p = preview(&ws, &e, RoomType::Direct, false, false);
         assert_eq!(p.kind, PreviewKind::Encrypted);
         assert_eq!(p.text, None);
+        // Decrypted in place by the app: the plaintext preview.
+        e.msg = "hello there".into();
+        crate::e2e::shown::set_marker(&mut e, crate::e2e::shown::DECRYPTED);
+        let p = preview(&ws, &e, RoomType::Direct, false, false);
+        assert_eq!(p.kind, PreviewKind::Text);
+        assert_eq!(p.text.as_deref(), Some("hello there"));
 
         let mut long = msg("l", "r", 1, "bob");
         long.msg = "x".repeat(500);

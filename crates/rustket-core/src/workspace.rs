@@ -247,6 +247,8 @@ pub struct Workspace {
     ephemeral: HashMap<String, HashSet<String>>,
     uikit: UiKitStore,
     videoconf: crate::videoconf::VideoConfStore,
+    /// End-to-end encryption of this account (set by the app while logged in).
+    e2e: Option<crate::e2e::E2eManager>,
 }
 
 /// When a realtime event touched something.
@@ -1786,6 +1788,81 @@ impl Workspace {
     pub fn drafts(&self) -> &HashMap<DraftKey, String> {
         &self.drafts
     }
+
+    // --- end-to-end encryption ------------------------------------------------------
+
+    /// The account's E2E manager, if the app started one.
+    pub fn e2e(&self) -> Option<&crate::e2e::E2eManager> {
+        self.e2e.as_ref()
+    }
+
+    pub fn set_e2e(&mut self, manager: Option<crate::e2e::E2eManager>) {
+        self.e2e = manager;
+    }
+
+    /// Rooms with an open room or thread timeline.
+    pub fn rooms_with_timelines(&self) -> HashSet<String> {
+        self.timelines
+            .keys()
+            .cloned()
+            .chain(self.threads.values().map(|t| t.rid().to_owned()))
+            .collect()
+    }
+
+    /// Rewrites the messages of room `rid` in place: its room timeline, its
+    /// thread timelines and the room's last message (see
+    /// [`Timeline::rewrite`]). Changed timelines and rooms are marked. Returns
+    /// whether anything changed.
+    pub fn rewrite_messages(&mut self, rid: &str, f: &mut dyn FnMut(&mut Message) -> bool) -> bool {
+        let mut changed = false;
+        if let Some(t) = self.timelines.get_mut(rid)
+            && t.rewrite(f)
+        {
+            self.mark_timeline(rid);
+            changed = true;
+        }
+        let threads: Vec<String> = self
+            .threads
+            .iter()
+            .filter(|(_, t)| t.rid() == rid)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for tmid in threads {
+            if let Some(t) = self.threads.get_mut(&tmid)
+                && t.rewrite(f)
+            {
+                self.mark_thread(&tmid);
+                changed = true;
+            }
+        }
+        if let Some(m) = self
+            .rooms
+            .get_mut(rid)
+            .and_then(|e| e.room.as_mut())
+            .and_then(|r| r.last_message.as_deref_mut())
+            && f(m)
+        {
+            self.mark_room(rid);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Rewrites the last message of every room (sidebar previews).
+    pub fn rewrite_last_messages(&mut self, f: &mut dyn FnMut(&mut Message) -> bool) -> bool {
+        let mut touched = Vec::new();
+        for (rid, e) in self.rooms.iter_mut() {
+            if let Some(m) = e.room.as_mut().and_then(|r| r.last_message.as_deref_mut())
+                && f(m)
+            {
+                touched.push(rid.clone());
+            }
+        }
+        for rid in &touched {
+            self.mark_room(rid);
+        }
+        !touched.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -1804,6 +1881,60 @@ mod tests {
         let c = ws.take_changes();
         assert!(c.areas.contains(Dirty::ROOMS | Dirty::SETTINGS));
         assert!(ws.take_changes().is_empty());
+    }
+
+    #[test]
+    fn messages_are_rewritten_in_place() {
+        let mut ws = Workspace::new();
+        let mut r = room("r1", "one", RoomType::Private);
+        r.last_message = Some(Box::new(msg("last", "r1", 5, "u")));
+        ws.apply_room(Change::Inserted, r);
+        ws.open_room("r1");
+        ws.apply_message(msg("a", "r1", 1, "u"));
+        ws.open_thread("r1", "a");
+        let mut reply = msg("b", "r1", 2, "u");
+        reply.tmid = Some("a".into());
+        ws.apply_message(reply);
+        ws.take_changes();
+        let v = ws.timeline("r1").unwrap().version();
+        assert_eq!(ws.rooms_with_timelines(), HashSet::from(["r1".to_owned()]));
+        let changed = ws.rewrite_messages("r1", &mut |m| {
+            m.msg = m.msg.to_uppercase();
+            true
+        });
+        assert!(changed);
+        let c = ws.take_changes();
+        assert!(c.timelines.contains("r1") && c.threads.contains("a") && c.rooms.contains("r1"));
+        assert!(ws.timeline("r1").unwrap().version() > v);
+        assert_eq!(
+            ws.timeline("r1").unwrap().get("a").unwrap().message.msg,
+            "TEXT A"
+        );
+        assert_eq!(
+            ws.thread("a").unwrap().get("b").unwrap().message.msg,
+            "TEXT B"
+        );
+        assert_eq!(ws.thread("a").unwrap().parent().unwrap().msg, "TEXT A");
+        // Nothing changed: no marks, no new version.
+        assert!(!ws.rewrite_messages("r1", &mut |_| false));
+        assert!(ws.take_changes().is_empty());
+        assert!(ws.rewrite_last_messages(&mut |m| {
+            m.msg.clear();
+            true
+        }));
+        assert!(ws.take_changes().rooms.contains("r1"));
+        let entry = ws.room("r1").unwrap();
+        assert_eq!(
+            entry
+                .room
+                .as_ref()
+                .unwrap()
+                .last_message
+                .as_ref()
+                .unwrap()
+                .msg,
+            ""
+        );
     }
 
     #[test]

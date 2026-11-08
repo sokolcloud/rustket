@@ -140,6 +140,10 @@ impl RenderState {
         self.downloads.insert((mid.to_owned(), url.to_owned()), t);
     }
 
+    pub fn clear_transfer(&mut self, mid: &str, url: &str) {
+        self.downloads.remove(&(mid.to_owned(), url.to_owned()));
+    }
+
     pub fn transfer(&self, mid: &str, url: &str) -> Option<&Transfer> {
         self.downloads.get(&(mid.to_owned(), url.to_owned()))
     }
@@ -238,6 +242,10 @@ pub fn message_body<'a>(msg: &'a Message, ctx: &ViewCtx<'a>) -> Element<'a, Rend
 /// Like [`message_body`] with interaction state (spoilers, collapsed
 /// attachments, downloads).
 pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, RenderMsg> {
+    // Encrypted messages that are not shown decrypted (pending, failed).
+    if let Some(p) = crate::e2e::view::placeholder(msg) {
+        return p;
+    }
     let mut col: Column<'static, RenderMsg> = column![].spacing(SPACE_1);
     // UIKit blocks hide the markdown body (docs/uikit.md §3.1).
     let blocks = crate::uikit::message_blocks(msg, rc);
@@ -254,6 +262,9 @@ pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, 
     }
     for p in attachments::link_previews(msg, rc) {
         col = col.push(p);
+    }
+    if let Some(n) = crate::e2e::view::plaintext_note(msg) {
+        col = col.push(n);
     }
     col.into()
 }

@@ -180,6 +180,10 @@ impl App {
         if let Some(strip) = self.connection_strip(s) {
             area = area.push(strip);
         }
+        if let Some(b) = crate::e2e::view::banner(s) {
+            let (sid, epoch) = (sid.clone(), s.generation);
+            area = area.push(b.map(move |m| Message::E2e(sid.clone(), epoch, m)));
+        }
         for strip in self.uikit_strips(s) {
             area = area.push(strip);
         }
@@ -254,6 +258,14 @@ impl App {
                 let Some(s) = self.active.as_ref().and_then(|id| self.servers.get(id)) else {
                     return (None, None);
                 };
+                if let Some(o) = crate::e2e::view::modal(s) {
+                    let (sid, epoch) = (s.id.clone(), s.generation);
+                    let close = Message::E2e(sid.clone(), epoch, crate::e2e::Message::CloseModal);
+                    return (
+                        Some(o.map(move |m| Message::E2e(sid.clone(), epoch, m))),
+                        Some(close),
+                    );
+                }
                 let Some(l) = &s.login else {
                     return self.uikit_overlay(s);
                 };

@@ -680,6 +680,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
     teams::teams_shots(&mut d, &server, &out, &sid, &user, &fixture.ledger).await;
+    e2e::e2e_shots(&mut d, &server, &out, &sid, &user, &fixture.ledger).await;
     // `RUSTKET_SNAPSHOT_ONLY=glue`: only the integration shots.
     // Any `RUSTKET_SNAPSHOT_ONLY` value skips the shared component shots.
     let only_glue = std::env::var("RUSTKET_SNAPSHOT_ONLY").is_ok();
@@ -879,6 +880,8 @@ fn image_bytes(w: u32, h: u32) -> Vec<u8> {
     drop(wr);
     out
 }
+#[path = "snapshot/e2e.rs"]
+mod e2e;
 #[path = "snapshot/glue.rs"]
 mod glue;
 

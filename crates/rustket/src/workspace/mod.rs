@@ -51,6 +51,8 @@ pub struct ServerState {
     pub restoring: bool,
     /// UIKit widget state that holds iced types (modal editors).
     pub uikit: crate::uikit::Local,
+    /// End-to-end encryption of this account.
+    pub e2e: crate::e2e::ServerE2e,
 }
 
 impl ServerState {
@@ -96,6 +98,7 @@ impl ServerState {
             start_error: None,
             restoring: true,
             uikit: crate::uikit::Local::default(),
+            e2e: Default::default(),
         })
     }
 
@@ -129,6 +132,7 @@ impl ServerState {
         self.credentials = None;
         let _ = self.close_rooms();
         self.session = None;
+        self.e2e.reset();
         self.workspace = Workspace::new();
         self.uikit = crate::uikit::Local::default();
         self.sidebar = sidebar::Sidebar::default();

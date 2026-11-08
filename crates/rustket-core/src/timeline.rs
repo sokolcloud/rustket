@@ -414,6 +414,24 @@ impl Timeline {
         self.items.values().filter(|i| i.is_pending())
     }
 
+    /// Rewrites messages in place (thread parent included), e.g. to show the
+    /// decrypted content of end-to-end encrypted messages. `f` returns whether
+    /// it changed the message; the version is bumped if any did. `_id`, `ts`
+    /// and `tmid` must not be changed.
+    pub fn rewrite(&mut self, f: &mut dyn FnMut(&mut Message) -> bool) -> bool {
+        let mut changed = false;
+        if let Some(p) = self.parent.as_mut() {
+            changed |= f(p);
+        }
+        for item in self.items.values_mut() {
+            changed |= f(&mut item.message);
+        }
+        if changed {
+            self.bump();
+        }
+        changed
+    }
+
     /// Drops every server message (pending ones stay) and resets pagination, e.g.
     /// when a sync reports more changes than can be applied incrementally or an
     /// import added messages; the next [`Self::begin_load_older`] starts again at

@@ -117,6 +117,8 @@ pub enum Message {
     Modal(ModalMessage),
     CloseModal,
     CloseToast(u64),
+    /// End-to-end encryption of a server: server, session generation, message.
+    E2e(ServerId, u64, crate::e2e::Message),
     /// A file was dropped onto the window (routed to the active composer).
     FileDropped(std::path::PathBuf),
     Noop,

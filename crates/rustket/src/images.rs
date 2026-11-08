@@ -516,6 +516,19 @@ pub async fn fetch(rest: RestClient, server_dir: Option<PathBuf>, url: String) -
     } else {
         IMAGE_MAX_PX
     };
+    // End-to-end encrypted files: decrypted in memory, never cached on disk.
+    if let Some(r) = crate::e2e::files::fetch_image(&rest, &url, MAX_DOWNLOAD_BYTES).await {
+        let fetched = match r {
+            Ok(bytes) => decode_limited(bytes, max_px)
+                .await
+                .map(|(img, _)| Fetched::Image(img)),
+            Err(e) => Err(e),
+        };
+        return FetchResult {
+            fetched,
+            write: None,
+        };
+    }
     if let Some(dir) = &server_dir {
         let [marker, png] = disk_paths(dir, &url);
         let versioned = has_version(&url);

@@ -288,12 +288,14 @@ pub enum FetchFor {
     Quote,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Editing {
     mid: String,
     original: String,
     /// The text that was in the composer before the edit started.
     stash: String,
+    /// The message as shown when the edit started (encrypted edits need it).
+    message: Box<rocketchat::models::Message>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -696,7 +698,16 @@ impl Composer {
             }
             Message::Fetched(purpose, r) => match r {
                 Ok(m) => match purpose {
-                    FetchFor::Edit => self.start_edit(&m, ctx.workspace),
+                    FetchFor::Edit => {
+                        // Decrypted like every shown message before it is edited.
+                        let mut m = m;
+                        crate::e2e::shown::process_list(
+                            ctx.workspace,
+                            ctx.server,
+                            std::slice::from_mut(&mut m),
+                        );
+                        self.start_edit(&m, ctx.workspace)
+                    }
                     FetchFor::Quote => {
                         self.add_quote(&m);
                         Action::task(self.focus())
@@ -1026,7 +1037,10 @@ impl Composer {
         } else {
             None
         };
-        let Some(trigger) = trigger else {
+        let Some(trigger) = trigger.filter(|t| {
+            t.kind != TriggerKind::Command
+                || !crate::e2e::outgoing::slash_commands_blocked(ctx.workspace, &self.rid)
+        }) else {
             self.popup = None;
             return Task::none();
         };
@@ -1148,6 +1162,9 @@ impl Composer {
         if !permissions::can_edit_message(ws, m, chrono::Utc::now()) {
             return Action::effect(error_toast(t!("room_composer.cannot_edit").into_owned()));
         }
+        if let Err(e) = crate::e2e::room::check_edit(ws, m) {
+            return Action::effect(error_toast(e));
+        }
         let stash = match self.editing.take() {
             Some(e) => e.stash,
             None => self.content.text(),
@@ -1156,6 +1173,7 @@ impl Composer {
             mid: m.id.clone(),
             original: m.msg.clone(),
             stash,
+            message: Box::new(m.clone()),
         });
         self.popup = None;
         self.picker = None;
@@ -1217,14 +1235,23 @@ impl Composer {
             if text::too_long(&text, max) {
                 return Action::effect(too_long(max));
             }
-            self.cancel_edit();
             if text == ed.original.trim() {
+                self.cancel_edit();
                 return Action::task(self.focus());
             }
             let rid = self.rid.clone();
+            // Encrypted messages are edited encrypted (never with plaintext);
+            // on failure the edit stays open with the text.
+            let enc =
+                match crate::e2e::outgoing::prepare_edit(ctx.workspace, &rid, &ed.message, &text) {
+                    Some(Err(e)) => return Action::effect(error_toast(e)),
+                    Some(Ok(enc)) => Some(enc),
+                    None => None,
+                };
+            self.cancel_edit();
             return Action::task(Task::batch([
                 ctx.rest_task(
-                    move |rest| async move { rest.update_message(&rid, &ed.mid, &text).await },
+                    move |rest| crate::e2e::outgoing::update_message(rest, rid, ed.mid, text, enc),
                     |r| Message::Updated(r.map(Box::new)),
                 ),
                 self.focus(),
@@ -1234,7 +1261,17 @@ impl Composer {
         if text.is_empty() {
             return Action::none();
         }
-        let is_command = self.quotes.is_empty() && text::parse_slash(&text).is_some();
+        // An encrypted room without its key: nothing goes out (§7.6).
+        if matches!(
+            crate::e2e::outgoing::mode(ctx.workspace, &self.rid),
+            crate::e2e::outgoing::Mode::Blocked
+        ) {
+            return Action::effect(error_toast(crate::e2e::outgoing::blocked_text()));
+        }
+        // Slash commands do not run in rooms that must stay encrypted (§2.1).
+        let is_command = self.quotes.is_empty()
+            && text::parse_slash(&text).is_some()
+            && !crate::e2e::outgoing::slash_commands_blocked(ctx.workspace, &self.rid);
         if is_command && cached_commands(ctx.server_id).is_none() {
             // The text stays in the editor until the command list is known.
             if self.commands_loading {
@@ -1371,7 +1408,20 @@ impl Composer {
         if let Some(block) = permissions::post_block(ctx.workspace, &self.rid) {
             return self.notice_view(block, ctx);
         }
+        if let Some(n) = crate::e2e::room::composer_block(ctx.workspace, &self.rid) {
+            return container(n).padding([SPACE_2, SPACE_4]).into();
+        }
         let mut col = column![].spacing(SPACE_1);
+        if let Some(h) = crate::e2e::room::composer_hint(ctx.workspace, &self.rid) {
+            col = col.push(h);
+        }
+        let slash = self
+            .content
+            .line(0)
+            .is_some_and(|l| l.text.starts_with('/'));
+        if let Some(h) = crate::e2e::room::slash_hint(ctx.workspace, &self.rid, slash) {
+            col = col.push(h);
+        }
         if let Some(l) = ctx
             .workspace
             .typing_label(&self.rid, self.tmid.as_deref(), ctx.now)
@@ -1777,6 +1827,8 @@ fn send_task(ctx: &UpdateCtx<'_>, m: rocketchat::models::Message) -> Task<Messag
     let id = m.id.clone();
     outbox_start(ctx.server_id, &m.rid, &id);
     let server = ctx.server_id.as_str().to_owned();
+    // Encrypted rooms: encrypted at send time with the current room key.
+    let enc = crate::e2e::outgoing::prepare_send(ctx.workspace, &m);
     let out = OutgoingMessage {
         id: Some(m.id),
         rid: m.rid,
@@ -1786,7 +1838,7 @@ fn send_task(ctx: &UpdateCtx<'_>, m: rocketchat::models::Message) -> Task<Messag
         ..Default::default()
     };
     ctx.rest_task(
-        move |rest| async move { rest.send_message(&out).await },
+        move |rest| crate::e2e::outgoing::send_outgoing(rest, out, enc),
         move |r| {
             let r = r.map(Box::new);
             outbox_finish(&server, &id, &r);
@@ -1802,10 +1854,12 @@ fn find_message<'a>(
     tmid: Option<&str>,
     mid: &str,
 ) -> Option<&'a rocketchat::models::Message> {
-    tmid.and_then(|t| ws.thread(t))
+    let thread = tmid.and_then(|t| ws.thread(t));
+    thread
         .and_then(|t| t.get(mid))
         .or_else(|| ws.timeline(rid).and_then(|t| t.get(mid)))
         .map(|i| &i.message)
+        .or_else(|| thread.and_then(|t| t.parent()).filter(|p| p.id == mid))
 }
 
 /// The newest own message the user may edit (Up in an empty composer).
@@ -1827,6 +1881,9 @@ fn last_editable<'a>(
         // The room composer edits room messages, not thread replies shown in the channel.
         .filter(|m| tmid.is_some() || m.tmid.is_none())
         .find(|m| permissions::can_edit_message(ws, m, now))
+        // An encrypted message that cannot be edited stops the search (an
+        // older message is not what the user meant).
+        .filter(|m| crate::e2e::room::check_edit(ws, m).is_ok())
 }
 
 /// Editor state the key bindings depend on.

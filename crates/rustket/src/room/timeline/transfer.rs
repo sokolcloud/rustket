@@ -180,6 +180,13 @@ async fn run(
     target: Target,
     tx: &mut iced::futures::channel::mpsc::Sender<DlEvent>,
 ) -> Result<(), String> {
+    // End-to-end encrypted files are decrypted while they are written.
+    let mut e2e = crate::e2e::files::Decryptor::for_url(url);
+    if e2e.is_none() && crate::e2e::files::is_marked(url) {
+        // Never save the ciphertext as if it were the file.
+        return Err(crate::e2e::files::key_missing_text());
+    }
+    let url = crate::e2e::files::strip(url).unwrap_or(url);
     let dl = rest.download(url).await.map_err(net)?;
     let total = dl.content_length;
     let write_path = match target {
@@ -224,6 +231,10 @@ async fn run(
                 return Err(net(e));
             }
         };
+        let chunk = match e2e.as_mut() {
+            Some(d) => d.apply(&chunk).into(),
+            None => chunk,
+        };
         if let Err(e) = file.write_all(&chunk).await {
             drop(file);
             let _ = tokio::fs::remove_file(&write_path).await;
@@ -237,6 +248,12 @@ async fn run(
     }
     file.flush().await.map_err(io)?;
     drop(file);
+    if let Some(d) = e2e
+        && !d.finish()
+    {
+        let _ = tokio::fs::remove_file(&write_path).await;
+        return Err(crate::e2e::files::hash_mismatch_text());
+    }
     if write_path != path {
         tokio::fs::rename(&write_path, path).await.map_err(io)?;
     }

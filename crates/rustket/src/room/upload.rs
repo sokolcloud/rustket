@@ -248,6 +248,14 @@ impl Uploads {
                 if file.error.is_some() {
                     return Action::none();
                 }
+                // Encrypted rooms: encrypted upload, or refused (§7.8).
+                let e2e = match crate::e2e::outgoing::upload_mode(ctx.workspace, ctx.rid) {
+                    crate::e2e::outgoing::UploadMode::Refused(why) => {
+                        return Action::effect(toast_error(why));
+                    }
+                    crate::e2e::outgoing::UploadMode::Encrypt(m) => Some(m),
+                    crate::e2e::outgoing::UploadMode::Plain => None,
+                };
                 // Keep the file (and the edited fields) when it cannot go out now.
                 let Some(rest) = ctx.rest() else {
                     return Action::effect(toast_error(
@@ -273,6 +281,7 @@ impl Uploads {
                     name.clone(),
                     description,
                     message,
+                    e2e,
                 )
                 .abortable();
                 // Closing the room drops the composer and with it the upload.
@@ -598,6 +607,7 @@ fn start(
     name: String,
     description: Option<String>,
     message: Option<String>,
+    e2e: Option<rustket_core::e2e::E2eManager>,
 ) -> Task<Message> {
     let (tx, rx) = futures::channel::mpsc::unbounded::<(u64, u64)>();
     let last = Arc::new(AtomicU64::new(u64::MAX));
@@ -608,6 +618,27 @@ fn start(
         }
     });
     let upload = async move {
+        if let Some(mgr) = e2e {
+            let data = match &file.source {
+                Source::Bytes(b) => b.as_ref().clone(),
+                Source::Path(p) => tokio::fs::read(p).await?,
+            };
+            let caption = message.unwrap_or_default();
+            return crate::e2e::outgoing::upload(
+                mgr,
+                rest,
+                rid,
+                tmid,
+                name,
+                file.mime.clone(),
+                data,
+                caption,
+                description,
+                Some(progress),
+            )
+            .await
+            .map_err(crate::e2e::outgoing::local_error);
+        }
         let source = match &file.source {
             Source::Bytes(b) => UploadSource::Bytes(Bytes::from(b.as_ref().clone())),
             Source::Path(p) => {
