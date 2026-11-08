@@ -831,21 +831,24 @@ impl Composer {
                     return Action::none();
                 }
                 let rid = self.rid.clone();
-                let task = if needs_join_code(ctx.workspace, &self.rid) {
+                let code = if needs_join_code(ctx.workspace, &self.rid) {
                     let code = self.join_code.trim().to_owned();
                     if code.is_empty() {
                         return Action::none();
                     }
-                    ctx.rest_task(
-                        move |rest| async move { rest.rooms_join(&rid, Some(&code)).await.map(|_| ()) },
-                        Message::Joined,
-                    )
+                    Some(code)
                 } else {
-                    ctx.rest_task(
-                        move |rest| async move { rest.channels_join(&rid).await.map(|_| ()) },
-                        Message::Joined,
-                    )
+                    None
                 };
+                // `rooms.join` also covers discussions of private groups,
+                // like the web client.
+                let task =
+                    ctx.rest_task(
+                        move |rest| async move {
+                            rest.rooms_join(&rid, code.as_deref()).await.map(|_| ())
+                        },
+                        Message::Joined,
+                    );
                 self.joining = true;
                 Action::task(task)
             }
@@ -1676,12 +1679,9 @@ impl Composer {
     }
 
     fn notice_view<'a>(&'a self, block: PostBlock, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
-        let channel = ctx
-            .workspace
-            .room(&self.rid)
-            .is_some_and(|e| e.room_type() == RoomType::Channel);
+        let channel = can_join(ctx.workspace, &self.rid);
         let text = match block {
-            // A previewed channel: the Join bar.
+            // A previewed channel or discussion: the Join bar.
             PostBlock::NotSubscribed if channel => t!("room_composer.preview_notice"),
             PostBlock::NotSubscribed => t!("room_composer.block.not_subscribed"),
             PostBlock::Archived => t!("room_composer.block.archived"),
@@ -1815,6 +1815,13 @@ fn commands_unavailable() -> Effect {
 
 fn paste_text() -> Task<Message> {
     iced::clipboard::read().map(Message::Pasted)
+}
+
+/// A previewed room the user may join: a channel, or a discussion of any
+/// type (members of the parent may join it, like in the web client).
+fn can_join(ws: &Workspace, rid: &str) -> bool {
+    ws.room(rid)
+        .is_some_and(|e| e.room_type() == RoomType::Channel || e.is_discussion())
 }
 
 /// Joining needs a code: the room requires one and the user may not skip it.

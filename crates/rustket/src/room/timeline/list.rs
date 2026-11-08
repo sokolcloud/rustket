@@ -239,6 +239,8 @@ struct RowKey {
     minute: i64,
     /// Current day for rows with a day separator ("Today"/"Yesterday").
     today: i32,
+    /// Collapsed: the author is ignored and the row was not revealed.
+    ignored: bool,
 }
 
 impl Hash for RowKey {
@@ -257,7 +259,23 @@ impl Hash for RowKey {
         self.locale.hash(h);
         self.minute.hash(h);
         self.today.hash(h);
+        self.ignored.hash(h);
     }
+}
+
+/// `RenderState` toggle index of "show the ignored message" (the toggles
+/// of attachments use small indices).
+pub(crate) const IGNORED_REVEAL: usize = usize::MAX;
+
+/// Whether `m` comes from a user the current user ignores in room `rid`
+/// (`subscription.ignored`); system messages are never hidden (web
+/// `MessageListItem`).
+pub(crate) fn is_ignored(ws: &Workspace, rid: &str, m: &RcMessage) -> bool {
+    !m.is_system()
+        && ws
+            .subscription(rid)
+            .and_then(|s| s.ignored.as_ref())
+            .is_some_and(|list| list.contains(&m.u.id))
 }
 
 /// The `lazy` widget of planned row `r` (with its day separator and the
@@ -294,11 +312,13 @@ pub(crate) fn row<'a>(
         locale: common.locale,
         minute: if own { common.minute } else { 0 },
         today: if r.new_day { common.today } else { 0 },
+        ignored: is_ignored(env.ws, env.rid, m) && !env.render.is_toggled(&m.id, IGNORED_REVEAL),
     };
     let unread_before = r.unread_before;
     let now = common.now;
+    let ignored = dep.ignored;
     lazy(dep, move |_| {
-        let row = row::build(&env, item, flags, now);
+        let row = row::build(&env, item, flags, ignored, now);
         if day.is_none() && !unread_before {
             return row;
         }
@@ -585,6 +605,54 @@ pub(crate) fn with_jump_button<'a, M: Clone + 'a>(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ignored_authors_are_collapsed_until_revealed() {
+        use rocketchat::models::{RoomType, Subscription, UserRef};
+        use rustket_core::workspace::Change;
+        let mut ws = Workspace::new();
+        ws.apply_subscription(
+            Change::Inserted,
+            Subscription {
+                id: "s".into(),
+                rid: "r".into(),
+                name: "r".into(),
+                t: RoomType::Channel,
+                ignored: Some(vec!["troll".into()]),
+                u: UserRef {
+                    id: "me".into(),
+                    username: None,
+                    name: None,
+                },
+                ..Default::default()
+            },
+        );
+        let msg = |user: &str, t: Option<&str>| RcMessage {
+            id: "m".into(),
+            rid: "r".into(),
+            t: t.map(str::to_owned),
+            u: UserRef {
+                id: user.into(),
+                username: Some(user.into()),
+                name: None,
+            },
+            ..Default::default()
+        };
+        assert!(is_ignored(&ws, "r", &msg("troll", None)));
+        assert!(!is_ignored(&ws, "r", &msg("bob", None)));
+        // System messages stay (e.g. "troll joined").
+        assert!(!is_ignored(&ws, "r", &msg("troll", Some("uj"))));
+        assert!(!is_ignored(&ws, "other", &msg("troll", None)));
+        // "Show" toggles the row open; the row key changes with it.
+        let mut st = render::RenderState::new();
+        let before = st.key("m");
+        assert!(st.handle(&render::RenderMsg::ToggleCollapsed(
+            "m".into(),
+            IGNORED_REVEAL
+        )));
+        assert!(st.is_toggled("m", IGNORED_REVEAL));
+        assert_ne!(st.key("m"), before);
+    }
 
     #[test]
     fn follow_freezes_grows_and_holds() {

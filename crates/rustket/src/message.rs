@@ -36,6 +36,33 @@ impl std::fmt::Debug for SecretsReady {
     }
 }
 
+/// A navigation away from the current screen that the admin screen's
+/// unsaved-changes dialog may hold back; replayed after "Discard".
+#[derive(Debug, Clone)]
+pub enum Go {
+    Nav(crate::component::Nav),
+    /// Activate server `sid` and open room `rid` (and thread `tmid`).
+    Room {
+        sid: ServerId,
+        rid: String,
+        tmid: Option<String>,
+    },
+    /// The add-server screen, probing `url` (an offered unknown-host link).
+    AddServer(rocketchat::ServerUrl),
+    Logout {
+        sid: ServerId,
+        everywhere: bool,
+    },
+    /// The "create discussion" dialog of room `rid` on server `sid`.
+    Discussion {
+        sid: ServerId,
+        rid: String,
+        pmid: Option<String>,
+    },
+    /// Quit the application (tray menu).
+    Quit,
+}
+
 #[derive(Debug, Clone)]
 pub enum ModalMessage {
     ConfirmToken,
@@ -121,5 +148,10 @@ pub enum Message {
     E2e(ServerId, u64, crate::e2e::Message),
     /// A file was dropped onto the window (routed to the active composer).
     FileDropped(std::path::PathBuf),
+    /// A navigation checked against unsaved admin settings first.
+    Go(Go),
+    /// A task result of the create-room or quick-switcher dialog instance
+    /// (`Message::CreateRoom` / `Message::QuickSwitcher` inside).
+    Dialog(u64, Box<Message>),
     Noop,
 }

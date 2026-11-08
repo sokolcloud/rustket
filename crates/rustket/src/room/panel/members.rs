@@ -56,6 +56,11 @@ impl Members {
         &self.query
     }
 
+    #[cfg(test)]
+    pub fn reloading_for_test(&self) -> bool {
+        self.list.state == LoadState::Loading
+    }
+
     pub fn activate(&mut self, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
         self.reload(ctx)
     }

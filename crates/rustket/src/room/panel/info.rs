@@ -5,7 +5,6 @@ use iced::widget::{column, container, scrollable, text};
 use iced::{Alignment, Element, Length};
 use rocketchat::models::{Message as RcMessage, RoomType};
 use rust_i18n::t;
-use rustket_core::permissions;
 use rustket_core::room_list;
 use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
@@ -197,7 +196,7 @@ impl Info {
         }
 
         let mut actions = column![].spacing(SPACE_1);
-        if permissions::can_edit_room(ws, ctx.rid) && t_ != RoomType::Direct {
+        if super::settings::offered(ws, ctx.rid) {
             actions = actions.push(common::action_entry(
                 Icon::Pencil,
                 t!("room_panel.edit").into_owned(),

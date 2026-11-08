@@ -233,3 +233,6 @@ room_timeline.jump_not_loaded:
 room_timeline.act_start_discussion:
   en: "Start a discussion"
   ru: "Начать обсуждение"
+room_timeline.message_ignored:
+  en: "This message was ignored"
+  ru: "Это сообщение было проигнорировано"

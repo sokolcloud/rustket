@@ -170,7 +170,7 @@ pub fn menu_entries(
             panel::Kind::NotificationPrefs,
         ));
     }
-    if !direct && permissions::can_edit_room(ws, rid) {
+    if panel::settings::offered(ws, rid) {
         v.push(item(
             Icon::Settings,
             "room_header.room_settings",
@@ -815,6 +815,45 @@ mod tests {
         assert!(!labels.contains(&RoomAction::Leave.label()));
         assert!(!labels.contains(&t!("room_header.room_settings").into_owned()));
         assert!(labels.contains(&RoomAction::Hide.label()));
+    }
+
+    #[test]
+    fn livechat_menu_has_no_room_settings() {
+        let ws = ws("l", json!({}));
+        assert!(permissions::can_edit_room(&ws, "r"));
+        let l = labels(&ws);
+        assert!(!l.contains(&t!("room_header.room_settings").into_owned()));
+        assert_eq!(
+            panel::settings::Allowed::compute(&ws, "r"),
+            panel::settings::Allowed::default()
+        );
+    }
+
+    #[test]
+    fn broadcast_room_keeps_read_only() {
+        let mut ws = ws("c", json!({"broadcast": true, "ro": true}));
+        for p in ["set-readonly", "set-react-when-readonly"] {
+            ws.apply_permission(
+                Change::Updated,
+                Permission {
+                    id: p.into(),
+                    roles: vec!["owner".into()],
+                    updated_at: None,
+                },
+            );
+        }
+        let a = panel::settings::Allowed::compute(&ws, "r");
+        assert!(a.edit && !a.read_only && !a.react_when_read_only);
+        let plain = {
+            let mut w = ws.clone();
+            w.apply_room(
+                Change::Updated,
+                serde_json::from_value(json!({"_id": "r", "t": "c", "name": "bob", "ro": true}))
+                    .unwrap(),
+            );
+            panel::settings::Allowed::compute(&w, "r")
+        };
+        assert!(plain.read_only && plain.react_when_read_only);
     }
 
     fn labels(ws: &Workspace) -> Vec<String> {

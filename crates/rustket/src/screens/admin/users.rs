@@ -160,6 +160,43 @@ impl Form {
         }
     }
 
+    /// A fresh `users.info` for the user being edited: fields the admin has
+    /// not touched take the new values, touched ones stay as typed, and the
+    /// new snapshot becomes the baseline (stale fields never turn into
+    /// changes, e.g. revoking a role granted meanwhile).
+    pub fn rebase(&mut self, u: AdminUser) {
+        let Some(old) = self.user.as_ref().map(Self::edit) else {
+            return;
+        };
+        let new = Self::edit(&u);
+        macro_rules! take {
+            ($($f:ident),*) => {
+                $(if self.$f == old.$f {
+                    self.$f = new.$f.clone();
+                })*
+            };
+        }
+        take!(
+            name,
+            username,
+            email,
+            verified,
+            status_text,
+            bio,
+            nickname,
+            require_password_change
+        );
+        let sorted = |r: &[String]| {
+            let mut r = r.to_vec();
+            r.sort();
+            r
+        };
+        if sorted(&self.roles) == sorted(&old.roles) {
+            self.roles = new.roles;
+        }
+        self.user = Some(u);
+    }
+
     pub fn validate(&self) -> Option<String> {
         if self.name.trim().is_empty() || self.username.trim().is_empty() {
             return Some(t!("admin.users.required").into_owned());
@@ -372,7 +409,7 @@ impl State {
                 let is_form = matches!(self.dialog, Some(Dialog::Form(_)));
                 match r {
                     Ok(u) if current.as_deref() == Some(id.as_str()) => match &mut self.dialog {
-                        Some(Dialog::Form(f)) => f.user = Some(u),
+                        Some(Dialog::Form(f)) => f.rebase(u),
                         _ => self.dialog = Some(Dialog::Details(Box::new(u))),
                     },
                     Ok(u) if open && !is_form => {

@@ -15,7 +15,6 @@ pub mod members;
 pub mod messages;
 pub mod notify;
 pub mod paged;
-pub mod rooms;
 pub mod settings;
 pub mod thread;
 pub mod user_info;
@@ -133,7 +132,6 @@ pub enum BodyMsg {
     User(user_info::Msg),
     Members(members::Msg),
     Messages(messages::Msg),
-    Rooms(rooms::Msg),
     Files(files::Msg),
     Notify(notify::Msg),
     Settings(settings::Msg),
@@ -149,7 +147,6 @@ enum Body {
     User(user_info::UserInfo),
     Members(members::Members),
     Messages(messages::Messages),
-    Rooms(rooms::Rooms),
     Files(files::Files),
     Notify(notify::Notify),
     Settings(settings::Settings),
@@ -181,14 +178,15 @@ impl Body {
                 api::MessageList::Mentions,
             ))),
             Kind::Search => Body::Messages(messages::Messages::new(messages::Mode::Search)),
-            Kind::Discussions => Body::Rooms(rooms::Rooms::new(rooms::Mode::Discussions)),
-            Kind::TeamChannels => Body::Rooms(rooms::Rooms::new(rooms::Mode::TeamChannels)),
             Kind::Files => Body::Files(files::Files::default()),
             Kind::NotificationPrefs => Body::Notify(notify::Notify::default()),
             Kind::RoomSettings => Body::Settings(settings::Settings::default()),
             Kind::Invite => Body::Invite(invite::Invite::default()),
             Kind::Thread(tmid) => Body::Thread(Box::new(thread::Thread::new(rid, tmid))),
-            Kind::TeamMembers | Kind::TeamInfo => Body::Members(members::Members::default()),
+            // Hosted by `crate::teams::TeamPanel` (above).
+            Kind::Discussions | Kind::TeamChannels | Kind::TeamMembers | Kind::TeamInfo => {
+                Body::Members(members::Members::default())
+            }
             Kind::Omnichannel(k) => {
                 Body::Omni(Box::new(crate::omnichannel::panel::OmniPanel::new(k)))
             }
@@ -203,6 +201,9 @@ struct Stash {
     kind: Kind,
     body: Body,
     generation: u64,
+    /// A child changed what the stashed list shows (member removed, role
+    /// changed): Back reloads it.
+    stale: bool,
 }
 
 pub struct Panel {
@@ -433,6 +434,7 @@ impl Panel {
                 kind: from.clone(),
                 body,
                 generation: self.generation,
+                stale: false,
             }),
             (_, body) => {
                 self.drop_body(body);
@@ -450,8 +452,9 @@ impl Panel {
         self.pending = Some(self.generation);
     }
 
-    /// Back to the stashed panel; `false` when there is none for `kind`.
-    fn restore(&mut self, kind: &Kind) -> bool {
+    /// Back to the stashed panel; `None` when there is none for `kind`,
+    /// otherwise whether it must be reloaded.
+    fn restore(&mut self, kind: &Kind) -> Option<bool> {
         match self.stash.take() {
             Some(st) if &st.kind == kind => {
                 self.open = Some(st.kind);
@@ -460,9 +463,9 @@ impl Panel {
                 self.generation = st.generation;
                 self.back = None;
                 self.pending = None;
-                true
+                Some(st.stale)
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -530,8 +533,12 @@ impl Panel {
             }
             Message::UiKit(m) => Action::effect(Effect::UiKit(m)),
             Message::Back => match self.back.clone() {
-                Some(kind) if self.restore(&kind) => Action::none(),
-                Some(kind) => Action::effect(Effect::OpenPanel(kind)),
+                Some(kind) => match self.restore(&kind) {
+                    // The list keeps its query and filter.
+                    Some(true) => self.activate(ctx),
+                    Some(false) => Action::none(),
+                    None => Action::effect(Effect::OpenPanel(kind)),
+                },
                 None => Action::effect(Effect::ClosePanel),
             },
             Message::Activate(g) => {
@@ -542,6 +549,13 @@ impl Panel {
                 self.activate(ctx)
             }
             Message::Body(g, m) => {
+                // A member action from the profile changes the list behind it.
+                if g == self.generation
+                    && let BodyMsg::User(user_info::Msg::ActionDone(_, Ok(()))) = &m
+                    && let Some(st) = self.stash.as_mut()
+                {
+                    st.stale = true;
+                }
                 if g == self.generation {
                     let a = Self::update_body(self.body.as_mut(), g, m, &self.rid, ctx);
                     if let Some(Body::Thread(t)) = &self.body {
@@ -567,7 +581,6 @@ impl Panel {
             Some(Body::User(b)) => wrap(g, b.activate(ctx), BodyMsg::User),
             Some(Body::Members(b)) => wrap(g, b.activate(ctx), BodyMsg::Members),
             Some(Body::Messages(b)) => wrap(g, b.activate(ctx), BodyMsg::Messages),
-            Some(Body::Rooms(b)) => wrap(g, b.activate(ctx), BodyMsg::Rooms),
             Some(Body::Files(b)) => wrap(g, b.activate(ctx), BodyMsg::Files),
             Some(Body::Notify(b)) => wrap(g, b.activate(ctx), BodyMsg::Notify),
             Some(Body::Settings(b)) => wrap(g, b.activate(ctx), BodyMsg::Settings),
@@ -595,7 +608,6 @@ impl Panel {
             (Some(Body::Messages(b)), BodyMsg::Messages(m)) => {
                 wrap(g, b.update(m, ctx), BodyMsg::Messages)
             }
-            (Some(Body::Rooms(b)), BodyMsg::Rooms(m)) => wrap(g, b.update(m, ctx), BodyMsg::Rooms),
             (Some(Body::Files(b)), BodyMsg::Files(m)) => wrap(g, b.update(m, ctx), BodyMsg::Files),
             (Some(Body::Notify(b)), BodyMsg::Notify(m)) => {
                 wrap(g, b.update(m, ctx), BodyMsg::Notify)
@@ -635,7 +647,6 @@ impl Panel {
         match self.body.as_mut() {
             Some(Body::Info(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Info),
             Some(Body::User(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::User),
-            Some(Body::Rooms(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Rooms),
             Some(Body::Settings(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Settings),
             Some(Body::Thread(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Thread),
             Some(Body::Team(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Team),
@@ -681,9 +692,6 @@ impl Panel {
             Some(Body::Messages(b)) => b
                 .view(ctx)
                 .map(move |m| Message::Body(g, BodyMsg::Messages(m))),
-            Some(Body::Rooms(b)) => b
-                .view(ctx)
-                .map(move |m| Message::Body(g, BodyMsg::Rooms(m))),
             Some(Body::Files(b)) => b
                 .view(ctx)
                 .map(move |m| Message::Body(g, BodyMsg::Files(m))),
@@ -853,7 +861,7 @@ mod tests {
         }
         p.open(Kind::UserInfo("bob".into()));
         assert!(p.generation() > g_members);
-        assert!(p.restore(&Kind::Members));
+        assert_eq!(p.restore(&Kind::Members), Some(false));
         assert_eq!(p.kind(), Some(&Kind::Members));
         assert_eq!(p.generation(), g_members);
         assert!(p.pending.is_none());
@@ -864,6 +872,47 @@ mod tests {
         // New generations never reuse one handed out before.
         p.open(Kind::Files);
         assert!(p.generation() > g_members + 1);
+    }
+
+    #[test]
+    fn back_after_a_member_action_reloads_the_list() {
+        let mut ws = Workspace::new();
+        let (sid, url) = (
+            rustket_core::ServerId("s".into()),
+            rocketchat::ServerUrl::parse("http://localhost:3000").unwrap(),
+        );
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "r",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let mut p = Panel::new("r");
+        p.open(Kind::Members);
+        p.pending = None;
+        p.open(Kind::UserInfo("bob".into()));
+        p.pending = None;
+        let g = p.generation();
+        let _ = p.update(
+            Message::Body(
+                g,
+                BodyMsg::User(user_info::Msg::ActionDone(api::UserAction::Remove, Ok(()))),
+            ),
+            &mut ctx,
+        );
+        let a = p.update(Message::Back, &mut ctx);
+        assert_eq!(p.kind(), Some(&Kind::Members));
+        // Reloading: the list was reset (fetch through rest_task).
+        assert!(a.effects.is_empty());
+        match &p.body {
+            Some(Body::Members(m)) => assert!(m.reloading_for_test()),
+            _ => panic!("members body expected"),
+        }
     }
 
     #[test]

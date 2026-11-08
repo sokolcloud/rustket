@@ -308,22 +308,24 @@ impl Discussions {
                     .into()
             }
         };
-        let mut out = column![top].height(Length::Fill);
-        if let Some((_, name)) = &self.confirm_join {
-            out = out.push(
-                iced::widget::container(common::confirm_card(
-                    t!("teams.join_confirm", room = name.as_str()).into_owned(),
-                    t!("teams.join").into_owned(),
-                    false,
-                    self.joining,
-                    Msg::ConfirmJoin,
-                    Msg::CancelJoin,
-                ))
-                .padding([0.0, SPACE_4])
-                .center_x(Length::Fill),
-            );
-        }
-        out.push(body).into()
+        // The card has a slot of its own: the list below keeps its scroll
+        // offset while the card is shown.
+        let confirm = self.confirm_join.as_ref().map(|(_, name)| {
+            iced::widget::container(common::confirm_card(
+                t!("teams.join_confirm", room = name.as_str()).into_owned(),
+                t!("teams.join").into_owned(),
+                false,
+                self.joining,
+                Msg::ConfirmJoin,
+                Msg::CancelJoin,
+            ))
+            .padding([0.0, SPACE_4])
+            .center_x(Length::Fill)
+            .into()
+        });
+        column![top, rustket_ui::widget::slot(confirm, 0.0), body]
+            .height(Length::Fill)
+            .into()
     }
 }
 
@@ -331,6 +333,74 @@ impl Discussions {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn join_confirmation_keeps_the_list_scrollable() {
+        use crate::room::{UpdateCtx, ViewCtx};
+        use crate::tree_probe::{assert_kept, scrollable_tag};
+        use iced::advanced::widget::Tree;
+        use rocketchat::ServerUrl;
+        use rustket_core::ServerId;
+        use rustket_core::workspace::Workspace;
+        let mut ws = Workspace::new();
+        let (sid, url) = (
+            ServerId("s".into()),
+            ServerUrl::parse("http://localhost:3000").unwrap(),
+        );
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let mut d = Discussions::default();
+        let req = d.list.reset();
+        d.list.finish(
+            req,
+            Ok(Paginated {
+                items: vec![
+                    serde_json::from_value(serde_json::json!({
+                        "_id": "m1", "rid": "r", "t": "discussion-created",
+                        "msg": "Disc", "drid": "d1", "u": {"_id": "u", "username": "u"}
+                    }))
+                    .unwrap(),
+                ],
+                count: 1,
+                offset: 0,
+                total: 1,
+                raw_len: 1,
+                dropped: 0,
+            }),
+        );
+        macro_rules! view_ctx {
+            ($ws:expr) => {
+                ViewCtx {
+                    server_id: &sid,
+                    server: &url,
+                    rid: "r",
+                    workspace: $ws,
+                    images: &images,
+                    prefs: &prefs,
+                    connected: true,
+                    panel: None,
+                    now: std::time::Instant::now(),
+                }
+            };
+        }
+        let mut tree = Tree::new(d.view(&view_ctx!(&ws)).as_widget());
+        for (step, msg) in [
+            ("card shown", Msg::Open("d1".into())),
+            ("card gone", Msg::CancelJoin),
+        ] {
+            let mut ctx = UpdateCtx {
+                server_id: &sid,
+                server: &url,
+                rid: "r",
+                workspace: &mut ws,
+                session: None,
+                images: &images,
+                prefs: &prefs,
+            };
+            let _ = d.update(msg, &mut ctx);
+            assert_kept(&mut tree, &d.view(&view_ctx!(&ws)), scrollable_tag(), step);
+        }
+    }
 
     #[test]
     fn deleted_discussion_label() {

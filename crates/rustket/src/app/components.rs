@@ -10,7 +10,7 @@ use crate::component::{self, Ctx, Effect, Nav};
 use crate::desktop;
 use crate::dialogs::{create_room, quick_switcher};
 use crate::e2e;
-use crate::message::Message;
+use crate::message::{Go, Message};
 use crate::screens::{account, directory, settings};
 use crate::workspace::{ServerState, status_menu};
 
@@ -75,6 +75,13 @@ impl App {
     }
 
     pub(super) fn navigate(&mut self, nav: Nav) -> Task<Message> {
+        let leaves = matches!(
+            nav,
+            Nav::Settings | Nav::Workspace | Nav::Account | Nav::Directory | Nav::Admin
+        );
+        if leaves && !self.may_leave(Message::Go(Go::Nav(nav.clone()))) {
+            return Task::none();
+        }
         let sid = self.active.clone();
         match (nav, sid) {
             (Nav::Settings, _) => {
@@ -107,6 +114,7 @@ impl App {
             }
             (Nav::Admin, Some(sid)) => self.open_admin(sid),
             (Nav::CreateRoom(kind), Some(sid)) => {
+                self.dialog_instances.0 += 1;
                 self.modals.push(Modal::CreateRoom(
                     sid,
                     Box::new(create_room::CreateRoom::new(kind)),
@@ -123,6 +131,7 @@ impl App {
                     return Task::none();
                 };
                 self.modals.retain(|m| !matches!(m, Modal::CreateRoom(..)));
+                self.dialog_instances.0 += 1;
                 self.modals.push(Modal::CreateRoom(sid, Box::new(dialog)));
                 iced::widget::operation::focus(create_room::NAME_ID)
             }
@@ -134,6 +143,7 @@ impl App {
                 {
                     return Task::none();
                 }
+                self.dialog_instances.1 += 1;
                 self.modals.push(Modal::QuickSwitcher(
                     sid.clone(),
                     Box::new(quick_switcher::QuickSwitcher::new()),
@@ -157,10 +167,11 @@ impl App {
                 Effect::Toast(kind, title, body) => self.toast(kind, title, body),
                 Effect::Navigate(nav) => self.navigate(nav),
                 Effect::OpenRoom(rid) => match sid {
-                    Some(sid) => {
-                        let a = self.activate(sid.clone());
-                        Task::batch([a, self.open_room(sid, &rid)])
-                    }
+                    Some(sid) => self.go(Go::Room {
+                        sid: sid.clone(),
+                        rid,
+                        tmid: None,
+                    }),
                     None => Task::none(),
                 },
                 Effect::OpenUrl(url) => self.open_url(url),
@@ -179,7 +190,10 @@ impl App {
                 },
                 Effect::SaveConfig => self.save_config(),
                 Effect::Logout { everywhere } => match sid {
-                    Some(sid) => self.logout(sid, everywhere),
+                    Some(sid) => self.go(Go::Logout {
+                        sid: sid.clone(),
+                        everywhere,
+                    }),
                     None => Task::none(),
                 },
                 Effect::RemoveServer => {
@@ -358,16 +372,68 @@ impl App {
         Task::batch([
             task,
             self.component_effects(Some(&sid), Source::Screen, a.effects),
-            leave.map_or_else(Task::none, |to| Task::done(Message::Rail(to))),
+            leave.map_or_else(Task::none, Task::done),
         ])
     }
 
-    /// Leaving through the rail (server, add server, settings gear) asks an
-    /// admin screen with unsaved settings first; `false` when it asked.
-    pub(super) fn may_leave_admin(&mut self, to: &crate::workspace::rail::Message) -> bool {
+    /// Every way away from the screen (rail, room links, notifications,
+    /// quick switcher, calls, logout, window close) asks an admin screen with
+    /// unsaved settings first: `false` when it asked; `then` is replayed
+    /// after "Discard".
+    pub(super) fn may_leave(&mut self, then: Message) -> bool {
         match &mut self.screen {
-            Screen::Admin(_, c) => c.ask_leave(to.clone()),
+            Screen::Admin(_, c) => c.ask_leave(then),
             _ => true,
+        }
+    }
+
+    /// Whether the admin screen holds unsaved settings edits.
+    pub(super) fn admin_dirty(&self) -> bool {
+        matches!(&self.screen, Screen::Admin(_, c) if c.is_dirty())
+    }
+
+    /// A navigation that leaves the current screen, after the admin check.
+    pub(super) fn go(&mut self, go: Go) -> Task<Message> {
+        if !self.may_leave(Message::Go(go.clone())) {
+            return Task::none();
+        }
+        match go {
+            Go::Nav(nav) => self.navigate(nav),
+            Go::Room { sid, rid, tmid } => {
+                let a = self.activate(sid.clone());
+                let open = self.open_room(&sid, &rid);
+                if let Some(tmid) = tmid
+                    && let Some(rv) = self
+                        .servers
+                        .get_mut(&sid)
+                        .and_then(|s| s.rooms.get_mut(&rid))
+                {
+                    let kind = crate::room::panel::Kind::Thread(tmid);
+                    if rv.panel.kind() != Some(&kind) {
+                        rv.panel.open(kind);
+                    }
+                }
+                Task::batch([a, open])
+            }
+            Go::AddServer(url) => {
+                self.screen = Screen::AddServer(Box::new(
+                    crate::screens::add_server::AddServer::new(!self.servers.is_empty())
+                        .with_url(url.as_str()),
+                ));
+                Task::done(Message::AddServer(
+                    crate::screens::add_server::Message::Submit,
+                ))
+            }
+            Go::Logout { sid, everywhere } => self.logout(&sid, everywhere),
+            Go::Discussion { sid, rid, pmid } => {
+                let a = self.activate(sid);
+                let nav = self.navigate(Nav::CreateDiscussion { rid, pmid });
+                Task::batch([a, nav])
+            }
+            Go::Quit => {
+                self.flush_config();
+                iced::exit()
+            }
         }
     }
 
@@ -399,7 +465,10 @@ impl App {
         };
         let a = c.update(m, &mut ctx);
         let s2 = sid.clone();
-        let task = a.task.map(move |m| Message::CreateRoom(s2.clone(), m));
+        let instance = self.dialog_instances.0;
+        let task = a
+            .task
+            .map(move |m| Message::Dialog(instance, Box::new(Message::CreateRoom(s2.clone(), m))));
         Task::batch([
             task,
             self.component_effects(Some(&sid), Source::CreateRoom, a.effects),
@@ -424,11 +493,28 @@ impl App {
         };
         let a = c.update(m, &mut ctx);
         let s2 = sid.clone();
-        let task = a.task.map(move |m| Message::QuickSwitcher(s2.clone(), m));
+        let instance = self.dialog_instances.1;
+        let task = a.task.map(move |m| {
+            Message::Dialog(instance, Box::new(Message::QuickSwitcher(s2.clone(), m)))
+        });
         Task::batch([
             task,
             self.component_effects(Some(&sid), Source::QuickSwitcher, a.effects),
         ])
+    }
+
+    /// A dialog's task result: dropped unless that dialog instance is still
+    /// the open one (a closed dialog's late result never lands in the next).
+    pub(super) fn on_dialog_result(&mut self, instance: u64, m: Message) -> Task<Message> {
+        match m {
+            Message::CreateRoom(sid, m) if instance == self.dialog_instances.0 => {
+                self.on_create_room(sid, m)
+            }
+            Message::QuickSwitcher(sid, m) if instance == self.dialog_instances.1 => {
+                self.on_quick_switcher(sid, m)
+            }
+            _ => Task::none(),
+        }
     }
 
     pub(super) fn on_status_menu(
@@ -455,34 +541,27 @@ impl App {
         let mut tasks = vec![task.map(Message::Desktop)];
         for r in requests {
             tasks.push(match r {
-                desktop::Request::OpenRoom { server_id, rid } => {
-                    let a = self.activate(server_id.clone());
-                    Task::batch([a, self.open_room(&server_id, &rid)])
-                }
+                desktop::Request::OpenRoom { server_id, rid } => self.go(Go::Room {
+                    sid: server_id,
+                    rid,
+                    tmid: None,
+                }),
                 desktop::Request::OpenThread {
                     server_id,
                     rid,
                     tmid,
-                } => {
-                    let a = self.activate(server_id.clone());
-                    let open = self.open_room(&server_id, &rid);
-                    if let Some(rv) = self
-                        .servers
-                        .get_mut(&server_id)
-                        .and_then(|s| s.rooms.get_mut(&rid))
-                    {
-                        let kind = crate::room::panel::Kind::Thread(tmid);
-                        if rv.panel.kind() != Some(&kind) {
-                            rv.panel.open(kind);
-                        }
-                    }
-                    Task::batch([a, open])
-                }
+                } => self.go(Go::Room {
+                    sid: server_id,
+                    rid,
+                    tmid: Some(tmid),
+                }),
                 desktop::Request::ShowWindow => self.desktop.show_window().map(Message::Desktop),
-                desktop::Request::Quit => {
-                    self.flush_config();
-                    iced::exit()
-                }
+                // Unsaved admin settings: the window comes back for the question.
+                desktop::Request::Quit if self.admin_dirty() => Task::batch([
+                    self.desktop.show_window().map(Message::Desktop),
+                    self.go(Go::Quit),
+                ]),
+                desktop::Request::Quit => self.go(Go::Quit),
                 desktop::Request::IdleTime(idle) => self.idle_presence(idle),
                 desktop::Request::SetStatus(status) => self.set_status_everywhere(status),
                 desktop::Request::RoomStep(step) => self.room_step(step),

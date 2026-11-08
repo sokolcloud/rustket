@@ -57,28 +57,60 @@ pub struct Allowed {
 }
 
 impl Allowed {
-    /// The web client's `useEditRoomPermissions`.
+    /// The web client's `useEditRoomPermissions` with the channel/group
+    /// directives (`allowRoomSettingChange`): only channels and private
+    /// groups have these settings (omnichannel rooms have their own form);
+    /// broadcast rooms keep read-only on.
     pub fn compute(ws: &Workspace, rid: &str) -> Self {
         let Some(entry) = ws.room(rid) else {
             return Self::default();
         };
         let t = entry.room_type();
-        let edit = permissions::can_edit_room(ws, rid) && t != RoomType::Direct;
+        if !matches!(t, RoomType::Channel | RoomType::Private) {
+            return Self::default();
+        }
+        let edit = permissions::can_edit_room(ws, rid);
+        let room = entry.room.as_ref();
+        let broadcast = room.and_then(|r| r.broadcast) == Some(true);
         let is_admin = ws.me().is_some_and(|m| m.has_role("admin"));
-        let is_default = entry.room.as_ref().and_then(|r| r.default) == Some(true);
+        let is_default = room.and_then(|r| r.default) == Some(true);
+        // A team's child room changes type with the team permissions in the
+        // team's main room.
+        let (create_c, create_p) = if rustket_core::teams::is_child_room(ws, rid) {
+            let main = rustket_core::teams::team_of(ws, rid).and_then(|(_, m)| m);
+            (
+                permissions::has_permission(ws, "create-team-channel", main.as_deref()),
+                permissions::has_permission(ws, "create-team-group", main.as_deref()),
+            )
+        } else {
+            (
+                permissions::can_create_channel(ws),
+                permissions::can_create_group(ws),
+            )
+        };
         let change_type = (!is_default || is_admin)
-            && ((t == RoomType::Private && permissions::can_create_channel(ws))
-                || (t == RoomType::Channel && permissions::can_create_group(ws)));
+            && ((t == RoomType::Private && create_c) || (t == RoomType::Channel && create_p));
         Self {
             edit,
             change_type: edit && change_type,
-            read_only: edit && permissions::has_permission(ws, "set-readonly", Some(rid)),
+            read_only: edit
+                && !broadcast
+                && permissions::has_permission(ws, "set-readonly", Some(rid)),
             react_when_read_only: edit
+                && !broadcast
                 && permissions::has_permission(ws, "set-react-when-readonly", Some(rid)),
             archive: permissions::has_permission(ws, ids::ARCHIVE_ROOM, Some(rid)),
             unarchive: permissions::has_permission(ws, ids::UNARCHIVE_ROOM, Some(rid)),
         }
     }
+}
+
+/// Whether the room has the channel settings form at all (web
+/// `useChannelSettingsRoomAction`: groups `channel` and `group`).
+pub fn offered(ws: &Workspace, rid: &str) -> bool {
+    ws.room(rid)
+        .is_some_and(|e| matches!(e.room_type(), RoomType::Channel | RoomType::Private))
+        && permissions::can_edit_room(ws, rid)
 }
 
 /// The text input look for multi-line fields.
@@ -337,21 +369,32 @@ impl Settings {
                 f.private,
                 Flag::Private,
                 allowed.change_type,
-            ))
-            .push(toggle(
-                t!("room_panel.read_only").into_owned(),
-                Some(t!("room_panel.read_only_hint").into_owned()),
-                f.read_only,
-                Flag::ReadOnly,
-                allowed.read_only,
-            ))
-            .push(toggle(
-                t!("room_panel.react_when_read_only").into_owned(),
-                None,
-                f.react_when_read_only,
-                Flag::ReactWhenReadOnly,
-                allowed.react_when_read_only && f.read_only,
-            ))
+            ));
+        // Broadcast rooms stay read-only: the web hides both toggles there.
+        let broadcast = ctx
+            .workspace
+            .room(ctx.rid)
+            .and_then(|e| e.room.as_ref())
+            .and_then(|r| r.broadcast)
+            == Some(true);
+        if !broadcast {
+            col = col
+                .push(toggle(
+                    t!("room_panel.read_only").into_owned(),
+                    Some(t!("room_panel.read_only_hint").into_owned()),
+                    f.read_only,
+                    Flag::ReadOnly,
+                    allowed.read_only,
+                ))
+                .push(toggle(
+                    t!("room_panel.react_when_read_only").into_owned(),
+                    None,
+                    f.react_when_read_only,
+                    Flag::ReactWhenReadOnly,
+                    allowed.react_when_read_only && f.read_only,
+                ));
+        }
+        col = col
             .push(toggle(
                 t!("room_panel.archived").into_owned(),
                 None,

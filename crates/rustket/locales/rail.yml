@@ -5,3 +5,6 @@ rail.add_server:
 rail.settings:
   en: "Settings"
   ru: "Настройки"
+rail.signed_out:
+  en: "%{name} (signed out)"
+  ru: "%{name} (выполнен выход)"
