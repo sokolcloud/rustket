@@ -348,9 +348,13 @@ impl RestClient {
     }
 
     /// Downloads an attachment, avatar or any URL. Server-relative paths are resolved
-    /// against the server. Auth headers are sent only to this server; a redirect to
-    /// another origin (e.g. S3/GCS file storage) is followed without credentials,
-    /// cookies or `Referer`, and never from https to http.
+    /// against the server. Auth headers are sent only to this server's file and
+    /// image routes ([`ServerUrl::is_credentialed_asset`]): message content can
+    /// point at any same-origin path, and a header-authenticated GET to `/api/…`
+    /// (e.g. the legacy `GET /api/v1/logout`) must not be triggerable by
+    /// rendering a message. A redirect to another origin (e.g. S3/GCS file
+    /// storage) is followed without credentials, cookies or `Referer`, and never
+    /// from https to http.
     ///
     /// The credentials also go as the `rc_uid` / `rc_token` cookies the web client
     /// sets: `/avatar/…` ignores the auth headers and, with
@@ -358,7 +362,7 @@ impl RestClient {
     /// anonymous requests with the default SVG.
     pub async fn download(&self, url_or_path: &str) -> Result<Download> {
         let url = self.server().absolute(url_or_path);
-        let mut response = if self.server().owns(&url) {
+        let mut response = if self.server().is_credentialed_asset(&url) {
             let mut rb = self.authed(self.download_http(), Method::GET, &url, None);
             if let Some(c) = self.credentials() {
                 rb = rb.header(

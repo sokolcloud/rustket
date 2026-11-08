@@ -186,6 +186,22 @@ async fn password_login_and_me() {
         .unwrap();
 }
 
+/// App review #6: an image URL in a message pointing at `GET /api/v1/logout`
+/// on the user's own server must not log the user out when rendered.
+#[tokio::test]
+async fn downloading_an_api_url_sends_no_credentials() {
+    let Some(s) = server() else { return };
+    let c = login(&s, "alice").await;
+    let logout = s.absolute("/api/v1/logout");
+    let e = c.download(&logout).await.unwrap_err();
+    assert!(e.is_unauthorized(), "{e:?}");
+    c.me().await.expect("the token survives");
+    // Avatars still get the credentials.
+    let avatar = c.download(&s.avatar_user("alice", Some(32))).await.unwrap();
+    assert!(avatar.content_type.unwrap().starts_with("image/"));
+    c.logout().await.unwrap();
+}
+
 #[tokio::test]
 async fn wrong_password_is_unauthorized() {
     let Some(s) = server() else { return };

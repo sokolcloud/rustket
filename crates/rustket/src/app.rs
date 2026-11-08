@@ -326,7 +326,13 @@ impl App {
         );
         let theme = iced::system::theme().map(Message::SystemTheme);
         let handler = query_handler_task();
-        (app, Task::batch([open, theme, handler]))
+        // Media opened with the system player in earlier runs.
+        let media = crate::room::timeline::transfer::purge_media_task(
+            app.images.disk_dir(),
+            true,
+            Message::Noop,
+        );
+        (app, Task::batch([open, theme, handler, media]))
     }
 
     // --- helpers ---------------------------------------------------------------
@@ -747,7 +753,13 @@ impl App {
 
     fn fetch_images(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
-        for req in self.images.take_wanted() {
+        let servers = &self.servers;
+        let wanted = self.images.take_wanted(|r| {
+            servers
+                .get(&r.server_id)
+                .is_some_and(|s| s.url.is_credentialed_asset(&r.url))
+        });
+        for req in wanted {
             let generation = self.images.generation(&req.server_id);
             let Some(s) = self.servers.get(&req.server_id) else {
                 self.images.finish(
@@ -916,6 +928,16 @@ impl App {
                 iced::window::close(id)
             }
             Message::FlushImages => Task::none(),
+            Message::PurgeStaleMedia => Task::batch([
+                crate::room::timeline::transfer::purge_media_task(
+                    self.images.disk_dir(),
+                    true,
+                    Message::Noop,
+                ),
+                Task::perform(crate::e2e::files::purge_private_media(true), |()| {
+                    Message::Noop
+                }),
+            ]),
             Message::ImageLoaded(sid, generation, url, r) => {
                 // Results of a purged cache (logout, removal) are dropped and
                 // never written back.
@@ -1274,7 +1296,13 @@ impl App {
         let Some(url) = self.servers.get(sid).map(|s| s.url.clone()) else {
             return Task::none();
         };
-        match self.images.purge_server(sid, &url) {
+        // Opened media is not kept per server: all of it goes.
+        let media = crate::room::timeline::transfer::purge_media_task(
+            self.images.disk_dir(),
+            false,
+            Message::Noop,
+        );
+        let images = match self.images.purge_server(sid, &url) {
             Some(dir) => Task::perform(
                 async move {
                     let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir)).await;
@@ -1282,7 +1310,8 @@ impl App {
                 |_| Message::Noop,
             ),
             None => Task::none(),
-        }
+        };
+        Task::batch([images, media])
     }
 
     fn delete_token(&mut self, sid: &ServerId) -> Task<Message> {
@@ -2512,6 +2541,11 @@ impl App {
         {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
         }
+        // A long-running session expires opened media too, not only startup.
+        subs.push(
+            iced::time::every(crate::room::timeline::transfer::MEDIA_PURGE_INTERVAL)
+                .map(|_| Message::PurgeStaleMedia),
+        );
         // Image misses recorded while drawing a frame are fetched right after it.
         subs.push(iced::event::listen_with(
             |event, _status, _id| match event {

@@ -325,11 +325,16 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        // Like `Column`: children outside the viewport are not drawn.
+        if layout.bounds().intersection(viewport).is_none() {
+            return;
+        }
         for ((child, state), layout) in self
             .children
             .iter()
             .zip(&tree.children)
             .zip(layout.children())
+            .filter(|(_, layout)| layout.bounds().intersects(viewport))
         {
             child
                 .as_widget()

@@ -16,6 +16,11 @@
 //!   results of older generations are dropped by the app, which also does the
 //!   disk write, so in-flight fetches cannot repopulate a purged cache.
 //! - The memory LRU is bounded by entry count and bytes.
+//! - At most [`MAX_FETCHES_PER_SERVER`] fetches of the server's own asset
+//!   routes and [`MAX_FOREIGN_FETCHES_PER_SERVER`] of other URLs (message
+//!   content) run per server; the rest wait in a queue served newest request
+//!   first (what the last frame showed). Every network fetch ends after
+//!   [`FETCH_DEADLINE`], so a trickling host cannot hold a slot.
 //!
 //! Views only read ([`Images::get`], [`Images::avatar`]). Misses are recorded
 //! and fetched after the next update, or right after the next frame (the app
@@ -60,6 +65,14 @@ pub const MAX_DIMENSION: u32 = 10_000;
 pub const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
 /// Raster decodes running at the same time.
 pub const MAX_CONCURRENT_DECODES: usize = 4;
+/// Fetches (disk or network) of the server's own asset routes (avatars,
+/// emoji, uploads) running at the same time per server.
+pub const MAX_FETCHES_PER_SERVER: usize = 12;
+/// Fetches of other URLs (attachment `image_url`s on foreign hosts, other
+/// paths) per server: a separate pool, so they never take the avatar slots.
+pub const MAX_FOREIGN_FETCHES_PER_SERVER: usize = 4;
+/// Total time a network download may take (connect, headers and body).
+pub const FETCH_DEADLINE: Duration = Duration::from_secs(60);
 
 /// Set when a view recorded a miss; the app flushes it after the next frame.
 pub static VIEW_MISSES: AtomicBool = AtomicBool::new(false);
@@ -115,11 +128,28 @@ pub struct Images {
     clock: Cell<u64>,
     capacity: usize,
     budget: usize,
-    in_flight: HashSet<String>,
+    /// URL → running fetch.
+    in_flight: HashMap<String, InFlight>,
     failed: HashMap<String, Instant>,
-    wanted: RefCell<Vec<ImageRequest>>,
+    /// Queued requests → (batch, order): later batches are served first.
+    wanted: RefCell<HashMap<ImageRequest, (u64, u64)>>,
+    /// Current batch (bumped by every [`Self::take_wanted`]) and order counter.
+    want_batch: Cell<u64>,
+    want_seq: Cell<u64>,
     generations: HashMap<ServerId, u64>,
     disk_dir: Option<PathBuf>,
+    /// Bumped whenever what [`Self::get`] returns may have changed.
+    revision: u64,
+    /// Per server: bumped when one of its URLs got an image or an initials
+    /// decision, or its entries were dropped (not on failures).
+    server_revisions: HashMap<ServerId, u64>,
+}
+
+struct InFlight {
+    server_id: ServerId,
+    generation: u64,
+    /// Counted in the server's own pool ([`MAX_FETCHES_PER_SERVER`]).
+    own: bool,
 }
 
 impl Default for Images {
@@ -141,11 +171,15 @@ impl Images {
             clock: Cell::new(0),
             capacity: MEMORY_CAPACITY,
             budget: MEMORY_BUDGET,
-            in_flight: HashSet::new(),
+            in_flight: HashMap::new(),
+            server_revisions: HashMap::new(),
             failed: HashMap::new(),
-            wanted: RefCell::new(Vec::new()),
+            wanted: RefCell::new(HashMap::new()),
+            want_batch: Cell::new(0),
+            want_seq: Cell::new(0),
             generations: HashMap::new(),
             disk_dir,
+            revision: 0,
         }
     }
 
@@ -194,6 +228,24 @@ impl Images {
         self.cache.contains_key(url)
     }
 
+    /// Changes whenever a cached image or initials decision was added or
+    /// dropped: a key for memoised views that show images.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Like [`Self::revision`] but only for one server's URLs: a key for
+    /// views that show only that server's images (the sidebar).
+    pub fn server_revision(&self, server_id: &ServerId) -> u64 {
+        self.server_revisions.get(server_id).copied().unwrap_or(0)
+    }
+
+    fn bump(&mut self, server_id: &ServerId) {
+        self.revision = self.revision.wrapping_add(1);
+        let r = self.server_revisions.entry(server_id.clone()).or_default();
+        *r = r.wrapping_add(1);
+    }
+
     pub fn shows_initials(&self, url: &str) -> bool {
         self.initials.contains(url)
     }
@@ -222,7 +274,7 @@ impl Images {
             self.touch(e);
             return;
         }
-        if self.initials.contains(&req.url) || self.in_flight.contains(&req.url) {
+        if self.initials.contains(&req.url) || self.in_flight.contains_key(&req.url) {
             return;
         }
         if let Some(t) = self.failed.get(&req.url)
@@ -230,23 +282,80 @@ impl Images {
         {
             return;
         }
+        let batch = self.want_batch.get();
+        let seq = self.want_seq.get();
+        self.want_seq.set(seq.wrapping_add(1));
         let mut w = self.wanted.borrow_mut();
-        if !w.contains(&req) {
-            w.push(req);
+        match w.get_mut(&req) {
+            // Asked again in a later frame: it is still on screen.
+            Some(at) if at.0 != batch => *at = (batch, seq),
+            Some(_) => {}
+            None => {
+                w.insert(req, (batch, seq));
+            }
         }
+    }
+
+    /// Number of queued requests.
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        self.wanted.borrow().len()
     }
 
     pub fn has_wanted(&self) -> bool {
         !self.wanted.borrow().is_empty()
     }
 
-    /// Requests recorded since the last call, marked in flight (deduplicated).
-    pub fn take_wanted(&mut self) -> Vec<ImageRequest> {
-        let wanted = std::mem::take(&mut *self.wanted.borrow_mut());
-        wanted
-            .into_iter()
-            .filter(|r| self.in_flight.insert(r.url.clone()))
-            .collect()
+    /// Requests to start now, marked in flight: per server at most
+    /// [`MAX_FETCHES_PER_SERVER`] running for which `own` holds (the server's
+    /// asset routes, `ServerUrl::is_credentialed_asset`) and
+    /// [`MAX_FOREIGN_FETCHES_PER_SERVER`] for the rest; the most recently
+    /// requested first (in request order within a batch). The rest stay queued.
+    pub fn take_wanted(&mut self, own: impl Fn(&ImageRequest) -> bool) -> Vec<ImageRequest> {
+        self.want_batch.set(self.want_batch.get().wrapping_add(1));
+        let mut running: HashMap<(ServerId, bool), usize> = HashMap::new();
+        for f in self.in_flight.values() {
+            *running.entry((f.server_id.clone(), f.own)).or_default() += 1;
+        }
+        let full = |key: &(ServerId, bool), running: &HashMap<(ServerId, bool), usize>| {
+            let cap = if key.1 {
+                MAX_FETCHES_PER_SERVER
+            } else {
+                MAX_FOREIGN_FETCHES_PER_SERVER
+            };
+            running.get(key).copied().unwrap_or(0) >= cap
+        };
+        let mut w = self.wanted.borrow_mut();
+        let both_full = |sid: &ServerId| {
+            full(&(sid.clone(), true), &running) && full(&(sid.clone(), false), &running)
+        };
+        if w.keys().all(|r| both_full(&r.server_id)) {
+            return Vec::new();
+        }
+        let mut queued: Vec<(ImageRequest, (u64, u64))> = w.drain().collect();
+        queued.sort_unstable_by(|a, b| b.1.0.cmp(&a.1.0).then(a.1.1.cmp(&b.1.1)));
+        let mut out = Vec::new();
+        for (req, at) in queued {
+            if self.in_flight.contains_key(&req.url) {
+                continue;
+            }
+            let key = (req.server_id.clone(), own(&req));
+            if full(&key, &running) {
+                w.insert(req, at);
+                continue;
+            }
+            *running.entry(key.clone()).or_default() += 1;
+            self.in_flight.insert(
+                req.url.clone(),
+                InFlight {
+                    server_id: key.0,
+                    generation: self.generations.get(&req.server_id).copied().unwrap_or(0),
+                    own: key.1,
+                },
+            );
+            out.push(req);
+        }
+        out
     }
 
     pub fn disk_dir(&self) -> Option<&Path> {
@@ -288,9 +397,19 @@ impl Images {
         url: String,
         result: Result<Fetched, String>,
     ) -> bool {
-        self.in_flight.remove(&url);
+        // A result of an older generation must not free a newer fetch's slot.
+        if self
+            .in_flight
+            .get(&url)
+            .is_some_and(|f| &f.server_id == server_id && f.generation == generation)
+        {
+            self.in_flight.remove(&url);
+        }
         if generation != self.generation(server_id) {
             return false;
+        }
+        if result.is_ok() {
+            self.bump(server_id);
         }
         match result {
             Ok(Fetched::Image(img)) => {
@@ -311,6 +430,7 @@ impl Images {
     }
 
     fn insert(&mut self, url: String, img: Loaded) {
+        self.revision = self.revision.wrapping_add(1);
         self.clock.set(self.clock.get() + 1);
         self.bytes += img.bytes();
         if let Some(old) = self.cache.insert(
@@ -371,6 +491,9 @@ impl Images {
         };
         let mut dropped: Vec<String> = self.cache.keys().filter(|u| matches(u)).cloned().collect();
         dropped.extend(self.initials.iter().filter(|u| matches(u)).cloned());
+        if !dropped.is_empty() {
+            self.bump(server_id);
+        }
         let dir = self.server_dir(server_id);
         for url in &dropped {
             if let Some(e) = self.cache.remove(url) {
@@ -397,6 +520,7 @@ impl Images {
     /// generation. Returns the disk directory to delete (off the UI thread).
     pub fn purge_server(&mut self, server_id: &ServerId, server: &ServerUrl) -> Option<PathBuf> {
         *self.generations.entry(server_id.clone()).or_default() += 1;
+        self.bump(server_id);
         let prefix = format!("{}/", server.as_str());
         let mut freed = 0;
         self.cache.retain(|k, e| {
@@ -409,10 +533,11 @@ impl Images {
         self.bytes -= freed;
         self.initials.retain(|k| !k.starts_with(&prefix));
         self.failed.retain(|k, _| !k.starts_with(&prefix));
-        self.in_flight.retain(|k| !k.starts_with(&prefix));
+        self.in_flight
+            .retain(|k, f| !k.starts_with(&prefix) && &f.server_id != server_id);
         self.wanted
             .borrow_mut()
-            .retain(|r| &r.server_id != server_id);
+            .retain(|r, _| &r.server_id != server_id);
         self.server_dir(server_id)
     }
 
@@ -517,7 +642,13 @@ pub async fn fetch(rest: RestClient, server_dir: Option<PathBuf>, url: String) -
         IMAGE_MAX_PX
     };
     // End-to-end encrypted files: decrypted in memory, never cached on disk.
-    if let Some(r) = crate::e2e::files::fetch_image(&rest, &url, MAX_DOWNLOAD_BYTES).await {
+    let e2e = tokio::time::timeout(
+        FETCH_DEADLINE,
+        crate::e2e::files::fetch_image(&rest, &url, MAX_DOWNLOAD_BYTES),
+    )
+    .await
+    .unwrap_or_else(|_| Some(Err("image fetch timed out".into())));
+    if let Some(r) = e2e {
         let fetched = match r {
             Ok(bytes) => decode_limited(bytes, max_px)
                 .await
@@ -559,7 +690,7 @@ pub async fn fetch(rest: RestClient, server_dir: Option<PathBuf>, url: String) -
             None => {}
         }
     }
-    let fetched = download(&rest, &url).await;
+    let fetched = download(&rest, &url, FETCH_DEADLINE).await;
     let (fetched, store) = match fetched {
         Err(e) => (Err(e), None),
         Ok(Body::Svg) => (Ok(Fetched::Initials), Some(Vec::new())),
@@ -587,7 +718,14 @@ enum Body {
     Raster(Vec<u8>),
 }
 
-async fn download(rest: &RestClient, url: &str) -> Result<Body, String> {
+/// Downloads `url` within `deadline` (connect, headers and body together).
+async fn download(rest: &RestClient, url: &str, deadline: Duration) -> Result<Body, String> {
+    tokio::time::timeout(deadline, download_body(rest, url))
+        .await
+        .unwrap_or_else(|_| Err("image fetch timed out".into()))
+}
+
+async fn download_body(rest: &RestClient, url: &str) -> Result<Body, String> {
     let dl = rest.download(url).await.map_err(|e| e.to_string())?;
     let svg_type = dl
         .content_type
@@ -762,24 +900,57 @@ mod tests {
         assert!(images.get(&sid, "u1").is_none());
         assert!(images.get(&sid, "u1").is_none());
         assert!(images.has_wanted());
-        assert_eq!(images.take_wanted().len(), 1);
+        assert_eq!(images.take_wanted(|_| true).len(), 1);
         assert!(images.get(&sid, "u1").is_none());
-        assert!(images.take_wanted().is_empty(), "in flight");
+        assert!(images.take_wanted(|_| true).is_empty(), "in flight");
         assert!(images.finish(&sid, 0, "u1".into(), Ok(Fetched::Image(img(1)))));
         assert!(images.get(&sid, "u1").is_some());
         // Failures back off.
         images.get(&sid, "bad");
-        images.take_wanted();
+        images.take_wanted(|_| true);
         images.finish(&sid, 0, "bad".into(), Err("x".into()));
         assert!(images.get(&sid, "bad").is_none());
-        assert!(images.take_wanted().is_empty());
+        assert!(images.take_wanted(|_| true).is_empty());
         // SVG answers become initials and are not requested again.
         images.get(&sid, "svg");
-        images.take_wanted();
+        images.take_wanted(|_| true);
         images.finish(&sid, 0, "svg".into(), Ok(Fetched::Initials));
         assert!(images.get(&sid, "svg").is_none());
         assert!(images.shows_initials("svg"));
-        assert!(images.take_wanted().is_empty());
+        assert!(images.take_wanted(|_| true).is_empty());
+    }
+
+    /// App review #57: a sidebar of 2000 rows does not start 2000 fetches at
+    /// once; what the latest frame asked for goes first.
+    #[test]
+    fn fetches_are_bounded_per_server_newest_first() {
+        let mut images = Images::new(None);
+        let (a, b) = (ServerId("a".into()), ServerId("b".into()));
+        for i in 0..2000 {
+            images.get(&a, &format!("a{i}"));
+        }
+        images.get(&b, "b0");
+        let first = images.take_wanted(|_| true);
+        assert_eq!(first.len(), MAX_FETCHES_PER_SERVER + 1);
+        assert_eq!(first[0].url, "a0", "request order within a frame");
+        assert!(
+            first.iter().any(|r| r.url == "b0"),
+            "servers are independent"
+        );
+        assert!(images.take_wanted(|_| true).is_empty(), "all slots busy");
+        // The next frame shows a room: its image jumps the queue.
+        images.get(&a, "room-image");
+        images.finish(&a, 0, "a0".into(), Err("x".into()));
+        let next = images.take_wanted(|_| true);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].url, "room-image");
+        // Duplicates are not queued twice.
+        let queued = images.wanted.borrow().len();
+        images.get(&a, "a1999");
+        assert_eq!(images.wanted.borrow().len(), queued);
+        let rev = images.revision();
+        images.finish(&a, 0, "a1".into(), Ok(Fetched::Image(img(1))));
+        assert_ne!(images.revision(), rev);
     }
 
     /// Re-review #12/#7: LRU bounded by entries and bytes; used entries stay.
@@ -843,7 +1014,7 @@ mod tests {
         assert!(!images.contains(&u));
         assert!(images.contains(&r));
         assert!(!disk_paths(&sdir, &u)[1].exists());
-        let w = images.take_wanted();
+        let w = images.take_wanted(|_| true);
         assert_eq!(w.len(), 1, "re-requested right away");
         // Purge bumps the generation: an in-flight result is dropped.
         let generation = images.generation(&sid);
@@ -852,6 +1023,95 @@ mod tests {
         assert!(!images.finish(&sid, generation, u.clone(), Ok(Fetched::Image(img(1)))));
         assert!(!images.contains(&u));
         assert_eq!(images.memory_bytes(), 0);
+    }
+
+    /// Review: untrusted image URLs (message content) used to share the
+    /// server's slots, so a dozen slow foreign hosts starved every avatar.
+    #[test]
+    fn foreign_urls_never_take_the_servers_slots() {
+        let mut images = Images::new(None);
+        let sid = ServerId("s".into());
+        let own = |r: &ImageRequest| r.url.starts_with("http://srv/avatar/");
+        for i in 0..50 {
+            images.get(&sid, &format!("http://evil{i}/x.png"));
+        }
+        let first = images.take_wanted(own);
+        assert_eq!(first.len(), MAX_FOREIGN_FETCHES_PER_SERVER);
+        assert!(images.take_wanted(own).is_empty());
+        for i in 0..20 {
+            images.get(&sid, &format!("http://srv/avatar/u{i}"));
+        }
+        let avatars = images.take_wanted(own);
+        assert_eq!(avatars.len(), MAX_FETCHES_PER_SERVER);
+        assert!(avatars.iter().all(own));
+    }
+
+    /// Review: a result of a purged generation removed the in-flight marker
+    /// of the newer fetch of the same URL (duplicate downloads, slots
+    /// undercounted). Failures change nothing a view shows.
+    #[test]
+    fn stale_results_keep_newer_fetches_in_flight() {
+        let mut images = Images::new(None);
+        let sid = ServerId("s".into());
+        let server = ServerUrl::parse("http://localhost:3000").unwrap();
+        let url = "http://localhost:3000/avatar/bob?size=64".to_owned();
+        images.get(&sid, &url);
+        assert_eq!(images.take_wanted(|_| true).len(), 1);
+        images.purge_server(&sid, &server);
+        images.get(&sid, &url);
+        assert_eq!(images.take_wanted(|_| true).len(), 1);
+        assert!(!images.finish(&sid, 0, url.clone(), Err("old".into())));
+        images.get(&sid, &url);
+        assert!(images.take_wanted(|_| true).is_empty(), "still in flight");
+        let rev = images.server_revision(&sid);
+        let other = ServerId("o".into());
+        images.get(&other, "http://o/x");
+        images.take_wanted(|_| true);
+        images.finish(&other, 0, "http://o/x".into(), Ok(Fetched::Image(img(1))));
+        assert!(images.finish(&sid, 1, url.clone(), Err("x".into())));
+        assert_eq!(images.server_revision(&sid), rev, "other server, failure");
+        images.get(&sid, &url);
+        assert!(images.take_wanted(|_| true).is_empty(), "backing off");
+    }
+
+    /// Review: a host that sends headers and then one byte at a time held a
+    /// fetch (and its slot) forever; the read timeout resets on every byte.
+    #[tokio::test]
+    async fn trickling_host_hits_the_deadline() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 1000000\r\n\r\n",
+                        )
+                        .await;
+                    for _ in 0..1000 {
+                        if sock.write_all(b"x").await.is_err() {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                });
+            }
+        });
+        let server = ServerUrl::parse(&format!("http://{addr}")).unwrap();
+        let tls = crate::session::tls_for(&[]).unwrap();
+        let rest = RestClient::new(server, &tls).unwrap();
+        let started = Instant::now();
+        let r = download(
+            &rest,
+            &format!("http://{addr}/elsewhere/x.png"),
+            Duration::from_millis(600),
+        )
+        .await;
+        assert!(r.is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

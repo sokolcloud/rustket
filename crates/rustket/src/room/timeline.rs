@@ -15,7 +15,7 @@ mod dialogs;
 pub mod interact;
 pub(crate) mod list;
 pub(crate) mod row;
-mod transfer;
+pub(crate) mod transfer;
 pub mod viewer;
 
 use std::time::Duration;

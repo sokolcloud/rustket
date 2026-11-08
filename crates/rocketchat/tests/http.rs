@@ -151,6 +151,30 @@ async fn foreign_download_never_gets_credentials() {
 }
 
 #[tokio::test]
+async fn same_origin_non_asset_download_is_anonymous() {
+    let (pa, log) = serve(|_| Some(http_response("200 OK", &[], "x"))).await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    for path in [
+        "/api/v1/logout",
+        "/api/apps/private/app/hash/act",
+        "/file-upload/../api/v1/logout",
+    ] {
+        c.download(path).await.unwrap();
+        c.download(&format!("http://127.0.0.1:{pa}{path}"))
+            .await
+            .unwrap();
+    }
+    let sent = joined(&log);
+    assert!(sent.contains("get /api/v1/logout"), "{sent}");
+    for h in ["x-auth-token", "x-user-id", "cookie"] {
+        assert!(!sent.contains(h), "{h} sent to a non-asset path:\n{sent}");
+    }
+    log.lock().unwrap().clear();
+    c.download("/avatar/alice?size=64").await.unwrap();
+    assert!(joined(&log).contains("rc_token=secret-auth-token"));
+}
+
+#[tokio::test]
 async fn hung_server_times_out() {
     let (pa, _) = serve(|_| None).await;
     let c = client_with(
