@@ -2833,13 +2833,14 @@ fn query_handler_task() -> Task<Message> {
     Task::perform(
         async {
             tokio::task::spawn_blocking(|| {
-                let check = handler_executable().map(|(_, w)| w);
+                let exe = handler_executable();
                 let Some(env) = XdgEnv::from_env() else {
-                    return (None, false, check);
+                    return (None, false, exe.map(|(_, w)| w));
                 };
                 let current = url_handler::current_handler(&env);
-                let registered = current.as_deref() == Some(url_handler::DESKTOP_FILE);
-                (current, registered, check)
+                let path = exe.as_ref().ok().map(|(p, _)| p.as_path());
+                let registered = url_handler::registered_for(&env, current.as_deref(), path);
+                (current, registered, exe.map(|(_, w)| w))
             })
             .await
             .unwrap_or_else(|e| (None, false, Err(e.to_string())))

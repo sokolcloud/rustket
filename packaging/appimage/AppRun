@@ -1,0 +1,10 @@
+#!/bin/sh
+# Entry point of the Rustket AppDir/AppImage. The binary links only glibc and
+# libgcc_s; X11/Wayland/xkbcommon/Vulkan are loaded from the host at runtime.
+# XDG_DATA_DIRS is deliberately left alone: the in-app rocketchat:// handler
+# registration must not pick up the AppDir's desktop file (it registers
+# $APPIMAGE instead).
+HERE="$(dirname "$(readlink -f "$0")")"
+APPDIR="${APPDIR:-$HERE}"
+export APPDIR
+exec "$HERE/usr/bin/rustket" "$@"

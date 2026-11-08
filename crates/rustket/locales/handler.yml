@@ -8,6 +8,9 @@ handler.body:
 handler.replaces:
   en: "rocketchat:// links currently open %{current} (e.g. the official desktop app). Registering replaces it."
   ru: "Сейчас ссылки rocketchat:// открывает %{current} (например, официальное приложение). Регистрация заменит его."
+handler.stale:
+  en: "rocketchat:// links currently start another Rustket executable (%{current}). Registering switches them to this one."
+  ru: "Сейчас ссылки rocketchat:// запускают другой исполняемый файл Rustket (%{current}). Регистрация переключит их на этот."
 handler.already:
   en: "Rustket is already registered."
   ru: "Rustket уже зарегистрирован."

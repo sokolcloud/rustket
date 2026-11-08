@@ -7,8 +7,13 @@
 
 rust_i18n::i18n!("locales", fallback = "en");
 
+/// The window's application id (X11 `WM_CLASS`, Wayland `app_id`); the packaged
+/// desktop file, icon and AppStream id use the same name (`packaging/linux`).
+pub const APP_ID: &str = "rustket";
+
 pub mod app;
 pub mod cache;
+pub mod cli;
 pub mod component;
 pub mod config_writer;
 pub mod deeplink;

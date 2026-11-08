@@ -2,8 +2,10 @@ use rustket::app::{App, Flags};
 use rustket::renderer;
 use rustket::single_instance::{self, Instance, ListenerSlot};
 
-/// The log filter: the user's `RUST_LOG` (or the recommended default), always
-/// followed by `rocketchat::LOG_FILTER_PINS` so transport crates that log
+/// The log filter: the user's `RUST_LOG` (or the recommended default), after
+/// [`QUIET_DEPS`] (more specific directives win, so `RUST_LOG=debug` keeps the
+/// toolkit quiet unless it names those crates) and always followed by
+/// `rocketchat::LOG_FILTER_PINS` so transport crates that log
 /// credentials at TRACE (tungstenite logs the resume token) stay at `info`.
 /// Toolkit crates that are noisy at `info`: `iced_winit` dumps the window
 /// attributes including every byte of the icon, `winit` warns about XSETTINGS
@@ -12,7 +14,7 @@ const QUIET_DEPS: &str = "wgpu=warn,naga=warn,iced_winit=warn,winit=error";
 
 fn log_filter(user: Option<&str>) -> String {
     match user.map(str::trim).filter(|f| !f.is_empty()) {
-        Some(f) => format!("{f},{}", rocketchat::LOG_FILTER_PINS),
+        Some(f) => format!("{QUIET_DEPS},{f},{}", rocketchat::LOG_FILTER_PINS),
         None => format!("{},{QUIET_DEPS}", rocketchat::RECOMMENDED_LOG_FILTER),
     }
 }
@@ -60,6 +62,12 @@ fn software_reexec() -> Option<std::io::Error> {
 }
 
 fn main() -> iced::Result {
+    // `--help`/`--version` print and exit before any GUI or re-exec work.
+    rust_i18n::set_locale(rustket::i18n::from_env(|k| std::env::var(k).ok()));
+    if let rustket::cli::Action::Print(text) = rustket::cli::parse(std::env::args_os().skip(1)) {
+        print!("{text}");
+        return Ok(());
+    }
     // Before anything else: the restarted process redoes all of it.
     let reexec_error = software_reexec();
     let user_filter = std::env::var("RUST_LOG").ok();
@@ -129,7 +137,7 @@ fn main() -> iced::Result {
             decorations,
             min_size: Some(rustket::workspace::titlebar::MIN_WINDOW_SIZE),
             platform_specific: iced::window::settings::PlatformSpecific {
-                application_id: "rustket".into(),
+                application_id: rustket::APP_ID.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -154,7 +162,7 @@ mod tests {
     #[test]
     fn log_filter_appends_pins() {
         let f = log_filter(Some("trace"));
-        assert!(f.starts_with("trace,"));
+        assert!(f.starts_with(&format!("{QUIET_DEPS},trace,")));
         assert!(f.ends_with(rocketchat::LOG_FILTER_PINS));
         assert!(f.contains("tungstenite=info"));
         assert!(log_filter(None).starts_with(rocketchat::RECOMMENDED_LOG_FILTER));
