@@ -16,7 +16,8 @@ use rustket_ui::theme::{
     FONT_MEDIUM, MONOSPACE_FONT, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, banner, danger_button, ghost_button, icon_button, primary_button, secondary_button,
+    BannerKind, above, banner, danger_button, ghost_button, icon_button, primary_button,
+    secondary_button,
 };
 
 use super::common::{
@@ -718,10 +719,14 @@ fn editor_view<'a>(e: &'a Editor, v: &V<'a>) -> Element<'a, Message> {
             .loading(e.busy)
             .into(),
     );
-    let mut col = column![back_row(title, m(Msg::Back), buttons)].spacing(SPACE_4);
-    if let Some(err) = &e.error {
-        col = col.push(banner(BannerKind::Error, err.clone(), None));
-    }
+    let head = back_row(title, m(Msg::Back), buttons);
+    // The save error has a slot of its own: it must not shift the fields
+    // (and their focus and editor state) below it.
+    let error = e
+        .error
+        .as_ref()
+        .map(|err| banner(BannerKind::Error, err.clone(), None));
+    let mut col = column![].spacing(SPACE_4);
     if let Some(i) = &e.integration {
         if let Some(se) = &i.script_error {
             col = col.push(banner(
@@ -932,7 +937,12 @@ fn editor_view<'a>(e: &'a Editor, v: &V<'a>) -> Element<'a, Message> {
                 ));
         }
     }
-    col.push(container(form).max_width(760)).into()
+    column![
+        head,
+        above(error, SPACE_4, col.push(container(form).max_width(760)))
+    ]
+    .spacing(SPACE_4)
+    .into()
 }
 
 fn history_view<'a>(list: &'a List<IntegrationHistory>) -> Element<'a, Message> {

@@ -20,7 +20,7 @@ use rustket_ui::theme::{
     TEXT_SMALL, TEXT_SUBTITLE,
 };
 use rustket_ui::widget::{
-    BannerKind, banner, dialog, divider, ghost_button, icon_button, loading_placeholder,
+    BannerKind, above, banner, dialog, divider, ghost_button, icon_button, loading_placeholder,
     primary_button, secondary_button,
 };
 
@@ -486,16 +486,18 @@ pub fn list_view<'a, T, M: Clone + 'a>(
     if !list.loaded && list.loading {
         return container(loading_placeholder(None)).height(200).into();
     }
-    let mut col = column![].spacing(SPACE_3);
-    if let Some(e) = &list.error {
-        col = col.push(banner(
+    let error = list.error.as_ref().map(|e| {
+        banner(
             BannerKind::Error,
             e.clone(),
             Some((t!("admin.retry").into_owned(), to_msg(ListMsg::Reload))),
-        ));
-    }
+        )
+    });
     if list.items.is_empty() {
-        if list.error.is_none() {
+        let mut col = column![].spacing(SPACE_3);
+        if let Some(e) = error {
+            col = col.push(e);
+        } else {
             col = col.push(
                 container(text(empty).size(TEXT_BODY).style(style::text_secondary))
                     .padding(SPACE_4),
@@ -503,9 +505,10 @@ pub fn list_view<'a, T, M: Clone + 'a>(
         }
         return col.into();
     }
-    col = col.push(table());
-    col = col.push(pager(list, to_msg));
-    col.into()
+    // A failed reload shows its error in a slot, so the table keeps its
+    // widget state (e.g. a horizontal scroll) under it.
+    let body = column![table(), pager(list, to_msg)].spacing(SPACE_3);
+    above(error, SPACE_3, body).into()
 }
 
 pub fn pager<'a, T, M: Clone + 'a>(
@@ -807,6 +810,33 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// A failed reload put its error banner before the table, moving the
+    /// table and resetting its widget state (the permission matrix's
+    /// horizontal scroll).
+    #[test]
+    fn table_keeps_its_tree_when_an_error_comes_and_goes() {
+        use crate::tree_probe::{assert_kept, scrollable_tag};
+        use iced::advanced::widget::Tree;
+        let mut l: List<u32> = List::new(None);
+        l.items = vec![1, 2];
+        l.total = 2;
+        l.loaded = true;
+        fn view(l: &List<u32>) -> Element<'_, ListMsg> {
+            list_view(
+                l,
+                || iced::widget::scrollable(text("table")).into(),
+                |m| m,
+                String::new(),
+            )
+        }
+        let tag = scrollable_tag();
+        let mut tree = Tree::new(view(&l).as_widget());
+        l.error = Some("boom".into());
+        assert_kept(&mut tree, &view(&l), tag, "error appears");
+        l.error = None;
+        assert_kept(&mut tree, &view(&l), tag, "error goes");
+    }
 
     #[tokio::test]
     async fn list_paging_and_sort() {

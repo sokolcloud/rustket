@@ -430,21 +430,26 @@ impl Members {
 
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
         let ws = ctx.workspace;
-        let mut top = column![].spacing(SPACE_2).padding([SPACE_3, SPACE_4]);
-        if teams::can_add_team_members(ws, ctx.rid)
+        let can_add = teams::can_add_team_members(ws, ctx.rid)
             || super::main_room(ws, ctx.rid)
-                .is_some_and(|m| rustket_core::permissions::can_add_users(ws, &m))
-        {
-            top = top.push(
-                secondary_button(t!("teams.add_members").into_owned(), Some(Msg::ShowAdd))
-                    .icon(Icon::UserPlus),
-            );
-        }
-        top = top.push(common::search_field(
-            &self.query,
-            t!("teams.search_members").into_owned(),
-            Msg::Query,
-        ));
+                .is_some_and(|m| rustket_core::permissions::can_add_users(ws, &m));
+        let add = can_add.then(|| {
+            secondary_button(t!("teams.add_members").into_owned(), Some(Msg::ShowAdd))
+                .icon(Icon::UserPlus)
+                .into()
+        });
+        // The button has a slot of its own: permissions changing must not
+        // move the search field (and its focus).
+        let top = rustket_ui::widget::above(
+            add,
+            SPACE_2,
+            common::search_field(
+                &self.query,
+                t!("teams.search_members").into_owned(),
+                Msg::Query,
+            ),
+        )
+        .padding([SPACE_3, SPACE_4]);
         let body: Element<'a, Msg> = match &self.list.state {
             LoadState::Loading => common::loading(),
             LoadState::Failed(e) if self.list.items.is_empty() => {

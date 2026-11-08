@@ -11,7 +11,8 @@ use rustket_ui::theme::{
     FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, banner, dialog, ghost_button, loading_placeholder, primary_button, secondary_button,
+    BannerKind, above, banner, dialog, ghost_button, loading_placeholder, primary_button,
+    secondary_button,
 };
 
 use super::super::common::{back_row, input, muted, search_bar, strip_tags, title_row};
@@ -19,17 +20,27 @@ use super::super::{Message, V};
 use super::{Dialog, GroupView, Msg, State, widgets};
 
 pub fn list_view<'a>(s: &'a State, v: &V<'a>) -> Element<'a, Message> {
-    let m = Message::Settings;
-    let mut col =
-        column![title_row(t!("admin.section.settings").into_owned(), vec![])].spacing(SPACE_4);
-    if let Some(e) = &s.error {
-        col = col.push(banner(BannerKind::Error, e.clone(), None));
-    }
+    let head = title_row(t!("admin.section.settings").into_owned(), vec![]);
+    // The error has a slot of its own, so the search field keeps its state.
+    let error = s
+        .error
+        .as_ref()
+        .map(|e| banner(BannerKind::Error, e.clone(), None));
     if !s.loaded {
-        return col
-            .push(container(loading_placeholder(None)).height(240))
+        let col = column![].push(container(loading_placeholder(None)).height(240));
+        return column![head, above(error, SPACE_4, col)]
+            .spacing(SPACE_4)
             .into();
     }
+    let rest = list_body(s, v);
+    column![head, above(error, SPACE_4, rest)]
+        .spacing(SPACE_4)
+        .into()
+}
+
+fn list_body<'a>(s: &'a State, v: &V<'a>) -> Element<'a, Message> {
+    let m = Message::Settings;
+    let mut col = column![].spacing(SPACE_4);
     col = col.push(search_bar(
         &s.search,
         t!("admin.settings.search").into_owned(),
@@ -193,13 +204,17 @@ pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, M
         ));
     }
     let conflicts = g.session.remote_conflicts(&s.store);
-    if !conflicts.is_empty() {
-        col = col.push(banner(
+    // The conflict notice comes with remote edits while the admin types: in
+    // a slot, so the fields below keep their state (focus, editors).
+    let notice = (!conflicts.is_empty()).then(|| {
+        banner(
             BannerKind::Warning,
             t!("admin.settings.conflicts", n = conflicts.len()).into_owned(),
             None,
-        ));
-    }
+        )
+    });
+    let top = col;
+    let mut col = column![].spacing(SPACE_4);
     if g.page.has_tabs() {
         let mut tabs = row![].spacing(SPACE_2);
         for (i, tab) in g.page.tabs.iter().enumerate() {
@@ -222,7 +237,8 @@ pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, M
         col = col.push(tabs.wrap());
     }
     let Some(tab) = g.page.tabs.get(g.tab) else {
-        return col.push(muted(t!("admin.settings.empty_group"))).into();
+        col = col.push(muted(t!("admin.settings.empty_group")));
+        return top.push(above(notice, SPACE_4, col)).into();
     };
     for (si, section) in tab.sections.iter().enumerate() {
         let collapsible = GroupPage::is_collapsible(tab, section);
@@ -319,7 +335,7 @@ pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, M
                 .style(style::container_card),
         );
     }
-    col.into()
+    top.push(above(notice, SPACE_4, col)).into()
 }
 
 /// The save bar (shown while the group has changes).

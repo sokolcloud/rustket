@@ -17,7 +17,7 @@ use rustket_ui::theme::{
     FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, banner, dialog, icon_button, primary_button, secondary_button,
+    BannerKind, above, banner, dialog, icon_button, primary_button, secondary_button,
 };
 
 use super::common::{
@@ -395,7 +395,7 @@ impl State {
                     .on_press_maybe(enabled.then_some(m(Msg::Tab(tab)))),
             );
         }
-        let mut col = column![
+        let col = column![
             title_row(
                 t!("admin.section.permissions").into_owned(),
                 if self.tab == Tab::Roles {
@@ -412,9 +412,17 @@ impl State {
             tabs
         ]
         .spacing(SPACE_4);
-        if let Some(e) = &self.error {
-            col = col.push(banner(BannerKind::Error, e.clone(), None));
-        }
+        // The error has a slot of its own: it must not shift the filter
+        // field and the matrix (focus, horizontal scroll).
+        let error: Option<Element<'a, Message>> = self
+            .error
+            .as_ref()
+            .map(|e| banner(BannerKind::Error, e.clone(), None));
+        let head = col;
+        let wrap = move |col: iced::widget::Column<'a, Message>| -> Element<'a, Message> {
+            head.push(above(error, SPACE_4, col)).into()
+        };
+        let mut col = column![].spacing(SPACE_4);
         let mut roles: Vec<&Role> = ws.roles().values().collect();
         roles.sort_by(|a, b| {
             b.protected
@@ -455,13 +463,13 @@ impl State {
                     .on_press(m(Msg::OpenRole(r.id.clone()))),
                 );
             }
-            return col
-                .push(
+            return wrap(
+                col.push(
                     container(list)
                         .style(style::container_card)
                         .width(Length::Fill),
-                )
-                .into();
+                ),
+            );
         }
         col = col.push(search_bar(
             &self.filter,
@@ -470,7 +478,7 @@ impl State {
             m(Msg::Reload),
         ));
         if !self.loaded {
-            return col.push(muted(t!("admin.loading"))).into();
+            return wrap(col.push(muted(t!("admin.loading"))));
         }
         let rows = self.rows(v.i18n);
         let pages = rows.len().div_ceil(ROWS).max(1);
@@ -564,7 +572,7 @@ impl State {
             .spacing(SPACE_2)
             .align_y(Alignment::Center),
         );
-        col.into()
+        wrap(col)
     }
 
     pub fn overlay<'a>(&'a self, _v: &V<'a>) -> Option<Element<'a, Message>> {
@@ -615,25 +623,31 @@ impl State {
         if protected {
             body = body.push(muted(t!("admin.perms.protected")));
         }
-        if let Some(err) = &e.error {
-            body = body.push(banner(BannerKind::Error, err.clone(), None));
-        }
-        body = body.push(card(
-            t!("admin.perms.users_in_role", total = e.users.total).into_owned(),
-            column![
-                row![
-                    input(&e.add, Some(move |s| m(Msg::AddUser(s))))
-                        .on_submit(m(Msg::AddUserNow))
-                        .width(Length::Fill),
-                    secondary_button(t!("admin.perms.add_user"), Some(m(Msg::AddUserNow)))
-                        .icon(Icon::UserPlus),
+        // In a slot: a failed request must not move the add-user field.
+        let error = e
+            .error
+            .as_ref()
+            .map(|err| banner(BannerKind::Error, err.clone(), None));
+        let body = body.push(above(
+            error,
+            SPACE_3,
+            card(
+                t!("admin.perms.users_in_role", total = e.users.total).into_owned(),
+                column![
+                    row![
+                        input(&e.add, Some(move |s| m(Msg::AddUser(s))))
+                            .on_submit(m(Msg::AddUserNow))
+                            .width(Length::Fill),
+                        secondary_button(t!("admin.perms.add_user"), Some(m(Msg::AddUserNow)))
+                            .icon(Icon::UserPlus),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+                    users,
+                    super::common::pager(&e.users, |x| m(Msg::Users(x))),
                 ]
-                .spacing(SPACE_2)
-                .align_y(Alignment::Center),
-                users,
-                super::common::pager(&e.users, |x| m(Msg::Users(x))),
-            ]
-            .spacing(SPACE_2),
+                .spacing(SPACE_2),
+            ),
         ));
         Some(dialog(
             t!("admin.perms.role_title", name = e.role.name.clone()),

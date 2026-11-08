@@ -15,7 +15,8 @@ use rustket_ui::theme::{
     FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, ChipKind, banner, chip, danger_button, primary_button, secondary_button, text_field,
+    BannerKind, ChipKind, above, banner, chip, danger_button, primary_button, secondary_button,
+    text_field,
 };
 
 use super::two_factor::{self, Op};
@@ -197,24 +198,26 @@ impl E2eSection {
             Some(AccountE2eState::Error(_)) => (t!("e2e.account_state_error"), ChipKind::Danger),
             _ => (t!("e2e.account_state_off"), ChipKind::Neutral),
         };
-        let mut c = column![
-            row![
-                text(t!("e2e.account_help"))
-                    .size(TEXT_SMALL)
-                    .style(style::text_secondary)
-                    .width(Length::Fill),
-                chip(label.into_owned(), kind),
-            ]
-            .spacing(SPACE_2)
-            .align_y(Alignment::Center)
+        let head = row![
+            text(t!("e2e.account_help"))
+                .size(TEXT_SMALL)
+                .style(style::text_secondary)
+                .width(Length::Fill),
+            chip(label.into_owned(), kind),
         ]
-        .spacing(SPACE_3);
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+        // Error and notice share a slot before the fields, so they do not
+        // shift the fields (and their focus) when they come and go.
+        let mut banners: Vec<Element<'a, Message>> = Vec::new();
         if let Some(e) = &self.error {
-            c = c.push(banner(BannerKind::Error, e.clone(), None));
+            banners.push(banner(BannerKind::Error, e.clone(), None));
         }
         if let Some(n) = &self.notice {
-            c = c.push(banner(BannerKind::Success, n.clone(), None));
+            banners.push(banner(BannerKind::Success, n.clone(), None));
         }
+        let banners = (!banners.is_empty()).then(|| column(banners).spacing(SPACE_3).into());
+        let mut c = column![].spacing(SPACE_3);
 
         // Change the passphrase.
         c = c.push(
@@ -240,6 +243,9 @@ impl E2eSection {
                 .password(true)
                 .disabled(self.busy),
             );
+            // The policy checklist appears with the first character: in a
+            // slot before the confirmation field, which keeps its state.
+            let mut rules_el: Option<Element<'a, Message>> = None;
             if !self.new.is_empty() {
                 let rules = policy(&self.new).map(|(key, ok)| -> Element<'a, Message> {
                     row![
@@ -258,9 +264,9 @@ impl E2eSection {
                     .align_y(Alignment::Center)
                     .into()
                 });
-                c = c.push(column(rules).spacing(2));
+                rules_el = Some(column(rules).spacing(2).into());
             }
-            c = c.push(confirm);
+            c = c.push(above(rules_el, SPACE_3, confirm));
             c = c.push(row![
                 primary_button(
                     t!("e2e.account_change"),
@@ -315,7 +321,8 @@ impl E2eSection {
                 Some(wrap(Msg::AskReset)),
             )]);
         }
-        Some(section(t!("e2e.account_title").into_owned(), c.into()))
+        let body = column![head, above(banners, SPACE_3, c)].spacing(SPACE_3);
+        Some(section(t!("e2e.account_title").into_owned(), body.into()))
     }
 }
 

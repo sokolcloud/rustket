@@ -942,3 +942,39 @@ fn editor_keeps_its_tree_when_bars_and_popups_come_and_go() {
         assert_kept(&mut tree, &c.view(&view_ctx(&env)), ed, step);
     }
 }
+
+/// The E2E "sent unencrypted" hint shares the bars slot: E2E being switched
+/// on for the room (or the room key arriving) must not rebuild the editor.
+#[test]
+fn editor_keeps_its_tree_when_the_e2e_hint_comes_and_goes() {
+    use crate::tree_probe::{assert_kept, text_editor_tag};
+    use iced::advanced::widget::Tree;
+    let mut env = Env::new("t-tree-e2e");
+    let set = |env: &mut Env, id: &str, v: bool| {
+        env.ws.apply_setting(
+            rustket_core::Change::Updated,
+            rocketchat::models::Setting {
+                id: id.into(),
+                value: serde_json::json!(v),
+                ..Default::default()
+            },
+        );
+    };
+    let encrypted = |env: &mut Env, on: bool| {
+        let mut r = room("R1", "general", RoomType::Channel);
+        r.encrypted = Some(on);
+        env.ws.apply_room(rustket_core::Change::Updated, r);
+    };
+    let mut c = Composer::new("R1");
+    type_text(&mut c, &mut env, "hello");
+    let ed = text_editor_tag();
+    let mut tree = Tree::new(c.view(&view_ctx(&env)).as_widget());
+    set(&mut env, "E2E_Enable", true);
+    set(&mut env, "E2E_Allow_Unencrypted_Messages", true);
+    encrypted(&mut env, true);
+    assert!(crate::e2e::room::composer_hint::<()>(&env.ws, "R1").is_some());
+    assert_kept(&mut tree, &c.view(&view_ctx(&env)), ed, "hint appears");
+    encrypted(&mut env, false);
+    assert!(crate::e2e::room::composer_hint::<()>(&env.ws, "R1").is_none());
+    assert_kept(&mut tree, &c.view(&view_ctx(&env)), ed, "hint goes");
+}

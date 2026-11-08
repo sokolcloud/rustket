@@ -13,7 +13,7 @@ use rustket_ui::theme::{
     FONT_MEDIUM, MONOSPACE_FONT, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, ChipKind, banner, chip, danger_button, primary_button, secondary_button,
+    BannerKind, ChipKind, above, banner, chip, danger_button, primary_button, secondary_button,
 };
 use serde_json::Value;
 
@@ -445,22 +445,25 @@ impl State {
 
 fn detail_view<'a>(d: &'a Detail, can_manage: bool) -> Element<'a, Message> {
     let m = Message::Apps;
-    let mut col = column![back_row(
+    let head = back_row(
         d.app.name.clone(),
         m(Msg::Back),
         vec![
             danger_button(
                 t!("admin.apps.uninstall"),
-                can_manage.then_some(m(Msg::Uninstall))
+                can_manage.then_some(m(Msg::Uninstall)),
             )
             .icon(Icon::Trash2)
-            .into()
-        ]
-    )]
-    .spacing(SPACE_4);
-    if let Some(e) = &d.error {
-        col = col.push(banner(BannerKind::Error, e.clone(), None));
-    }
+            .into(),
+        ],
+    );
+    // The error has a slot of its own: it must not shift the settings
+    // fields (and their focus) below it.
+    let error = d
+        .error
+        .as_ref()
+        .map(|e| banner(BannerKind::Error, e.clone(), None));
+    let mut col = column![].spacing(SPACE_4);
     col = col.push(card(
         t!("admin.apps.details").into_owned(),
         column![
@@ -606,7 +609,9 @@ fn detail_view<'a>(d: &'a Detail, can_manage: bool) -> Element<'a, Message> {
             l,
         ));
     }
-    col.into()
+    column![head, above(error, SPACE_4, col)]
+        .spacing(SPACE_4)
+        .into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
