@@ -162,6 +162,7 @@ impl App {
             && matches!(self.screen, super::Screen::Server)
             && let Some(s) = self.active.as_ref().and_then(|id| self.servers.get(id))
             && s.login.is_none()
+            && s.e2e.modal.is_none()
             && let Some(key) = uikit::overlay_key(&s.workspace)
         {
             return format!("uikit:{key}");

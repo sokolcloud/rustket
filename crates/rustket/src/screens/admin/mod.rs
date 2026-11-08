@@ -116,6 +116,9 @@ pub enum Message {
     Guarded(Op, Res<Done>),
     /// Confirmation dialog answered.
     Confirmed(bool),
+    /// "Discard" in the unsaved-changes dialog asked by [`Admin::ask_leave`]:
+    /// drop the edits, then the app goes on with [`Admin::take_leave`].
+    DiscardAndLeave,
     Noop,
 }
 
@@ -127,6 +130,9 @@ pub struct Admin {
     pub i18n_loaded: bool,
     pub guard: Option<guard::Prompt>,
     pub confirm: Option<Confirm>,
+    /// Where the user wanted to go (rail) while the settings had unsaved
+    /// edits; `ready` once they were discarded.
+    leave: Option<(crate::workspace::rail::Message, bool)>,
 }
 
 impl Default for Admin {
@@ -145,6 +151,35 @@ impl Admin {
             i18n_loaded: false,
             guard: None,
             confirm: None,
+            leave: None,
+        }
+    }
+
+    /// The rail asks before leaving the admin screen: `true` when it may
+    /// leave now; otherwise the unsaved-changes dialog is shown and, after
+    /// "Discard", [`Admin::take_leave`] hands `to` back.
+    pub fn ask_leave(&mut self, to: crate::workspace::rail::Message) -> bool {
+        if !matches!(&self.page, Page::Settings(p) if p.is_dirty()) {
+            return true;
+        }
+        self.leave = Some((to, false));
+        self.confirm = Some(Confirm::ask(
+            t!("admin.unsaved_title").into_owned(),
+            t!("admin.unsaved_body").into_owned(),
+            t!("admin.discard").into_owned(),
+            Message::DiscardAndLeave,
+        ));
+        false
+    }
+
+    /// The rail navigation to carry out after the edits were discarded.
+    pub fn take_leave(&mut self) -> Option<crate::workspace::rail::Message> {
+        match self.leave.take() {
+            Some((to, true)) => Some(to),
+            pending => {
+                self.leave = pending;
+                None
+            }
         }
     }
 
@@ -397,6 +432,7 @@ impl Admin {
                 if yes {
                     self.update(*c.yes, ctx)
                 } else {
+                    self.leave = None;
                     Action::none()
                 }
             }
@@ -407,6 +443,15 @@ impl Admin {
                 self.select(s, ctx)
             }
             Message::Settings(settings::Msg::DiscardAndClose) => Action::effect(Effect::Close),
+            Message::DiscardAndLeave => {
+                if let Page::Settings(p) = &mut self.page {
+                    p.discard();
+                }
+                if let Some((_, ready)) = &mut self.leave {
+                    *ready = true;
+                }
+                Action::none()
+            }
             Message::Noop => Action::none(),
             m => self.with_page(ctx, move |page, cx| page.update(m, cx)),
         }

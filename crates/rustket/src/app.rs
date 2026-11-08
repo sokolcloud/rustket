@@ -793,6 +793,7 @@ impl App {
             }
             Message::AddServer(m) => self.on_add_server(m),
             Message::Login(sid, m) => self.on_login(sid, m),
+            Message::Rail(m) if !self.may_leave_admin(&m) => Task::none(),
             Message::Rail(m) => match m {
                 rail::Message::Select(sid) => self.activate(sid),
                 rail::Message::Add => Task::done(Message::ShowAddServer),

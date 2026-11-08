@@ -352,12 +352,23 @@ impl App {
             return Task::none();
         };
         let a = c.update(m, &mut ctx);
+        let leave = c.take_leave();
         let s2 = sid.clone();
         let task = a.task.map(move |m| Message::Admin(s2.clone(), m));
         Task::batch([
             task,
             self.component_effects(Some(&sid), Source::Screen, a.effects),
+            leave.map_or_else(Task::none, |to| Task::done(Message::Rail(to))),
         ])
+    }
+
+    /// Leaving through the rail (server, add server, settings gear) asks an
+    /// admin screen with unsaved settings first; `false` when it asked.
+    pub(super) fn may_leave_admin(&mut self, to: &crate::workspace::rail::Message) -> bool {
+        match &mut self.screen {
+            Screen::Admin(_, c) => c.ask_leave(to.clone()),
+            _ => true,
+        }
     }
 
     /// Realtime events for an open admin screen of `sid`.

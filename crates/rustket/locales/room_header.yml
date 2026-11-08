@@ -47,9 +47,6 @@ room_header.room_settings:
 room_header.invite:
   en: "Invite users"
   ru: "Пригласить пользователей"
-room_header.call_soon:
-  en: "Calls are coming soon"
-  ru: "Звонки скоро появятся"
 room_header.team:
   en: "Team"
   ru: "Команда"

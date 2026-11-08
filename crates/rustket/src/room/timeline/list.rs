@@ -222,6 +222,10 @@ struct RowKey {
     msg: u64,
     state: u8,
     render: u64,
+    /// `video_conf` block state (`crate::videoconf::block::key`).
+    call: u64,
+    /// UIKit state of the row (`crate::uikit::row_key`).
+    uikit: u64,
     flags: RowFlags,
     /// Day separator, unread divider above the row.
     separators: (bool, bool),
@@ -242,6 +246,8 @@ impl Hash for RowKey {
         self.msg.hash(h);
         self.state.hash(h);
         self.render.hash(h);
+        self.call.hash(h);
+        self.uikit.hash(h);
         self.flags.hash(h);
         self.separators.hash(h);
         self.dark.hash(h);
@@ -274,9 +280,11 @@ pub(crate) fn row<'a>(
         .new_day
         .then(|| m.ts.map(|ts| row::day_label(ts, common.now_local)));
     let dep = RowKey {
-        msg: render::message_key(m) ^ crate::videoconf::block::key(env.ws, m),
+        msg: render::message_key(m),
         state,
-        render: env.render.key(&m.id) ^ crate::uikit::row_key(env.ws, env.images, env.server, m),
+        render: env.render.key(&m.id),
+        call: crate::videoconf::block::key(env.ws, m),
+        uikit: crate::uikit::row_key(env.ws, env.images, env.server, m),
         flags,
         separators: (r.new_day, r.unread_before),
         dark: common.dark,

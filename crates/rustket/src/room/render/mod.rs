@@ -379,6 +379,8 @@ pub fn message_key(msg: &Message) -> u64 {
     msg.id.hash(&mut h);
     msg.updated_at.map(|d| d.timestamp_millis()).hash(&mut h);
     msg.msg.hash(&mut h);
+    // E2E state marker (pending, decrypted by this process, …).
+    msg.e2e.hash(&mut h);
     msg.tcount.hash(&mut h);
     msg.tlm.map(|d| d.timestamp_millis()).hash(&mut h);
     msg.dcount.hash(&mut h);
