@@ -16,7 +16,7 @@ use rustket_ui::theme::{
 use rustket_ui::widget::{
     AvatarShape, AvatarSource, BannerKind, Toast, above, avatar, banner, dialog, empty_state,
     loading_placeholder, modal_keyed, primary_button, secondary_button, spinner, split,
-    status_strip, toasts,
+    status_strip, toasts_with,
 };
 
 use super::{App, Modal, Screen};
@@ -30,19 +30,25 @@ use crate::workspace::{ServerState, rail};
 use rustket_core::ServerId;
 
 /// `base` under the app's layers: the open modal (keyed by dialog identity),
-/// `calls` (the video-call layer: call dialog and call cards, drawn above
-/// blocking modals but taking input only over the cards) and the toasts.
-/// Every wrapper is always there, so a layer coming and going keeps the
-/// base's widget state.
+/// `calls` (the call dialog, above the app modal) and the corner column of
+/// toasts and `call_cards` (ringing calls), drawn above every modal and taking
+/// input only over the cards. Every wrapper is always there, so a layer coming
+/// and going keeps the base's widget state.
 pub(crate) fn layered<'a, M: Clone + 'a>(
     base: Element<'a, M>,
     overlay: Option<(String, Element<'a, M>)>,
     dismiss: Option<M>,
     calls: impl FnOnce(Element<'a, M>) -> Element<'a, M>,
+    call_cards: Vec<Element<'a, M>>,
     list: &'a [Toast],
     on_close: impl Fn(u64) -> M + 'a,
 ) -> Element<'a, M> {
-    toasts(calls(modal_keyed(base, overlay, dismiss)), list, on_close)
+    toasts_with(
+        calls(modal_keyed(base, overlay, dismiss)),
+        call_cards,
+        list,
+        on_close,
+    )
 }
 
 impl App {
@@ -88,6 +94,7 @@ impl App {
             overlay.map(|o| (key, o)),
             dismiss,
             |c| crate::videoconf::view::layer(self, c),
+            crate::videoconf::view::popups(self),
             &self.toasts,
             Message::CloseToast,
         )

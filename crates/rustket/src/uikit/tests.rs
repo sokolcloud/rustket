@@ -371,8 +371,73 @@ fn modal_values_toggles_text_and_submit() {
         kind: Typed::Date,
     });
 
+    // A partial date or a cleared field holds no value (not the last one).
+    let d = req(surface.clone(), None, "b_d", "date", None);
+    let date = |fx: &Fx| fx.ws.uikit().modal().unwrap().state.get("date").cloned();
+    fx.ui(UiKitMsg::Typing {
+        req: d.clone(),
+        text: "2026-11-3".into(),
+        emit: false,
+        kind: Typed::Date,
+    });
+    assert_eq!(date(&fx), Some(json!("")));
+    fx.ui(UiKitMsg::Typing {
+        req: d.clone(),
+        text: String::new(),
+        emit: false,
+        kind: Typed::Date,
+    });
+    assert_eq!(date(&fx), Some(json!("")));
+    fx.ui(UiKitMsg::Typing {
+        req: d.clone(),
+        text: "2026-11-30".into(),
+        emit: false,
+        kind: Typed::Date,
+    });
+    // An emitting time field sends a change once, not per invalid keystroke.
+    let tm = req(surface.clone(), None, "b_t", "time", None);
+    let before = fx.triggers();
+    for text in ["1", "12", "12:3"] {
+        fx.ui(UiKitMsg::Typing {
+            req: tm.clone(),
+            text: text.into(),
+            emit: true,
+            kind: Typed::Time,
+        });
+    }
+    assert_eq!(fx.triggers(), before, "an empty field stays empty");
+    assert!(
+        fx.ws.uikit().modal().unwrap().state.get("time").is_none(),
+        "nothing is stored for a field that never had a value"
+    );
+    fx.ui(UiKitMsg::Typing {
+        req: tm.clone(),
+        text: "12:30".into(),
+        emit: true,
+        kind: Typed::Time,
+    });
+    assert_eq!(fx.triggers(), before + 1);
+    // Breaking a valid value clears it exactly once.
+    for text in ["12:", "1"] {
+        fx.ui(UiKitMsg::Typing {
+            req: tm.clone(),
+            text: text.into(),
+            emit: true,
+            kind: Typed::Time,
+        });
+    }
+    assert_eq!(fx.triggers(), before + 2, "one clear for a valid value");
+    fx.ui(UiKitMsg::Typing {
+        req: tm,
+        text: "12:30".into(),
+        emit: true,
+        kind: Typed::Time,
+    });
+    assert_eq!(fx.triggers(), before + 3);
+
     let state = fx.ws.uikit().modal().unwrap().state.to_state_json();
     assert_eq!(state["b_q"]["question"], json!("Pizza??"));
+    assert_eq!(state["b_t"]["time"], json!("12:30"));
     assert_eq!(state["b_opts"]["opts"], json!(["anon"]));
     assert_eq!(state["b_act"]["chk"], json!(["x", "y"]));
     assert_eq!(state["b_d"]["date"], json!("2026-11-30"));
@@ -382,7 +447,11 @@ fn modal_values_toggles_text_and_submit() {
     let (_, submit) = fx
         .ws
         .uikit_mut()
-        .view_submit("view-1", Instant::now())
+        .view_submit(
+            rustket_core::uikit::ViewTarget::Modal,
+            "view-1",
+            Instant::now(),
+        )
         .unwrap();
     let trigger = submit.trigger_id().to_owned();
     assert!(fx.ws.uikit().modal().unwrap().submitting);
@@ -437,13 +506,13 @@ fn closing_a_modal_sends_view_closed_and_forgets_its_widgets() {
 fn contextual_bars_go_to_the_origin_or_active_room() {
     let mut fx = Fx::new();
     let out = fx.answer(
-        Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)).rid(Some("r2")),
+        Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)).rid(Some("r1")),
         serde_json::from_str(BAR).unwrap(),
     );
     assert_eq!(
         out.effects,
         vec![Effect::ShowBar {
-            rid: "r2".into(),
+            rid: "r1".into(),
             view_id: "bar-1".into()
         }]
     );
@@ -885,4 +954,124 @@ fn pushes_without_a_known_trigger_are_ignored() {
     );
     assert!(out.effects.is_empty());
     assert!(fx.ws.uikit().modal().is_none());
+}
+
+/// A bar answering an action of a room whose view has closed since opens in
+/// the room shown; with no room shown it is dropped with a notice.
+#[test]
+fn bar_for_a_closed_room_opens_in_the_active_room() {
+    let mut fx = Fx::new();
+    let out = fx.answer(
+        Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)).rid(Some("r0")),
+        serde_json::from_str(BAR).unwrap(),
+    );
+    assert!(out.effects.contains(&Effect::ShowBar {
+        rid: "r1".into(),
+        view_id: "bar-1".into()
+    }));
+    assert_eq!(
+        fx.ws.uikit().bar("bar-1").unwrap().rid.as_deref(),
+        Some("r1")
+    );
+
+    let mut fx = Fx::new();
+    let t = fx.ws.uikit_mut().begin(
+        Some("app1"),
+        Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)).rid(Some("r0")),
+        Instant::now(),
+    );
+    let mut si: Value = serde_json::from_str(BAR).unwrap();
+    si["triggerId"] = Value::String(t.clone());
+    let mut ctx = Ctx {
+        ws: &mut fx.ws,
+        local: &mut fx.local,
+        rest: None,
+        active_rid: None,
+    };
+    let out = controller::update(
+        &mut ctx,
+        Msg::Finished {
+            trigger: t,
+            result: InteractionResult::Response(InteractionResponse::Interaction(
+                ServerInteraction::from_value(si),
+            )),
+        },
+    );
+    assert!(out.effects.iter().any(|e| matches!(e, Effect::Toast(..))));
+    assert!(fx.ws.uikit().bar("bar-1").is_none());
+}
+
+/// A pending `on_character_entered` timer of a modal replaced by another
+/// instance with the same view id sends nothing into the new instance.
+#[test]
+fn debounce_does_not_survive_modal_replacement() {
+    let mut fx = Fx::new();
+    let origin = || Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction));
+    fx.answer(origin(), serde_json::from_str(MODAL).unwrap());
+    let surface = SurfaceKey::Modal("view-1".into());
+    let a = req(surface.clone(), None, "b_q", "question", Some(json!("old")));
+    fx.ui(UiKitMsg::Text {
+        req: a.clone(),
+        dispatch: true,
+    });
+    let stamp = fx
+        .ws
+        .uikit()
+        .scratch()
+        .current_stamp(&surface.element("question"))
+        .unwrap();
+    fx.answer(origin(), serde_json::from_str(MODAL).unwrap());
+    let before = fx.triggers();
+    controller::update(&mut fx.ctx(), Msg::Debounced { req: a, stamp });
+    assert_eq!(fx.triggers(), before, "stale text not sent");
+}
+
+/// The same for a contextual bar reopened in place (same id, same room): its
+/// pending timer and typed texts belong to the old instance.
+#[test]
+fn debounce_does_not_survive_bar_replacement() {
+    let mut fx = Fx::new();
+    let origin =
+        || Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)).rid(Some("r1"));
+    fx.answer(origin(), serde_json::from_str(BAR).unwrap());
+    let surface = SurfaceKey::Bar("bar-1".into());
+    let a = req(surface.clone(), None, "b_q", "question", Some(json!("old")));
+    fx.ui(UiKitMsg::Text {
+        req: a.clone(),
+        dispatch: true,
+    });
+    let key = surface.element("question");
+    let stamp = fx.ws.uikit().scratch().current_stamp(&key).unwrap();
+    fx.answer(origin(), serde_json::from_str(BAR).unwrap());
+    assert!(fx.ws.uikit().bar("bar-1").is_some());
+    assert!(!fx.ws.uikit().scratch().texts.contains_key(&key));
+    let before = fx.triggers();
+    controller::update(&mut fx.ctx(), Msg::Debounced { req: a, stamp });
+    assert_eq!(fx.triggers(), before, "stale text not sent");
+}
+
+/// Date/time text is marked as an error only when it cannot become valid.
+#[test]
+fn partial_date_and_time_are_not_errors() {
+    use super::elements::typed_plausible;
+    for t in [
+        "",
+        "2",
+        "2026-",
+        "2026-1",
+        "2026-04-3",
+        "2026-04-30",
+        "2026-02-0",
+    ] {
+        assert!(typed_plausible(t, Typed::Date), "{t}");
+    }
+    for t in ["2026-13", "2026-02-3", "2026-04-31", "x", "2026-04-300"] {
+        assert!(!typed_plausible(t, Typed::Date), "{t}");
+    }
+    for t in ["1", "2", "12:", "12:3", "23:59"] {
+        assert!(typed_plausible(t, Typed::Time), "{t}");
+    }
+    for t in ["25", "12:6", "9:30", "12:300"] {
+        assert!(!typed_plausible(t, Typed::Time), "{t}");
+    }
 }

@@ -169,6 +169,12 @@ impl App {
                                     let close =
                                         rv.close(&mut s.workspace, s.session.as_ref()).discard();
                                     tasks.push(close);
+                                    // Its app panels go with it (the
+                                    // after-update sweep only sees s.rooms).
+                                    crate::uikit::controller::room_closed(
+                                        &mut s.workspace,
+                                        &sub.rid,
+                                    );
                                     if s.active_room.as_deref() == Some(sub.rid.as_str()) {
                                         s.active_room = None;
                                     }

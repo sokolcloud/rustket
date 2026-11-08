@@ -140,6 +140,27 @@ pub const NOTIFY_ROOM_EVENTS: &[&str] = &[
 /// Activity name of "typing" in [`Session::set_user_activity`].
 /// At most one `/me` refresh per this interval after `userData` hints.
 pub const ME_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+/// Retries of a failed `/me` re-read (the change it should pick up, such as
+/// `statusLivechat`, sends no second `userData`).
+pub const ME_REFRESH_RETRIES: u32 = 6;
+
+/// Wait before retry `failure` (1-based) of a failed `/me` re-read: the
+/// server's rate-limit reset when known, else 2 s doubling; at most 60 s.
+/// `None` once the retries are used up or for errors a retry cannot fix.
+fn me_retry_delay(e: &crate::Error, failure: u32) -> Option<Duration> {
+    if failure > ME_REFRESH_RETRIES || e.is_unauthorized() {
+        return None;
+    }
+    let backoff = ME_REFRESH_INTERVAL.saturating_mul(1 << (failure - 1).min(5));
+    let wait = match e {
+        crate::Error::RateLimited {
+            retry_after: Some(after),
+            ..
+        } => (*after).max(ME_REFRESH_INTERVAL),
+        _ => backoff,
+    };
+    Some(wait.min(Duration::from_secs(60)))
+}
 /// Hints arriving within this delay share one `/me` refresh.
 const ME_REFRESH_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -302,6 +323,8 @@ struct Core {
     logged_out: Mutex<Option<String>>,
     registry: Arc<Registry>,
     me_refresh: Mutex<MeRefresh>,
+    /// Wakes a backing-off `/me` refresh when a new `userData` hint arrives.
+    me_wake: Arc<tokio::sync::Notify>,
 }
 
 /// State of the `/me` refreshes triggered by `userData` hints.
@@ -311,6 +334,8 @@ struct MeRefresh {
     scheduled: bool,
     /// When the last refresh started.
     last: Option<Instant>,
+    /// A failed refresh is backing off and a new hint may wake it early.
+    wakeable: bool,
 }
 
 impl Core {
@@ -412,6 +437,11 @@ impl Core {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if r.scheduled {
+                // A refresh backing off after a failure runs again now (after
+                // the usual spacing) instead of after up to a minute.
+                if r.wakeable {
+                    self.me_wake.notify_one();
+                }
                 return;
             }
             r.scheduled = true;
@@ -421,38 +451,93 @@ impl Core {
             wait.max(ME_REFRESH_DEBOUNCE)
         };
         let core = Arc::downgrade(self);
+        let wake = Arc::clone(&self.me_wake);
         let mut shutdown = self.shutdown.subscribe();
         tokio::spawn(async move {
-            tokio::select! {
-                _ = shutdown.wait_for(|s| *s) => return,
-                () = tokio::time::sleep(delay) => {}
-            }
-            let Some(core) = core.upgrade() else {
-                return;
-            };
-            {
-                let mut r = core
-                    .me_refresh
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                r.scheduled = false;
-                r.last = Some(Instant::now());
-            }
-            match core.rest.me().await {
-                Ok(me) => {
-                    let changed = {
-                        let mut cached = core.me.write().unwrap_or_else(PoisonError::into_inner);
-                        let changed = cached.as_ref() != Some(&me);
-                        if changed {
-                            *cached = Some(me.clone());
-                        }
-                        changed
+            let mut delay = delay;
+            let mut failures = 0u32;
+            let mut wakeable = false;
+            loop {
+                let woken = tokio::select! {
+                    _ = shutdown.wait_for(|s| *s) => return,
+                    () = tokio::time::sleep(delay) => false,
+                    () = wake.notified(), if wakeable => true,
+                };
+                if woken {
+                    // Same spacing as a fresh hint.
+                    let Some(last) = core.upgrade().map(|c| {
+                        c.me_refresh
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .last
+                    }) else {
+                        return;
                     };
-                    if changed {
-                        core.emit(SessionEvent::MeChanged(Box::new(me)));
+                    let spacing = last
+                        .map_or(Duration::ZERO, |t| {
+                            ME_REFRESH_INTERVAL.saturating_sub(t.elapsed())
+                        })
+                        .max(ME_REFRESH_DEBOUNCE);
+                    tokio::select! {
+                        _ = shutdown.wait_for(|s| *s) => return,
+                        () = tokio::time::sleep(spacing) => {}
                     }
                 }
-                Err(e) => tracing::debug!(error = %e, "refreshing the user after userData failed"),
+                let Some(core) = core.upgrade() else {
+                    return;
+                };
+                {
+                    let mut r = core
+                        .me_refresh
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    r.scheduled = false;
+                    r.wakeable = false;
+                    r.last = Some(Instant::now());
+                }
+                match core.rest.me().await {
+                    Ok(me) => {
+                        let changed = {
+                            let mut cached =
+                                core.me.write().unwrap_or_else(PoisonError::into_inner);
+                            let changed = cached.as_ref() != Some(&me);
+                            if changed {
+                                *cached = Some(me.clone());
+                            }
+                            changed
+                        };
+                        if changed {
+                            core.emit(SessionEvent::MeChanged(Box::new(me)));
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "refreshing the user after userData failed");
+                        failures += 1;
+                        let Some(wait) = me_retry_delay(&e, failures) else {
+                            return;
+                        };
+                        // A newer `userData` already scheduled a re-read.
+                        let mut r = core
+                            .me_refresh
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        if r.scheduled {
+                            return;
+                        }
+                        r.scheduled = true;
+                        // A known rate-limit reset is waited out in full.
+                        wakeable = !matches!(
+                            e,
+                            crate::Error::RateLimited {
+                                retry_after: Some(_),
+                                ..
+                            }
+                        );
+                        r.wakeable = wakeable;
+                        delay = wait;
+                    }
+                }
             }
         });
     }
@@ -598,6 +683,7 @@ impl Session {
             logged_out: Mutex::new(None),
             registry: Arc::new(Registry::new()),
             me_refresh: Mutex::new(MeRefresh::default()),
+            me_wake: Arc::new(tokio::sync::Notify::new()),
         });
 
         let mut config = DdpConfig::new(url)
@@ -757,6 +843,13 @@ impl Session {
     /// The current user: fetched at the first login, then kept current from
     /// `/me` refreshes (after `userData` hints and reconnects) and
     /// `Users:NameChanged` (username and name).
+    /// `livechat/agent.status` answered `status`: the cached user takes it, so
+    /// a later `/me` with another availability is still reported as
+    /// [`SessionEvent::MeChanged`].
+    pub fn note_agent_status(&self, status: crate::models::AgentStatus) {
+        self.core.update_me(|me| me.status_livechat = Some(status));
+    }
+
     pub fn me(&self) -> Option<User> {
         self.core
             .me
@@ -1056,5 +1149,32 @@ fn map_call_error(e: CallError) -> Error {
         )),
         CallError::Timeout => Error::Timeout("DDP method call"),
         CallError::Closed => Error::Protocol("session closed".into()),
+    }
+}
+
+#[cfg(test)]
+mod me_retry_tests {
+    use super::*;
+
+    #[test]
+    fn me_re_read_retries_back_off() {
+        let net = crate::Error::Timeout("me");
+        assert_eq!(me_retry_delay(&net, 1), Some(Duration::from_secs(2)));
+        assert_eq!(me_retry_delay(&net, 3), Some(Duration::from_secs(8)));
+        assert_eq!(
+            me_retry_delay(&net, ME_REFRESH_RETRIES),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(me_retry_delay(&net, ME_REFRESH_RETRIES + 1), None);
+        let limited = crate::Error::RateLimited {
+            retry_after: Some(Duration::from_secs(40)),
+            message: None,
+        };
+        assert_eq!(me_retry_delay(&limited, 1), Some(Duration::from_secs(40)));
+        let gone = crate::Error::Unauthorized {
+            message: None,
+            code: None,
+        };
+        assert_eq!(me_retry_delay(&gone, 1), None);
     }
 }

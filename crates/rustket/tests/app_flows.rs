@@ -717,10 +717,32 @@ async fn closed_livechat_chat_closes_its_view_by_default() {
         app.servers[&sid].omni.state.routing.is_none(),
         "old session's result dropped"
     );
+    // An app panel open in the chat goes away with its view.
+    {
+        use rocketchat::models::ButtonContext;
+        use rocketchat::uikit::{InteractionResponse, ServerInteraction};
+        use rustket_core::uikit::{InteractionResult, Origin, OriginKind};
+        let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+        let now = std::time::Instant::now();
+        let origin =
+            Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)).rid(Some("L1"));
+        let t = ws.uikit_mut().begin(Some("app1"), origin, now);
+        let mut si: serde_json::Value = serde_json::from_str(include_str!(
+            "../../rocketchat/tests/fixtures/uikit/synthetic_contextual_bar_open.json"
+        ))
+        .unwrap();
+        si["triggerId"] = serde_json::Value::String(t.clone());
+        let result = InteractionResult::Response(InteractionResponse::Interaction(
+            ServerInteraction::from_value(si),
+        ));
+        ws.uikit_mut().finish(&t, result, now);
+        assert!(ws.uikit().bar("bar-1").is_some());
+    }
     remove_sub(&mut app, &sid, &s);
     let st = &app.servers[&sid];
     assert!(!st.rooms.contains_key("L1"));
     assert_eq!(st.active_room, None);
+    assert!(st.workspace.uikit().bar("bar-1").is_none(), "bar closed");
 }
 
 /// Omnichannel: without "Hide conversation after closing" the closed chat

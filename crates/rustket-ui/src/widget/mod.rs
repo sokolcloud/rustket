@@ -44,7 +44,7 @@ pub use message::{
 pub use misc::{
     ChipKind, TooltipPosition, above, chip, divider, kbd, slot, tooltip, vertical_divider,
 };
-pub use overlay::{Toast, dialog, modal, modal_keyed, toasts};
+pub use overlay::{TOAST_WIDTH, Toast, dialog, modal, modal_keyed, toasts, toasts_with};
 pub use popover::{Placement, popover};
 pub use presence::{Presence, presence_dot};
 pub use sidebar::{

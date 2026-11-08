@@ -46,6 +46,15 @@ impl SurfaceKey {
         format!("{}{action_id}", self.prefix())
     }
 
+    /// The modal or bar this surface is, with its view id.
+    pub fn view_target(&self) -> Option<(super::ViewTarget, &str)> {
+        match self {
+            Self::Modal(id) => Some((super::ViewTarget::Modal, id)),
+            Self::Bar(id) => Some((super::ViewTarget::Bar, id)),
+            Self::Message { .. } | Self::Banner(_) => None,
+        }
+    }
+
     /// View id of a modal, bar or banner.
     pub fn view_id(&self) -> Option<&str> {
         match self {
@@ -131,6 +140,9 @@ impl Scratch {
         self.loading.retain(|k, _| !k.starts_with(prefix));
         self.suggestions.retain(|k, _| !k.starts_with(prefix));
         self.labels.retain(|k, _| !k.starts_with(prefix));
+        // Pending debounce timers of the surface: a view replaced under the
+        // same id must not receive the old instance's input.
+        self.stamps.retain(|k, _| !k.starts_with(prefix));
         if self
             .confirm
             .as_ref()

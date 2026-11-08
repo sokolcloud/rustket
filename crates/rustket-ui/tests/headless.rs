@@ -342,6 +342,41 @@ fn toast_cards_capture_clicks() {
     assert_eq!(msgs, vec![M::Base]);
 }
 
+#[test]
+fn pinned_card_click_survives_toast_changes() {
+    let mut r = renderer();
+    fn view(list: &[w::Toast]) -> Element<'_, M> {
+        let card = button(space().width(Length::Fill).height(60))
+            .on_press(M::Trig)
+            .into();
+        w::toasts_with(
+            button(space().width(Length::Fill).height(Length::Fill)).on_press(M::Base),
+            vec![card],
+            list,
+            M::Close,
+        )
+    }
+    let one = toast_list(1);
+    let none = toast_list(0);
+    // The pinned card sits in the corner, under any toasts.
+    let on_card = Point::new(SIZE.width - 20.0 - 100.0, SIZE.height - 20.0 - 30.0);
+    for (at_press, at_release) in [(&one, &none), (&none, &one)] {
+        let mut ui = UserInterface::build(view(at_press), SIZE, Cache::default(), &mut r);
+        let (msgs, _) = step(&mut ui, &mut r, &[moved(on_card), press()], on_card);
+        assert!(msgs.is_empty(), "{msgs:?}");
+        let cache = ui.into_cache();
+        let mut ui = UserInterface::build(view(at_release), SIZE, cache, &mut r);
+        let (msgs, _) = step(&mut ui, &mut r, &[release()], on_card);
+        assert_eq!(
+            msgs,
+            vec![M::Trig],
+            "toasts {} -> {}",
+            at_press.len(),
+            at_release.len()
+        );
+    }
+}
+
 /// Counts how often it is drawn.
 struct DrawProbe(Rc<Cell<u32>>);
 

@@ -1358,9 +1358,9 @@ mod tests {
         let base = rustket_ui::widget::above(strip, 0.0, rv.view(ctx)).into();
         let overlay = dialog.then(|| (String::from("app"), text("dialog").into()));
         let dismiss = dialog.then_some(Message::Timeline(timeline::Message::JumpToLatest));
-        // The call layer: always a stack over the modal.
-        let calls = |c: Element<'a, Message>| iced::widget::stack![c, iced::widget::space()].into();
-        crate::app::layered(base, overlay, dismiss, calls, toasts, |_| {
+        // The call layer: the call dialog's modal over the app modal.
+        let calls = |c: Element<'a, Message>| rustket_ui::widget::modal(c, None, None);
+        crate::app::layered(base, overlay, dismiss, calls, Vec::new(), toasts, |_| {
             Message::Timeline(timeline::Message::JumpToLatest)
         })
     }

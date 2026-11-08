@@ -134,14 +134,42 @@ pub fn toasts<'a, Message: Clone + 'a>(
     list: &'a [Toast],
     on_close: impl Fn(u64) -> Message + 'a,
 ) -> Element<'a, Message> {
-    let cards = (!list.is_empty()).then(|| {
-        column(list.iter().map(|t| toast_card(t, on_close(t.id))))
-            .spacing(SPACE_2)
-            .width(Length::Fixed(340.0))
-            .into()
+    toasts_with(base, Vec::new(), list, on_close)
+}
+
+/// [`toasts`] with `pinned` cards (e.g. ringing calls) under the toasts, closest
+/// to the corner, in the same column: neither covers the other, and presses on
+/// any card stop there. Like the toasts, the pinned cards are drawn above every
+/// modal of `base`.
+pub fn toasts_with<'a, Message: Clone + 'a>(
+    base: impl Into<Element<'a, Message>>,
+    pinned: Vec<Element<'a, Message>>,
+    list: &'a [Toast],
+    on_close: impl Fn(u64) -> Message + 'a,
+) -> Element<'a, Message> {
+    // Toasts and pinned cards are two always-present groups, so the pinned cards
+    // keep their tree position (and e.g. a pressed button) when toasts come and go.
+    let gap = if list.is_empty() || pinned.is_empty() {
+        0.0
+    } else {
+        SPACE_2
+    };
+    let cards = (!list.is_empty() || !pinned.is_empty()).then(|| {
+        column![
+            column(list.iter().map(|t| toast_card(t, on_close(t.id))))
+                .spacing(SPACE_2)
+                .width(Length::Fill),
+            column(pinned).spacing(SPACE_2).width(Length::Fill),
+        ]
+        .spacing(gap)
+        .width(Length::Fixed(TOAST_WIDTH))
+        .into()
     });
     Layered::new(base.into(), cards, Kind::Corner { padding: SPACE_5 }).into()
 }
+
+/// Width of the corner column of [`toasts`] and [`toasts_with`].
+pub const TOAST_WIDTH: f32 = 340.0;
 
 fn toast_card<'a, Message: Clone + 'a>(
     toast: &'a Toast,

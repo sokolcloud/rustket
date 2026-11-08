@@ -477,6 +477,20 @@ pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId, rid: &str) {
         "errors must reach the modal"
     );
     both(d, out, "u7-modal-errors", Size::new(1280.0, 1100.0), None);
+    // Date text being typed (plain border) and text that cannot become a
+    // date (error border).
+    let closes = SurfaceKey::Modal("poll-modal".into()).element("closes");
+    for (text, name) in [
+        ("2026-1", "u7b-modal-date-typing"),
+        ("2026-13", "u7c-modal-date-invalid"),
+    ] {
+        let ws = &mut d.app.servers.get_mut(sid).expect("server").workspace;
+        ws.uikit_mut()
+            .scratch_mut()
+            .texts
+            .insert(closes.clone(), text.into());
+        shoot_with(d, out, name, Size::new(1280.0, 1100.0), None);
+    }
 
     // Clean up locally (nothing exists on the server).
     answer(

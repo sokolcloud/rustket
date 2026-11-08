@@ -14,7 +14,7 @@ use rocketchat::uikit::{Element as El, LayoutBlock, UserInteraction};
 use rust_i18n::t;
 use rustket_core::Workspace;
 use rustket_core::room_list::Avatar;
-use rustket_core::uikit::{InteractionResult, UiKitChange, UiKitToast};
+use rustket_core::uikit::{InteractionResult, UiKitChange, UiKitToast, ViewTarget};
 use rustket_ui::widget::BannerKind;
 use serde_json::Value;
 
@@ -360,14 +360,31 @@ fn store_value(ws: &mut Workspace, req: &ActionRequest, value: Value) {
     let block = Some(req.block_id.as_str()).filter(|b| !b.is_empty());
     let key = req.surface.element(&req.action_id);
     let store = ws.uikit_mut();
-    if let Some(id) = req.surface.view_id()
-        && !matches!(req.surface, SurfaceKey::Banner(_))
-        && let Some(state) = store.view_state_mut(id)
+    if let Some((target, id)) = req.surface.view_target()
+        && let Some(state) = store.view_state_mut(target, id)
     {
         state.set(&req.action_id, block, value);
         return;
     }
     store.scratch_mut().values.insert(key, value);
+}
+
+/// The value [`store_value`] holds for `req`'s element.
+fn current_value<'w>(ws: &'w Workspace, req: &ActionRequest) -> Option<&'w Value> {
+    let store = ws.uikit();
+    if let Some((target, id)) = req.surface.view_target() {
+        let state = match target {
+            ViewTarget::Modal => store.modal().filter(|m| m.id() == id).map(|m| &m.state),
+            ViewTarget::Bar => store.bar(id).map(|b| &b.state),
+        };
+        if let Some(state) = state {
+            return state.get(&req.action_id);
+        }
+    }
+    store
+        .scratch()
+        .values
+        .get(&req.surface.element(&req.action_id))
 }
 
 fn ui(ctx: &mut Ctx<'_>, msg: UiKitMsg) -> Out {
@@ -464,10 +481,18 @@ fn ui(ctx: &mut Ctx<'_>, msg: UiKitMsg) -> Out {
                 _ => parse_time(&text).map(|(h, m)| format!("{h:02}:{m:02}")),
             };
             ctx.ws.uikit_mut().scratch_mut().texts.insert(key, text);
-            let Some(v) = valid else {
-                return Out::none();
+            // A cleared or not (yet) valid field holds no value, like the
+            // web's native date/time input (""): submitting must not send the
+            // previous value the field no longer shows.
+            // A field that never held a value already is "": no change.
+            let value = Value::String(valid.unwrap_or_default());
+            let unchanged = match current_value(ctx.ws, &req) {
+                Some(current) => current == &value,
+                None => value.as_str() == Some(""),
             };
-            let value = Value::String(v);
+            if unchanged {
+                return Out::none();
+            }
             store_value(ctx.ws, &req, value.clone());
             if !send {
                 return Out::none();
@@ -507,10 +532,10 @@ fn ui(ctx: &mut Ctx<'_>, msg: UiKitMsg) -> Out {
             Out::none()
         }
         UiKitMsg::Submit(surface) => {
-            let Some(id) = surface.view_id() else {
+            let Some((target, id)) = surface.view_target() else {
                 return Out::none();
             };
-            match ctx.ws.uikit_mut().view_submit(id, now) {
+            match ctx.ws.uikit_mut().view_submit(target, id, now) {
                 Some((app, i)) => send(ctx.rest.clone(), app, i),
                 None => Out::none(),
             }
@@ -663,7 +688,17 @@ pub fn interaction(
                 now,
             )
         }
-        SurfaceKey::Modal(id) | SurfaceKey::Bar(id) => ws.uikit_mut().view_block_action(
+        SurfaceKey::Modal(id) => ws.uikit_mut().view_block_action(
+            ViewTarget::Modal,
+            id,
+            app,
+            &req.block_id,
+            &req.action_id,
+            req.value.clone(),
+            now,
+        ),
+        SurfaceKey::Bar(id) => ws.uikit_mut().view_block_action(
+            ViewTarget::Bar,
             id,
             app,
             &req.block_id,
@@ -713,9 +748,9 @@ fn close(ctx: &mut Ctx<'_>, surface: &SurfaceKey, cleared: bool) -> Out {
     let Some(id) = surface.view_id() else {
         return Out::none();
     };
-    let built = match surface {
-        SurfaceKey::Banner(_) => ctx.ws.uikit_mut().banner_closed(id, now),
-        _ => ctx.ws.uikit_mut().view_closed(id, cleared, now),
+    let built = match surface.view_target() {
+        Some((target, _)) => ctx.ws.uikit_mut().view_closed(target, id, cleared, now),
+        None => ctx.ws.uikit_mut().banner_closed(id, now),
     };
     let Some((app, i, change)) = built else {
         return Out::none();
@@ -801,6 +836,49 @@ pub fn room_closed(ws: &mut Workspace, rid: &str) {
     }
 }
 
+fn forget_bar(ctx: &mut Ctx<'_>, view_id: &str) {
+    let prefix = SurfaceKey::Bar(view_id.to_owned()).prefix();
+    ctx.local.editors.retain(|k, _| !k.starts_with(&prefix));
+    ctx.ws.uikit_mut().scratch_mut().forget(&prefix);
+}
+
+/// Shows a (re)opened bar in its room, the active room, or drops it.
+fn bar_opened(ctx: &mut Ctx<'_>, rid: Option<String>, view_id: String) -> Out {
+    let mut out = Out::none();
+    match (rid, ctx.active_rid) {
+        (Some(rid), Some(active)) if rid != active => {
+            // Its room's view closed while the app answered (§4.6:
+            // origin room, else the active room).
+            let active = active.to_owned();
+            let moved = ctx.ws.uikit_mut().move_bar(&view_id, &active);
+            out = out.merge(apply_changes(ctx, moved));
+        }
+        (Some(rid), None) => {
+            // No room view to show it in: drop it instead of keeping
+            // it hidden in the store.
+            let closed = ctx.ws.uikit_mut().close_room_bars(&rid);
+            out = out.merge(apply_changes(ctx, closed));
+            out.effects.push(Effect::Toast(
+                BannerKind::Info,
+                t!("uikit.bar_needs_room").into_owned(),
+                String::new(),
+            ));
+        }
+        (Some(rid), _) => out.effects.push(Effect::ShowBar { rid, view_id }),
+        (None, Some(active)) => {
+            let active = active.to_owned();
+            let placed = ctx.ws.uikit_mut().place_bar(&view_id, &active);
+            out = out.merge(apply_changes(ctx, placed));
+        }
+        (None, None) => out.effects.push(Effect::Toast(
+            BannerKind::Info,
+            t!("uikit.bar_needs_room").into_owned(),
+            String::new(),
+        )),
+    }
+    out
+}
+
 /// Reports store changes as effects (and keeps the scratch/editors tidy).
 pub fn apply_changes(ctx: &mut Ctx<'_>, changes: Vec<UiKitChange>) -> Out {
     let mut out = Out::none();
@@ -827,37 +905,30 @@ pub fn apply_changes(ctx: &mut Ctx<'_>, changes: Vec<UiKitChange>) -> Out {
                     out = out.merge(apply_changes(ctx, vec![next]));
                 }
             }
-            UiKitChange::BarOpened { rid, view_id } => match (rid, ctx.active_rid) {
-                (Some(rid), _) => out.effects.push(Effect::ShowBar { rid, view_id }),
-                (None, Some(active)) => {
-                    let active = active.to_owned();
-                    let placed = ctx.ws.uikit_mut().place_bar(&view_id, &active);
-                    out = out.merge(apply_changes(ctx, placed));
-                }
-                (None, None) => out.effects.push(Effect::Toast(
-                    BannerKind::Info,
-                    t!("uikit.bar_needs_room").into_owned(),
-                    String::new(),
-                )),
-            },
+            UiKitChange::BarOpened { rid, view_id } => {
+                // Always a new instance (possibly replacing one in place): the
+                // old one's texts and pending timers must not reach it.
+                forget_bar(ctx, &view_id);
+                out = out.merge(bar_opened(ctx, rid, view_id));
+            }
             UiKitChange::BarClosed { rid, view_id } => {
-                ctx.ws
-                    .uikit_mut()
-                    .scratch_mut()
-                    .forget(&SurfaceKey::Bar(view_id.clone()).prefix());
+                forget_bar(ctx, &view_id);
                 if let Some(rid) = rid {
                     out.effects.push(Effect::HideBar { rid, view_id });
                 }
             }
-            UiKitChange::ErrorsSet(id) => {
+            UiKitChange::ErrorsSet(target, id) => {
                 let store = ctx.ws.uikit();
-                let (blocks, errors, surface) = match store.modal().filter(|m| m.id() == id) {
-                    Some(m) => (
-                        &m.view.view.blocks,
-                        &m.errors,
-                        SurfaceKey::Modal(id.clone()),
-                    ),
-                    None => match store.bar(&id) {
+                let (blocks, errors, surface) = match target {
+                    ViewTarget::Modal => match store.modal().filter(|m| m.id() == id) {
+                        Some(m) => (
+                            &m.view.view.blocks,
+                            &m.errors,
+                            SurfaceKey::Modal(id.clone()),
+                        ),
+                        None => continue,
+                    },
+                    ViewTarget::Bar => match store.bar(&id) {
                         Some(b) => (&b.view.view.blocks, &b.errors, SurfaceKey::Bar(id.clone())),
                         None => continue,
                     },
