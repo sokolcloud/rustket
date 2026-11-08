@@ -1,6 +1,6 @@
 //! Small decorations: tooltips, chips/tags, keyboard hints, dividers.
 
-use iced::widget::{container, text, tooltip as iced_tooltip};
+use iced::widget::{Column, column, container, text, tooltip as iced_tooltip};
 use iced::{Element, Length, Theme, border};
 
 use crate::style;
@@ -101,4 +101,31 @@ pub fn vertical_divider<'a, Message: 'a>() -> Element<'a, Message> {
         .width(1)
         .style(style::container_divider)
         .into()
+}
+
+/// `top` with `gap` below it, or an empty placeholder: always one tree node,
+/// so the widgets after it keep their positions (and their widget state:
+/// focus, cursor, scroll offset) when `top` comes and goes.
+pub fn slot<'a, Message: 'a>(top: Option<Element<'a, Message>>, gap: f32) -> Element<'a, Message> {
+    match top {
+        Some(top) => container(top)
+            .padding(iced::Padding {
+                bottom: gap,
+                ..iced::Padding::ZERO
+            })
+            .into(),
+        None => iced::widget::space().into(),
+    }
+}
+
+/// `body` below an optional `top` (an error banner, a notice) separated by
+/// `gap`. `body` keeps its widget state when `top` appears or disappears,
+/// which it would not as the next child of a column (iced diffs children by
+/// position).
+pub fn above<'a, Message: 'a>(
+    top: Option<Element<'a, Message>>,
+    gap: f32,
+    body: impl Into<Element<'a, Message>>,
+) -> Column<'a, Message> {
+    column![slot(top, gap), body.into()]
 }

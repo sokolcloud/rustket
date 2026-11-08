@@ -25,7 +25,8 @@ use rustket_ui::theme::{
     FONT_MEDIUM, RADIUS_MD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, tokens,
 };
 use rustket_ui::widget::{
-    BannerKind, banner, dialog, ghost_button, primary_button, secondary_button, spinner, text_field,
+    BannerKind, above, banner, dialog, ghost_button, primary_button, secondary_button, spinner,
+    text_field,
 };
 
 use crate::deeplink::{PendingKind, PendingLogin};
@@ -781,9 +782,6 @@ impl Login {
             return column![].into();
         };
         let mut col = column![].spacing(SPACE_3);
-        if let Some(err) = &self.error {
-            col = col.push(banner(BannerKind::Error, err.clone(), None));
-        }
         if meta.show_form {
             let (user_label, user_ph) = if meta.ldap {
                 (t!("login.ldap_user"), t!("login.ldap_user_placeholder"))
@@ -832,40 +830,47 @@ impl Login {
                     .icon(Icon::Key)
                     .width(Length::Fill),
             );
-        col.into()
+        // A failed sign-in must not shift the fields (and move the focus).
+        above(self.error_banner(), SPACE_3, col).into()
+    }
+
+    fn error_banner(&self) -> Option<Element<'_, Message>> {
+        self.error
+            .as_ref()
+            .map(|err| banner(BannerKind::Error, err.clone(), None))
     }
 
     fn token_view(&self) -> Element<'_, Message> {
         let can = !self.pat_user_id.trim().is_empty() && !self.pat_token.trim().is_empty();
-        let mut col = column![
-            text(t!("login.token_help"))
-                .size(TEXT_CAPTION)
-                .style(style::text_secondary)
-        ]
-        .spacing(SPACE_3);
-        if let Some(err) = &self.error {
-            col = col.push(banner(BannerKind::Error, err.clone(), None));
-        }
-        col.push(
-            text_field(
-                t!("login.token_user_id"),
-                &self.pat_user_id,
-                Message::PatUserId,
-            )
-            .on_submit(Message::SubmitPat),
-        )
-        .push(
-            text_field(t!("login.token"), &self.pat_token, Message::PatToken)
-                .password(true)
+        let help = text(t!("login.token_help"))
+            .size(TEXT_CAPTION)
+            .style(style::text_secondary);
+        let fields = column![]
+            .spacing(SPACE_3)
+            .push(
+                text_field(
+                    t!("login.token_user_id"),
+                    &self.pat_user_id,
+                    Message::PatUserId,
+                )
                 .on_submit(Message::SubmitPat),
-        )
-        .push(
-            primary_button(t!("login.sign_in"), can.then_some(Message::SubmitPat))
-                .loading(self.busy)
-                .width(Length::Fill),
-        )
-        .push(ghost_button(t!("login.back"), Some(Message::ShowToken(false))).width(Length::Fill))
-        .into()
+            )
+            .push(
+                text_field(t!("login.token"), &self.pat_token, Message::PatToken)
+                    .password(true)
+                    .on_submit(Message::SubmitPat),
+            )
+            .push(
+                primary_button(t!("login.sign_in"), can.then_some(Message::SubmitPat))
+                    .loading(self.busy)
+                    .width(Length::Fill),
+            )
+            .push(
+                ghost_button(t!("login.back"), Some(Message::ShowToken(false))).width(Length::Fill),
+            );
+        column![help, above(self.error_banner(), SPACE_3, fields)]
+            .spacing(SPACE_3)
+            .into()
     }
 
     fn pending_view<'a>(&'a self, p: &'a Pending) -> Element<'a, Message> {
@@ -873,7 +878,7 @@ impl Login {
             p.login.kind,
             PendingKind::Saml { .. } | PendingKind::Cas { .. }
         );
-        let mut col = column![
+        let col = column![
             row![
                 spinner(18.0),
                 text(t!("login.pending_title", service = p.label))
@@ -891,10 +896,7 @@ impl Login {
             .style(style::text_secondary),
         ]
         .spacing(SPACE_3);
-        if let Some(err) = &p.error {
-            col = col.push(banner(BannerKind::Error, err.clone(), None));
-        }
-        col = col.push(
+        let mut rest = column![].spacing(SPACE_3).push(
             row![
                 secondary_button(t!("login.open_again"), Some(Message::OpenAgain))
                     .icon(Icon::ExternalLink)
@@ -904,13 +906,13 @@ impl Login {
             .spacing(SPACE_2),
         );
         if !polling {
-            col = col.push(rule::horizontal(1)).push(
+            rest = rest.push(rule::horizontal(1)).push(
                 text_field(t!("login.paste_label"), &p.paste, Message::Paste)
                     .placeholder("rocketchat://auth?…")
                     .help(t!("login.paste_help"))
                     .on_submit(Message::SubmitPaste),
             );
-            col = col.push(
+            rest = rest.push(
                 secondary_button(
                     t!("login.paste_submit"),
                     (!p.paste.trim().is_empty()).then_some(Message::SubmitPaste),
@@ -918,7 +920,7 @@ impl Login {
                 .width(Length::Fill),
             );
             if !self.handler_registered {
-                col = col.push(banner(
+                rest = rest.push(banner(
                     BannerKind::Info,
                     t!("login.handler_hint"),
                     Some((
@@ -928,7 +930,11 @@ impl Login {
                 ));
             }
         }
-        col.into()
+        let error = p
+            .error
+            .as_ref()
+            .map(|err| banner(BannerKind::Error, err.clone(), None));
+        col.push(above(error, SPACE_3, rest)).into()
     }
 
     /// The 2FA dialog.
@@ -1157,6 +1163,22 @@ mod tests {
         assert!(e.starts_with("The browser reported"), "{e}");
         assert!(!e.contains('\u{202e}') && !e.contains('\n'), "{e:?}");
         assert!(e.contains('“'));
+    }
+
+    /// The error banner used to be inserted before the fields: a failed
+    /// sign-in moved the password field's state (focus, cursor) to the user
+    /// field and rebuilt the password field.
+    #[test]
+    fn failed_sign_in_keeps_the_fields_state() {
+        use crate::tree_probe::{assert_kept, text_input_tag};
+        use iced::advanced::widget::Tree;
+        let mut l = login_with(vec![]);
+        let mut tree = Tree::new(l.view().as_widget());
+        let _ = l.update(Message::LoginDone(Err(Failure::from(RcError::Timeout(
+            "x",
+        )))));
+        assert!(l.error.is_some());
+        assert_kept(&mut tree, &l.view(), text_input_tag(), "error shown");
     }
 
     #[test]

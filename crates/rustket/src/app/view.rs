@@ -14,7 +14,7 @@ use rustket_ui::theme::{
     TEXT_CAPTION, TEXT_SUBTITLE,
 };
 use rustket_ui::widget::{
-    AvatarShape, AvatarSource, BannerKind, avatar, banner, dialog, empty_state,
+    AvatarShape, AvatarSource, BannerKind, Toast, above, avatar, banner, dialog, empty_state,
     loading_placeholder, modal, primary_button, secondary_button, spinner, split, status_strip,
     toasts,
 };
@@ -28,6 +28,19 @@ use crate::url_handler;
 use crate::workspace::sidebar::SidebarCtx;
 use crate::workspace::{ServerState, rail};
 use rustket_core::ServerId;
+
+/// `base` under the app's layers: the open modal and the toasts. Both
+/// wrappers are always there, so a dialog or a toast coming and going keeps
+/// the base's widget state.
+pub(crate) fn layered<'a, M: Clone + 'a>(
+    base: Element<'a, M>,
+    overlay: Option<Element<'a, M>>,
+    dismiss: Option<M>,
+    list: &'a [Toast],
+    on_close: impl Fn(u64) -> M + 'a,
+) -> Element<'a, M> {
+    toasts(modal(base, overlay, dismiss), list, on_close)
+}
 
 impl App {
     // --- view --------------------------------------------------------------------
@@ -61,8 +74,7 @@ impl App {
             }),
         };
         let (overlay, dismiss) = self.overlay();
-        let content = modal(base, overlay, dismiss);
-        toasts(content, &self.toasts, Message::CloseToast)
+        layered(base, overlay, dismiss, &self.toasts, Message::CloseToast)
     }
 
     /// Rail plus a page of server `sid`.
@@ -168,11 +180,9 @@ impl App {
                 .height(Length::Fill)
                 .into(),
             };
-        let mut area = column![];
-        if let Some(strip) = self.connection_strip(s) {
-            area = area.push(strip);
-        }
-        area = area.push(room_area);
+        // The strip comes and goes with the connection; the room keeps its
+        // widget state (composer focus, timeline scroll) meanwhile.
+        let area = above(self.connection_strip(s), 0.0, room_area);
         split(
             sidebar_view,
             area.width(Length::Fill).height(Length::Fill),

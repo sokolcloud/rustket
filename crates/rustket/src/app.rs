@@ -2,6 +2,8 @@
 
 mod components;
 mod view;
+#[cfg(test)]
+pub(crate) use view::layered;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;

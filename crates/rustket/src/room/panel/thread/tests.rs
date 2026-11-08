@@ -749,3 +749,81 @@ fn new_thread_reply_keeps_every_row_tree() {
         diff_keeps_rows(&mut tree, &t.view(&view_ctx(&env)));
     }
 }
+
+/// The "jump to latest" button used to wrap the timeline's scrollable in a
+/// stack only while it was shown: scrolling up, a message arriving below and
+/// jumping back down each rebuilt the scrollable (offset back to the bottom)
+/// and every row.
+#[test]
+fn jump_button_keeps_the_timeline_scrollable() {
+    use crate::room::timeline::{Message as TlMsg, Timeline};
+    use crate::tree_probe::{assert_kept, scrollable_tag};
+    use iced::advanced::widget::Tree;
+    let mut env = Env::new(None);
+    env.ws.apply_message(message("a", "bob", T0, None));
+    env.ws.apply_message(message("b", "bob", T0 + 1, None));
+    let mut tl = Timeline::new("R1");
+    // `jump_to` starts timers.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _rt = rt.enter();
+    let s = scrollable_tag();
+    let mut tree = Tree::new(tl.view(&view_ctx(&env)).as_widget());
+    // Scrolled away from the bottom (held at a message, like a scroll up).
+    let _ = tl.jump_to("a", None, &mut env.ctx());
+    assert_kept(&mut tree, &tl.view(&view_ctx(&env)), s, "scrolled up");
+    // A message arrives below while scrolled up.
+    env.ws.apply_message(message("c", "alice", T0 + 2, None));
+    let mut changes = rustket_core::workspace::Changes::default();
+    changes.timelines.insert("R1".into());
+    let _ = tl.on_changes(&changes, &mut env.ctx());
+    assert_kept(&mut tree, &tl.view(&view_ctx(&env)), s, "new message below");
+    let _ = tl.update(TlMsg::JumpToLatest, &mut env.ctx());
+    assert_kept(
+        &mut tree,
+        &tl.view(&view_ctx(&env)),
+        s,
+        "back at the bottom",
+    );
+}
+
+/// The same for the thread panel's list (and its composer).
+#[test]
+fn jump_button_keeps_the_thread_scrollable_and_editor() {
+    use crate::tree_probe::{assert_kept, scrollable_tag, text_editor_tag};
+    use iced::advanced::widget::Tree;
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(2));
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let ticket = t.ticket.unwrap();
+    let replies = vec![
+        message("r2", "alice", T0 + 2, Some("P")),
+        message("r1", "alice", T0 + 1, Some("P")),
+    ];
+    let _ = t.update(Msg::Page(ticket, Ok(page(replies, 0, 2))), &mut env.ctx());
+    let (s, ed) = (scrollable_tag(), text_editor_tag());
+    let mut tree = Tree::new(t.view(&view_ctx(&env)).as_widget());
+    type Change = dyn Fn(&mut Thread, &mut Env);
+    let steps: [(&str, &Change); 3] = [
+        ("scrolled up", &|t, env| {
+            assert!(t.follow.hold_at(env.ws.thread("P").unwrap(), "r1"));
+        }),
+        ("new reply below", &|_, env| {
+            env.ws
+                .apply_message(message("r3", "bob", T0 + 3, Some("P")));
+        }),
+        ("back at the bottom", &|t, env| {
+            let _ = t.update(Msg::JumpToLatest, &mut env.ctx());
+        }),
+    ];
+    for (step, change) in steps {
+        let before = crate::tree_probe::states(&tree, ed);
+        change(&mut t, &mut env);
+        let view = t.view(&view_ctx(&env));
+        assert_kept(&mut tree, &view, s, step);
+        assert_eq!(crate::tree_probe::states(&tree, ed), before, "{step}");
+    }
+}

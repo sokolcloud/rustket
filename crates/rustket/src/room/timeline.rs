@@ -387,15 +387,15 @@ impl Timeline {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(style::scrollable);
-        if self.follow.at_bottom && new_below == 0 {
-            return list.into();
-        }
-        let label = if new_below > 0 {
-            t!("room_timeline.new_messages", count = new_below).into_owned()
-        } else {
-            t!("room_timeline.jump_to_latest").into_owned()
-        };
-        list::with_jump_button(list.into(), label, Message::JumpToLatest)
+        let jump = (!self.follow.at_bottom || new_below > 0).then(|| {
+            let label = if new_below > 0 {
+                t!("room_timeline.new_messages", count = new_below).into_owned()
+            } else {
+                t!("room_timeline.jump_to_latest").into_owned()
+            };
+            (label, Message::JumpToLatest)
+        });
+        list::with_jump_button(list.into(), jump)
     }
 }
 

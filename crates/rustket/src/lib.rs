@@ -22,6 +22,8 @@ pub mod room;
 pub mod screens;
 pub mod session;
 pub mod single_instance;
+#[cfg(test)]
+mod tree_probe;
 pub mod ui_state;
 pub mod url_handler;
 pub mod workspace;

@@ -13,7 +13,7 @@ use rustket_ui::theme::{
     TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, ChipKind, banner, chip, danger_button, dialog, divider, ghost_button,
+    BannerKind, ChipKind, above, banner, chip, danger_button, dialog, divider, ghost_button,
     loading_placeholder, primary_button, secondary_button, text_field,
 };
 
@@ -187,10 +187,7 @@ impl Tokens {
             .max_width(640)
             .into();
         }
-        let mut body = column![].spacing(SPACE_4).max_width(720);
-        if let Some(e) = &self.error {
-            body = body.push(banner(BannerKind::Error, e.clone(), None));
-        }
+        let mut body = column![].spacing(SPACE_4);
 
         let name_err = self.name_error();
         let can_generate =
@@ -253,7 +250,12 @@ impl Tokens {
             }
         };
         body = body.push(section(t!("account.tokens_list").into_owned(), list));
-        body.into()
+        // A failed request must not shift the name field (and its focus).
+        let error = self
+            .error
+            .as_ref()
+            .map(|e| banner(BannerKind::Error, e.clone(), None));
+        above(error, SPACE_4, body).max_width(720).into()
     }
 
     fn token_row<'a>(&'a self, tok: &'a PersonalToken) -> Element<'a, Message> {
