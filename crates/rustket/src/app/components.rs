@@ -400,7 +400,7 @@ impl App {
         match go {
             Go::Nav(nav) => self.navigate(nav),
             Go::Room { sid, rid, tmid } => {
-                let a = self.activate(sid.clone());
+                let a = self.activate_for(sid.clone(), false);
                 let open = self.open_room(&sid, &rid);
                 if let Some(tmid) = tmid
                     && let Some(rv) = self
