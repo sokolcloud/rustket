@@ -729,6 +729,34 @@ fn shortcuts_yield_after_a_press_the_scope_did_not_see() {
 }
 
 #[test]
+fn shortcuts_yield_to_an_input_focused_by_keyboard() {
+    use iced::widget::text_input;
+    let view = || -> El {
+        press_guard(column![
+            scope(blocks(&["alpha beta", "gamma"])),
+            text_input("", "typed").id("field").on_input(|_| Msg::Menu),
+        ])
+    };
+    let mut h = Harness::new(view);
+    let from = start_of(&mut h, 0);
+    let to = at(&mut h, 0, 0.5);
+    h.drag(from, to);
+    assert!(h.selections()[0].is_some());
+    assert_eq!(h.ctrl("a"), Status::Captured);
+    // Tab / F6 focus the input without a press: its Ctrl+A and Escape win.
+    h.with_ui(|ui, h| {
+        let mut op = iced::advanced::widget::operation::focusable::focus(Id::new("field"));
+        ui.operate(&h.renderer, &mut op);
+    });
+    h.modifiers(Modifiers::CTRL);
+    assert_eq!(h.ctrl("a"), Status::Captured, "the input selects its text");
+    let sel = h.selections()[0].clone();
+    assert_eq!(h.ctrl("c"), Status::Captured);
+    assert_eq!(h.clip.0.as_deref(), Some("typed"), "the input copies");
+    assert_eq!(h.selections()[0], sel, "the message selection is left alone");
+}
+
+#[test]
 fn a_drag_can_start_between_blocks() {
     let mut h = Harness::new(|| scope(blocks(&["first", "second block"])).into());
     let (a, b) = (h.blocks()[0].0, h.blocks()[1].0);
