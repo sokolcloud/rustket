@@ -50,6 +50,12 @@ settings.names_usernames:
 settings.show_avatars:
   en: "Show avatars in the room list"
   ru: "Показывать аватары в списке комнат"
+settings.unread_on_top:
+  en: "Unread conversations in a separate group"
+  ru: "Непрочитанные беседы отдельной группой"
+settings.unread_on_top_help:
+  en: "Rooms with new messages are listed first in the room list, in their own Unread section."
+  ru: "Комнаты с новыми сообщениями собираются в начале списка, в отдельном разделе «Непрочитанные»."
 settings.clock_24h:
   en: "24-hour clock"
   ru: "24-часовой формат времени"
