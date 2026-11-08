@@ -753,7 +753,11 @@ fn shortcuts_yield_to_an_input_focused_by_keyboard() {
     let sel = h.selections()[0].clone();
     assert_eq!(h.ctrl("c"), Status::Captured);
     assert_eq!(h.clip.0.as_deref(), Some("typed"), "the input copies");
-    assert_eq!(h.selections()[0], sel, "the message selection is left alone");
+    assert_eq!(
+        h.selections()[0],
+        sel,
+        "the message selection is left alone"
+    );
 }
 
 #[test]

@@ -87,23 +87,54 @@ rustket [--help] [--version] [LINK...]
 Only one instance runs per user; `rocketchat://` and `https://go.rocket.chat/`
 links on the command line are forwarded to the running instance.
 
+### Window title bar
+
+By default Rustket draws its own title bar: the workspaces (servers), the "add
+server" and settings buttons and the minimize/maximize/close buttons share one
+row at the top. Drag the empty part of the bar to move the window, double-click
+it to maximize, right-click the title for a window menu, and drag the window
+borders to resize. Dialogs cover only the area below the bar, so the window can
+still be moved and closed with one open.
+
+If you prefer your window manager's decorations, turn on **Settings → Appearance
+→ Use system window title bar**: the window gets the system title bar right
+away and the workspaces move back to a column on the left.
+
 ### Hardware acceleration
 
 Rendering uses the GPU (wgpu: Vulkan or OpenGL/EGL) by default. If the window is
-blank, flickers or the GPU driver misbehaves, turn off **Settings → Hardware
-acceleration** (it takes effect after a restart: the next start uses the CPU
-renderer), or start it once with:
+blank, flickers or the GPU driver misbehaves, turn off **Settings → Appearance →
+Hardware acceleration (GPU)** (it takes effect after a restart: the next start
+uses the CPU renderer), or start it once with:
 
 ```sh
 ICED_BACKEND=tiny-skia rustket
 ```
+
+### Keyboard
+
+- Tab / Shift+Tab move through every button, row and field; the focused one
+  gets a focus ring and Enter or Space activates it. The title bar comes first.
+- F6 / Shift+F6 jump between the main regions: sidebar search, timeline,
+  composer and the right panel (the thread composer when a thread is open).
+  The title bar is not one of them.
+- Escape closes the innermost thing: a menu or dialog, then a field's focus,
+  then the right panel or the open settings/account/directory/administration
+  page.
+- Alt+Up / Alt+Down open the previous / next room.
+- Message text can be selected with the mouse (double-click: word,
+  triple-click: paragraph); Ctrl+A selects the whole message last clicked and
+  Ctrl+C copies the selection. While a text field has the focus, these keys
+  belong to the field.
 
 ## Where data lives
 
 | What | Where |
 |---|---|
 | Servers and preferences | `~/.config/rustket/config.toml` (`$XDG_CONFIG_HOME`) |
-| Downloaded images and media | `~/.cache/rustket/images/`, `~/.cache/rustket/media/` (`$XDG_CACHE_HOME`); safe to delete while the app is closed |
+| Offline cache: rooms, settings and the newest messages per room, plus messages not sent yet | `~/.local/share/rustket/<server id>/cache.sqlite` (`$XDG_DATA_HOME`), private to the user; one per server, deleted when you log out of or remove that server. **Settings → Storage → Offline cache → Clear** empties it but keeps unsent messages. Encrypted rooms are stored as ciphertext only and their unsent messages are not kept |
+| Downloaded images | `~/.cache/rustket/images/` (`$XDG_CACHE_HOME`); the oldest files are removed past the limit in **Settings → Storage** (500 MB by default); safe to delete while the app is closed |
+| Media opened in another app (video, audio, files) | `~/.cache/rustket/media/`, removed after 24 hours |
 | Decrypted E2E attachments opened in another app | `~/.cache/rustket/media/e2e/`, private to the user, removed after 24 hours |
 | Auth tokens | the desktop keyring (Secret Service: GNOME Keyring, KWallet, KeePassXC) |
 | Token fallback | `~/.local/share/rustket/secrets.json` (mode 0600), only when no keyring is available; the app warns about it |
@@ -111,6 +142,10 @@ ICED_BACKEND=tiny-skia rustket
 | Link handler (source builds) | `~/.local/share/applications/rustket-url-handler.desktop` |
 
 End-to-end encryption keys go through the same secret store as the tokens.
+
+Do not delete `cache.sqlite` by hand while it may hold messages written offline
+that were not sent yet: they are sent from there once the connection is back.
+Use the Clear button instead, or log out to remove everything of a server.
 
 ## Reporting crashes
 

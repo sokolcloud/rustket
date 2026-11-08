@@ -225,6 +225,14 @@ retry, selectable message text (custom widget on top of `iced::advanced::text`),
 accessibility, performance (lazy timeline, image cache limits), packaging
 (`.deb` via cargo-deb, AppImage, desktop file, icons).
 
+Status: done. Offline cache and persisted outbox (`rustket-core` `cache`,
+`src/cache`), selectable message text, keyboard focus/F6/contrast and image
+cache limits, packaging (`packaging/deb/build.sh` with dpkg-deb, AppImage
+AppDir, `[profile.dist]`, `--help`/`--version`), plus the client-side title bar
+(`UiPrefs::system_title_bar` switches back to the system one). Open: queued
+offline actions other than sending text, cross-message selection, a screen
+reader tree (iced has no AccessKit), an AppImage built with appimagetool.
+
 ## Known limitations / decisions
 
 - iced 0.14 `text`/`rich_text` is not mouse-selectable: message bodies use

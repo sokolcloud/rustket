@@ -357,7 +357,10 @@ impl App {
         // Image disk cache cap (Settings → Storage).
         images::set_disk_cap_mb(app.config.ui.image_cache_mb);
         let trim = images::trim_task(app.images.disk_dir(), Message::Noop);
-        (app, Task::batch([open, theme, handler, media, maximized, trim]))
+        (
+            app,
+            Task::batch([open, theme, handler, media, maximized, trim]),
+        )
     }
 
     // --- helpers ---------------------------------------------------------------

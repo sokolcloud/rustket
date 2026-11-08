@@ -20,9 +20,7 @@ use iced::advanced::overlay;
 use iced::advanced::renderer;
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell};
-use iced::{
-    Element, Event, Length, Point, Rectangle, Size, Theme, Vector, keyboard, mouse, touch,
-};
+use iced::{Element, Event, Length, Point, Rectangle, Size, Theme, Vector, keyboard, mouse, touch};
 
 use super::DRAG_THRESHOLD;
 
