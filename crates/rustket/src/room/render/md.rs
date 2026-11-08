@@ -1554,10 +1554,11 @@ mod tests {
 
     /// Copied text of every `md` node: markdown rendered to plain text, emoji
     /// as unicode, mentions as `@name`, links as their label (like a browser
-    /// selection in the web client), list markers kept, table cells tabbed.
+    /// selection in the web client), list markers kept, table cells tabbed,
+    /// hidden spoilers left out.
     #[test]
     fn copy_text_of_every_node() {
-        let fx = Fx::new();
+        let mut fx = Fx::new();
         let inline = body(
             serde_json::json!([{"type": "PARAGRAPH", "value": [
                 plain("a "),
@@ -1578,9 +1579,12 @@ mod tests {
                 {"type": "EMOJI", "value": plain("smile"), "shortCode": "smile"},
                 {"type": "EMOJI", "value": null, "unicode": "🎉"},
                 plain(" "),
+                // Hidden: neither highlighted nor copied.
                 {"type": "SPOILER", "value": [plain("secret")]},
                 plain(" "),
                 {"type": "INLINE_KATEX", "value": "x^2"},
+                plain(" "),
+                {"type": "TIMESTAMP", "value": {"timestamp": "1700000000", "format": "d"}},
                 plain(" "),
                 {"type": "COLOR", "value": {"r": 255, "g": 0, "b": 0, "a": 255}},
                 plain(" "),
@@ -1590,9 +1594,18 @@ mod tests {
             ]}]),
             &fx,
         );
+        let ts = format_timestamp(
+            &TimestampValue {
+                timestamp: "1700000000".into(),
+                format: Some("d".into()),
+            },
+            true,
+        );
         assert_eq!(
             inline,
-            "a bbi s x() Rust https://example.org/x @bob #general 😄🎉 secret x^2 ■ #ff0000 🖼 pic unknown"
+            format!(
+                "a bbi s x() Rust https://example.org/x @bob #general 😄🎉  x^2 {ts} ■ #ff0000 🖼 pic unknown"
+            )
         );
         let blocks = body(
             serde_json::json!([
@@ -1603,6 +1616,7 @@ mod tests {
                     {"type": "CODE_LINE", "value": plain("}")}
                 ]},
                 {"type": "QUOTE", "value": [{"type": "PARAGRAPH", "value": [plain("quoted")]}]},
+                {"type": "BLOCKQUOTE", "value": [{"type": "PARAGRAPH", "value": [plain("legacy")]}]},
                 {"type": "UNORDERED_LIST", "value": [{"type": "LIST_ITEM", "value": [plain("u1")]}, {"type": "LIST_ITEM", "value": [plain("u2")]}]},
                 {"type": "ORDERED_LIST", "value": [{"type": "LIST_ITEM", "number": 3, "value": [plain("o3")]}]},
                 {"type": "TASKS", "value": [{"type": "TASK", "status": true, "value": [plain("done")]}]},
@@ -1626,8 +1640,17 @@ mod tests {
         );
         assert_eq!(
             blocks,
-            "Title\npara\nfn main() {\n}\nquoted\n• u1\n• u2\n3. o3\ndone\ne^{i\\pi}\nH1\tH2\nc1\tc2\n🎉👍\nfallback"
+            "Title\npara\nfn main() {\n}\nquoted\nlegacy\n• u1\n• u2\n3. o3\ndone\ne^{i\\pi}\nH1\tH2\nc1\tc2\n🎉👍\nfallback"
         );
+        // Revealed, the spoiler is ordinary text.
+        fx.state.handle(&RenderMsg::ToggleSpoiler("m1".into(), 0));
+        let revealed = body(
+            serde_json::json!([{"type": "PARAGRAPH", "value": [
+                plain("a "), {"type": "SPOILER", "value": [plain("secret")]}, plain(" b")
+            ]}]),
+            &fx,
+        );
+        assert_eq!(revealed, "a secret b");
         // Messages without `md` and attachment text are selectable too.
         let msg: Message = serde_json::from_value(serde_json::json!({
             "_id": "m2", "rid": "r", "msg": "plain www.example.org\nnext line", "u": {"_id": "u"},

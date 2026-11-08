@@ -13,16 +13,22 @@
 //!   outside a scope render and handle links but are not selectable. Scopes
 //!   must not be nested.
 //!
-//! Interaction (inside a scope): press and drag selects (also past the blocks,
-//! clamped to the nearest position); Shift+click extends; double-click selects
-//! a word, triple-click the whole block; Ctrl+A selects everything in the
-//! scope that took the last press; Ctrl+C or right-click → Copy copies; a
-//! press elsewhere or Escape clears. A link activates on press and release
-//! without a drag (moving more than [`DRAG_THRESHOLD`] makes it a selection);
-//! the released drag is captured so buttons around the text do not fire.
-//! While a selection exists, right-clicking the scope opens its Copy menu
-//! instead of the menus of the widgets around it (wrapping context menus
-//! forward the right press first, see `context_menu`).
+//! Interaction (inside a scope): press and drag selects (also from the gaps
+//! between blocks and past them, clamped to the nearest position);
+//! Shift+click extends; double-click selects the word under the pointer,
+//! triple-click the whole block; Ctrl+A selects everything in the scope that
+//! took the last press (only while no press happened elsewhere since, see
+//! [`press_guard`]); Ctrl+C or right-click → Copy copies; a finished mouse
+//! selection also goes to the PRIMARY selection; a press elsewhere or Escape
+//! clears. Plain-text presses are not captured (rows that act on a click use
+//! [`click_area`], which ignores drags). A link captures its press and
+//! activates on release without a drag (moving more than [`DRAG_THRESHOLD`]
+//! makes it a selection); the released drag is captured so buttons around the
+//! text do not fire. Right-clicking the selected text opens the scope's Copy
+//! menu instead of the menus of the widgets around it (wrapping context menus
+//! forward the right press first, see `context_menu`); a right press anywhere
+//! else opens those as usual. Concealed spans (text in the colour of its own
+//! background: hidden spoilers) are never highlighted nor copied.
 //!
 //! Copied text is the shown text of the selected blocks joined by each
 //! block's joiner (`"\n"`, `"\t"` for table cells), with a block's copy
@@ -34,11 +40,13 @@
 //! each message is its own scope, like separate documents.
 
 mod core;
+mod guard;
 mod rich;
 mod scope;
 #[cfg(test)]
 mod tests;
 
+pub use guard::{click_area, press_guard};
 pub use rich::{Rich, rich};
 pub use scope::{Scope, scope};
 

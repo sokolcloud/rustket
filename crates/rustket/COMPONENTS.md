@@ -315,8 +315,13 @@ pub enum RenderMsg { OpenUrl(String), OpenRoom(String), OpenUser(String), Toggle
 Bodies are mouse-selectable: `message_body_with` wraps the body in a
 `rustket_ui::widget::selectable::scope` and paragraph-level text is
 `selectable::rich` (a drop-in for `rich_text`; use it instead of `rich_text`/`text`
-for body text so it joins the message's selection). Do not nest scopes. With a
-selection, right-click opens the scope's Copy menu instead of the message menu.
+for body text so it joins the message's selection). Do not nest scopes.
+Right-clicking the selected text opens the scope's Copy menu; elsewhere the message
+menu opens as usual. Rows that act on a click around a body use
+`selectable::click_area` (fires on a click without drag), not `mouse_area::on_press`,
+which would fire whenever a selection starts. The app root is wrapped in
+`selectable::press_guard` (keyboard shortcuts of a selection yield to whatever was
+clicked since). Hidden inline spoilers are neither highlighted nor copied.
 
 Callers map `RenderMsg` into their own `Message` and turn it into effects
 (`OpenUrl`, `OpenRoom`, `OpenPanel(UserInfo(..))`, …). New variants may be

@@ -35,6 +35,12 @@ pub struct Core {
     pub(super) joiner: &'static str,
     /// Inside a selection scope: shows the text cursor.
     pub(super) scoped: bool,
+    /// Byte ranges of concealed spans (hidden spoilers): never highlighted
+    /// nor copied.
+    pub(super) concealed: Vec<Range<usize>>,
+    /// The last left press landed on a link of this block (the block
+    /// captured it; its scope still handles it).
+    pub(super) link_press: bool,
 }
 
 impl Core {
@@ -55,13 +61,43 @@ impl Core {
     /// Byte offset of the character boundary nearest to `p` (relative to the
     /// paragraph origin). Points outside clamp to the nearest line/end.
     pub(super) fn hit(&self, p: Point) -> usize {
+        self.hit_with_affinity(p).0
+    }
+
+    /// Byte offset of the character under `p` (its start), for word
+    /// selection: [`Self::hit`] gives the boundary after a glyph when `p` is
+    /// on its right half.
+    pub(super) fn hit_under(&self, p: Point) -> usize {
+        let (offset, line_start, after_glyph) = self.hit_with_affinity(p);
+        if !after_glyph || offset <= line_start {
+            return offset;
+        }
+        self.text
+            .get(line_start..offset)
+            .and_then(|s| s.grapheme_indices(true).next_back())
+            .map_or(offset, |(i, _)| line_start + i)
+    }
+
+    /// The hit offset, the start of its line, and whether it is the boundary
+    /// after the glyph under `p` (cosmic-text's `Affinity::Before`).
+    fn hit_with_affinity(&self, p: Point) -> (usize, usize, bool) {
         let buffer = self.paragraph.buffer();
         let Some(c) = buffer.hit(p.x, p.y) else {
             // Above the first line (or empty): the start; below: the end.
-            return if p.y < 0.0 { 0 } else { self.len() };
+            let at = if p.y < 0.0 { 0 } else { self.len() };
+            return (at, at, false);
         };
         let start = self.lines.get(c.line).copied().unwrap_or(self.len());
-        floor_boundary(&self.text, start + c.index)
+        (
+            floor_boundary(&self.text, start + c.index),
+            start,
+            c.affinity.before(),
+        )
+    }
+
+    /// Whether byte `i` is inside a concealed span.
+    fn is_concealed(&self, i: usize) -> bool {
+        self.concealed.iter().any(|r| r.contains(&i))
     }
 
     /// Whether `p` (relative to the bounds) is inside this block.
@@ -88,15 +124,6 @@ impl Core {
                 .get(run.line_i + 1)
                 .map_or(self.len(), |next| next - 1);
             let last_of_line = runs.get(i + 1).is_none_or(|n| n.line_i != run.line_i);
-            let mut x0 = f32::INFINITY;
-            let mut x1 = f32::NEG_INFINITY;
-            for g in run.glyphs {
-                let (a, b) = (line_start + g.start, line_start + g.end);
-                if a < range.end && b > range.start {
-                    x0 = x0.min(g.x);
-                    x1 = x1.max(g.x + g.w);
-                }
-            }
             if run.glyphs.is_empty() {
                 // An empty line: selected when the range spans it.
                 if range.start <= line_start && range.end > line_start {
@@ -107,6 +134,24 @@ impl Core {
                 }
                 continue;
             }
+            // Runs of adjacent selected glyphs (concealed ones split them).
+            let mut segments: Vec<(f32, f32)> = Vec::new();
+            let mut open = false;
+            for g in run.glyphs {
+                let (a, b) = (line_start + g.start, line_start + g.end);
+                if a < range.end && b > range.start && !self.is_concealed(a) {
+                    match segments.last_mut() {
+                        Some(seg) if open => {
+                            seg.0 = seg.0.min(g.x);
+                            seg.1 = seg.1.max(g.x + g.w);
+                        }
+                        _ => segments.push((g.x, g.x + g.w)),
+                    }
+                    open = true;
+                } else {
+                    open = false;
+                }
+            }
             // The line break after the last run is selected too.
             if last_of_line
                 && line_end < self.len()
@@ -114,25 +159,47 @@ impl Core {
                 && range.end > line_end
             {
                 let end = run.glyphs.iter().map(|g| g.x + g.w).fold(0.0, f32::max);
-                x0 = x0.min(end);
-                x1 = x1.max(end + stub);
+                match segments.last_mut() {
+                    Some(seg) if open && seg.1 >= end => seg.1 = end + stub,
+                    _ => segments.push((end, end + stub)),
+                }
             }
-            if x1 > x0 {
-                out.push(Rectangle::new(
-                    Point::new(x0, run.line_top),
-                    Size::new(x1 - x0, run.line_height),
-                ));
+            for (x0, x1) in segments {
+                if x1 > x0 {
+                    out.push(Rectangle::new(
+                        Point::new(x0, run.line_top),
+                        Size::new(x1 - x0, run.line_height),
+                    ));
+                }
             }
         }
         out
     }
 
-    /// The selected text (empty without a selection).
-    pub(super) fn selected(&self) -> &str {
-        self.selection
-            .as_ref()
-            .and_then(|r| self.text.get(r.clone()))
-            .unwrap_or_default()
+    /// The selected text without concealed spans (empty without a
+    /// selection).
+    pub(super) fn selected(&self) -> String {
+        let Some(sel) = &self.selection else {
+            return String::new();
+        };
+        let mut out = String::new();
+        let mut at = sel.start;
+        let mut hidden: Vec<_> = self
+            .concealed
+            .iter()
+            .filter(|r| r.start < sel.end && r.end > sel.start)
+            .collect();
+        hidden.sort_by_key(|r| r.start);
+        for r in hidden {
+            if r.start > at {
+                out.push_str(self.text.get(at..r.start).unwrap_or_default());
+            }
+            at = at.max(r.end);
+        }
+        if at < sel.end {
+            out.push_str(self.text.get(at..sel.end).unwrap_or_default());
+        }
+        out
     }
 }
 

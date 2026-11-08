@@ -16,6 +16,7 @@ use iced::{Element, Event, Length, Point, Rectangle, Size, Theme, Vector, mouse}
 
 use super::DRAG_THRESHOLD;
 use super::core::{Core, clamp_range, word_at};
+use super::guard::presses;
 use crate::icon::Icon;
 use crate::widget::menu::{MenuEntry, MenuItem, menu_panel};
 
@@ -73,8 +74,12 @@ pub(super) struct State {
     drag: Option<Point>,
     moved: bool,
     last_click: Option<Click>,
-    /// The last press was inside: keyboard shortcuts act on this scope.
+    /// The last press was inside: keyboard shortcuts act on this scope
+    /// while no press happened elsewhere since ([`presses`] unchanged).
     focused: bool,
+    press_gen: u64,
+    /// The blocks know they are inside a scope (reset on rebuilds).
+    marked: bool,
     modifiers: Modifiers,
     /// Open Copy menu: where, and the text it copies.
     menu: Option<(Point, String)>,
@@ -145,8 +150,12 @@ fn each<F: FnMut(usize, &mut Core) + Send>(f: F) -> Each<F> {
 /// document order (dragging past the blocks).
 struct Locate {
     exact: bool,
+    /// Use the character under the cursor instead of the nearest boundary.
+    under: bool,
     found: Option<Pos>,
     candidate: Option<Pos>,
+    /// The block of `found` took the press on one of its links.
+    link: bool,
 }
 
 impl Locate {
@@ -159,7 +168,13 @@ impl Locate {
         };
         let b = p + core.origin;
         if core.contains(b) {
-            self.found = Some(Pos::new(i, core.hit(p)));
+            let offset = if self.under {
+                core.hit_under(p)
+            } else {
+                core.hit(p)
+            };
+            self.found = Some(Pos::new(i, offset));
+            self.link = core.link_press;
             return;
         }
         if self.exact {
@@ -189,14 +204,29 @@ impl<Message> Scope<'_, Message> {
         renderer: &iced::Renderer,
         exact: bool,
     ) -> Option<Pos> {
+        self.locate_with(tree, layout, renderer, exact, false).0
+    }
+
+    /// [`Self::locate`], optionally by the character under the cursor; also
+    /// whether the hit block took the press on a link.
+    fn locate_with(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        exact: bool,
+        under: bool,
+    ) -> (Option<Pos>, bool) {
         let mut loc = Locate {
             exact,
+            under,
             found: None,
             candidate: None,
+            link: false,
         };
         let mut op = each(|i, core: &mut Core| loc.visit(i, core));
         run(&mut self.content, tree, layout, renderer, &mut op);
-        loc.result()
+        (loc.result(), loc.found.is_some() && loc.link)
     }
 
     /// Gives every block its part of the selection.
@@ -235,6 +265,18 @@ impl<Message> Scope<'_, Message> {
         out
     }
 
+    /// What `range` would copy (computed before it is applied).
+    fn selected_text_of(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        range: Option<(Pos, Pos)>,
+    ) -> String {
+        self.apply(tree, layout, renderer, range);
+        self.selected_text(tree, layout, renderer)
+    }
+
     /// The text of block `leaf` (`None` when there is no such block).
     fn block_range(
         &mut self,
@@ -248,7 +290,10 @@ impl<Message> Scope<'_, Message> {
         let mut op = each(|i, core: &mut Core| {
             if i == at.leaf {
                 out = Some(if word {
-                    word_at(&core.text, at.offset)
+                    // The word under the pointer, not the one after the
+                    // boundary on a glyph's right half.
+                    let offset = core.cursor.map_or(at.offset, |p| core.hit_under(p));
+                    word_at(&core.text, offset)
                 } else {
                     0..core.len()
                 });
@@ -256,6 +301,14 @@ impl<Message> Scope<'_, Message> {
         });
         run(&mut self.content, tree, layout, renderer, &mut op);
         out
+    }
+}
+
+/// A finished mouse selection goes to the X11/Wayland PRIMARY selection
+/// (middle-click paste); a no-op where there is none.
+fn write_primary(clipboard: &mut dyn Clipboard, text: String) {
+    if !text.is_empty() {
+        clipboard.write(clipboard::Kind::Primary, text);
     }
 }
 
@@ -269,6 +322,7 @@ pub(super) fn copy_piece(out: &mut String, core: &Core) {
     if piece.is_empty() {
         return;
     }
+    let piece = piece.as_str();
     if !out.is_empty() {
         out.push_str(core.joiner);
     }
@@ -294,6 +348,7 @@ impl<'a, Message: 'a> Widget<Message, Theme, iced::Renderer> for Scope<'a, Messa
     }
 
     fn diff(&self, tree: &mut Tree) {
+        tree.state.downcast_mut::<State>().marked = false;
         tree.children[0].diff(&self.content);
     }
 
@@ -311,20 +366,9 @@ impl<'a, Message: 'a> Widget<Message, Theme, iced::Renderer> for Scope<'a, Messa
         renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let node = self
-            .content
+        self.content
             .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits);
-        // Blocks inside a scope show the text cursor.
-        let mut op = each(|_, core: &mut Core| core.scoped = true);
-        run(
-            &mut self.content,
-            &mut tree.children[0],
-            Layout::new(&node),
-            renderer,
-            &mut op,
-        );
-        node
+            .layout(&mut tree.children[0], renderer, limits)
     }
 
     fn operate(
@@ -334,6 +378,18 @@ impl<'a, Message: 'a> Widget<Message, Theme, iced::Renderer> for Scope<'a, Messa
         renderer: &iced::Renderer,
         operation: &mut dyn Operation,
     ) {
+        let state = tree.state.downcast_mut::<State>();
+        if !state.marked {
+            state.marked = true;
+            let mut op = each(|_, core: &mut Core| core.scoped = true);
+            run(
+                &mut self.content,
+                &mut tree.children[0],
+                layout,
+                renderer,
+                &mut op,
+            );
+        }
         // Before the blocks: public operations group blocks by scope.
         operation.custom(None, layout.bounds(), tree.state.downcast_mut::<State>());
         self.content
@@ -371,6 +427,13 @@ impl<'a, Message: 'a> Widget<Message, Theme, iced::Renderer> for Scope<'a, Messa
         let content = &mut children[0];
         let over = cursor.position_over(layout.bounds());
         let at = cursor.land().position();
+        if !state.marked && over.is_some() && matches!(event, Event::Mouse(_)) {
+            // Blocks inside a scope show the text cursor; once per rebuild,
+            // when the pointer gets here (mouse_interaction runs after this).
+            state.marked = true;
+            let mut op = each(|_, core: &mut Core| core.scoped = true);
+            run(&mut self.content, content, layout, renderer, &mut op);
+        }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let Some(p) = over else {
@@ -382,13 +445,18 @@ impl<'a, Message: 'a> Widget<Message, Theme, iced::Renderer> for Scope<'a, Messa
                     }
                     return;
                 };
-                if captured {
+                let (exact, on_link) = self.locate_with(content, layout, renderer, true, false);
+                if captured && !on_link {
+                    // Taken by a widget inside (a button): not ours.
+                    state.focused = false;
                     return;
                 }
                 state.focused = true;
+                state.press_gen = presses();
                 let click = Click::new(p, mouse::Button::Left, state.last_click);
                 state.last_click = Some(click);
-                let hit = self.locate(content, layout, renderer, true);
+                // Gaps and padding between blocks start at the nearest position.
+                let hit = exact.or_else(|| self.locate(content, layout, renderer, false));
                 let had = state.range().is_some();
                 match (hit, click.kind()) {
                     (None, _) => {
@@ -412,6 +480,8 @@ impl<'a, Message: 'a> Widget<Message, Theme, iced::Renderer> for Scope<'a, Messa
                             state.focus = Some(Pos::new(h.leaf, r.end));
                         }
                         state.drag = None;
+                        let text = self.selected_text_of(content, layout, renderer, state.range());
+                        write_primary(clipboard, text);
                     }
                 }
                 if had || state.range().is_some() {
@@ -439,17 +509,27 @@ impl<'a, Message: 'a> Widget<Message, Theme, iced::Renderer> for Scope<'a, Messa
                 if state.drag.take().is_some() && state.moved {
                     // A drag is not a click on what is underneath.
                     shell.capture_event();
+                    let text = self.selected_text(content, layout, renderer);
+                    write_primary(clipboard, text);
                 }
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
-                let Some(p) = over else {
+                // Only a right press on the selected text opens the Copy menu;
+                // anywhere else the message menu (or another) takes it.
+                let range = state.range().filter(|_| !captured);
+                let on_selection = over.is_some()
+                    && range.is_some_and(|(s, e)| {
+                        self.locate_with(content, layout, renderer, true, true)
+                            .0
+                            .is_some_and(|h| s <= h && h < e)
+                    });
+                let Some(p) = over.filter(|_| on_selection) else {
+                    state.focused = false;
                     return;
                 };
-                if captured || state.range().is_none() {
-                    return;
-                }
                 let text = self.selected_text(content, layout, renderer);
                 if text.is_empty() {
+                    state.focused = false;
                     return;
                 }
                 state.menu = Some((p, text));
@@ -463,7 +543,7 @@ impl<'a, Message: 'a> Widget<Message, Theme, iced::Renderer> for Scope<'a, Messa
                 physical_key,
                 modifiers,
                 ..
-            }) if state.focused && !captured => {
+            }) if state.focused && state.press_gen == presses() && !captured => {
                 let named = |n| *key == keyboard::Key::Named(n);
                 match key.to_latin(*physical_key) {
                     Some('a') if modifiers.command() => {

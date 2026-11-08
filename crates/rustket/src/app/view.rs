@@ -89,7 +89,9 @@ impl App {
         };
         let (overlay, dismiss) = self.overlay();
         let key = self.overlay_key();
-        layered(
+        // Counts presses so text selections yield keyboard shortcuts to
+        // whatever was clicked since.
+        rustket_ui::widget::selectable::press_guard(layered(
             base,
             overlay.map(|o| (key, o)),
             dismiss,
@@ -97,7 +99,7 @@ impl App {
             crate::videoconf::view::popups(self),
             &self.toasts,
             Message::CloseToast,
-        )
+        ))
     }
 
     /// Rail plus a page of server `sid`.

@@ -2,7 +2,8 @@
 //! open dev channel, drags across both with real mouse events in one
 //! persistent `UserInterface` and shoots light and dark (the selection lives
 //! in the widget tree, so the theme switch rebuilds the view from the same
-//! cache). Prints what Ctrl+C would copy.
+//! cache). The paragraph's hidden inline spoiler stays covered and is not
+//! copied. Prints what Ctrl+C would copy.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -101,7 +102,8 @@ pub async fn selection_shots(
     let creds = d.app.servers[sid].credentials.clone().expect("creds");
     let rest = super::rest(server).await;
     rest.set_credentials(Some(creds));
-    let body = format!("{PARAGRAPH}, then copy it.\n```rust\n{CODE}\n```");
+    let body =
+        format!("{PARAGRAPH}, past a ||hidden spoiler|| then copy it.\n```rust\n{CODE}\n```");
     let v: Value = rest
         .post("chat.postMessage", &json!({"roomId": rid, "text": body}))
         .await
@@ -174,6 +176,10 @@ pub async fn selection_shots(
     println!("selection copies {text:?}");
     assert_eq!(text.len(), 1, "one message selected");
     assert!(text[0].contains("paragraph") && text[0].contains("fn main"));
+    assert!(
+        !text[0].contains("hidden spoiler"),
+        "a hidden spoiler is copied"
+    );
     let cursor = mouse::Cursor::Available(to);
     draw(
         d,

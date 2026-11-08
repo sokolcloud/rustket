@@ -141,6 +141,27 @@ impl<'a, Link: Clone + 'static, Message> Rich<'a, Link, Message> {
     }
 }
 
+/// Byte ranges of the concealed spans: text drawn in the colour of its own
+/// opaque background (hidden spoilers) is not selectable, so a selection
+/// neither reveals nor copies it.
+fn concealed_ranges<Link>(spans: &[Span<'static, Link, Font>]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for s in spans {
+        let len = s.text.len();
+        let hidden = s.color.is_some_and(|c| {
+            c.a > 0.0
+                && s.highlight
+                    .is_some_and(|h| h.background == iced::Background::Color(c))
+        });
+        if hidden && len > 0 {
+            out.push(at..at + len);
+        }
+        at += len;
+    }
+    out
+}
+
 struct State<Link> {
     core: Core,
     spans: Vec<Span<'static, Link, Font>>,
@@ -203,6 +224,7 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, iced::Renderer>
                 state
                     .core
                     .set_text(self.spans.iter().map(|s| s.text.as_ref()).collect());
+                state.core.concealed = concealed_ranges(&self.spans);
             } else {
                 match state.core.paragraph.compare(text) {
                     iced::advanced::text::Difference::None => {}
@@ -250,6 +272,9 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, iced::Renderer>
             return;
         };
         let state = tree.state.downcast_mut::<State<Link>>();
+        if matches!(mouse_event, mouse::Event::ButtonPressed(_)) {
+            state.core.link_press = false;
+        }
         let bounds = layout.bounds();
         let origin = bounds.position() + state.core.origin;
         // Scopes read this to hit test the block, also outside its bounds.
@@ -271,6 +296,12 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, iced::Renderer>
         match mouse_event {
             mouse::Event::ButtonPressed(mouse::Button::Left) => {
                 state.pressed = state.hovered.zip(cursor.position());
+                state.core.link_press = state.pressed.is_some();
+                if state.pressed.is_some() {
+                    // Not a press on what is around the text (rows that open
+                    // on press); the scope still starts a selection here.
+                    shell.capture_event();
+                }
             }
             mouse::Event::CursorMoved { position } => {
                 if state

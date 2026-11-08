@@ -16,7 +16,7 @@ use iced::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, mouse};
 use iced_runtime::user_interface::{Cache, UserInterface};
 
 use super::core::Core;
-use super::{rich, scope};
+use super::{click_area, press_guard, rich, scope};
 use crate::widget::context_menu;
 use crate::widget::{MenuEntry, MenuItem};
 
@@ -28,15 +28,22 @@ enum Msg {
     Menu,
 }
 
+/// Standard clipboard and PRIMARY selection.
 #[derive(Default)]
-struct Clip(Option<String>);
+struct Clip(Option<String>, Option<String>);
 
 impl Clipboard for Clip {
-    fn read(&self, _: Kind) -> Option<String> {
-        self.0.clone()
+    fn read(&self, kind: Kind) -> Option<String> {
+        match kind {
+            Kind::Standard => self.0.clone(),
+            Kind::Primary => self.1.clone(),
+        }
     }
-    fn write(&mut self, _: Kind, contents: String) {
-        self.0 = Some(contents);
+    fn write(&mut self, kind: Kind, contents: String) {
+        match kind {
+            Kind::Standard => self.0 = Some(contents),
+            Kind::Primary => self.1 = Some(contents),
+        }
     }
 }
 
@@ -273,14 +280,57 @@ fn click_without_drag_selects_nothing() {
 fn double_and_triple_click() {
     let mut h = Harness::new(|| scope(blocks(&["alpha beta", "gamma"])).into());
     let b = h.blocks()[0].0;
-    // Find "beta" with the block's own hit test: the last 10 % of the text.
+    // The left half of the first glyph.
     let p = Point::new(b.x + 2.0, b.y + b.height / 2.0);
     h.click(p);
     h.click(p);
     assert_eq!(h.selections(), [Some("alpha".into()), None]);
+    assert_eq!(h.clip.1.as_deref(), Some("alpha"), "PRIMARY selection");
     h.click(p);
     assert_eq!(h.selections(), [Some("alpha beta".into()), None]);
     assert_eq!(h.copy().as_deref(), Some("alpha beta"));
+}
+
+/// Glyph boxes (x, width) of block `i`, relative to the window.
+fn glyphs(h: &mut Harness, i: usize) -> Vec<(f32, f32)> {
+    struct G(usize, Vec<(f32, f32)>);
+    impl Operation for G {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn custom(&mut self, _: Option<&Id>, bounds: Rectangle, state: &mut dyn std::any::Any) {
+            if let Some(core) = state.downcast_mut::<Core>() {
+                if self.0 == 0 {
+                    let x0 = bounds.x + core.origin.x;
+                    for run in core.paragraph.buffer().layout_runs() {
+                        self.1.extend(run.glyphs.iter().map(|g| (x0 + g.x, g.w)));
+                    }
+                }
+                self.0 = self.0.wrapping_sub(1);
+            }
+        }
+    }
+    h.with_ui(|ui, h| {
+        let mut g = G(i, Vec::new());
+        ui.operate(&h.renderer, &mut g);
+        g.1
+    })
+}
+
+#[test]
+fn double_click_on_the_right_half_of_a_last_letter_selects_the_word() {
+    let mut h = Harness::new(|| scope(blocks(&["alpha beta"])).into());
+    let y = h.blocks()[0].0.center_y();
+    let g = glyphs(&mut h, 0);
+    // The "a" ending "alpha" (glyph 4), right half; then "beta"'s last glyph.
+    for (glyph, word) in [(4, "alpha"), (9, "beta")] {
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        let (x, w) = g[glyph];
+        let p = Point::new(x + w * 0.75, y);
+        h.click(p);
+        h.click(p);
+        assert_eq!(h.selections(), [Some(word.into())], "glyph {glyph}");
+    }
 }
 
 #[test]
@@ -543,4 +593,175 @@ fn hit_testing_maps_to_byte_offsets() {
     });
     let len = "ab\nжё😀".len();
     assert_eq!(offsets, [0, 0, 2, 3, len, len]);
+}
+
+#[test]
+fn hidden_spoilers_are_neither_highlighted_nor_copied() {
+    let cover = iced::Color::from_rgb8(74, 79, 87);
+    let mut h = Harness::new(move || {
+        scope(
+            rich::<String, Msg>(vec![
+                span("open "),
+                span("SECRET").color(cover).background(cover),
+                span(" end"),
+            ])
+            .width(Length::Fill),
+        )
+        .into()
+    });
+    let p = start_of(&mut h, 0);
+    h.click(p);
+    h.ctrl("a");
+    assert_eq!(h.copy().as_deref(), Some("open  end"));
+    // No highlight over the concealed glyphs ("SECRET" is bytes 5..11).
+    let (rects, secret) = h.with_ui(|ui, h| {
+        struct R(Vec<Rectangle>, (f32, f32));
+        impl Operation for R {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn custom(&mut self, _: Option<&Id>, _: Rectangle, state: &mut dyn std::any::Any) {
+                if let Some(core) = state.downcast_mut::<Core>() {
+                    self.0 = core.rects(&(0..core.len()));
+                    let run = core.paragraph.buffer().layout_runs().next().unwrap();
+                    let g: Vec<_> = run
+                        .glyphs
+                        .iter()
+                        .filter(|g| (5..11).contains(&g.start))
+                        .collect();
+                    self.1 = (g[0].x, g[g.len() - 1].x + g[g.len() - 1].w);
+                }
+            }
+        }
+        let mut r = R(Vec::new(), (0.0, 0.0));
+        ui.operate(&h.renderer, &mut r);
+        (r.0, r.1)
+    });
+    assert!(!rects.is_empty());
+    for r in &rects {
+        let inside = r.x + 0.5 < secret.1 && r.x + r.width - 0.5 > secret.0;
+        assert!(!inside, "{r:?} covers the spoiler {secret:?}");
+    }
+}
+
+#[test]
+fn click_area_rows_ignore_drags_and_links() {
+    let view = || -> El {
+        click_area(
+            scope(
+                rich::<String, Msg>(vec![
+                    span("see "),
+                    span("the docs").link("https://docs.example".to_owned()),
+                    span(" now and then"),
+                ])
+                .on_link_click(Msg::Link)
+                .width(Length::Fill),
+            ),
+            Msg::Menu,
+        )
+    };
+    let mut h = Harness::new(view);
+    let b = h.blocks()[0].0;
+    let link_at = (1..200)
+        .map(|x| Point::new(b.x + x as f32, b.center_y()))
+        .find(|p| {
+            h.move_to(*p);
+            h.interaction == mouse::Interaction::Pointer
+        })
+        .expect("a point over the link");
+    // A link click is only the link.
+    h.click(link_at);
+    assert_eq!(h.msgs, [Msg::Link("https://docs.example".into())]);
+    h.msgs.clear();
+    // A press on plain text does not act; the click does.
+    std::thread::sleep(std::time::Duration::from_millis(350));
+    let plain = start_of(&mut h, 0);
+    h.move_to(plain);
+    h.press(mouse::Button::Left);
+    assert!(h.msgs.is_empty(), "{:?}", h.msgs);
+    h.release();
+    assert_eq!(h.msgs, [Msg::Menu]);
+    h.msgs.clear();
+    // A drag selects and does not act.
+    std::thread::sleep(std::time::Duration::from_millis(350));
+    h.drag(plain, Point::new(b.x + b.width - 2.0, b.center_y()));
+    assert!(h.msgs.is_empty(), "{:?}", h.msgs);
+    assert!(h.selections()[0].is_some());
+    assert!(h.clip.1.is_some(), "a finished drag fills PRIMARY");
+}
+
+#[test]
+fn shortcuts_yield_after_a_press_the_scope_did_not_see() {
+    use crate::widget::hover_box;
+    use iced::widget::{button, container, text};
+    let view = || -> El {
+        press_guard(hover_box(
+            scope(blocks(&["alpha beta", "gamma"])),
+            vec![
+                container(button(text("Quote")).on_press(Msg::Menu))
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .width(Length::Fill)
+                    .into(),
+            ],
+            |_, _| iced::widget::container::Style::default(),
+        ))
+    };
+    let mut h = Harness::new(view);
+    let from = start_of(&mut h, 0);
+    let to = at(&mut h, 0, 0.5);
+    h.drag(from, to);
+    assert!(h.selections()[0].is_some());
+    // The toolbar button over the row takes the press (the composer gets
+    // focus): the message no longer reacts to Ctrl+A or Escape.
+    let top = h.blocks()[0].0.y;
+    h.click(Point::new(396.0, top + 4.0));
+    assert_eq!(h.msgs, [Msg::Menu]);
+    assert_eq!(h.ctrl("a"), Status::Ignored);
+    assert_eq!(
+        h.key(keyboard::Key::Named(key::Named::Escape), Modifiers::empty()),
+        Status::Ignored
+    );
+    // A press in the text gives them back.
+    std::thread::sleep(std::time::Duration::from_millis(350));
+    let p = at(&mut h, 1, 0.01);
+    h.click(p);
+    assert_eq!(h.ctrl("a"), Status::Captured);
+}
+
+#[test]
+fn a_drag_can_start_between_blocks() {
+    let mut h = Harness::new(|| scope(blocks(&["first", "second block"])).into());
+    let (a, b) = (h.blocks()[0].0, h.blocks()[1].0);
+    let gap = Point::new(b.x + 4.0, (a.y + a.height + b.y) / 2.0);
+    assert!(gap.y > a.y + a.height && gap.y < b.y);
+    let to = at(&mut h, 1, 0.99);
+    h.drag(gap, to);
+    assert_eq!(h.selections(), [None, Some("second block".into())]);
+}
+
+#[test]
+fn right_click_off_the_selection_opens_the_message_menu() {
+    let view = || -> El {
+        context_menu(
+            scope(blocks(&["copy me", "and me"])).copy_label("Copy"),
+            vec![MenuEntry::Item(MenuItem::new("Message action", Msg::Menu))],
+        )
+    };
+    let mut h = Harness::new(view);
+    let from = start_of(&mut h, 0);
+    let to = at(&mut h, 0, 0.99);
+    h.drag(from, to);
+    assert_eq!(h.selections(), [Some("copy me".into()), None]);
+    let p = at(&mut h, 1, 0.5);
+    h.move_to(p);
+    assert_eq!(h.press(mouse::Button::Right), Status::Captured);
+    h.clip.0 = None;
+    // The highlighted first entry is the message action, not Copy.
+    h.key(
+        keyboard::Key::Named(key::Named::ArrowDown),
+        Modifiers::empty(),
+    );
+    h.key(keyboard::Key::Named(key::Named::Enter), Modifiers::empty());
+    assert_eq!(h.msgs, [Msg::Menu]);
+    assert_eq!(h.clip.0, None);
 }
