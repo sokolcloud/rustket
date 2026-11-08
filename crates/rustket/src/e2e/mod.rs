@@ -66,6 +66,19 @@ pub enum Modal {
         passphrase: Zeroizing<String>,
         busy: bool,
     },
+    /// Signing out would delete the generated passphrase the user has not
+    /// saved yet: show it once more before `action` runs.
+    SignOutWarning {
+        passphrase: Zeroizing<String>,
+        action: SignOut,
+    },
+}
+
+/// A sign-out the user asked for that deletes the E2E secrets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignOut {
+    Logout { everywhere: bool },
+    RemoveServer,
 }
 
 impl std::fmt::Debug for Modal {
@@ -78,6 +91,10 @@ impl std::fmt::Debug for Modal {
             Modal::SavePassword { busy, .. } => f
                 .debug_struct("SavePassword")
                 .field("busy", busy)
+                .finish_non_exhaustive(),
+            Modal::SignOutWarning { action, .. } => f
+                .debug_struct("SignOutWarning")
+                .field("action", action)
                 .finish_non_exhaustive(),
         }
     }
@@ -109,6 +126,16 @@ pub struct ServerE2e {
     quotes_in_flight: usize,
     /// [`shown`] epoch of the last pass.
     last_epoch: u64,
+    /// Failed starts in a row (backoff of the automatic retry).
+    start_failures: u32,
+    /// An automatic retry of the start is scheduled.
+    retry_scheduled: bool,
+    /// `Workspace::last_sync` seen by the last update (a resync retries a
+    /// failed start).
+    seen_sync: Option<rocketchat::RcDate>,
+    /// Failed fetches of the E2E settings in a row; whether one runs.
+    settings_failures: u32,
+    settings_fetching: bool,
 }
 
 impl std::fmt::Debug for ServerE2e {
@@ -158,7 +185,13 @@ pub enum Message {
     ForgotPassword,
     /// Retry loading the keys after an error.
     Retry,
+    /// The backoff of an automatic retry ran out (manager instance).
+    AutoRetry(u64),
     QuoteFetched(String, Res<Box<RcMessage>>),
+    /// The E2E settings were fetched again (they were missing).
+    SettingsFetched(Res<Vec<rocketchat::models::Setting>>),
+    /// "Sign out anyway" in [`Modal::SignOutWarning`].
+    ConfirmSignOut,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +206,8 @@ pub enum Request {
     Toast(BannerKind, String, String),
     /// Account → Security of this server.
     OpenAccountSecurity,
+    /// The user saw the unsaved passphrase and still wants to sign out.
+    SignOut(SignOut),
 }
 
 /// What the room components ask the app for.
@@ -224,6 +259,12 @@ pub fn after_update(
             crate::message::Message::Noop
         });
     } else if let Some(w) = &s.e2e.worker {
+        // A resync after a failed start (e.g. `e2e.fetchMyKeys` timed out
+        // while the connection dropped) tries again.
+        let sync = s.workspace.last_sync();
+        if sync != s.e2e.seen_sync && matches!(w.mgr.account_state(), AccountE2eState::Error(_)) {
+            let _ = w.tx.send(Input::Start);
+        }
         let now = settings_of(s);
         if s.e2e.settings.as_ref() != Some(&now) {
             let was_enabled = s.e2e.settings.as_ref().is_some_and(|x| x.enabled);
@@ -258,7 +299,70 @@ pub fn after_update(
             }
         }
     }
-    Task::batch([purge, decrypt_pass(s)])
+    s.e2e.seen_sync = s.workspace.last_sync();
+    let settings = if ready {
+        fetch_settings(s)
+    } else {
+        Task::none()
+    };
+    Task::batch([purge, settings, decrypt_pass(s)])
+}
+
+/// Delay before the next automatic attempt after `failures` failures in a
+/// row: 5 s, doubling, at most 5 min (the default REST rate limit window is
+/// one minute).
+fn backoff(failures: u32) -> std::time::Duration {
+    let secs = 5u64.saturating_mul(1 << failures.min(6));
+    std::time::Duration::from_secs(secs.min(300))
+}
+
+/// While the E2E settings are unknown (`settings.public` failed during the
+/// load), encrypted rooms are blocked (`outgoing::mode`); fetch just those
+/// settings again, with backoff, instead of waiting for the next reconnect.
+fn fetch_settings(s: &mut ServerState) -> Task<crate::message::Message> {
+    if s.e2e.settings_fetching || E2eSettings::loaded(s.workspace.settings()) {
+        return Task::none();
+    }
+    let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
+        return Task::none();
+    };
+    s.e2e.settings_fetching = true;
+    let delay = backoff(s.e2e.settings_failures);
+    let (sid, generation) = (s.id.clone(), s.generation);
+    Task::perform(
+        async move {
+            tokio::time::sleep(delay).await;
+            rest.settings_public_by_ids(&rustket_core::e2e::E2E_SETTING_IDS)
+                .await
+                .map_err(crate::error::Failure::from)
+        },
+        move |r| crate::message::Message::E2e(sid.clone(), generation, Message::SettingsFetched(r)),
+    )
+}
+
+/// Schedules an automatic retry of a failed start.
+fn schedule_retry(s: &mut ServerState) -> Task<Message> {
+    if s.e2e.retry_scheduled {
+        return Task::none();
+    }
+    s.e2e.retry_scheduled = true;
+    let delay = backoff(s.e2e.start_failures);
+    s.e2e.start_failures = s.e2e.start_failures.saturating_add(1);
+    let instance = s.e2e.instance;
+    Task::perform(tokio::time::sleep(delay), move |_| {
+        Message::AutoRetry(instance)
+    })
+}
+
+/// Opens [`Modal::SignOutWarning`] when `action` would delete a generated
+/// passphrase the user has not saved yet; the caller signs out only when
+/// this returns `false` (otherwise after [`Request::SignOut`]).
+pub fn warn_before_sign_out(s: &mut ServerState, action: SignOut) -> bool {
+    let Some(passphrase) = s.e2e.manager().and_then(E2eManager::pending_passphrase) else {
+        return false;
+    };
+    s.e2e.modal = Some(Modal::SignOutWarning { passphrase, action });
+    true
 }
 
 /// Decrypts shown messages when something changed; fetches quoted messages
@@ -369,9 +473,9 @@ pub fn on_event(s: &ServerState, ev: &SessionEvent) {
     }
 }
 
-/// Explicit logout, `force_logout` or a key reset: stops the manager and
-/// deletes this account's E2E secrets (the private key and a pending
-/// generated passphrase). Call before the server state is reset.
+/// Explicit logout or server removal (after [`warn_before_sign_out`]):
+/// stops the manager and deletes this account's E2E secrets (the private key
+/// and a pending generated passphrase). Call before the server state is reset.
 /// Without a running manager (offline start, logout before the initial load)
 /// the secrets are deleted directly, for the logged-in user or `user_id`.
 pub fn forget_secrets(
@@ -379,14 +483,42 @@ pub fn forget_secrets(
     store: Option<&Arc<dyn SecretStore>>,
     user_id: Option<&str>,
 ) -> Task<crate::message::Message> {
+    forget(s, store, user_id, false)
+}
+
+/// `force_logout` (key reset, this session logged out elsewhere): like
+/// [`forget_secrets`], but a generated passphrase the user has not saved yet
+/// is kept, since nobody could warn them; the next login unlocks the key
+/// backup with it and shows it again.
+pub fn forget_keys(
+    s: &mut ServerState,
+    store: Option<&Arc<dyn SecretStore>>,
+    user_id: Option<&str>,
+) -> Task<crate::message::Message> {
+    forget(s, store, user_id, true)
+}
+
+fn forget(
+    s: &mut ServerState,
+    store: Option<&Arc<dyn SecretStore>>,
+    user_id: Option<&str>,
+    keep_pending: bool,
+) -> Task<crate::message::Message> {
     let purge = Task::perform(files::purge_private_media(false), |_| {
         crate::message::Message::Noop
     });
     if let Some(mgr) = s.e2e.manager().cloned() {
         s.e2e.reset();
-        let logout = Task::perform(async move { mgr.logout().await }, |_| {
-            crate::message::Message::Noop
-        });
+        let logout = Task::perform(
+            async move {
+                if keep_pending {
+                    mgr.forced_logout().await;
+                } else {
+                    mgr.logout().await;
+                }
+            },
+            |_| crate::message::Message::Noop,
+        );
         return Task::batch([purge, logout]);
     }
     s.e2e.reset();
@@ -401,7 +533,12 @@ pub fn forget_secrets(
     let secrets = rustket_core::e2e::E2eSecrets::new(store.clone(), &s.id, &uid);
     let clear = Task::perform(
         async move {
-            if let Err(e) = secrets.clear().await {
+            let r = if keep_pending {
+                secrets.delete_private_key().await
+            } else {
+                secrets.clear().await
+            };
+            if let Err(e) = r {
                 tracing::warn!(error = %e, "could not delete the E2E secrets");
             }
         },
@@ -512,9 +649,36 @@ fn run(r: &Runner) -> impl iced::futures::Stream<Item = Tagged> + use<> {
     })
 }
 
+fn settings_fetched(s: &mut ServerState, r: Res<Vec<rocketchat::models::Setting>>) {
+    s.e2e.settings_fetching = false;
+    match r {
+        Ok(list) => {
+            for setting in list {
+                s.workspace
+                    .apply_setting(rustket_core::Change::Updated, setting);
+            }
+            s.e2e.settings_failures = if E2eSettings::loaded(s.workspace.settings()) {
+                0
+            } else {
+                s.e2e.settings_failures.saturating_add(1)
+            };
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "E2E settings not available");
+            s.e2e.settings_failures = s.e2e.settings_failures.saturating_add(1);
+        }
+    }
+    // The next update schedules another attempt while still unknown.
+    shown::keys_changed();
+}
+
 /// Handles an E2E message of server `s`.
 pub fn update(s: &mut ServerState, msg: Message) -> (Task<Message>, Vec<Request>) {
     let none = (Task::none(), Vec::new());
+    if let Message::SettingsFetched(r) = msg {
+        settings_fetched(s, r);
+        return none;
+    }
     let Some(mgr) = s.e2e.manager().cloned() else {
         return none;
     };
@@ -538,14 +702,36 @@ pub fn update(s: &mut ServerState, msg: Message) -> (Task<Message>, Vec<Request>
         }
         Message::Started(err) => {
             shown::keys_changed();
-            match err {
-                Some(e) if !e.is_empty() => {
-                    tracing::warn!(server = %s.id, "end-to-end encryption failed to start");
-                    let _ = e;
-                    none
-                }
-                _ => none,
+            if err.is_some() && matches!(mgr.account_state(), AccountE2eState::Error(_)) {
+                tracing::warn!(server = %s.id, "end-to-end encryption failed to start");
+                // Transient failures (fetchMyKeys timeout, 5xx, 429, a locked
+                // keyring) are retried with backoff; the banner keeps Retry.
+                return (schedule_retry(s), Vec::new());
             }
+            if err.is_none() {
+                s.e2e.start_failures = 0;
+            }
+            none
+        }
+        Message::AutoRetry(instance) => {
+            if instance == s.e2e.instance {
+                s.e2e.retry_scheduled = false;
+                if matches!(mgr.account_state(), AccountE2eState::Error(_))
+                    && let Some(w) = &s.e2e.worker
+                {
+                    let _ = w.tx.send(Input::Start);
+                }
+            }
+            none
+        }
+        Message::SettingsFetched(_) => none,
+        Message::ConfirmSignOut => {
+            let Some(Modal::SignOutWarning { action, .. }) = &s.e2e.modal else {
+                return none;
+            };
+            let action = *action;
+            s.e2e.modal = None;
+            (Task::none(), vec![Request::SignOut(action)])
         }
         Message::OpenModal => {
             s.e2e.modal = match mgr.account_state() {
@@ -664,7 +850,10 @@ pub fn update(s: &mut ServerState, msg: Message) -> (Task<Message>, Vec<Request>
             }
         },
         Message::CopyPassphrase => {
-            let Some(Modal::SavePassword { passphrase, .. }) = &s.e2e.modal else {
+            let Some(
+                Modal::SavePassword { passphrase, .. } | Modal::SignOutWarning { passphrase, .. },
+            ) = &s.e2e.modal
+            else {
                 return none;
             };
             (
@@ -712,6 +901,7 @@ pub fn update(s: &mut ServerState, msg: Message) -> (Task<Message>, Vec<Request>
             (Task::none(), vec![Request::OpenAccountSecurity])
         }
         Message::Retry => {
+            s.e2e.start_failures = 0;
             if let Some(w) = &s.e2e.worker {
                 let _ = w.tx.send(Input::Start);
             }
@@ -771,5 +961,148 @@ mod tests {
         assert!(req.is_empty());
         assert!(s.e2e.modal.is_none());
         let _ = forget_secrets(&mut s, Some(&store), None);
+    }
+
+    const INSTANCE: u64 = 77;
+
+    /// Installs `mgr` as the running manager; returns the worker's inbox.
+    fn with_manager(s: &mut ServerState, mgr: E2eManager) -> mpsc::UnboundedReceiver<Input> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        s.workspace.set_e2e(Some(mgr.clone()));
+        s.e2e.instance = INSTANCE;
+        s.e2e.worker = Some(Worker {
+            mgr,
+            tx,
+            rx: Arc::new(Mutex::new(None)),
+        });
+        rx
+    }
+
+    fn manager(url: &rocketchat::ServerUrl, store: Arc<dyn SecretStore>) -> E2eManager {
+        let tls = crate::session::tls_for(&[]).unwrap();
+        let rest = rocketchat::RestClient::new(url.clone(), &tls).unwrap();
+        E2eManager::new(
+            rest,
+            store,
+            &ServerId("s-e2e".into()),
+            "me",
+            E2eSettings {
+                enabled: true,
+                ..Default::default()
+            },
+            E2eConfig {
+                auto_distribution: false,
+                ..Default::default()
+            },
+        )
+    }
+
+    async fn run(task: Task<crate::message::Message>) {
+        use iced::futures::StreamExt;
+        if let Some(stream) = iced_runtime::task::into_stream(task) {
+            stream.collect::<Vec<_>>().await;
+        }
+    }
+
+    fn starts(rx: &mut mpsc::UnboundedReceiver<Input>) -> usize {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|i| matches!(i, Input::Start))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn failed_start_is_retried_with_backoff_and_on_resync() {
+        // `e2e.fetchMyKeys` fails (server unreachable): Error.
+        let url = rocketchat::ServerUrl::parse("http://127.0.0.1:9").unwrap();
+        let mgr = manager(&url, Arc::new(rustket_core::secrets::MemoryStore::new()));
+        assert!(mgr.start().await.is_err());
+        assert!(matches!(mgr.account_state(), AccountE2eState::Error(_)));
+        let mut s = server();
+        let mut rx = with_manager(&mut s, mgr);
+        let _ = update(&mut s, Message::Started(Some("timeout".into())));
+        assert!(s.e2e.retry_scheduled);
+        assert_eq!(s.e2e.start_failures, 1);
+        // One timer at a time.
+        let _ = update(&mut s, Message::Started(Some("timeout".into())));
+        assert_eq!(s.e2e.start_failures, 1);
+        assert_eq!(backoff(0), std::time::Duration::from_secs(5));
+        assert_eq!(backoff(1), std::time::Duration::from_secs(10));
+        assert_eq!(backoff(30), std::time::Duration::from_secs(300));
+        // The timer of an old manager does nothing.
+        let _ = update(&mut s, Message::AutoRetry(INSTANCE + 1));
+        assert_eq!(starts(&mut rx), 0);
+        let _ = update(&mut s, Message::AutoRetry(INSTANCE));
+        assert_eq!(starts(&mut rx), 1);
+        assert!(!s.e2e.retry_scheduled);
+        // A resync (reconnect) while in Error tries again at once.
+        s.workspace.apply_initial(rustket_core::sync::InitialData {
+            next_since: Some(rocketchat::RcDate::now()),
+            ..Default::default()
+        });
+        let _ = after_update(&mut s, None);
+        assert_eq!(starts(&mut rx), 1);
+        let _ = after_update(&mut s, None);
+        assert_eq!(starts(&mut rx), 0, "only when the sync changed");
+    }
+
+    #[tokio::test]
+    async fn sign_out_warns_while_the_generated_passphrase_is_unsaved() {
+        // First use: keys are created and backed up with a generated passphrase.
+        let url = super::shown::tests::stub_server(r#"{"success":true}"#.into()).await;
+        let store = Arc::new(rustket_core::secrets::MemoryStore::new());
+        let mgr = manager(&url, store.clone());
+        mgr.start().await.unwrap();
+        assert_eq!(mgr.account_state(), AccountE2eState::SavePassword);
+        let mut s = server();
+        let _rx = with_manager(&mut s, mgr.clone());
+        let logout = SignOut::Logout { everywhere: false };
+        assert!(warn_before_sign_out(&mut s, logout));
+        assert!(matches!(s.e2e.modal, Some(Modal::SignOutWarning { .. })));
+        assert!(view::modal(&s).is_some());
+        let (_, req) = update(&mut s, Message::CopyPassphrase);
+        assert!(matches!(req.as_slice(), [Request::Toast(..)]));
+        // Cancel keeps everything.
+        let _ = update(&mut s, Message::CloseModal);
+        assert!(s.e2e.modal.is_none());
+        assert!(warn_before_sign_out(&mut s, SignOut::RemoveServer));
+        let (_, req) = update(&mut s, Message::ConfirmSignOut);
+        assert!(matches!(
+            req.as_slice(),
+            [Request::SignOut(SignOut::RemoveServer)]
+        ));
+        assert!(s.e2e.modal.is_none());
+        // Saved: nothing to warn about.
+        mgr.confirm_passphrase_saved().await.unwrap();
+        assert!(!warn_before_sign_out(&mut s, logout));
+    }
+
+    #[tokio::test]
+    async fn forced_logout_keeps_the_unsaved_passphrase() {
+        use rustket_core::e2e::{pending_passphrase_secret, private_key_secret};
+        let sid = ServerId("s-e2e".into());
+        let fill = |store: &rustket_core::secrets::MemoryStore| {
+            store.set(&private_key_secret(&sid, "me"), "jwk").unwrap();
+            store
+                .set(&pending_passphrase_secret(&sid, "me"), "twelve words")
+                .unwrap();
+        };
+        let mem = Arc::new(rustket_core::secrets::MemoryStore::new());
+        let store: Arc<dyn SecretStore> = mem.clone();
+        fill(&mem);
+        let mut s = server();
+        run(forget_keys(&mut s, Some(&store), Some("me"))).await;
+        assert!(mem.get(&private_key_secret(&sid, "me")).unwrap().is_none());
+        assert!(
+            mem.get(&pending_passphrase_secret(&sid, "me"))
+                .unwrap()
+                .is_some()
+        );
+        // An explicit sign-out (after the warning) deletes both.
+        run(forget_secrets(&mut s, Some(&store), Some("me"))).await;
+        assert!(
+            mem.get(&pending_passphrase_secret(&sid, "me"))
+                .unwrap()
+                .is_none()
+        );
     }
 }

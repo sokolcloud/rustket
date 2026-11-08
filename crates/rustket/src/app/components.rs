@@ -179,7 +179,7 @@ impl App {
                 },
                 Effect::SaveConfig => self.save_config(),
                 Effect::Logout { everywhere } => match sid {
-                    Some(sid) => self.logout(sid, everywhere),
+                    Some(sid) => self.sign_out(sid, e2e::SignOut::Logout { everywhere }),
                     None => Task::none(),
                 },
                 Effect::RemoveServer => {
@@ -231,9 +231,28 @@ impl App {
                     );
                     Task::none()
                 }
+                e2e::Request::SignOut(e2e::SignOut::Logout { everywhere }) => {
+                    self.logout(&sid, everywhere)
+                }
+                e2e::Request::SignOut(e2e::SignOut::RemoveServer) => self.remove_server(&sid),
             });
         }
         Task::batch(tasks)
+    }
+
+    /// Logout or server removal the user asked for: first warns (and shows
+    /// it again) when it would delete an unsaved generated E2E passphrase.
+    pub(super) fn sign_out(&mut self, sid: &ServerId, action: e2e::SignOut) -> Task<Message> {
+        if let Some(s) = self.servers.get_mut(sid)
+            && e2e::warn_before_sign_out(s, action)
+        {
+            // The warning is a modal of the server screen.
+            return self.activate(sid.clone());
+        }
+        match action {
+            e2e::SignOut::Logout { everywhere } => self.logout(sid, everywhere),
+            e2e::SignOut::RemoveServer => self.remove_server(sid),
+        }
     }
 
     /// A room component asked for the account E2E flow.

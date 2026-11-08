@@ -40,10 +40,22 @@ pub fn settings(ws: &Workspace) -> E2eSettings {
     E2eSettings::from_settings(ws.settings())
 }
 
+/// Whether the server's E2E settings are known (`settings.public` may have
+/// failed during the load; until they are, encrypted rooms fail closed).
+pub fn settings_loaded(ws: &Workspace) -> bool {
+    E2eSettings::loaded(ws.settings())
+}
+
 /// The send mode of `rid`.
 pub fn mode(ws: &Workspace, rid: &str) -> Mode {
+    if !room_encrypted(ws, rid) {
+        return Mode::Plain;
+    }
+    if !settings_loaded(ws) {
+        return Mode::Blocked;
+    }
     let s = settings(ws);
-    if !s.enabled || !room_encrypted(ws, rid) {
+    if !s.enabled {
         return Mode::Plain;
     }
     if let Some(m) = ws.e2e().filter(|m| m.can_encrypt(rid)) {
@@ -60,7 +72,7 @@ pub fn mode(ws: &Workspace, rid: &str) -> Mode {
 /// `isSlashCommandAllowed`).
 pub fn slash_commands_blocked(ws: &Workspace, rid: &str) -> bool {
     let s = settings(ws);
-    s.enabled && room_encrypted(ws, rid) && !s.allow_unencrypted
+    room_encrypted(ws, rid) && (!settings_loaded(ws) || (s.enabled && !s.allow_unencrypted))
 }
 
 /// Why sending is refused, for a toast.
@@ -127,16 +139,10 @@ pub fn prepare_edit(
 ) -> Option<Result<OutgoingEncrypted, String>> {
     let encrypted = original.t.as_deref() == Some("e2e") || original.content.is_some();
     if !encrypted {
-        // A plaintext message in an encrypted room is edited like a new
-        // message is sent there (web: `onClientBeforeSendMessage`).
-        return match mode(ws, rid) {
-            Mode::Plain | Mode::Unencrypted => None,
-            Mode::Blocked => Some(Err(blocked_text())),
-            Mode::Encrypt(mgr) => Some(
-                mgr.encrypt_edit(rid, text, None)
-                    .map_err(|e| super::error_text(&e)),
-            ),
-        };
+        // A plaintext message cannot become encrypted (the server refuses
+        // `content` unless the message is `t: 'e2e'`); a plaintext edit goes
+        // out only where unencrypted messages may (§7.6).
+        return plain_edit_refusal(ws, rid).map(Err);
     }
     if let Err(e) = super::room::check_edit(ws, original) {
         return Some(Err(e));
@@ -149,6 +155,17 @@ pub fn prepare_edit(
         Mode::Encrypt(mgr) => encrypt_edit(&mgr, original, text),
         _ => Err(t!("e2e.edit_unavailable").into_owned()),
     })
+}
+
+/// Why a plaintext message of `rid` cannot be edited (with plaintext), if it
+/// cannot: the room must stay encrypted, or its state is unknown.
+pub fn plain_edit_refusal(ws: &Workspace, rid: &str) -> Option<String> {
+    match mode(ws, rid) {
+        Mode::Plain | Mode::Unencrypted => None,
+        Mode::Blocked => Some(blocked_text()),
+        Mode::Encrypt(_) if settings(ws).allow_unencrypted => None,
+        Mode::Encrypt(_) => Some(t!("e2e.edit_plaintext_refused").into_owned()),
+    }
 }
 
 /// Sends an edit: `chat.update` with `content` when encrypted.
@@ -377,6 +394,104 @@ mod tests {
             upload_mode(&ws(false, false, false), "g"),
             UploadMode::Plain
         ));
+    }
+
+    /// `settings.public` failed during the load: no E2E settings at all.
+    fn ws_without_settings() -> Workspace {
+        let mut w = Workspace::new();
+        for (id, encrypted) in [("g", true), ("p", false)] {
+            w.apply_room(
+                Change::Inserted,
+                Room {
+                    id: id.into(),
+                    t: RoomType::Private,
+                    encrypted: Some(encrypted),
+                    ..Default::default()
+                },
+            );
+            w.apply_subscription(
+                Change::Inserted,
+                Subscription {
+                    rid: id.into(),
+                    t: RoomType::Private,
+                    ..Default::default()
+                },
+            );
+        }
+        w
+    }
+
+    #[test]
+    fn unknown_settings_fail_closed_in_encrypted_rooms() {
+        let w = ws_without_settings();
+        assert!(!settings_loaded(&w));
+        let text = |rid: &str| Message {
+            id: format!("m-{rid}"),
+            rid: rid.into(),
+            msg: "secret".into(),
+            ..Default::default()
+        };
+        // Text, slash commands, uploads and edits never go out in plaintext.
+        assert!(matches!(mode(&w, "g"), Mode::Blocked));
+        assert!(matches!(prepare_send(&w, &text("g")), Some(Err(_))));
+        assert!(slash_commands_blocked(&w, "g"));
+        assert!(matches!(upload_mode(&w, "g"), UploadMode::Refused(_)));
+        assert!(matches!(
+            prepare_edit(&w, "g", &text("g"), "edited"),
+            Some(Err(_))
+        ));
+        assert!(super::super::room::check_edit(&w, &text("g")).is_err());
+        assert!(super::super::room::composer_block::<()>(&w, "g").is_some());
+        // Rooms that are not encrypted are not affected.
+        assert!(matches!(mode(&w, "p"), Mode::Plain));
+        assert!(prepare_send(&w, &text("p")).is_none());
+        assert!(!slash_commands_blocked(&w, "p"));
+        assert!(matches!(upload_mode(&w, "p"), UploadMode::Plain));
+        assert!(prepare_edit(&w, "p", &text("p"), "edited").is_none());
+        // Once the settings arrive (E2E off), the encrypted room is writable.
+        let mut w = w;
+        w.apply_setting(
+            Change::Updated,
+            Setting {
+                id: "E2E_Enable".into(),
+                value: serde_json::json!(false),
+                ..Default::default()
+            },
+        );
+        assert!(settings_loaded(&w));
+        assert!(matches!(mode(&w, "g"), Mode::Plain));
+    }
+
+    #[tokio::test]
+    async fn plaintext_messages_are_not_edited_into_encrypted_ones() {
+        use crate::room::timeline::Act;
+        let (mgr, _, _) = super::super::shown::tests::ready_manager_with_key("g").await;
+        let plain = Message {
+            id: "p".into(),
+            rid: "g".into(),
+            msg: "sent before encryption".into(),
+            ..Default::default()
+        };
+        // Unencrypted messages not allowed: refused before the composer
+        // drops the edit, and the action is not offered.
+        let mut w = ws(true, false, true);
+        w.set_e2e(Some(mgr.clone()));
+        assert!(matches!(mode(&w, "g"), Mode::Encrypt(_)));
+        assert_eq!(
+            prepare_edit(&w, "g", &plain, "x").and_then(Result::err),
+            Some(t!("e2e.edit_plaintext_refused").into_owned())
+        );
+        assert!(super::super::room::check_edit(&w, &plain).is_err());
+        let mut acts = vec![Act::Edit, Act::CopyText];
+        super::super::room::filter_actions(&w, &plain, &mut acts);
+        assert!(!acts.contains(&Act::Edit));
+        assert!(acts.contains(&Act::CopyText));
+        // Allowed: a plaintext message stays plaintext (`chat.update {text}`).
+        let mut w = ws(true, true, true);
+        w.set_e2e(Some(mgr));
+        assert!(matches!(mode(&w, "g"), Mode::Encrypt(_)));
+        assert!(prepare_edit(&w, "g", &plain, "x").is_none());
+        assert!(super::super::room::check_edit(&w, &plain).is_ok());
     }
 
     #[test]

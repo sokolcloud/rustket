@@ -6,7 +6,12 @@
 //! v1 ciphertext in `msg` is moved there), and `Message::e2e` gets a marker.
 //! Markers carry a per-process nonce (`rustket_core::e2e::shown::stored`), so
 //! a marker the server stored is never believed; what was processed is also
-//! recorded per `(rid, _id)` with `_updatedAt`, so an edit is decrypted again.
+//! recorded per `(rid, _id)` with `_updatedAt` (the last few versions: copies
+//! of one message in the timeline, the room's last message and the panels can
+//! hold different versions), so an edit is decrypted again.
+//! Server-side plaintext stored next to the envelope (`blocks`, `urls`,
+//! attachments the payload does not have) is never shown as part of the
+//! decrypted message; the message gets the plaintext note instead (§4).
 //! Messages that could not be decrypted yet are tried again when keys change
 //! ([`keys_changed`]).
 
@@ -37,12 +42,18 @@ struct Seen {
     done: bool,
 }
 
-fn seen() -> &'static Mutex<HashMap<(String, String), Seen>> {
-    static S: OnceLock<Mutex<HashMap<(String, String), Seen>>> = OnceLock::new();
+/// Processed versions of one message (newest last).
+type Versions = Vec<Seen>;
+
+/// Versions remembered per message.
+const MAX_VERSIONS: usize = 4;
+
+fn seen() -> &'static Mutex<HashMap<(String, String), Versions>> {
+    static S: OnceLock<Mutex<HashMap<(String, String), Versions>>> = OnceLock::new();
     S.get_or_init(Default::default)
 }
 
-fn seen_lock() -> std::sync::MutexGuard<'static, HashMap<(String, String), Seen>> {
+fn seen_lock() -> std::sync::MutexGuard<'static, HashMap<(String, String), Versions>> {
     seen()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -60,7 +71,7 @@ pub fn keys_changed() {
 /// File keys were dropped from the registry: decrypted messages are
 /// processed again so their attachments are registered again.
 pub fn forget_files() {
-    for s in seen_lock().values_mut() {
+    for s in seen_lock().values_mut().flatten() {
         s.done = false;
     }
     keys_changed();
@@ -81,10 +92,21 @@ fn updated_ms(m: &Message) -> Option<i64> {
 /// nonce the server cannot know) for this version (when it is recorded).
 pub fn verified_marker(m: &Message) -> Option<&'static str> {
     let marker = mark::marker(m)?;
+    let updated = updated_ms(m);
     match seen_lock().get(&(m.rid.clone(), m.id.clone())) {
-        Some(s) if s.updated != updated_ms(m) => None,
+        Some(v) if !v.iter().any(|s| s.updated == updated) => None,
         _ => Some(marker),
     }
+}
+
+/// The record of this version of `m` whose marker `m` carries.
+fn prior_record(m: &Message, updated: Option<i64>) -> Option<Seen> {
+    let marker = mark::marker(m)?;
+    seen_lock()
+        .get(&(m.rid.clone(), m.id.clone()))?
+        .iter()
+        .find(|s| s.updated == updated && s.marker == marker)
+        .copied()
 }
 
 /// Whether `m` is shown decrypted (verified).
@@ -189,38 +211,55 @@ fn record(m: &Message, seen: Seen) {
     if table.len() >= MAX_SEEN {
         table.clear();
     }
-    let key = (m.rid.clone(), m.id.clone());
-    // Another copy of this version (a panel list, the thread view) is shown
-    // decrypted: keep that record, so its plaintext is never mistaken for a
-    // server message. Copies that are not decrypted hold no plaintext.
-    if let Some(old) = table.get(&key)
-        && old.updated == seen.updated
-        && is_decrypted_marker(old.marker)
-        && !is_decrypted_marker(seen.marker)
-    {
-        return;
+    let versions = table.entry((m.rid.clone(), m.id.clone())).or_default();
+    match versions.iter_mut().find(|s| s.updated == seen.updated) {
+        // Another copy of this version (a panel list, the thread view) is
+        // shown decrypted: keep that record, so its plaintext is never
+        // mistaken for a server message. Copies that are not decrypted hold
+        // no plaintext.
+        Some(old) if is_decrypted_marker(old.marker) && !is_decrypted_marker(seen.marker) => {}
+        Some(old) => *old = seen,
+        None => {
+            if versions.len() >= MAX_VERSIONS {
+                versions.remove(0);
+            }
+            versions.push(seen);
+        }
     }
-    table.insert(key, seen);
+}
+
+fn is_removed_file(a: &MessageAttachment) -> bool {
+    a.kind.as_deref() == Some("removed-file")
+}
+
+/// Drops server-side plaintext the client never shows on an `e2e` message
+/// (UIKit blocks, URL previews); `true` if there was any.
+fn drop_server_extras(m: &mut Message) -> bool {
+    let blocks = m
+        .blocks
+        .take()
+        .is_some_and(|b| !(b.is_null() || b.as_array().is_some_and(Vec::is_empty)));
+    let urls = m.urls.take().is_some_and(|u| !u.is_empty());
+    blocks || urls
 }
 
 fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
     let epoch = EPOCH.load(Ordering::SeqCst);
     let updated = updated_ms(m);
-    let prior = seen_lock()
-        .get(&(m.rid.clone(), m.id.clone()))
-        .copied()
-        .filter(|s| s.updated == updated && Some(s.marker) == mark::marker(m))
-        .or_else(|| {
-            // Processed by this process, but the record is gone.
-            mark::marker(m).map(|marker| Seen {
-                updated,
-                marker,
-                plain: marker == mark::DECRYPTED_PLAINTEXT,
-                epoch: 0,
-                done: false,
-            })
-        });
-    let (result, plain) = match prior {
+    let prior = prior_record(m, updated).or_else(|| {
+        // Processed by this process, but the record is gone.
+        mark::marker(m).map(|marker| Seen {
+            updated,
+            marker,
+            plain: marker == mark::DECRYPTED_PLAINTEXT,
+            epoch: 0,
+            done: false,
+        })
+    });
+    // The attachments are still the server's (not yet replaced by a
+    // decrypted payload and local quotes in an earlier pass).
+    let server_attachments = prior.is_none_or(|s| !is_decrypted_marker(s.marker));
+    let (result, mut plain) = match prior {
         Some(s) if s.done || s.epoch == epoch => return false,
         Some(s) => {
             let r = match &env.mgr {
@@ -237,6 +276,7 @@ fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
                 .and_then(|c| c.get("ciphertext"))
                 .and_then(Value::as_str);
             let plain = m.content.is_some() && !m.msg.is_empty() && ciphertext != Some(&m.msg);
+            let extras = drop_server_extras(m);
             m.e2e = None;
             m.md = None;
             let r = match &env.mgr {
@@ -250,7 +290,7 @@ fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
                     "ciphertext": m.msg,
                 }));
             }
-            (r, plain)
+            (r, plain || extras)
         }
     };
     let mut done = false;
@@ -266,6 +306,19 @@ fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
                     files::mark_attachment(a, env.server, &m.rid, &m.id, i);
                 }
                 m.attachments = Some(atts);
+            } else if server_attachments && let Some(server) = m.attachments.take() {
+                // Attachments only the server has: plaintext anyone with
+                // database access could add. With an envelope only the
+                // `removed-file` placeholders stay; without one (§11.13) the
+                // server's attachment is all there is, shown with the note.
+                let unencrypted = server.iter().any(|a| !is_removed_file(a));
+                if m.content.is_some() {
+                    let kept: Vec<_> = server.into_iter().filter(is_removed_file).collect();
+                    m.attachments = (!kept.is_empty()).then_some(kept);
+                } else {
+                    m.attachments = Some(server);
+                }
+                plain |= unencrypted;
             }
             if let Some(f) = &p.files {
                 m.files = Some(f.clone());
@@ -322,10 +375,7 @@ fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
 fn process_pinned(m: &mut Message, env: &Env<'_>) -> bool {
     let epoch = EPOCH.load(Ordering::SeqCst);
     let updated = updated_ms(m);
-    let prior = seen_lock()
-        .get(&(m.rid.clone(), m.id.clone()))
-        .copied()
-        .filter(|s| s.updated == updated && Some(s.marker) == mark::marker(m));
+    let prior = prior_record(m, updated);
     if prior.is_some_and(|s| s.done || s.epoch == epoch) {
         return false;
     }
@@ -624,23 +674,81 @@ pub(crate) mod tests {
     pub(crate) async fn manager_with_key(
         rid: &str,
     ) -> (E2eManager, rocketchat::e2e::RoomKey, ServerUrl) {
-        use rocketchat::e2e::{RoomKey, UserPublicKey};
-        use rocketchat::models::{Room, RoomType, Subscription};
-        use rustket_core::secrets::SecretStore;
+        let server = ServerUrl::parse("http://127.0.0.1:9").unwrap();
+        manager_on(rid, server, Default::default()).await
+    }
+
+    /// My key pair of the fixtures (public JWK, private JWK, key backup).
+    pub(crate) fn my_keys() -> (String, String, String) {
         let path = format!(
             "{}/../rocketchat/tests/fixtures/e2e/keychain_pwdv2web.json",
             env!("CARGO_MANIFEST_DIR")
         );
         let kc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let s = |k: &str| kc[k].as_str().unwrap().to_owned();
+        (s("public_key"), s("private_key"), s("persisted"))
+    }
+
+    /// A local HTTP server answering every request with `body` (JSON).
+    pub(crate) async fn stub_server(body: String) -> ServerUrl {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        ServerUrl::parse(&format!("http://127.0.0.1:{port}")).unwrap()
+    }
+
+    /// A ready manager (E2E on, keys on a stub server) holding a room key
+    /// for `rid`.
+    pub(crate) async fn ready_manager_with_key(
+        rid: &str,
+    ) -> (E2eManager, rocketchat::e2e::RoomKey, ServerUrl) {
+        let (public, _, backup) = my_keys();
+        let body =
+            serde_json::json!({"public_key": public, "private_key": backup, "success": true});
+        let server = stub_server(body.to_string()).await;
+        let settings = rustket_core::e2e::E2eSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let (mgr, key, server) = manager_on(rid, server, settings).await;
+        assert!(mgr.account_state().is_ready());
+        (mgr, key, server)
+    }
+
+    async fn manager_on(
+        rid: &str,
+        server: ServerUrl,
+        settings: rustket_core::e2e::E2eSettings,
+    ) -> (E2eManager, rocketchat::e2e::RoomKey, ServerUrl) {
+        use rocketchat::e2e::{RoomKey, UserPublicKey};
+        use rocketchat::models::{Room, RoomType, Subscription};
+        use rustket_core::secrets::SecretStore;
+        let (public, private, _) = my_keys();
         let sid = rustket_core::ServerId("s-shown".into());
         let store = std::sync::Arc::new(rustket_core::secrets::MemoryStore::new());
         store
-            .set(
-                &rustket_core::e2e::private_key_secret(&sid, "me"),
-                kc["private_key"].as_str().unwrap(),
-            )
+            .set(&rustket_core::e2e::private_key_secret(&sid, "me"), &private)
             .unwrap();
-        let server = ServerUrl::parse("http://127.0.0.1:9").unwrap();
         let tls = crate::session::tls_for(&[]).unwrap();
         let rest = rocketchat::RestClient::new(server.clone(), &tls).unwrap();
         let mgr = E2eManager::new(
@@ -648,12 +756,15 @@ pub(crate) mod tests {
             store,
             &sid,
             "me",
-            Default::default(),
-            Default::default(),
+            settings,
+            rustket_core::e2e::E2eConfig {
+                auto_distribution: false,
+                ..Default::default()
+            },
         );
         mgr.start().await.unwrap();
         let key = RoomKey::generate();
-        let public = UserPublicKey::from_jwk_str(kc["public_key"].as_str().unwrap()).unwrap();
+        let public = UserPublicKey::from_jwk_str(&public).unwrap();
         mgr.update_room(&Room {
             id: rid.into(),
             t: RoomType::Private,
@@ -792,6 +903,109 @@ pub(crate) mod tests {
                 .any(|a| a.text.as_deref() == Some("plain quoted"))
         );
         assert!(quotes.wants.borrow().is_empty());
+        // Locally added quotes are not server plaintext.
+        assert_eq!(state(&m), Some(State::Decrypted { plaintext: false }));
+    }
+
+    #[tokio::test]
+    async fn copies_with_different_versions_stay_decrypted() {
+        let (mgr, key, server) = manager_with_key("r-ver").await;
+        let mut ws = Workspace::new();
+        ws.set_e2e(Some(mgr));
+        let env = Env::new(&ws, &server, &NoQuotes);
+        let content = key
+            .encrypt_json(&serde_json::json!({"msg": "secret text"}))
+            .unwrap()
+            .to_json();
+        let raw = serde_json::json!({"t": "e2e", "content": content});
+        // The room's last message (older version) and the timeline copy (a
+        // reaction bumped `_updatedAt`).
+        let mut last = msg("v1", raw.clone());
+        last.rid = "r-ver".into();
+        let mut timeline = last.clone();
+        timeline.updated_at = rocketchat::RcDate::from_millis(2_000);
+        for _ in 0..2 {
+            process(&mut timeline, &env);
+            process(&mut last, &env);
+            assert_eq!(timeline.msg, "secret text");
+            assert_eq!(
+                state(&timeline),
+                Some(State::Decrypted { plaintext: false })
+            );
+            assert_eq!(state(&last), Some(State::Decrypted { plaintext: false }));
+            assert!(is_decrypted(&timeline) && is_decrypted(&last));
+            keys_changed();
+        }
+        // A version never processed here is not believed.
+        let mut forged = timeline.clone();
+        forged.updated_at = rocketchat::RcDate::from_millis(3_000);
+        assert_eq!(state(&forged), Some(State::Raw));
+    }
+
+    #[tokio::test]
+    async fn server_plaintext_next_to_the_envelope_is_not_shown() {
+        let (mgr, key, server) = manager_with_key("r-extra").await;
+        let mut ws = Workspace::new();
+        ws.set_e2e(Some(mgr));
+        let env = Env::new(&ws, &server, &NoQuotes);
+        let enc = |v: Value| key.encrypt_json(&v).unwrap().to_json();
+        let mk = |id: &str, v: Value| {
+            let mut m = msg(id, v);
+            m.rid = "r-extra".into();
+            m
+        };
+        // A forged attachment, UIKit block and URL preview next to a text.
+        let mut m = mk(
+            "x1",
+            serde_json::json!({"t": "e2e", "content": enc(serde_json::json!({"msg": "hello"})),
+                "attachments": [{"text": "Transfer the money to X"}],
+                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "spoofed"}}],
+                "urls": [{"url": "https://evil.example/"}]}),
+        );
+        process(&mut m, &env);
+        assert_eq!(m.msg, "hello");
+        assert!(m.attachments.is_none());
+        assert!(m.blocks.is_none());
+        assert!(m.urls.is_none());
+        assert_eq!(state(&m), Some(State::Decrypted { plaintext: true }));
+        // Processed again (new keys): still flagged, nothing comes back.
+        keys_changed();
+        process(&mut m, &env);
+        assert!(m.attachments.is_none() && m.blocks.is_none());
+        assert_eq!(state(&m), Some(State::Decrypted { plaintext: true }));
+
+        // A deleted file's placeholder stays.
+        let mut r = mk(
+            "x2",
+            serde_json::json!({"t": "e2e", "content": enc(serde_json::json!({"msg": "a file"})),
+                "attachments": [{"type": "removed-file", "title": "File removed"}]}),
+        );
+        process(&mut r, &env);
+        assert_eq!(r.attachments.as_ref().map(Vec::len), Some(1));
+        assert_eq!(state(&r), Some(State::Decrypted { plaintext: false }));
+
+        // Payload attachments replace the server's (encrypted upload).
+        let mut u = mk(
+            "x3",
+            serde_json::json!({"t": "e2e",
+                "content": enc(serde_json::json!({"msg": "", "attachments": [{"title": "real.png"}]})),
+                "attachments": [{"title": "0a1b2c", "type": "file"}]}),
+        );
+        process(&mut u, &env);
+        let atts = u.attachments.as_ref().unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].title.as_deref(), Some("real.png"));
+        assert_eq!(state(&u), Some(State::Decrypted { plaintext: false }));
+
+        // No envelope at all (§11.13): the server attachment is all there
+        // is; shown, but marked.
+        let mut c = mk(
+            "x4",
+            serde_json::json!({"t": "e2e", "msg": "", "attachments": [{"title": "0a1b2c", "type": "file"}]}),
+        );
+        process(&mut c, &env);
+        assert_eq!(c.attachments.as_ref().map(Vec::len), Some(1));
+        assert_eq!(state(&c), Some(State::Decrypted { plaintext: true }));
     }
 
     #[test]

@@ -12,8 +12,8 @@ use rustket_ui::theme::{
     FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, banner as info_banner, dialog, ghost_button, primary_button, secondary_button,
-    status_strip, text_field,
+    BannerKind, banner as info_banner, danger_button, dialog, ghost_button, primary_button,
+    secondary_button, status_strip, text_field,
 };
 
 use super::shown::{self, State};
@@ -34,6 +34,10 @@ pub enum BannerState {
 
 pub fn banner_state(s: &ServerState) -> Option<BannerState> {
     let mgr = s.e2e.manager()?;
+    // Settings not loaded yet: `enabled` is a guess, say nothing.
+    if !outgoing::settings_loaded(&s.workspace) {
+        return None;
+    }
     let enabled = outgoing::settings(&s.workspace).enabled;
     match mgr.account_state() {
         AccountE2eState::EnterPassword { .. } if enabled && !s.e2e.banner_hidden => {
@@ -93,7 +97,51 @@ pub fn modal(s: &ServerState) -> Option<Element<'_, Message>> {
         Modal::SavePassword { passphrase, busy } => {
             Some(save_password(passphrase, *busy, insecure))
         }
+        Modal::SignOutWarning { passphrase, action } => Some(sign_out_warning(passphrase, *action)),
     }
+}
+
+fn passphrase_box(passphrase: &str) -> Element<'_, Message> {
+    container(
+        row![
+            text(passphrase.to_owned())
+                .font(Font::MONOSPACE)
+                .size(TEXT_BODY)
+                .width(Length::Fill),
+            ghost_button(t!("e2e.copy"), Some(Message::CopyPassphrase)).icon(Icon::Copy),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center),
+    )
+    .padding(SPACE_3)
+    .width(Length::Fill)
+    .style(style::container_code_block)
+    .into()
+}
+
+/// Signing out would delete the generated passphrase the user never saved.
+fn sign_out_warning(passphrase: &str, action: super::SignOut) -> Element<'_, Message> {
+    let confirm = match action {
+        super::SignOut::Logout { .. } => t!("e2e.sign_out_anyway"),
+        super::SignOut::RemoveServer => t!("e2e.remove_anyway"),
+    };
+    let body = column![
+        text(t!("e2e.sign_out_warning_body")).size(TEXT_BODY),
+        passphrase_box(passphrase),
+        text(t!("e2e.sign_out_warning_hint"))
+            .size(TEXT_CAPTION)
+            .style(style::text_secondary),
+    ]
+    .spacing(SPACE_3);
+    dialog(
+        t!("e2e.sign_out_warning_title"),
+        body,
+        vec![
+            secondary_button(t!("e2e.cancel"), Some(Message::CloseModal)).into(),
+            danger_button(confirm, Some(Message::ConfirmSignOut)).into(),
+        ],
+        Some(Message::CloseModal),
+    )
 }
 
 fn enter_password<'a>(
@@ -141,20 +189,7 @@ fn enter_password<'a>(
 }
 
 fn save_password(passphrase: &str, busy: bool, insecure: bool) -> Element<'_, Message> {
-    let code = container(
-        row![
-            text(passphrase.to_owned())
-                .font(Font::MONOSPACE)
-                .size(TEXT_BODY)
-                .width(Length::Fill),
-            ghost_button(t!("e2e.copy"), Some(Message::CopyPassphrase)).icon(Icon::Copy),
-        ]
-        .spacing(SPACE_2)
-        .align_y(Alignment::Center),
-    )
-    .padding(SPACE_3)
-    .width(Length::Fill)
-    .style(style::container_code_block);
+    let code = passphrase_box(passphrase);
     let mut body = column![
         text(t!("e2e.save_password_body")).size(TEXT_BODY),
         text(t!("e2e.save_password_once"))

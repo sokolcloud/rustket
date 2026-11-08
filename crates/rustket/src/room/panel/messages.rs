@@ -77,6 +77,12 @@ impl Messages {
         }
     }
 
+    /// Workspace changes (keys may have arrived): encrypted results that were
+    /// not decrypted yet are tried again (processed ones are skipped).
+    pub fn on_changes(&mut self, ctx: &UpdateCtx<'_>) {
+        crate::e2e::shown::process_list(ctx.workspace, ctx.server, &mut self.list.items);
+    }
+
     /// The image lightbox, if open, and the message that closes it.
     pub fn overlay<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<(Element<'a, Msg>, Msg)> {
         self.viewer

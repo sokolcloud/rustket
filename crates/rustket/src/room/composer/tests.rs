@@ -565,6 +565,26 @@ fn mention_and_insert_intents() {
 }
 
 #[test]
+fn encrypted_room_without_e2e_settings_sends_nothing() {
+    // `settings.public` failed during the load: E2E state unknown.
+    let mut env = Env::new("t-e2e-unknown");
+    let mut r = room("R1", "general", RoomType::Private);
+    r.encrypted = Some(true);
+    env.ws.apply_room(rustket_core::Change::Updated, r);
+    env.ws.apply_message(msg("M1", "me", "plain before"));
+    let mut c = Composer::new("R1");
+    type_text(&mut c, &mut env, "secret");
+    let a = c.update(Message::Send, &mut env.ctx());
+    assert_eq!(c.text(), "secret", "the text stays");
+    assert!(env.ws.pending_messages("R1").is_empty());
+    assert_eq!(a.effects.len(), 1);
+    // Edits are refused before they start.
+    let a = c.intent(ComposeIntent::Edit("M1".into()), &mut env.ctx());
+    assert!(!c.is_editing());
+    assert_eq!(a.effects.len(), 1);
+}
+
+#[test]
 fn edit_intent_and_up_edit_the_last_own_message() {
     let mut env = Env::new("t-edit");
     env.ws.apply_message(msg("M1", "me", "first"));

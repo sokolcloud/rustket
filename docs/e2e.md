@@ -693,8 +693,15 @@ Rustket mapping:
 
 - Persist the **decrypted private JWK** and the **pending generated passphrase** in the secret store
   (`rustket-core::secrets`, new keys `rustket-e2e:<server_id>:<user_id>:private_key` and
-  `…:pending_passphrase`); never in config or the cache DB. Delete both on explicit logout and on
-  `force_logout`/user key reset. The public key can be cached unencrypted.
+  `…:pending_passphrase`); never in config or the cache DB. Delete both on explicit logout and
+  server removal, but first warn (and show the passphrase again) while one is still unsaved. A
+  `force_logout` (only when it names this DDP session or no session) deletes the cached key and
+  keeps an unsaved passphrase: the next start unlocks the key backup with it and shows it again.
+  A secret store read error is never treated as "no cached key" (nothing is deleted; the start
+  fails and is retried with backoff, as is a failed `e2e.fetchMyKeys`). The public key can be
+  cached unencrypted.
+- Until `E2E_Enable` is known (`settings.public` failed), encrypted rooms are blocked (text,
+  uploads, edits, slash commands); the E2E settings are fetched again with backoff.
 - Always reconcile with `e2e.fetchMyKeys`: if the server's `public_key` differs from the cached one
   (keys were reset on another device), drop the cached private key and go to `ENTER_PASSWORD`
   (or key creation if the server has none). The web does not do this (it trusts local storage).
@@ -874,7 +881,11 @@ the previous key under its old kid to the room's old keys immediately (the serve
   attachment re-encrypts those quote attachments and readers then get them twice (decrypted + rebuilt).
   Rustket: re-encrypt `{msg, attachments, files, file}` taken from the original *decrypted content*
   (never locally derived quote attachments), never fall back to `text`, and tolerate duplicate quote
-  attachments when reading.
+  attachments when reading. A plaintext message (sent before encryption was turned on) cannot be
+  edited into an encrypted one (`chat.update {content}` → "Only encrypted messages can have content
+  updated." [live]; the 8.9 web hits this): Rustket edits it with `text` only when
+  `E2E_Allow_Unencrypted_Messages` is on, otherwise it hides Edit and refuses before the edit text
+  is dropped.
 - If the room is encrypted but not `READY`, the web sends plaintext (server rejects unless
   unencrypted messages are allowed; the composer shows `E2EE_Composer_Unencrypted_Message` when
   they are allowed, `RC:apps/meteor/client/views/room/composer/messageBox/MessageBoxHint.tsx`).
@@ -925,6 +936,9 @@ Rustket deviations (hardening):
   be re-decrypted when a key arrives later and edits invalidate the cache.
 - Ignore the server's `e2e` field; decide by `t == 'e2e'` and content presence.
 - Parse markdown from the decrypted `msg` client-side; ignore any server `md` on e2e messages (§4).
+  Likewise ignore server `blocks` and `urls`, and keep server `attachments` only when the payload
+  has none and only `removed-file` placeholders of them (a content-less message, §11.13, keeps its
+  attachment); anything dropped marks the message as also carrying unencrypted content.
 - Treat decrypted attachment URLs (`title_link`, `image_url`, …) as server-relative paths only;
   refuse absolute URLs to other origins (the plaintext is controlled by any room member).
 

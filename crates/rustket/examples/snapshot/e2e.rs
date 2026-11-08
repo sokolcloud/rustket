@@ -231,6 +231,29 @@ async fn shots(
     };
     assert_eq!(passphrase.split(' ').count(), 12, "12-word passphrase");
     both(d, out, "e2-save-modal");
+    // Signing out now would delete the only copy of the passphrase: the app
+    // shows it again and signs out only when confirmed.
+    d.send(e2e_msg(d, sid, e2e::Message::CloseModal));
+    d.send(Message::StatusMenu(
+        sid.clone(),
+        rustket::workspace::status_menu::Message::Logout,
+    ));
+    assert!(
+        matches!(
+            d.app.servers[sid].e2e.modal,
+            Some(Modal::SignOutWarning { .. })
+        ),
+        "sign-out warning expected"
+    );
+    assert!(d.app.servers[sid].credentials.is_some(), "still signed in");
+    d.settle(Duration::from_millis(300)).await;
+    both(d, out, "e2b-sign-out-warning");
+    d.send(e2e_msg(d, sid, e2e::Message::CloseModal));
+    assert!(
+        d.app.servers[sid].credentials.is_some(),
+        "cancel keeps the session"
+    );
+    d.send(e2e_msg(d, sid, e2e::Message::OpenModal));
     d.send(e2e_msg(d, sid, e2e::Message::ConfirmSaved));
     let s2 = sid.clone();
     d.pump_until("ready", Duration::from_secs(30), move |a| {
@@ -473,6 +496,36 @@ async fn shots(
     );
     d.settle(Duration::from_secs(1)).await;
     both(d, out, "e3-encrypted-room");
+    // `settings.public` failed (simulated): E2E state unknown, the room is
+    // closed for sending until the settings are back.
+    let e2e_enable = |value: Option<bool>| rocketchat::models::Setting {
+        id: "E2E_Enable".into(),
+        value: value.map_or(Value::Null, Value::Bool),
+        ..Default::default()
+    };
+    if let Some(s) = d.app.servers.get_mut(sid) {
+        s.workspace
+            .apply_setting(rustket_core::Change::Removed, e2e_enable(None));
+    }
+    assert!(matches!(
+        rustket::e2e::outgoing::mode(&d.app.servers[sid].workspace, &rid),
+        rustket::e2e::outgoing::Mode::Blocked
+    ));
+    d.settle(Duration::from_millis(300)).await;
+    both(d, out, "e3b-settings-unknown");
+    if let Some(s) = d.app.servers.get_mut(sid) {
+        s.workspace
+            .apply_setting(rustket_core::Change::Updated, e2e_enable(Some(true)));
+    }
+    let s2 = sid.clone();
+    let r2 = rid.clone();
+    d.pump_until("encrypting again", Duration::from_secs(60), move |a| {
+        matches!(
+            rustket::e2e::outgoing::mode(&a.servers[&s2].workspace, &r2),
+            rustket::e2e::outgoing::Mode::Encrypt(_)
+        )
+    })
+    .await;
     d.send(room_msg(
         d,
         sid,

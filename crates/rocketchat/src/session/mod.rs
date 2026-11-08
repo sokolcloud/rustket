@@ -788,6 +788,15 @@ impl Session {
         self.ddp.watch_state()
     }
 
+    /// The server's id of the live DDP connection (the `session` of the
+    /// `connected` frame; `force_logout` and `Sessions` records use it).
+    pub fn ddp_session_id(&self) -> Option<String> {
+        match self.ddp.state() {
+            meteor_ddp::ConnectionState::Connected { session } => Some(session),
+            _ => None,
+        }
+    }
+
     /// Drops the current connection (or skips the backoff delay) and reconnects.
     pub fn reconnect_now(&self) {
         if !self.core.is_terminated() {
