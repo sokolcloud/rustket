@@ -19,8 +19,11 @@ sudo apt install ./rustket_0.1.0-1_amd64.deb
 The package installs `/usr/bin/rustket`, the desktop entry
 `/usr/share/applications/rustket.desktop` (it handles `rocketchat://` links), icons
 under `/usr/share/icons/hicolor/` and AppStream metadata. The binary links only
-glibc; X11/Wayland, xkbcommon and Vulkan/EGL are loaded at runtime and pulled in
-as dependencies/recommendations.
+glibc and libgcc_s; X11 (also used through XWayland), xkbcommon, Wayland,
+Vulkan/EGL and D-Bus are loaded at runtime and pulled in as
+dependencies/recommendations. File dialogs need an XDG desktop portal or
+`zenity`; notification sounds need `pw-play`, `paplay` or `canberra-gtk-play`.
+Third-party licenses: `/usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz`.
 
 ### AppImage
 
@@ -31,7 +34,12 @@ chmod +x Rustket-x86_64.AppImage
 
 To make `rocketchat://` links open the AppImage, use the "Open rocketchat:// links
 with Rustket" action in the app (it registers the AppImage file itself, so keep
-it at a stable path).
+it at a stable path). Third-party licenses are in
+`usr/share/doc/rustket/THIRD-PARTY-NOTICES` inside the image.
+
+The AppImage uses the glibc of the system it runs on and needs at least the
+version it was built against (2.38 for a build on Ubuntu 24.04 or newer); build
+it on the oldest distribution you want to support.
 
 ### Build from source
 
@@ -52,16 +60,23 @@ LINT=1 packaging/deb/build.sh  # ... and run lintian
 packaging/appimage/build.sh    # packaging/out/Rustket.AppDir, and the .AppImage
                                # when appimagetool is on PATH
 packaging/test.sh              # builds both and checks the package contents
+python3 -I packaging/notices.py >THIRD-PARTY-NOTICES   # license notices only
 ```
 
-`SKIP_BUILD=1` reuses an existing `target/dist/rustket`. cargo-deb users can run
-`cargo deb -p rustket --profile dist` instead (metadata in
-`crates/rustket/Cargo.toml`, kept in sync but not the maintained path).
+`SKIP_BUILD=1` reuses an existing `target/dist/rustket`. The scripts need
+`python3` for the third-party notices. cargo-deb users can run
+`python3 -I packaging/notices.py >packaging/out/THIRD-PARTY-NOTICES` and then
+`cargo deb -p rustket --profile dist --no-strip` instead (metadata in
+`crates/rustket/Cargo.toml`, kept in sync but not exercised; the scripts are
+the maintained path).
 
 To run a binary from the source tree without installing, register it as the
 `rocketchat://` handler from inside the app. When the packaged desktop file is
 installed and starts the same executable, the app makes `rustket.desktop` the
 default handler instead of writing its own `rustket-url-handler.desktop`.
+If an older registration still points at another executable (for example a
+source build registered before the package was installed), the app shows the
+register action again; using it switches to the packaged entry.
 
 ## Usage
 
@@ -69,15 +84,15 @@ default handler instead of writing its own `rustket-url-handler.desktop`.
 rustket [--help] [--version] [LINK...]
 ```
 
-Only one instance runs per user; links on the command line are forwarded to the
-running instance.
+Only one instance runs per user; `rocketchat://` and `https://go.rocket.chat/`
+links on the command line are forwarded to the running instance.
 
 ### Hardware acceleration
 
 Rendering uses the GPU (wgpu: Vulkan or OpenGL/EGL) by default. If the window is
 blank, flickers or the GPU driver misbehaves, turn off **Settings → Hardware
-acceleration** (the app restarts itself with the CPU renderer), or start it once
-with:
+acceleration** (it takes effect after a restart: the next start uses the CPU
+renderer), or start it once with:
 
 ```sh
 ICED_BACKEND=tiny-skia rustket
@@ -88,7 +103,8 @@ ICED_BACKEND=tiny-skia rustket
 | What | Where |
 |---|---|
 | Servers and preferences | `~/.config/rustket/config.toml` (`$XDG_CONFIG_HOME`) |
-| Caches (images, offline messages) | `~/.cache/rustket/` (`$XDG_CACHE_HOME`); safe to delete while the app is closed |
+| Downloaded images and media | `~/.cache/rustket/images/`, `~/.cache/rustket/media/` (`$XDG_CACHE_HOME`); safe to delete while the app is closed |
+| Decrypted E2E attachments opened in another app | `~/.cache/rustket/media/e2e/`, private to the user, removed after 24 hours |
 | Auth tokens | the desktop keyring (Secret Service: GNOME Keyring, KWallet, KeePassXC) |
 | Token fallback | `~/.local/share/rustket/secrets.json` (mode 0600), only when no keyring is available; the app warns about it |
 | Start on login | `~/.config/autostart/rustket.desktop` |
@@ -98,13 +114,18 @@ End-to-end encryption keys go through the same secret store as the tokens.
 
 ## Reporting crashes
 
-Run Rustket from a terminal with a backtrace and debug logs, then attach the
-output (it never contains passwords, tokens or message text at the default
-levels; check before posting anyway):
+Run Rustket from a terminal with a backtrace, then attach the output. At the
+default log level it never contains passwords, tokens or message text; check
+before posting anyway:
 
 ```sh
-RUST_BACKTRACE=1 RUST_LOG=debug rustket 2> rustket.log
+RUST_BACKTRACE=1 rustket 2> rustket.log
 ```
+
+If more detail is needed, use
+`RUST_LOG=info,rustket=debug,rustket_core=debug`. Debug logs can contain message
+contents, room names, user names and e-mail addresses (the DDP protocol frames),
+so review and redact them before posting them anywhere public.
 
 Include `rustket --version`, the distribution, the desktop session (X11 or
 Wayland) and whether hardware acceleration is on.

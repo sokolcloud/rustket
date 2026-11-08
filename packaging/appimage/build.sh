@@ -26,6 +26,8 @@ install -Dm644 "$LINUX/rustket.desktop" "$APPDIR/usr/share/applications/rustket.
 # appimagetool looks for <desktop id>.appdata.xml.
 install -Dm644 "$LINUX/rustket.metainfo.xml" "$APPDIR/usr/share/metainfo/rustket.appdata.xml"
 install_icons "$APPDIR/usr/share"
+install -Dm644 "$ROOT/packaging/deb/copyright" "$APPDIR/usr/share/doc/rustket/copyright"
+third_party_notices "$APPDIR/usr/share/doc/rustket/THIRD-PARTY-NOTICES"
 {
     cat "$LINUX/rustket.desktop"
     echo "X-AppImage-Version=$VERSION"

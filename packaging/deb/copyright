@@ -1,15 +1,46 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Rustket
 Upstream-Contact: Sergey Sokolov <sokol@xi-ix.org>
+Comment: /usr/bin/rustket is statically linked with about 480 Rust crates
+ (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0 and similar licenses) and embeds
+ the fonts, icons and data tables listed below. Their copyright notices and
+ complete license texts are in /usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz.
+ Only the Rustket sources themselves fall under the first stanza.
 
 Files: *
-Copyright: 2025-2026 Sergey Sokolov <sokol@xi-ix.org>
+Copyright: 2026 Sergey Sokolov <sokol@xi-ix.org>
 License: LicenseRef-Rustket
  All rights reserved. The project has not chosen a public license yet;
- redistribution requires the copyright holder's permission.
+ redistribution requires the copyright holder's permission. This does not
+ restrict the third-party components, which keep their own licenses.
+
+Files: crates/rustket-ui/assets/fonts/*
+Copyright: 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
+License: OFL-1.1
+ Noto Sans, embedded in /usr/bin/rustket. The full license text is in
+ /usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz.
+
+Files: lucide-icons/lucide.ttf
+Copyright: 2013-2022 Cole Bemis (Feather)
+ 2022 Lucide Contributors
+License: ISC and MIT
+ Lucide icon font, embedded in /usr/bin/rustket through the lucide-icons
+ crate. The full license texts are in
+ /usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz.
+
+Files: crates/rustket-core/data/emoji.tsv
+Copyright: 2017 Miles Johnson (emojibase-data)
+ 2015-2022 Rocket.Chat Technologies Corp.
+License: Expat
+ The full license text is in /usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz.
+
+Files: crates/rocketchat/src/e2e/bip39_english.txt
+Copyright: 2013 Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe
+License: BSD-2-Clause
+ The full license text is in /usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz.
 
 Files: usr/share/metainfo/rustket.metainfo.xml
-Copyright: 2025-2026 Sergey Sokolov <sokol@xi-ix.org>
+Copyright: 2026 Sergey Sokolov <sokol@xi-ix.org>
 License: CC0-1.0
  To the extent possible under law, the author has waived all copyright and
  related or neighboring rights to this metadata file.

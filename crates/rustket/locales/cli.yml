@@ -6,8 +6,8 @@ cli.about:
   en: "Native Rocket.Chat desktop client."
   ru: "Нативный клиент Rocket.Chat для рабочего стола."
 cli.links:
-  en: "rocketchat:// and https:// links are passed to the running instance (or open in a new one)."
-  ru: "Ссылки rocketchat:// и https:// передаются уже запущенному экземпляру (или открываются в новом)."
+  en: "rocketchat:// and https://go.rocket.chat/ links are passed to the running instance (or open in a new one)."
+  ru: "Ссылки rocketchat:// и https://go.rocket.chat/ передаются уже запущенному экземпляру (или открываются в новом)."
 cli.options:
   en: "Options:"
   ru: "Параметры:"
@@ -24,8 +24,8 @@ cli.env_backend:
   en: "force the CPU renderer"
   ru: "включить программную отрисовку"
 cli.env_log:
-  en: "log filter (logs go to stderr)"
-  ru: "фильтр журнала (журнал пишется в stderr)"
+  en: "log filter (stderr; debug logs can contain message text)"
+  ru: "фильтр журнала (stderr; журнал уровня debug может содержать текст сообщений)"
 cli.env_backtrace:
   en: "print a backtrace when the app crashes"
   ru: "печатать трассировку стека при сбое"

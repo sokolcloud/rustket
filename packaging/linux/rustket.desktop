@@ -8,7 +8,6 @@ Comment[ru]=Нативный клиент Rocket.Chat для рабочего с
 Exec=rustket %u
 Icon=rustket
 Terminal=false
-StartupNotify=true
 StartupWMClass=rustket
 Categories=Network;InstantMessaging;Chat;
 MimeType=x-scheme-handler/rocketchat;

@@ -42,14 +42,10 @@ install_icons() {
     done
 }
 
-# third_party_licenses: "name version license" of every crate linked into the
-# binary (normal dependencies only).
-third_party_licenses() {
-    local list
-    if ! list="$(cd "$ROOT" && cargo tree --locked -p rustket -e normal --prefix none \
-        --format '{p} | {l}' 2>/dev/null)"; then
-        echo "(cargo not available when packaging; see Cargo.lock)"
-        return
-    fi
-    sed -e 's/ (\*)//' -e 's/ (proc-macro)//' <<<"$list" | grep -v '(/' | sort -u
+# third_party_notices <file>: copyright notices and license texts of every
+# crate and asset compiled into the binary (packaging/notices.py).
+third_party_notices() {
+    command -v python3 >/dev/null || die "python3 is needed for the third-party notices"
+    python3 -I "$ROOT/packaging/notices.py" >"$1" || die "packaging/notices.py failed"
+    chmod 644 "$1"
 }

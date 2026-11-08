@@ -32,12 +32,8 @@ install_icons "$STAGE/usr/share"
 
 DOC="$STAGE/usr/share/doc/rustket"
 install -Dm644 "$ROOT/packaging/deb/copyright" "$DOC/copyright"
-{
-    echo "Rust crates compiled into /usr/bin/rustket (name version | license):"
-    echo
-    third_party_licenses
-} >"$DOC/THIRD-PARTY"
-chmod 644 "$DOC/THIRD-PARTY"
+third_party_notices "$DOC/THIRD-PARTY-NOTICES"
+gzip -9n "$DOC/THIRD-PARTY-NOTICES"
 DATE="$(date -R -d "@${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}")"
 cat >"$DOC/changelog.Debian" <<EOF
 rustket ($VERSION-$REVISION) unstable; urgency=medium
@@ -49,17 +45,12 @@ EOF
 gzip -9n "$DOC/changelog.Debian"
 
 mkdir -p "$STAGE/usr/share/man/man1"
-sed "s/@VERSION@/$VERSION/" "$LINUX/rustket.1" | gzip -9n >"$STAGE/usr/share/man/man1/rustket.1.gz"
+gzip -9n <"$LINUX/rustket.1" >"$STAGE/usr/share/man/man1/rustket.1.gz"
 chmod 644 "$STAGE/usr/share/man/man1/rustket.1.gz"
 
 # The symbol table is kept on purpose (profile.dist strip = "debuginfo") so
 # RUST_BACKTRACE=1 crash reports name functions.
-mkdir -p "$STAGE/usr/share/lintian/overrides"
-cat >"$STAGE/usr/share/lintian/overrides/rustket" <<'EOF'
-# Symbols are kept for readable crash backtraces (RUST_BACKTRACE=1).
-rustket: unstripped-binary-or-object [usr/bin/rustket]
-EOF
-chmod 644 "$STAGE/usr/share/lintian/overrides/rustket"
+install -Dm644 "$ROOT/packaging/deb/lintian-overrides" "$STAGE/usr/share/lintian/overrides/rustket"
 
 # Shared-library dependencies from the binary's NEEDED entries.
 shlib_depends() {
@@ -83,12 +74,17 @@ shlib_depends() {
     echo "libc6 (>= ${glibc:-2.35}), libgcc-s1"
 }
 
-# Libraries the toolkit loads with dlopen (not in NEEDED): xkbcommon for the
-# keyboard, X11 or Wayland for windows, Vulkan/EGL for the GPU renderer (the CPU
-# renderer works without them).
-DEPENDS="$(shlib_depends), libxkbcommon0, libx11-6 | libwayland-client0"
-RECOMMENDS="libxkbcommon-x11-0, libx11-xcb1, libxcursor1, libxi6, libwayland-client0, libwayland-egl1, libegl1, libvulkan1, xdg-utils"
-SUGGESTS="gnome-keyring | kwalletmanager | keepassxc"
+# Libraries loaded with dlopen (not in NEEDED), listed in packaging/deb/depends
+# and recommends (keep [package.metadata.deb] in crates/rustket/Cargo.toml in
+# sync). winit's X11 backend needs xkbcommon-x11, X11-xcb, Xcursor and Xi to
+# open a window at all (it panics without libxkbcommon-x11), and Wayland
+# desktops may run it through XWayland. Recommended: Wayland/Vulkan/EGL for the
+# GPU renderer (the CPU renderer works without them), libdbus plus a portal
+# backend or zenity for the file dialogs (rfd), a sound player and theme for
+# notification sounds, xdg-utils for links.
+DEPENDS="$(shlib_depends), $(cat "$ROOT/packaging/deb/depends")"
+RECOMMENDS="$(cat "$ROOT/packaging/deb/recommends")"
+SUGGESTS="$(cat "$ROOT/packaging/deb/suggests")"
 INSTALLED_SIZE="$(du -sk --exclude=DEBIAN "$STAGE" | cut -f1)"
 
 cat >"$STAGE/DEBIAN/control" <<EOF

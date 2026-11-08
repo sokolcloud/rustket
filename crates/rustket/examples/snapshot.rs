@@ -497,6 +497,26 @@ async fn main() {
     }
 }
 
+/// The link-handler modal: a stale registration of another build, then ours.
+fn handler_shots(d: &mut Driver, out: &Path) {
+    let modal = |current: &str| Modal::RegisterHandler {
+        current: Some(current.to_owned()),
+        loaded: true,
+        busy: false,
+        error: None,
+        warnings: Vec::new(),
+    };
+    d.app.handler_registered = false;
+    d.app.modals.push(modal("rustket-url-handler.desktop"));
+    d.shoot(out, "handler-stale");
+    d.app.modals.pop();
+    d.app.handler_registered = true;
+    d.app.modals.push(modal("rustket.desktop"));
+    d.shoot(out, "handler-registered");
+    d.app.modals.pop();
+    d.app.handler_registered = false;
+}
+
 fn confirm_modals(app: &App) -> usize {
     app.modals
         .iter()
@@ -522,6 +542,10 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
         server.as_str().to_owned(),
     )));
     d.shoot(&out, "01-add-server");
+    handler_shots(&mut d, &out);
+    if std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() == Ok("handler") {
+        return;
+    }
 
     d.send(Message::AddServer(add_server::Message::Submit));
     d.pump_until("login screen", Duration::from_secs(20), |a| {

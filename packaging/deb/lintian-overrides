@@ -1,0 +1,2 @@
+# Symbols are kept for readable crash backtraces (RUST_BACKTRACE=1).
+rustket: unstripped-binary-or-object [usr/bin/rustket]

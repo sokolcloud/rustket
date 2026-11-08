@@ -407,9 +407,16 @@ impl App {
                 let mut body = column![text(t!("handler.body")).size(TEXT_BODY)].spacing(SPACE_3);
                 if *loaded {
                     match current.as_deref() {
-                        Some(id) if url_handler::is_ours(id) => {
+                        Some(id) if url_handler::is_ours(id) && self.handler_registered => {
                             body =
                                 body.push(banner(BannerKind::Success, t!("handler.already"), None));
+                        }
+                        Some(id) if url_handler::is_ours(id) => {
+                            body = body.push(banner(
+                                BannerKind::Warning,
+                                t!("handler.stale", current = id),
+                                None,
+                            ));
                         }
                         Some(other) => {
                             body = body.push(banner(

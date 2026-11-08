@@ -9,14 +9,17 @@
 //! `/usr/share/applications/rustket.desktop` with the same `MimeType`. When
 //! the effective `rustket.desktop` (the first one in `$XDG_DATA_HOME`,
 //! `$XDG_DATA_DIRS`) starts the executable being registered, registration
-//! makes that file the default instead of writing a second entry, and removes
-//! a stale `rustket-url-handler.desktop` left from before the install.
+//! makes that file the default instead of writing a second entry, and then
+//! removes a stale `rustket-url-handler.desktop` left from before the install.
+//! [`registered_for`] counts a default as Rustket's only when its desktop file
+//! starts the executable being registered, so a registration left by another
+//! build (or by a removed package) shows the register action again.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const DESKTOP_FILE: &str = "rustket-url-handler.desktop";
-/// The desktop file installed by the packages (also the window's app id).
+/// The desktop file installed by the packages: `<crate::APP_ID>.desktop`.
 pub const PACKAGED_DESKTOP_FILE: &str = "rustket.desktop";
 pub const MIME: &str = "x-scheme-handler/rocketchat";
 
@@ -78,10 +81,23 @@ pub enum RegisterError {
     UnsafeExecutable(String),
 }
 
+const DELETED_SUFFIX: &str = " (deleted)";
+
+/// `/proc/self/exe` of a process whose binary was replaced while it runs (a
+/// package upgrade) reads `<path> (deleted)`; the new file at `<path>` is the
+/// one to register.
+pub fn undeleted_exe(exe: &Path) -> PathBuf {
+    exe.to_str()
+        .and_then(|s| s.strip_suffix(DELETED_SUFFIX))
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| exe.to_owned())
+}
+
 /// The executable to register and warnings to show before registering.
 /// `$APPIMAGE` is used only when this process runs from that AppImage (the
 /// current executable lies inside `$APPDIR`, the image's mount) and the image
-/// is a regular file; otherwise the current executable.
+/// is a regular file; otherwise the current executable (see [`undeleted_exe`]).
 pub fn handler_executable(
     current_exe: &Path,
     appimage: Option<&std::ffi::OsStr>,
@@ -94,7 +110,7 @@ pub fn handler_executable(
         }
         _ => None,
     };
-    let exe = from_appimage.unwrap_or_else(|| current_exe.to_owned());
+    let exe = from_appimage.unwrap_or_else(|| undeleted_exe(current_exe));
     let warnings = check_executable(&exe)?;
     Ok((exe, warnings))
 }
@@ -261,22 +277,37 @@ pub fn is_ours(id: &str) -> bool {
     id == DESKTOP_FILE || id == PACKAGED_DESKTOP_FILE
 }
 
-/// Whether Rustket is the registered handler.
-pub fn is_registered(env: &XdgEnv) -> bool {
-    current_handler(env).as_deref().is_some_and(is_ours)
+/// Whether the default handler `current` is Rustket's and its desktop file
+/// (the effective one in the data dirs) starts `exe`. Without a known `exe`
+/// only the name is compared.
+pub fn registered_for(env: &XdgEnv, current: Option<&str>, exe: Option<&Path>) -> bool {
+    let Some(id) = current.filter(|id| is_ours(id)) else {
+        return false;
+    };
+    let Some(exe) = exe else {
+        return true;
+    };
+    effective_entry(env, id)
+        .and_then(|file| parse_entry(env, &file))
+        .is_some_and(|e| e.mime && !e.hidden && same_file(&e.program, exe))
+}
+
+/// Whether Rustket is the registered handler for `exe`.
+pub fn is_registered(env: &XdgEnv, exe: &Path) -> bool {
+    registered_for(env, current_handler(env).as_deref(), Some(exe))
 }
 
 /// The first token of an `Exec` value, unquoted (Desktop Entry spec).
 fn exec_program(exec: &str) -> Option<String> {
     let exec = exec.trim_start().replace("\\\\", "\\");
     let Some(rest) = exec.strip_prefix('"') else {
-        return exec.split_whitespace().next().map(str::to_owned);
+        return exec.split_whitespace().next().map(|p| p.replace("%%", "%"));
     };
     let mut out = String::new();
     let mut chars = rest.chars();
     while let Some(c) = chars.next() {
         match c {
-            '"' => return Some(out),
+            '"' => return Some(out.replace("%%", "%")),
             '\\' => out.push(chars.next()?),
             c => out.push(c),
         }
@@ -284,15 +315,24 @@ fn exec_program(exec: &str) -> Option<String> {
     None
 }
 
-/// The packaged desktop file when it is the effective `rustket.desktop` (the
-/// first one in the data dirs), is not hidden, handles [`MIME`] and starts
-/// `exe` (compared after resolving symlinks; a relative `Exec` through `PATH`).
-pub fn packaged_entry(env: &XdgEnv, exe: &Path) -> Option<PathBuf> {
-    let file = std::iter::once(&env.data_home)
+/// The first `applications/<id>` in `$XDG_DATA_HOME`, then `$XDG_DATA_DIRS`.
+fn effective_entry(env: &XdgEnv, id: &str) -> Option<PathBuf> {
+    std::iter::once(&env.data_home)
         .chain(&env.data_dirs)
-        .map(|d| d.join("applications").join(PACKAGED_DESKTOP_FILE))
-        .find(|f| f.is_file())?;
-    let text = std::fs::read_to_string(&file).ok()?;
+        .map(|d| d.join("applications").join(id))
+        .find(|f| f.is_file())
+}
+
+/// What matters about a desktop file for link handling.
+struct Entry {
+    /// The `Exec` program, resolved through `PATH` when relative.
+    program: PathBuf,
+    mime: bool,
+    hidden: bool,
+}
+
+fn parse_entry(env: &XdgEnv, file: &Path) -> Option<Entry> {
+    let text = std::fs::read_to_string(file).ok()?;
     let (mut in_entry, mut exec, mut mime, mut hidden) = (false, None, false, false);
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
@@ -309,9 +349,6 @@ pub fn packaged_entry(env: &XdgEnv, exe: &Path) -> Option<PathBuf> {
             _ => {}
         }
     }
-    if hidden || !mime {
-        return None;
-    }
     let program = PathBuf::from(exec?);
     let program = if program.is_absolute() {
         program
@@ -323,11 +360,28 @@ pub fn packaged_entry(env: &XdgEnv, exe: &Path) -> Option<PathBuf> {
     } else {
         return None;
     };
-    let same = match (program.canonicalize(), exe.canonicalize()) {
+    Some(Entry {
+        program,
+        mime,
+        hidden,
+    })
+}
+
+/// Compared after resolving symlinks; missing files never match.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
-    };
-    same.then_some(file)
+    }
+}
+
+/// The packaged desktop file when it is the effective `rustket.desktop` (the
+/// first one in the data dirs), is not hidden, handles [`MIME`] and starts
+/// `exe` (compared after resolving symlinks; a relative `Exec` through `PATH`).
+pub fn packaged_entry(env: &XdgEnv, exe: &Path) -> Option<PathBuf> {
+    let file = effective_entry(env, PACKAGED_DESKTOP_FILE)?;
+    let entry = parse_entry(env, &file)?;
+    (entry.mime && !entry.hidden && same_file(&entry.program, exe)).then_some(file)
 }
 
 /// Makes Rustket the default handler: the packaged desktop file when it starts
@@ -335,12 +389,9 @@ pub fn packaged_entry(env: &XdgEnv, exe: &Path) -> Option<PathBuf> {
 /// Returns the path of the desktop file.
 pub fn register(env: &XdgEnv, exe: &Path) -> Result<PathBuf, RegisterError> {
     let dir = env.applications_dir();
-    let (id, path) = match packaged_entry(env, exe) {
-        Some(packaged) => {
-            // Our own entry from before the package was installed.
-            let _ = std::fs::remove_file(dir.join(DESKTOP_FILE));
-            (PACKAGED_DESKTOP_FILE, packaged)
-        }
+    let packaged = packaged_entry(env, exe);
+    let (id, path) = match packaged.clone() {
+        Some(packaged) => (PACKAGED_DESKTOP_FILE, packaged),
         None => {
             std::fs::create_dir_all(&dir).map_err(|source| RegisterError::Write {
                 path: dir.clone(),
@@ -363,6 +414,11 @@ pub fn register(env: &XdgEnv, exe: &Path) -> Result<PathBuf, RegisterError> {
         return Err(RegisterError::XdgMime(
             String::from_utf8_lossy(&out.stderr).trim().to_owned(),
         ));
+    }
+    if packaged.is_some() {
+        // Our own entry from before the package was installed; removed only
+        // once the default points at the packaged file.
+        let _ = std::fs::remove_file(dir.join(DESKTOP_FILE));
     }
     // Optional: refresh the MIME cache when the tool exists.
     match env.command("update-desktop-database").arg(&dir).output() {
@@ -411,7 +467,7 @@ mod tests {
         let mimeapps = std::fs::read_to_string(config.path().join("mimeapps.list")).unwrap();
         assert!(mimeapps.contains("x-scheme-handler/rocketchat=rustket-url-handler.desktop"));
         assert_eq!(current_handler(&env).as_deref(), Some(DESKTOP_FILE));
-        assert!(is_registered(&env));
+        assert!(registered_for(&env, Some(DESKTOP_FILE), None));
 
         // After installing the package, registering the packaged binary
         // switches to the packaged desktop file and drops the old entry.
@@ -424,7 +480,78 @@ mod tests {
         assert!(!data.path().join("applications").join(DESKTOP_FILE).exists());
         let mimeapps = std::fs::read_to_string(config.path().join("mimeapps.list")).unwrap();
         assert!(mimeapps.contains("x-scheme-handler/rocketchat=rustket.desktop"));
-        assert!(is_registered(&env));
+        assert!(is_registered(&env, &exe));
+    }
+
+    /// Review: a default left by another build is not "registered", and a
+    /// failed `xdg-mime` keeps the old entry.
+    #[test]
+    fn stale_registration_is_not_ours() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let sys = tempfile::tempdir().unwrap();
+        let mut env = test_env(data.path(), config.path(), sys.path());
+        let exe = install_packaged(sys.path(), "Exec=rustket %u");
+        let dev = sys.path().join("dev-rustket");
+        std::fs::write(&dev, "").unwrap();
+        let apps = data.path().join("applications");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::write(apps.join(DESKTOP_FILE), desktop_entry(&dev)).unwrap();
+
+        assert!(registered_for(&env, Some(DESKTOP_FILE), Some(&dev)));
+        assert!(!registered_for(&env, Some(DESKTOP_FILE), Some(&exe)));
+        assert!(registered_for(
+            &env,
+            Some(PACKAGED_DESKTOP_FILE),
+            Some(&exe)
+        ));
+        assert!(!registered_for(
+            &env,
+            Some(PACKAGED_DESKTOP_FILE),
+            Some(&dev)
+        ));
+        assert!(!registered_for(&env, Some("other.desktop"), Some(&exe)));
+        assert!(!registered_for(&env, None, Some(&exe)));
+        // Deleted build: never registered.
+        std::fs::remove_file(&dev).unwrap();
+        assert!(!registered_for(&env, Some(DESKTOP_FILE), Some(&dev)));
+        // Removed package: the desktop file is gone.
+        std::fs::remove_file(sys.path().join("applications").join(PACKAGED_DESKTOP_FILE)).unwrap();
+        assert!(!registered_for(
+            &env,
+            Some(PACKAGED_DESKTOP_FILE),
+            Some(&exe)
+        ));
+
+        // xdg-mime failing leaves the old entry in place.
+        install_packaged(sys.path(), "Exec=rustket %u");
+        let fake = tempfile::tempdir().unwrap();
+        let tool = fake.path().join("xdg-mime");
+        std::fs::write(&tool, "#!/bin/sh\necho broken >&2\nexit 1\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        env.vars
+            .push(("PATH".into(), fake.path().display().to_string()));
+        assert!(matches!(
+            register(&env, &exe),
+            Err(RegisterError::XdgMime(_))
+        ));
+        assert!(apps.join(DESKTOP_FILE).exists());
+    }
+
+    #[test]
+    fn deleted_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("rustket");
+        std::fs::write(&exe, "").unwrap();
+        let deleted = PathBuf::from(format!("{} (deleted)", exe.display()));
+        assert_eq!(undeleted_exe(&deleted), exe);
+        assert_eq!(undeleted_exe(&exe), exe);
+        // Nothing at the stripped path: unchanged (and later refused).
+        let gone = PathBuf::from(format!("{} (deleted)", dir.path().join("gone").display()));
+        assert_eq!(undeleted_exe(&gone), gone);
     }
 
     fn test_env(data: &Path, config: &Path, sys: &Path) -> XdgEnv {
