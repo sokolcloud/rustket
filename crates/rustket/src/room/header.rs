@@ -532,7 +532,9 @@ impl Header {
             };
             self.bar(&ctx, size.width)
         });
-        let mut col = column![
+        // Always one node for the announcement, so the tree below keeps its
+        // shape when one is set or cleared.
+        column![
             container(bar)
                 .height(HEADER_HEIGHT)
                 .width(Length::Fill)
@@ -540,12 +542,10 @@ impl Header {
                 .center_y(HEADER_HEIGHT)
                 .style(style::container_header),
             divider(),
+            rustket_ui::widget::slot(self.announcement_bar(ctx), 0.0),
         ]
-        .spacing(0);
-        if let Some(bar) = self.announcement_bar(ctx) {
-            col = col.push(bar);
-        }
-        col.into()
+        .spacing(0)
+        .into()
     }
 
     /// The room announcement under the header, as in the web client; a click

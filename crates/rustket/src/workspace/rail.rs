@@ -42,8 +42,12 @@ pub fn badge(unread: (u64, u64)) -> Option<(u32, BadgeKind)> {
     }
 }
 
-/// A small "signed out" emblem on the bottom-right corner of the face.
-fn signed_out_marker(item: Element<'_, Message>) -> Element<'_, Message> {
+/// A small "signed out" emblem on the bottom-right corner of the face, or
+/// an empty placeholder when `shown` is false.
+fn signed_out_marker(item: Element<'_, Message>, shown: bool) -> Element<'_, Message> {
+    if !shown {
+        return stack![item, iced::widget::space()].clip(false).into();
+    }
     let emblem = container(icon::sized(Icon::LogOut, 10.0))
         .center(16)
         .style(|theme: &Theme| {
@@ -82,11 +86,9 @@ pub fn view<'a>(entries: Vec<RailEntry>) -> Element<'a, Message> {
             e.selected,
             Message::Select(e.id),
         );
-        if e.signed_out {
-            signed_out_marker(item)
-        } else {
-            item
-        }
+        // Always wrapped, so the item keeps its widget state when the
+        // server signs out or back in.
+        signed_out_marker(item, e.signed_out)
     });
     let list = Column::with_children(items)
         .push(add_server_button(t!("rail.add_server"), Message::Add))
