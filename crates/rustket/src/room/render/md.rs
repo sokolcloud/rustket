@@ -155,38 +155,96 @@ pub(super) fn mrkdwn_paragraph(text: &str, cx: &Cx<'_, '_>, size: f32, bold: boo
     paragraph(spans, size)
 }
 
-/// Byte index of the closing `delim` for an opening one ending at `from`:
-/// non-empty content that does not start or end with a space, and (for
-/// `_`) no word character right after it.
-fn closing(text: &str, from: usize, delim: &str) -> Option<usize> {
-    let rest = &text[from..];
-    if rest.starts_with(char::is_whitespace) || rest.starts_with(delim) {
-        return None;
-    }
-    let mut search = 0;
-    while let Some(off) = rest[search..].find(delim) {
-        let at = search + off;
-        let end = from + at;
-        let before_ok = at > 0 && !rest[..at].ends_with(char::is_whitespace);
-        let after = &text[end + delim.len()..];
-        let after_ok = !delim.starts_with('_') || !after.starts_with(char::is_alphanumeric);
-        let doubled = delim.len() == 1 && after.starts_with(delim);
-        if before_ok && after_ok && !doubled && !rest[..at].contains('\n') {
-            return Some(end);
+/// Longest text parsed for markup; longer texts are shown plain (linkified).
+const MRKDWN_MAX_BYTES: usize = 64 * 1024;
+
+/// Emphasis delimiters, longest first.
+const DELIMS: [&str; 6] = ["**", "__", "~~", "*", "_", "~"];
+
+/// The first of the sorted positions `v` at or after `from`.
+fn first_from(v: &[usize], from: usize) -> Option<usize> {
+    v.get(v.partition_point(|p| *p < from)).copied()
+}
+
+/// Whether one of the sorted positions `v` lies in `a..b`.
+fn any_in(v: &[usize], a: usize, b: usize) -> bool {
+    first_from(v, a).is_some_and(|p| p < b)
+}
+
+/// Positions of everything [`mrkdwn_spans`] looks for, computed once per
+/// text so each candidate is checked in logarithmic time: the whole parse
+/// stays linear whatever the input (hostile attachment texts must not
+/// freeze the UI thread).
+struct Marks {
+    newlines: Vec<usize>,
+    spaces: Vec<usize>,
+    ticks: Vec<usize>,
+    link_mids: Vec<usize>,
+    parens: Vec<usize>,
+    lts: Vec<usize>,
+    gts: Vec<usize>,
+    /// Per [`DELIMS`] entry: where it can close a span (no space right
+    /// before it; for `_` no word character right after it; a single
+    /// delimiter not doubled).
+    closers: [Vec<usize>; 6],
+}
+
+impl Marks {
+    fn new(text: &str) -> Self {
+        let at = |pat: &str| text.match_indices(pat).map(|(i, _)| i).collect::<Vec<_>>();
+        let closers = DELIMS.map(|d| {
+            text.match_indices(d)
+                .map(|(p, _)| p)
+                .filter(|&p| {
+                    let before_ok = text[..p]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| !c.is_whitespace());
+                    let after = &text[p + d.len()..];
+                    let after_ok = !d.starts_with('_') || !after.starts_with(char::is_alphanumeric);
+                    let doubled = d.len() == 1 && after.starts_with(d);
+                    before_ok && after_ok && !doubled
+                })
+                .collect()
+        });
+        Self {
+            newlines: at("\n"),
+            spaces: text
+                .char_indices()
+                .filter(|(_, c)| c.is_whitespace())
+                .map(|(i, _)| i)
+                .collect(),
+            ticks: at("`"),
+            link_mids: at("]("),
+            parens: at(")"),
+            lts: at("<"),
+            gts: at(">"),
+            closers,
         }
-        search = at + delim.len();
     }
-    None
+
+    /// Byte index of the closing `DELIMS[d]` for an opening one ending at
+    /// `from`: non-empty content on one line that does not start or end
+    /// with a space, and (for `_`) no word character right after it.
+    fn closing(&self, text: &str, from: usize, d: usize) -> Option<usize> {
+        let rest = &text[from..];
+        if rest.starts_with(char::is_whitespace) || rest.starts_with(DELIMS[d]) {
+            return None;
+        }
+        let end = first_from(&self.closers[d], from + 1)?;
+        (!any_in(&self.newlines, from, end)).then_some(end)
+    }
 }
 
 /// A small markdown subset like the web's `MarkdownText` for attachments:
 /// `**b**`/`*b*`, `__i__`/`_i_`, `~~s~~`/`~s~`, `` `code` ``,
 /// `[label](url)`, `<url|label>`, bare URLs and line breaks.
 fn mrkdwn_spans(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>, depth: usize) {
-    if depth > 4 {
+    if depth > 4 || text.len() > MRKDWN_MAX_BYTES {
         push_linkified(out, text, fmt, cx);
         return;
     }
+    let marks = Marks::new(text);
     let mut plain = 0;
     let mut i = 0;
     while i < text.len() {
@@ -197,43 +255,50 @@ fn mrkdwn_spans(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>, depth
             .is_some_and(char::is_alphanumeric);
         type Emit<'e> = Box<dyn FnOnce(&mut Vec<Sp>) + 'e>;
         let mut matched: Option<(usize, Emit<'_>)> = None;
-        if let Some(after) = rest.strip_prefix('`') {
-            if let Some(len) = after.find('`').filter(|l| *l > 0) {
-                let code = after[..len].to_owned();
+        if rest.starts_with('`') {
+            if let Some(end) = first_from(&marks.ticks, i + 1).filter(|e| *e > i + 1) {
+                let code = text[i + 1..end].to_owned();
                 let f = fmt.clone();
                 let t = cx.t;
-                matched = Some((len + 2, Box::new(move |o| o.push(code_span(&code, t, &f)))));
+                matched = Some((
+                    end + 1 - i,
+                    Box::new(move |o| o.push(code_span(&code, t, &f))),
+                ));
             }
         } else if rest.starts_with('[') {
-            if let Some(mid) = rest.find("](")
-                && let Some(close) = rest[mid + 2..].find(')')
+            if let Some(mid) = first_from(&marks.link_mids, i)
+                && let Some(close) = first_from(&marks.parens, mid + 2)
+                && !any_in(&marks.newlines, i + 1, mid)
+                && !any_in(&marks.spaces, mid + 2, close)
             {
-                let label = &rest[1..mid];
-                let src = &rest[mid + 2..mid + 2 + close];
-                if !label.contains('\n') && !src.contains(char::is_whitespace) {
-                    let target = safe_url(src);
-                    let f = Fmt {
-                        link: target.clone().map(RenderMsg::OpenUrl),
-                        color: target.is_some().then_some(cx.t.link).or(fmt.color),
-                        ..fmt.clone()
-                    };
-                    let (label, src) = (label.to_owned(), src.to_owned());
-                    matched = Some((
-                        mid + 3 + close,
-                        Box::new(move |o| {
-                            if label.trim().is_empty() {
-                                push_text(o, &src, &f);
-                            } else {
-                                mrkdwn_spans(o, &label, &f, cx, depth + 1);
-                                push_link_host(o, &label, &src, &f, cx);
-                            }
-                        }),
-                    ));
-                }
+                let label = &text[i + 1..mid];
+                let src = &text[mid + 2..close];
+                let target = safe_url(src);
+                let f = Fmt {
+                    link: target.clone().map(RenderMsg::OpenUrl),
+                    color: target.is_some().then_some(cx.t.link).or(fmt.color),
+                    ..fmt.clone()
+                };
+                let (label, src) = (label.to_owned(), src.to_owned());
+                matched = Some((
+                    close + 1 - i,
+                    Box::new(move |o| {
+                        if label.trim().is_empty() {
+                            push_text(o, &src, &f);
+                        } else {
+                            mrkdwn_spans(o, &label, &f, cx, depth + 1);
+                            push_link_host(o, &label, &src, &f, cx);
+                        }
+                    }),
+                ));
             }
         } else if rest.starts_with('<') {
-            if let Some(close) = rest.find('>') {
-                let inner = &rest[1..close];
+            // A target never contains `<`: each `>` closes at most one
+            // candidate, which keeps the scan linear.
+            if let Some(close) = first_from(&marks.gts, i)
+                && !any_in(&marks.lts, i + 1, close)
+            {
+                let inner = &text[i + 1..close];
                 let (src, label) = inner.split_once('|').unwrap_or((inner, inner));
                 if let Some(target) = safe_url(src).filter(|_| !src.contains(char::is_whitespace)) {
                     let f = Fmt {
@@ -243,7 +308,7 @@ fn mrkdwn_spans(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>, depth
                     };
                     let (label, src) = (label.to_owned(), src.to_owned());
                     matched = Some((
-                        close + 1,
+                        close + 1 - i,
                         Box::new(move |o| {
                             push_text(o, &label, &f);
                             push_link_host(o, &label, &src, &f, cx);
@@ -252,11 +317,11 @@ fn mrkdwn_spans(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>, depth
                 }
             }
         } else if !prev_word {
-            for delim in ["**", "__", "~~", "*", "_", "~"] {
+            for (d, delim) in DELIMS.into_iter().enumerate() {
                 if !rest.starts_with(delim) {
                     continue;
                 }
-                if let Some(end) = closing(text, i + delim.len(), delim) {
+                if let Some(end) = marks.closing(text, i + delim.len(), d) {
                     let inner = text[i + delim.len()..end].to_owned();
                     let f = match delim.as_bytes()[0] {
                         b'*' => Fmt {
@@ -1212,6 +1277,44 @@ mod tests {
             "revealed spoiler uses the text colour"
         );
         assert_eq!(spans[4].color, Some(tokens().text_secondary));
+    }
+
+    #[test]
+    fn mrkdwn_hostile_input_renders_quickly() {
+        let fx = Fx::new();
+        let rc = fx.rc();
+        let cx = Cx::new(&rc, "m1", None);
+        let inputs = [
+            "*a ".repeat(20_000),
+            " _a".repeat(20_000),
+            "~~a ".repeat(15_000),
+            "**a ".repeat(15_000),
+            "*a _b ~c ".repeat(6_000),
+            "[".repeat(60_000) + "](http://a)",
+            "[a](".repeat(15_000),
+            "<".repeat(60_000) + ">",
+            "<http://a".repeat(6_000) + ">",
+            "`".repeat(60_000),
+            format!("*{}", "a\n".repeat(30_000)),
+            format!("[{}](http://a b)", "x".repeat(60_000)),
+        ];
+        let start = std::time::Instant::now();
+        for text in &inputs {
+            let mut spans = Vec::new();
+            mrkdwn_spans(&mut spans, text, &Fmt::default(), &cx, 0);
+        }
+        // The old per-opener scans took minutes here.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        // Past the size cap the text is still shown, unformatted.
+        let big = "*b* ".repeat(20_000);
+        let mut spans = Vec::new();
+        mrkdwn_spans(&mut spans, &big, &Fmt::default(), &cx, 0);
+        let shown: String = spans.iter().map(|s| s.text.as_ref()).collect();
+        assert_eq!(shown, big);
     }
 
     #[test]
