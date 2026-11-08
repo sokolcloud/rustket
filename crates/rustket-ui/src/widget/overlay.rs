@@ -147,12 +147,23 @@ pub fn toasts_with<'a, Message: Clone + 'a>(
     list: &'a [Toast],
     on_close: impl Fn(u64) -> Message + 'a,
 ) -> Element<'a, Message> {
+    // Toasts and pinned cards are two always-present groups, so the pinned cards
+    // keep their tree position (and e.g. a pressed button) when toasts come and go.
+    let gap = if list.is_empty() || pinned.is_empty() {
+        0.0
+    } else {
+        SPACE_2
+    };
     let cards = (!list.is_empty() || !pinned.is_empty()).then(|| {
-        column(list.iter().map(|t| toast_card(t, on_close(t.id))))
-            .extend(pinned)
-            .spacing(SPACE_2)
-            .width(Length::Fixed(TOAST_WIDTH))
-            .into()
+        column![
+            column(list.iter().map(|t| toast_card(t, on_close(t.id))))
+                .spacing(SPACE_2)
+                .width(Length::Fill),
+            column(pinned).spacing(SPACE_2).width(Length::Fill),
+        ]
+        .spacing(gap)
+        .width(Length::Fixed(TOAST_WIDTH))
+        .into()
     });
     Layered::new(base.into(), cards, Kind::Corner { padding: SPACE_5 }).into()
 }

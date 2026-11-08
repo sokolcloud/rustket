@@ -22,7 +22,8 @@ use crate::error::Res;
 pub enum Msg {
     /// Switch to the given availability.
     Set(AgentStatus),
-    Done(AgentStatus, Res<AgentStatus>),
+    /// Wanted status, [`Workspace::me_generation`] when it was sent, answer.
+    Done(AgentStatus, u64, Res<AgentStatus>),
     /// Open the Contact Center (handled by the sidebar / app).
     ContactCenter,
 }
@@ -65,27 +66,48 @@ fn apply_status(ws: &mut Workspace, status: AgentStatus) {
     }
 }
 
+/// Applies the `agent.status` answer `got` to a request sent at `me`
+/// generation `sent`, unless a newer `/me` (the source of truth) arrived since.
+/// Returns whether it was applied.
+fn apply_answer(ws: &mut Workspace, sent: u64, got: AgentStatus) -> bool {
+    if ws.me_generation() != sent {
+        return false;
+    }
+    apply_status(ws, got);
+    true
+}
+
 pub fn update(msg: Msg, ctx: &mut Ctx<'_>) -> Action<Msg> {
     match msg {
         // Setting an explicit status is idempotent: retry once after a
         // transient failure (e.g. a pooled connection the server closed).
-        Msg::Set(status) => Action::task(ctx.rest_task(
-            move |rest| async move {
-                match rest.livechat_agent_status(Some(status)).await {
-                    Err(e) if e.is_transient() => {
-                        tracing::debug!(error = %e, "agent.status failed; retrying");
-                        rest.livechat_agent_status(Some(status)).await
+        Msg::Set(status) => {
+            let sent = ctx.workspace.me_generation();
+            Action::task(ctx.rest_task(
+                move |rest| async move {
+                    match rest.livechat_agent_status(Some(status)).await {
+                        Err(e) if e.is_transient() => {
+                            tracing::debug!(error = %e, "agent.status failed; retrying");
+                            rest.livechat_agent_status(Some(status)).await
+                        }
+                        r => r,
                     }
-                    r => r,
-                }
-            },
-            move |r| Msg::Done(status, r),
-        )),
-        Msg::Done(wanted, Ok(got)) => {
+                },
+                move |r| Msg::Done(status, sent, r),
+            ))
+        }
+        Msg::Done(wanted, sent, Ok(got)) => {
             // The server's answer to the user's own request is the current
             // availability: shown even when the `/me` re-read after its
             // `userData` fails, or when nothing changed (no `userData` then).
-            apply_status(ctx.workspace, got);
+            // The session's cached user takes it too, so a later `/me` with
+            // another availability is not mistaken for "unchanged".
+            if apply_answer(ctx.workspace, sent, got)
+                && got != AgentStatus::Unknown
+                && let Some(session) = ctx.session
+            {
+                session.session().note_agent_status(got);
+            }
             if got != wanted {
                 Action::effect(Effect::Toast(
                     BannerKind::Warning,
@@ -96,7 +118,7 @@ pub fn update(msg: Msg, ctx: &mut Ctx<'_>) -> Action<Msg> {
                 Action::none()
             }
         }
-        Msg::Done(_, Err(f)) => Action::effect(Effect::Toast(
+        Msg::Done(_, _, Err(f)) => Action::effect(Effect::Toast(
             BannerKind::Error,
             t!("omnichannel.availability_failed").into_owned(),
             crate::omnichannel::error_text(&f),
@@ -247,6 +269,22 @@ mod tests {
         assert!(ws.me_generation() > g);
         apply_status(&mut ws, AgentStatus::Unknown);
         assert_eq!(availability(&ws), Some(AgentStatus::Available));
+    }
+
+    /// A late answer does not overwrite a newer `/me`.
+    #[test]
+    fn late_agent_status_answer_yields_to_newer_me() {
+        let mut ws = agent_ws(&["user", "livechat-agent"], "not-available");
+        let sent = ws.me_generation();
+        assert!(apply_answer(&mut ws, sent, AgentStatus::Available));
+        assert_eq!(availability(&ws), Some(AgentStatus::Available));
+
+        let sent = ws.me_generation();
+        let mut me = ws.me().cloned().unwrap();
+        me.status_livechat = Some(AgentStatus::NotAvailable);
+        ws.apply_me(me);
+        assert!(!apply_answer(&mut ws, sent, AgentStatus::Available));
+        assert_eq!(availability(&ws), Some(AgentStatus::NotAvailable));
     }
 
     #[test]

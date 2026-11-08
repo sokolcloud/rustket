@@ -323,6 +323,8 @@ struct Core {
     logged_out: Mutex<Option<String>>,
     registry: Arc<Registry>,
     me_refresh: Mutex<MeRefresh>,
+    /// Wakes a backing-off `/me` refresh when a new `userData` hint arrives.
+    me_wake: Arc<tokio::sync::Notify>,
 }
 
 /// State of the `/me` refreshes triggered by `userData` hints.
@@ -332,6 +334,8 @@ struct MeRefresh {
     scheduled: bool,
     /// When the last refresh started.
     last: Option<Instant>,
+    /// A failed refresh is backing off and a new hint may wake it early.
+    wakeable: bool,
 }
 
 impl Core {
@@ -433,6 +437,11 @@ impl Core {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if r.scheduled {
+                // A refresh backing off after a failure runs again now (after
+                // the usual spacing) instead of after up to a minute.
+                if r.wakeable {
+                    self.me_wake.notify_one();
+                }
                 return;
             }
             r.scheduled = true;
@@ -442,14 +451,37 @@ impl Core {
             wait.max(ME_REFRESH_DEBOUNCE)
         };
         let core = Arc::downgrade(self);
+        let wake = Arc::clone(&self.me_wake);
         let mut shutdown = self.shutdown.subscribe();
         tokio::spawn(async move {
             let mut delay = delay;
             let mut failures = 0u32;
+            let mut wakeable = false;
             loop {
-                tokio::select! {
+                let woken = tokio::select! {
                     _ = shutdown.wait_for(|s| *s) => return,
-                    () = tokio::time::sleep(delay) => {}
+                    () = tokio::time::sleep(delay) => false,
+                    () = wake.notified(), if wakeable => true,
+                };
+                if woken {
+                    // Same spacing as a fresh hint.
+                    let Some(last) = core.upgrade().map(|c| {
+                        c.me_refresh
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .last
+                    }) else {
+                        return;
+                    };
+                    let spacing = last
+                        .map_or(Duration::ZERO, |t| {
+                            ME_REFRESH_INTERVAL.saturating_sub(t.elapsed())
+                        })
+                        .max(ME_REFRESH_DEBOUNCE);
+                    tokio::select! {
+                        _ = shutdown.wait_for(|s| *s) => return,
+                        () = tokio::time::sleep(spacing) => {}
+                    }
                 }
                 let Some(core) = core.upgrade() else {
                     return;
@@ -460,6 +492,7 @@ impl Core {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
                     r.scheduled = false;
+                    r.wakeable = false;
                     r.last = Some(Instant::now());
                 }
                 match core.rest.me().await {
@@ -493,6 +526,15 @@ impl Core {
                             return;
                         }
                         r.scheduled = true;
+                        // A known rate-limit reset is waited out in full.
+                        wakeable = !matches!(
+                            e,
+                            crate::Error::RateLimited {
+                                retry_after: Some(_),
+                                ..
+                            }
+                        );
+                        r.wakeable = wakeable;
                         delay = wait;
                     }
                 }
@@ -641,6 +683,7 @@ impl Session {
             logged_out: Mutex::new(None),
             registry: Arc::new(Registry::new()),
             me_refresh: Mutex::new(MeRefresh::default()),
+            me_wake: Arc::new(tokio::sync::Notify::new()),
         });
 
         let mut config = DdpConfig::new(url)
@@ -800,6 +843,13 @@ impl Session {
     /// The current user: fetched at the first login, then kept current from
     /// `/me` refreshes (after `userData` hints and reconnects) and
     /// `Users:NameChanged` (username and name).
+    /// `livechat/agent.status` answered `status`: the cached user takes it, so
+    /// a later `/me` with another availability is still reported as
+    /// [`SessionEvent::MeChanged`].
+    pub fn note_agent_status(&self, status: crate::models::AgentStatus) {
+        self.core.update_me(|me| me.status_livechat = Some(status));
+    }
+
     pub fn me(&self) -> Option<User> {
         self.core
             .me

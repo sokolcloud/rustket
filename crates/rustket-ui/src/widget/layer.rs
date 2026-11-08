@@ -274,14 +274,17 @@ impl<Message: Clone> LayerOverlay<'_, '_, Message> {
         layout.children().nth(1)
     }
 
-    /// Whether the cursor is over one of the corner layer's direct children (cards),
-    /// or over the whole content when it has no children.
+    /// Whether the cursor is over one of the cards of the corner layer: its content
+    /// is a column of groups (columns) of cards. Content without children counts
+    /// as one card.
     fn over_card(content_layout: Layout<'_>, cursor: mouse::Cursor) -> bool {
-        let mut children = content_layout.children().peekable();
-        if children.peek().is_none() {
+        let mut groups = content_layout.children().peekable();
+        if groups.peek().is_none() {
             return cursor.is_over(content_layout.bounds());
         }
-        children.any(|card| cursor.is_over(card.bounds()))
+        groups
+            .flat_map(|group| group.children())
+            .any(|card| cursor.is_over(card.bounds()))
     }
 }
 

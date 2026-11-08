@@ -405,14 +405,35 @@ fn modal_values_toggles_text_and_submit() {
             kind: Typed::Time,
         });
     }
-    assert_eq!(fx.triggers(), before + 1, "the first one clears the value");
+    assert_eq!(fx.triggers(), before, "an empty field stays empty");
+    assert!(
+        fx.ws.uikit().modal().unwrap().state.get("time").is_none(),
+        "nothing is stored for a field that never had a value"
+    );
+    fx.ui(UiKitMsg::Typing {
+        req: tm.clone(),
+        text: "12:30".into(),
+        emit: true,
+        kind: Typed::Time,
+    });
+    assert_eq!(fx.triggers(), before + 1);
+    // Breaking a valid value clears it exactly once.
+    for text in ["12:", "1"] {
+        fx.ui(UiKitMsg::Typing {
+            req: tm.clone(),
+            text: text.into(),
+            emit: true,
+            kind: Typed::Time,
+        });
+    }
+    assert_eq!(fx.triggers(), before + 2, "one clear for a valid value");
     fx.ui(UiKitMsg::Typing {
         req: tm,
         text: "12:30".into(),
         emit: true,
         kind: Typed::Time,
     });
-    assert_eq!(fx.triggers(), before + 2);
+    assert_eq!(fx.triggers(), before + 3);
 
     let state = fx.ws.uikit().modal().unwrap().state.to_state_json();
     assert_eq!(state["b_q"]["question"], json!("Pizza??"));
@@ -1003,4 +1024,54 @@ fn debounce_does_not_survive_modal_replacement() {
     let before = fx.triggers();
     controller::update(&mut fx.ctx(), Msg::Debounced { req: a, stamp });
     assert_eq!(fx.triggers(), before, "stale text not sent");
+}
+
+/// The same for a contextual bar reopened in place (same id, same room): its
+/// pending timer and typed texts belong to the old instance.
+#[test]
+fn debounce_does_not_survive_bar_replacement() {
+    let mut fx = Fx::new();
+    let origin =
+        || Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)).rid(Some("r1"));
+    fx.answer(origin(), serde_json::from_str(BAR).unwrap());
+    let surface = SurfaceKey::Bar("bar-1".into());
+    let a = req(surface.clone(), None, "b_q", "question", Some(json!("old")));
+    fx.ui(UiKitMsg::Text {
+        req: a.clone(),
+        dispatch: true,
+    });
+    let key = surface.element("question");
+    let stamp = fx.ws.uikit().scratch().current_stamp(&key).unwrap();
+    fx.answer(origin(), serde_json::from_str(BAR).unwrap());
+    assert!(fx.ws.uikit().bar("bar-1").is_some());
+    assert!(!fx.ws.uikit().scratch().texts.contains_key(&key));
+    let before = fx.triggers();
+    controller::update(&mut fx.ctx(), Msg::Debounced { req: a, stamp });
+    assert_eq!(fx.triggers(), before, "stale text not sent");
+}
+
+/// Date/time text is marked as an error only when it cannot become valid.
+#[test]
+fn partial_date_and_time_are_not_errors() {
+    use super::elements::typed_plausible;
+    for t in [
+        "",
+        "2",
+        "2026-",
+        "2026-1",
+        "2026-04-3",
+        "2026-04-30",
+        "2026-02-0",
+    ] {
+        assert!(typed_plausible(t, Typed::Date), "{t}");
+    }
+    for t in ["2026-13", "2026-02-3", "2026-04-31", "x", "2026-04-300"] {
+        assert!(!typed_plausible(t, Typed::Date), "{t}");
+    }
+    for t in ["1", "2", "12:", "12:3", "23:59"] {
+        assert!(typed_plausible(t, Typed::Time), "{t}");
+    }
+    for t in ["25", "12:6", "9:30", "12:300"] {
+        assert!(!typed_plausible(t, Typed::Time), "{t}");
+    }
 }

@@ -71,8 +71,8 @@ pub enum Message {
     CustomFields(Res<Paginated<CustomFieldDef>>),
     Canned(Res<Vec<CannedResponse>>),
     Priorities(Res<Paginated<Priority>>),
-    /// Back-off of a failed load ended (session `Arc` address).
-    Retry(usize, Load),
+    /// Back-off of a failed load ended (session `Arc` address, timer token).
+    Retry(usize, Load, u64),
     /// A room fetched for opening (queued chat preview, contact center).
     Opened(Box<Res<open::Opened>>),
     /// A closed chat whose view stays open, re-read after its subscription
@@ -109,6 +109,10 @@ pub struct Omni {
     /// Failed attempts in a row (retry back-off).
     routing_failures: u32,
     license_failures: u32,
+    /// Token of the one pending retry timer per load (others are stale).
+    routing_retry: Option<u64>,
+    license_retry: Option<u64>,
+    retry_seq: u64,
     /// After the departments arrived: start the queue snapshot / load canned responses.
     queue_after_departments: bool,
     canned_after_departments: bool,
@@ -240,6 +244,8 @@ impl Omni {
                 self.departments_loading = false;
                 self.routing_failures = 0;
                 self.license_failures = 0;
+                self.routing_retry = None;
+                self.license_retry = None;
             }
             return Task::none();
         };
@@ -261,6 +267,8 @@ impl Omni {
             self.departments_loading = false;
             self.routing_failures = 0;
             self.license_failures = 0;
+            self.routing_retry = None;
+            self.license_retry = None;
         }
         let rev = ws.revision(Dirty::ME | Dirty::SETTINGS | Dirty::PERMISSIONS | Dirty::ROLES);
         if self.rev != Some(rev) {
@@ -436,12 +444,13 @@ impl Omni {
                 match r {
                     Ok(cfg) => {
                         self.routing_failures = 0;
+                        self.routing_retry = None;
                         self.state.set_routing(Some(cfg));
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "omnichannel routing config");
                         self.routing_failures = self.routing_failures.saturating_add(1);
-                        tasks.push(self.retry(Load::Routing, self.routing_failures));
+                        tasks.push(self.retry(Load::Routing));
                     }
                 }
                 follow = self.state.recompute_update(ws);
@@ -451,16 +460,20 @@ impl Omni {
                 match r {
                     Ok(l) => {
                         self.license_failures = 0;
+                        self.license_retry = None;
                         self.state.set_license(Some(l));
+                        follow.refetch_canned = true;
                     }
                     Err(e) => {
                         tracing::debug!(error = %e, "licenses.info");
                         self.license_failures = self.license_failures.saturating_add(1);
-                        tasks.push(self.retry(Load::License, self.license_failures));
+                        tasks.push(self.retry(Load::License));
                     }
                 }
+                // Canned responses depend on the license (only a new one).
+                let canned = follow.refetch_canned;
                 follow = self.state.recompute_update(ws);
-                follow.refetch_canned = true;
+                follow.refetch_canned |= canned;
             }
             Message::Departments(r) => {
                 self.departments_loading = false;
@@ -520,14 +533,7 @@ impl Omni {
                 Ok(p) => self.state.priorities = p.items,
                 Err(e) => tracing::debug!(error = %e, "priorities"),
             },
-            Message::Retry(session, load) => {
-                if self.session == Some(session) {
-                    match load {
-                        Load::Routing => follow.refetch_routing = self.state.routing.is_none(),
-                        Load::License => follow.refetch_license = self.state.license.is_none(),
-                    }
-                }
-            }
+            Message::Retry(session, load, token) => follow = self.retry_due(session, load, token),
             Message::Opened(_) | Message::Refreshed(_) | Message::ContactCenter(_) => {}
         }
         if let Some(h) = h {
@@ -538,16 +544,50 @@ impl Omni {
         Task::batch(tasks)
     }
 
-    /// Tries `load` of the current session again after a back-off.
-    fn retry(&self, load: Load, attempt: u32) -> Task<Message> {
+    /// Tries `load` of the current session again after a back-off, unless a
+    /// retry of it is already pending (one timer chain per load, whatever
+    /// started the failed load).
+    fn retry(&mut self, load: Load) -> Task<Message> {
         let Some(session) = self.session else {
             return Task::none();
         };
+        let (pending, attempt) = match load {
+            Load::Routing => (&mut self.routing_retry, self.routing_failures),
+            Load::License => (&mut self.license_retry, self.license_failures),
+        };
+        if pending.is_some() {
+            return Task::none();
+        }
+        self.retry_seq += 1;
+        let token = self.retry_seq;
+        *pending = Some(token);
         let delay = retry_delay(attempt);
         // The timer is created when the task runs (inside the runtime).
         Task::perform(async move { tokio::time::sleep(delay).await }, move |()| {
-            Message::Retry(session, load)
+            Message::Retry(session, load, token)
         })
+    }
+
+    /// The loads a retry timer asks for: only the pending timer of `load` of
+    /// the current session, while the load is still missing.
+    fn retry_due(&mut self, session: usize, load: Load, token: u64) -> OmnichannelUpdate {
+        let mut u = OmnichannelUpdate::default();
+        if self.session != Some(session) {
+            return u;
+        }
+        let pending = match load {
+            Load::Routing => &mut self.routing_retry,
+            Load::License => &mut self.license_retry,
+        };
+        if *pending != Some(token) {
+            return u;
+        }
+        *pending = None;
+        match load {
+            Load::Routing => u.refetch_routing = self.state.routing.is_none(),
+            Load::License => u.refetch_license = self.state.license.is_none(),
+        }
+        u
     }
 
     /// The Resync after a reconnect: watches that failed are tried again.
@@ -658,7 +698,20 @@ mod tests {
         assert_eq!(retry_delay(u32::MAX), Duration::from_secs(300));
     }
 
-    /// A failed routing load is retried for the same session only.
+    fn routing_failed(o: &mut Omni, ws: &Workspace, sid: &ServerId) {
+        let _ = o.apply(
+            Message::Routing(Err(Failure::from(rocketchat::Error::Status {
+                status: 503,
+                body: String::new(),
+            }))),
+            sid,
+            ws,
+            None,
+        );
+    }
+
+    /// A failed routing load is retried by one timer chain, for the same
+    /// session only, until it is loaded.
     #[test]
     fn routing_retry_refetches_until_loaded() {
         let mut o = Omni {
@@ -667,17 +720,26 @@ mod tests {
         };
         let ws = Workspace::new();
         let sid = ServerId("s".into());
-        let _ = o.apply(Message::Retry(8, Load::Routing), &sid, &ws, None);
-        let _ = o.apply(
-            Message::Routing(Err(Failure::from(rocketchat::Error::Status {
-                status: 503,
-                body: String::new(),
-            }))),
-            &sid,
-            &ws,
-            None,
-        );
+        routing_failed(&mut o, &ws, &sid);
         assert_eq!(o.routing_failures, 1);
+        let token = o.routing_retry.unwrap();
+        // A second failure (e.g. a Resync refetch) starts no second timer.
+        routing_failed(&mut o, &ws, &sid);
+        assert_eq!(o.routing_retry, Some(token));
+        // Another session's or a stale timer does nothing.
+        assert!(!o.retry_due(8, Load::Routing, token).refetch_routing);
+        assert!(!o.retry_due(7, Load::Routing, token + 1).refetch_routing);
+        assert!(!o.retry_due(7, Load::License, token).refetch_license);
+        // The pending timer refetches once.
+        assert!(o.retry_due(7, Load::Routing, token).refetch_routing);
+        assert_eq!(o.routing_retry, None);
+        assert!(!o.retry_due(7, Load::Routing, token).refetch_routing);
+        // After a successful load a leftover timer does nothing.
+        routing_failed(&mut o, &ws, &sid);
+        let token = o.routing_retry.unwrap();
+        let _ = o.apply(Message::Routing(Ok(Default::default())), &sid, &ws, None);
+        assert_eq!(o.routing_failures, 0);
+        assert!(!o.retry_due(7, Load::Routing, token).refetch_routing);
     }
 
     #[test]

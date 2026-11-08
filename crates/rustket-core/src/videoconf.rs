@@ -20,6 +20,10 @@ pub const CALL_INTERVAL: Duration = Duration::from_millis(3_000);
 pub const CALL_ATTEMPT_LIMIT: u32 = 10;
 /// The callee drops a ring that is not refreshed for this long.
 pub const CALL_TIMEOUT: Duration = Duration::from_millis(10_000);
+/// An unverified incoming call waits this long for its `video-conference.info`
+/// check (the REST client's 60 s API timeout, plus a margin): a slow answer is
+/// still accepted, and re-sent `call`s start no second check meanwhile.
+pub const VERIFY_TIMEOUT: Duration = Duration::from_secs(65);
 /// The callee waits this long for `confirmed` after accepting.
 pub const ACCEPT_TIMEOUT: Duration = Duration::from_millis(5_000);
 /// A joined outgoing call is forgotten after this long if the server's `end`
@@ -565,7 +569,8 @@ impl CallManager {
                     verified: false,
                     caller: None,
                     capabilities: None,
-                    deadline: now + CALL_TIMEOUT,
+                    // Until the check answers; then the ring timeout.
+                    deadline: now + VERIFY_TIMEOUT,
                     accept_deadline: None,
                 });
                 out.push(CallCommand::FetchInfo(s.call_id));
@@ -886,7 +891,7 @@ impl CallManager {
                 });
             }
         }
-        // An unverified entry whose check is still pending is only forgotten:
+        // An unverified entry whose check never answered is only forgotten:
         // the caller's next `call` verifies it again.
         self.incoming
             .retain(|c| c.verified || c.accept_deadline.is_some() || now < c.deadline);
@@ -1255,19 +1260,28 @@ mod tests {
         let out = m.on_verified("c1", Ok(&info("c1", "bob")), t1);
         assert!(has(&out, &CallCommand::ShowIncoming("c1".into())));
 
-        // The check outlives CALL_TIMEOUT: forgotten, not dismissed.
+        // A check slower than CALL_TIMEOUT is still waited for (re-sent
+        // `call`s start no second one) and its answer accepted.
         let mut m = CallManager::new("me");
         m.on_signal(sig(VideoConfAction::Call, "c2", "bob"), true, t0);
         let t2 = t0 + CALL_TIMEOUT + Duration::from_secs(1);
         assert!(m.tick(t2).is_empty());
-        assert!(m.incoming_call("c2").is_none());
-        assert_eq!(
-            m.on_signal(sig(VideoConfAction::Call, "c2", "bob"), true, t2),
-            vec![CallCommand::FetchInfo("c2".into())]
+        assert!(
+            m.on_signal(sig(VideoConfAction::Call, "c2", "bob"), true, t2)
+                .is_empty()
         );
-        // The late answer of the first check is still accepted.
         let out = m.on_verified("c2", Ok(&info("c2", "bob")), t2);
         assert!(has(&out, &CallCommand::ShowIncoming("c2".into())));
+        // A check that never answers is forgotten, not dismissed.
+        let mut m = CallManager::new("me");
+        m.on_signal(sig(VideoConfAction::Call, "c2", "bob"), true, t0);
+        let t3 = t0 + VERIFY_TIMEOUT;
+        assert!(m.tick(t3).is_empty());
+        assert!(m.incoming_call("c2").is_none());
+        assert_eq!(
+            m.on_signal(sig(VideoConfAction::Call, "c2", "bob"), true, t3),
+            vec![CallCommand::FetchInfo("c2".into())]
+        );
 
         // A definite refusal is still dismissed.
         let mut m = CallManager::new("me");

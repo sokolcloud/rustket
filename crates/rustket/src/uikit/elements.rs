@@ -708,6 +708,25 @@ fn typed_valid(text: &str, kind: Typed) -> bool {
         }
 }
 
+/// Valid, or a beginning of a valid value of `kind` (still being typed): only
+/// text that cannot become valid is marked as an error.
+pub(super) fn typed_plausible(text: &str, kind: Typed) -> bool {
+    if typed_valid(text, kind) {
+        return true;
+    }
+    let templates: &[&str] = match kind {
+        Typed::Date => &["2000-01-01", "2000-01-10"],
+        Typed::Month => return true,
+        _ => &["00:00"],
+    };
+    let text = text.trim();
+    templates.iter().any(|t| {
+        t.get(text.len()..)
+            .filter(|rest| !rest.is_empty())
+            .is_some_and(|rest| typed_valid(&format!("{text}{rest}"), kind))
+    })
+}
+
 /// A text field that turns valid typed text into a value (date / time).
 #[allow(clippy::too_many_arguments)]
 fn typed_field(
@@ -739,7 +758,7 @@ fn typed_field(
         .padding([6, 10])
         .width(Length::Fill)
         .style(
-            if env.error(&a.action_id).is_some() || !typed_valid(&shown, kind) {
+            if env.error(&a.action_id).is_some() || !typed_plausible(&shown, kind) {
                 style::text_input_error
             } else {
                 style::text_input

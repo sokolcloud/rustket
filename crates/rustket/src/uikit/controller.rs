@@ -484,8 +484,13 @@ fn ui(ctx: &mut Ctx<'_>, msg: UiKitMsg) -> Out {
             // A cleared or not (yet) valid field holds no value, like the
             // web's native date/time input (""): submitting must not send the
             // previous value the field no longer shows.
+            // A field that never held a value already is "": no change.
             let value = Value::String(valid.unwrap_or_default());
-            if current_value(ctx.ws, &req) == Some(&value) {
+            let unchanged = match current_value(ctx.ws, &req) {
+                Some(current) => current == &value,
+                None => value.as_str() == Some(""),
+            };
+            if unchanged {
                 return Out::none();
             }
             store_value(ctx.ws, &req, value.clone());
@@ -831,6 +836,49 @@ pub fn room_closed(ws: &mut Workspace, rid: &str) {
     }
 }
 
+fn forget_bar(ctx: &mut Ctx<'_>, view_id: &str) {
+    let prefix = SurfaceKey::Bar(view_id.to_owned()).prefix();
+    ctx.local.editors.retain(|k, _| !k.starts_with(&prefix));
+    ctx.ws.uikit_mut().scratch_mut().forget(&prefix);
+}
+
+/// Shows a (re)opened bar in its room, the active room, or drops it.
+fn bar_opened(ctx: &mut Ctx<'_>, rid: Option<String>, view_id: String) -> Out {
+    let mut out = Out::none();
+    match (rid, ctx.active_rid) {
+        (Some(rid), Some(active)) if rid != active => {
+            // Its room's view closed while the app answered (§4.6:
+            // origin room, else the active room).
+            let active = active.to_owned();
+            let moved = ctx.ws.uikit_mut().move_bar(&view_id, &active);
+            out = out.merge(apply_changes(ctx, moved));
+        }
+        (Some(rid), None) => {
+            // No room view to show it in: drop it instead of keeping
+            // it hidden in the store.
+            let closed = ctx.ws.uikit_mut().close_room_bars(&rid);
+            out = out.merge(apply_changes(ctx, closed));
+            out.effects.push(Effect::Toast(
+                BannerKind::Info,
+                t!("uikit.bar_needs_room").into_owned(),
+                String::new(),
+            ));
+        }
+        (Some(rid), _) => out.effects.push(Effect::ShowBar { rid, view_id }),
+        (None, Some(active)) => {
+            let active = active.to_owned();
+            let placed = ctx.ws.uikit_mut().place_bar(&view_id, &active);
+            out = out.merge(apply_changes(ctx, placed));
+        }
+        (None, None) => out.effects.push(Effect::Toast(
+            BannerKind::Info,
+            t!("uikit.bar_needs_room").into_owned(),
+            String::new(),
+        )),
+    }
+    out
+}
+
 /// Reports store changes as effects (and keeps the scratch/editors tidy).
 pub fn apply_changes(ctx: &mut Ctx<'_>, changes: Vec<UiKitChange>) -> Out {
     let mut out = Out::none();
@@ -857,42 +905,14 @@ pub fn apply_changes(ctx: &mut Ctx<'_>, changes: Vec<UiKitChange>) -> Out {
                     out = out.merge(apply_changes(ctx, vec![next]));
                 }
             }
-            UiKitChange::BarOpened { rid, view_id } => match (rid, ctx.active_rid) {
-                (Some(rid), Some(active)) if rid != active => {
-                    // Its room's view closed while the app answered (§4.6:
-                    // origin room, else the active room).
-                    let active = active.to_owned();
-                    let moved = ctx.ws.uikit_mut().move_bar(&view_id, &active);
-                    out = out.merge(apply_changes(ctx, moved));
-                }
-                (Some(rid), None) => {
-                    // No room view to show it in: drop it instead of keeping
-                    // it hidden in the store.
-                    let closed = ctx.ws.uikit_mut().close_room_bars(&rid);
-                    out = out.merge(apply_changes(ctx, closed));
-                    out.effects.push(Effect::Toast(
-                        BannerKind::Info,
-                        t!("uikit.bar_needs_room").into_owned(),
-                        String::new(),
-                    ));
-                }
-                (Some(rid), _) => out.effects.push(Effect::ShowBar { rid, view_id }),
-                (None, Some(active)) => {
-                    let active = active.to_owned();
-                    let placed = ctx.ws.uikit_mut().place_bar(&view_id, &active);
-                    out = out.merge(apply_changes(ctx, placed));
-                }
-                (None, None) => out.effects.push(Effect::Toast(
-                    BannerKind::Info,
-                    t!("uikit.bar_needs_room").into_owned(),
-                    String::new(),
-                )),
-            },
+            UiKitChange::BarOpened { rid, view_id } => {
+                // Always a new instance (possibly replacing one in place): the
+                // old one's texts and pending timers must not reach it.
+                forget_bar(ctx, &view_id);
+                out = out.merge(bar_opened(ctx, rid, view_id));
+            }
             UiKitChange::BarClosed { rid, view_id } => {
-                ctx.ws
-                    .uikit_mut()
-                    .scratch_mut()
-                    .forget(&SurfaceKey::Bar(view_id.clone()).prefix());
+                forget_bar(ctx, &view_id);
                 if let Some(rid) = rid {
                     out.effects.push(Effect::HideBar { rid, view_id });
                 }
