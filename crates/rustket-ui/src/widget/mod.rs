@@ -41,7 +41,9 @@ pub use message::{
     GUTTER, MESSAGE_AVATAR, MessageRowProps, discussion_summary, message_row, message_toolbar,
     system_message_row, thread_summary,
 };
-pub use misc::{ChipKind, TooltipPosition, chip, divider, kbd, tooltip, vertical_divider};
+pub use misc::{
+    ChipKind, TooltipPosition, above, chip, divider, kbd, slot, tooltip, vertical_divider,
+};
 pub use overlay::{Toast, dialog, modal, modal_keyed, toasts};
 pub use popover::{Placement, popover};
 pub use presence::{Presence, presence_dot};

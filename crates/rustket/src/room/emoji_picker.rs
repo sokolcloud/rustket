@@ -341,7 +341,9 @@ impl EmojiPicker {
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center);
         }
-        let mut body = column![header].spacing(SPACE_1);
+        // The tone row shares a child with the header so the grid keeps its
+        // position (and scroll offset) when the row opens and closes.
+        let mut head = column![header].spacing(SPACE_1);
         if self.tones_open {
             let mut tones = row![].spacing(0);
             for t in 0..=5u8 {
@@ -358,9 +360,10 @@ impl EmojiPicker {
                         .on_press(Message::Tone(t)),
                 );
             }
-            body = body.push(tones);
+            head = head.push(tones);
         }
-        body = body
+        let body = column![head]
+            .spacing(SPACE_1)
             .push(tabs)
             .push(
                 text(section)
@@ -456,5 +459,25 @@ mod tests {
         let cells = p.cells(&ws);
         assert!(cells.iter().any(|c| c.key == ":flag_ru:"));
         assert_eq!(p.update(Message::Close), Some(Event::Close));
+    }
+
+    /// The tone row used to be a child of its own before the grid: opening
+    /// or closing it rebuilt the grid's scrollable (back to the top).
+    #[test]
+    fn tone_row_keeps_the_grid_scrollable() {
+        use crate::tree_probe::{assert_kept, scrollable_tag, text_input_tag};
+        use iced::advanced::widget::Tree;
+        let ws = Workspace::new();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let mut p = EmojiPicker::new();
+        let mut tree = Tree::new(p.view(&ws, &sid, &url, &images, None).as_widget());
+        for step in ["tones open", "tones closed"] {
+            p.update(Message::ToggleTones);
+            let view = p.view(&ws, &sid, &url, &images, None);
+            assert_kept(&mut tree, &view, scrollable_tag(), step);
+            assert_kept(&mut tree, &view, text_input_tag(), step);
+        }
     }
 }

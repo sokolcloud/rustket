@@ -286,22 +286,24 @@ impl Rooms {
                     .into()
             }
         };
-        let mut out = column![top].height(Length::Fill);
-        if let Some((_, name)) = &self.confirm_join {
-            out = out.push(
-                iced::widget::container(common::confirm_card(
-                    t!("room_panel.confirm_join", room = name).into_owned(),
-                    t!("room_panel.join").into_owned(),
-                    false,
-                    self.joining.is_some(),
-                    Msg::ConfirmJoin,
-                    Msg::CancelJoin,
-                ))
-                .padding([0.0, SPACE_4])
-                .center_x(Length::Fill),
-            );
-        }
-        out.push(body).into()
+        // The card has a slot of its own: the list below keeps its scroll
+        // offset while the card is shown.
+        let confirm = self.confirm_join.as_ref().map(|(_, name)| {
+            iced::widget::container(common::confirm_card(
+                t!("room_panel.confirm_join", room = name).into_owned(),
+                t!("room_panel.join").into_owned(),
+                false,
+                self.joining.is_some(),
+                Msg::ConfirmJoin,
+                Msg::CancelJoin,
+            ))
+            .padding([0.0, SPACE_4])
+            .center_x(Length::Fill)
+            .into()
+        });
+        column![top, rustket_ui::widget::slot(confirm, 0.0), body]
+            .height(Length::Fill)
+            .into()
     }
 }
 
@@ -358,5 +360,81 @@ mod tests {
         let _ = r.update(Msg::Open("d1".into()), &mut ctx);
         let _ = r.update(Msg::ConfirmJoin, &mut ctx);
         assert_eq!(r.joining.as_deref(), Some("d1"));
+    }
+
+    /// The join confirmation used to be inserted before the list: the list
+    /// was rebuilt (scrolled back to the top) when the card appeared and
+    /// again when it went away.
+    #[test]
+    fn join_confirmation_keeps_the_list_scrollable() {
+        use crate::tree_probe::{assert_kept, scrollable_tag};
+        use iced::advanced::widget::Tree;
+        let mut ws = Workspace::new();
+        let (sid, url) = (
+            ServerId("s".into()),
+            ServerUrl::parse("http://localhost:3000").unwrap(),
+        );
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let mut r = Rooms::new(Mode::Discussions);
+        let req = r.list.reset();
+        r.list.finish(
+            req,
+            Ok(Paginated {
+                items: vec![
+                    serde_json::from_value(
+                        serde_json::json!({"_id": "d1", "t": "c", "name": "x", "fname": "Disc"}),
+                    )
+                    .unwrap(),
+                ],
+                count: 1,
+                offset: 0,
+                total: 1,
+                raw_len: 1,
+                dropped: 0,
+            }),
+        );
+        let view = |r: &Rooms, ws: &Workspace| -> Tree {
+            let ctx = ViewCtx {
+                server_id: &sid,
+                server: &url,
+                rid: "r",
+                workspace: ws,
+                images: &images,
+                prefs: &prefs,
+                connected: true,
+                panel: None,
+                now: std::time::Instant::now(),
+            };
+            Tree::new(r.view(&ctx).as_widget())
+        };
+        let mut tree = view(&r, &ws);
+        for (step, msg) in [
+            ("card shown", Msg::Open("d1".into())),
+            ("card gone", Msg::CancelJoin),
+        ] {
+            let mut ctx = UpdateCtx {
+                server_id: &sid,
+                server: &url,
+                rid: "r",
+                workspace: &mut ws,
+                session: None,
+                images: &images,
+                prefs: &prefs,
+            };
+            let _ = r.update(msg, &mut ctx);
+            let ctx = ViewCtx {
+                server_id: &sid,
+                server: &url,
+                rid: "r",
+                workspace: &ws,
+                images: &images,
+                prefs: &prefs,
+                connected: true,
+                panel: None,
+                now: std::time::Instant::now(),
+            };
+            assert_kept(&mut tree, &r.view(&ctx), scrollable_tag(), step);
+        }
     }
 }

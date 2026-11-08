@@ -5,7 +5,7 @@
 //! other rooms.
 
 use chrono::Local;
-use iced::widget::{column, container, row, text};
+use iced::widget::{container, row, text};
 use iced::{Alignment, Element, Length, Task};
 use rocketchat::models::{Contact, Room, RoomType, Subscription};
 use rust_i18n::t;
@@ -502,19 +502,18 @@ impl OmniRoom {
         ctx: &ViewCtx<'a>,
     ) -> Element<'a, crate::room::Message> {
         let omni = omni_of(ctx.server_id);
-        let Some(state) = state_of(ctx.workspace, &omni, ctx.rid) else {
-            return composer;
-        };
-        let main = match self.callout_view(state, ctx) {
+        let state = state_of(ctx.workspace, &omni, ctx.rid);
+        // A callout (closed, on hold, queued, …) replaces the composer.
+        let main = match state.and_then(|st| self.callout_view(st, ctx)) {
             Some(c) => c.map(crate::room::Message::Omni),
             None => composer,
         };
-        match self.contact_banner() {
-            Some(b) => column![b.map(crate::room::Message::Omni), main]
-                .spacing(SPACE_2)
-                .into(),
-            None => main,
-        }
+        // The contact banner sits in a slot, so the composer keeps its
+        // widget state (focus, text) when it is dismissed.
+        let banner = state
+            .and_then(|_| self.contact_banner())
+            .map(|b| b.map(crate::room::Message::Omni));
+        rustket_ui::widget::above(banner, SPACE_2, main).into()
     }
 
     /// The open dialog (over the whole room), its key and its dismiss message.

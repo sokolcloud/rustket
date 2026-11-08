@@ -18,7 +18,7 @@ use rustket_ui::theme::{
     TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, ChipKind, banner, chip, danger_button, dialog, ghost_button, primary_button,
+    BannerKind, ChipKind, above, banner, chip, danger_button, dialog, ghost_button, primary_button,
     secondary_button, text_field,
 };
 
@@ -541,13 +541,20 @@ impl Security {
         let ws = ctx.workspace;
         let settings = ws.settings();
         let me = ws.me();
-        let mut body = column![].spacing(SPACE_4).max_width(640);
+        let mut body = column![].spacing(SPACE_4);
+        // Error and notice share one slot: the code fields below keep their
+        // place (and focus) when a banner appears.
+        let mut notices = column![].spacing(SPACE_4);
+        let mut any = false;
         if let Some(e) = &self.error {
-            body = body.push(banner(BannerKind::Error, e.clone(), None));
+            notices = notices.push(banner(BannerKind::Error, e.clone(), None));
+            any = true;
         }
         if let Some(n) = &self.notice {
-            body = body.push(banner(BannerKind::Success, n.clone(), None));
+            notices = notices.push(banner(BannerKind::Success, n.clone(), None));
+            any = true;
         }
+        let notices = any.then(|| notices.into());
         if !settings.bool_or("Accounts_TwoFactorAuthentication_Enabled", true) {
             body = body.push(banner(
                 BannerKind::Info,
@@ -558,7 +565,7 @@ impl Security {
                 body = body.push(e2e);
             }
             body = body.push(self.sessions_view());
-            return body.into();
+            return above(notices, SPACE_4, body).max_width(640).into();
         }
 
         if settings.bool_or("Accounts_TwoFactorAuthentication_By_TOTP_Enabled", true) {
@@ -682,7 +689,7 @@ impl Security {
             body = body.push(e2e);
         }
         body = body.push(self.sessions_view());
-        body.into()
+        above(notices, SPACE_4, body).max_width(640).into()
     }
 
     /// Active sessions / devices.

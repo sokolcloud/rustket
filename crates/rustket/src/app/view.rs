@@ -14,7 +14,7 @@ use rustket_ui::theme::{
     TEXT_CAPTION, TEXT_SUBTITLE,
 };
 use rustket_ui::widget::{
-    AvatarShape, AvatarSource, BannerKind, avatar, banner, dialog, empty_state,
+    AvatarShape, AvatarSource, BannerKind, Toast, above, avatar, banner, dialog, empty_state,
     loading_placeholder, modal_keyed, primary_button, secondary_button, spinner, split,
     status_strip, toasts,
 };
@@ -28,6 +28,22 @@ use crate::url_handler;
 use crate::workspace::sidebar::SidebarCtx;
 use crate::workspace::{ServerState, rail};
 use rustket_core::ServerId;
+
+/// `base` under the app's layers: the open modal (keyed by dialog identity),
+/// `calls` (the video-call layer: call dialog and call cards, drawn above
+/// blocking modals but taking input only over the cards) and the toasts.
+/// Every wrapper is always there, so a layer coming and going keeps the
+/// base's widget state.
+pub(crate) fn layered<'a, M: Clone + 'a>(
+    base: Element<'a, M>,
+    overlay: Option<(String, Element<'a, M>)>,
+    dismiss: Option<M>,
+    calls: impl FnOnce(Element<'a, M>) -> Element<'a, M>,
+    list: &'a [Toast],
+    on_close: impl Fn(u64) -> M + 'a,
+) -> Element<'a, M> {
+    toasts(calls(modal_keyed(base, overlay, dismiss)), list, on_close)
+}
 
 impl App {
     // --- view --------------------------------------------------------------------
@@ -67,9 +83,14 @@ impl App {
         };
         let (overlay, dismiss) = self.overlay();
         let key = self.overlay_key();
-        let content = modal_keyed(base, overlay.map(|o| (key, o)), dismiss);
-        let content = crate::videoconf::view::layer(self, content);
-        toasts(content, &self.toasts, Message::CloseToast)
+        layered(
+            base,
+            overlay.map(|o| (key, o)),
+            dismiss,
+            |c| crate::videoconf::view::layer(self, c),
+            &self.toasts,
+            Message::CloseToast,
+        )
     }
 
     /// Rail plus a page of server `sid`.
@@ -176,18 +197,20 @@ impl App {
                 .into(),
             };
         let room_area = self.omni_screen(s).unwrap_or(room_area);
-        let mut area = column![];
+        // Strips above the room (connection, E2E banner, app banners) come
+        // and go in one slot; the room keeps its widget state (composer
+        // focus, timeline scroll) meanwhile. The UIKit busy pill floats.
+        let mut strips: Vec<Element<'_, Message>> = Vec::new();
         if let Some(strip) = self.connection_strip(s) {
-            area = area.push(strip);
+            strips.push(strip);
         }
         if let Some(b) = crate::e2e::view::banner(s) {
             let (sid, epoch) = (sid.clone(), s.generation);
-            area = area.push(b.map(move |m| Message::E2e(sid.clone(), epoch, m)));
+            strips.push(b.map(move |m| Message::E2e(sid.clone(), epoch, m)));
         }
-        for strip in self.uikit_strips(s) {
-            area = area.push(strip);
-        }
-        area = area.push(self.uikit_busy_over(s, room_area));
+        strips.extend(self.uikit_strips(s));
+        let strips = (!strips.is_empty()).then(|| column(strips).into());
+        let area = above(strips, 0.0, self.uikit_busy_over(s, room_area));
         split(
             sidebar_view,
             area.width(Length::Fill).height(Length::Fill),

@@ -876,3 +876,69 @@ fn leaving_stops_typing_once() {
     assert!(!c.typing.is_active());
     assert_eq!(c.leave(None).units(), 0);
 }
+
+fn view_ctx(env: &Env) -> ViewCtx<'_> {
+    ViewCtx {
+        server_id: &env.sid,
+        server: &env.server,
+        rid: "R1",
+        workspace: &env.ws,
+        images: &env.images,
+        prefs: &env.prefs,
+        connected: true,
+        panel: None,
+        now: std::time::Instant::now(),
+    }
+}
+
+/// The typing label, the edit bar and quote chips were children of the
+/// column before the editor: each one appearing or disappearing moved the
+/// editor to another position and rebuilt its tree (focus lost while
+/// typing, e.g. when someone else started typing).
+#[test]
+fn editor_keeps_its_tree_when_bars_and_popups_come_and_go() {
+    use crate::tree_probe::{assert_kept, text_editor_tag};
+    use iced::advanced::widget::Tree;
+    use std::time::{Duration, Instant};
+    let mut env = Env::new("t-tree");
+    env.ws.apply_message(msg("M1", "me", "first"));
+    let mut c = Composer::new("R1");
+    let ed = text_editor_tag();
+    let mut tree = Tree::new(c.view(&view_ctx(&env)).as_widget());
+    type Change = dyn Fn(&mut Composer, &mut Env);
+    let steps: [(&str, &Change); 6] = [
+        ("someone types", &|_, env| {
+            env.ws.apply_user_activity_at(
+                "R1",
+                "bob",
+                &["user-typing".into()],
+                None,
+                Instant::now(),
+            );
+        }),
+        ("edit bar", &|c, env| {
+            let _ = c.update(Message::EditLast, &mut env.ctx());
+            assert!(c.is_editing());
+        }),
+        ("popup opens", &|c, env| {
+            type_text(c, env, " :thumbsu");
+            assert!(!c.popup_items().is_empty());
+        }),
+        ("popup closes", &|c, env| {
+            let _ = c.update(Message::Cancel, &mut env.ctx());
+            assert!(c.popup_items().is_empty());
+        }),
+        ("edit cancelled", &|c, env| {
+            let _ = c.update(Message::CancelEdit, &mut env.ctx());
+            assert!(!c.is_editing());
+        }),
+        ("typing stops", &|_, env| {
+            env.ws
+                .expire_typing(Instant::now() + Duration::from_secs(3600));
+        }),
+    ];
+    for (step, change) in steps {
+        change(&mut c, &mut env);
+        assert_kept(&mut tree, &c.view(&view_ctx(&env)), ed, step);
+    }
+}

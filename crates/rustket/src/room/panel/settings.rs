@@ -10,7 +10,7 @@ use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
-use rustket_ui::widget::{BannerKind, banner, primary_button, secondary_button, text_field};
+use rustket_ui::widget::{BannerKind, above, banner, primary_button, secondary_button, text_field};
 
 use super::api::{self, RoomSettings};
 use super::common;
@@ -307,10 +307,7 @@ impl Settings {
             }
             c.into()
         };
-        let mut col = column![].spacing(SPACE_3).padding(SPACE_4);
-        if let Some(e) = &self.error {
-            col = col.push(banner(BannerKind::Error, e.clone(), None::<(String, Msg)>));
-        }
+        let mut col = column![].spacing(SPACE_3);
         col = col
             .push(input(
                 t!("room_panel.name").into_owned(),
@@ -390,7 +387,13 @@ impl Settings {
             ]
             .spacing(SPACE_3),
         );
-        scrollable(col)
+        // The error has a slot of its own: a failed save must not shift the
+        // fields (and their focus and editor state).
+        let error = self
+            .error
+            .as_ref()
+            .map(|e| banner(BannerKind::Error, e.clone(), None::<(String, Msg)>));
+        scrollable(above(error, SPACE_3, col).padding(SPACE_4))
             .height(Length::Fill)
             .style(style::scrollable)
             .into()

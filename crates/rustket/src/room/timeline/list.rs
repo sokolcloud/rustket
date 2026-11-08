@@ -534,38 +534,43 @@ impl Follow {
     }
 }
 
-/// `list` with the "jump to latest" button (with the count of what waits
-/// below when `new_below` is set) over its bottom right corner.
+/// `list` with the "jump to latest" button (`jump`: its label, with the
+/// count of what waits below, and message) over its bottom right corner.
+/// Always a stack, with an empty layer while there is no button: the list's
+/// tree keeps its place, so its scroll offset and rows survive the button
+/// appearing (scrolling up, a message arriving below) and disappearing.
 pub(crate) fn with_jump_button<'a, M: Clone + 'a>(
     list: Element<'a, M>,
-    label: String,
-    on_press: M,
+    jump: Option<(String, M)>,
 ) -> Element<'a, M> {
-    use iced::widget::{button, container, row as hrow, stack, text};
+    use iced::widget::{button, container, row as hrow, space, stack, text};
     use rustket_ui::icon::{self, Icon};
     use rustket_ui::style;
     use rustket_ui::theme::{SPACE_2, SPACE_4, TEXT_SMALL};
-    let jump = button(
-        hrow![
-            icon::sized(Icon::ArrowDown, 14.0),
-            text(label).size(TEXT_SMALL)
-        ]
-        .spacing(SPACE_2)
-        .align_y(iced::Alignment::Center),
-    )
-    .padding([6, 12])
-    .style(style::button_primary)
-    .on_press(on_press);
-    stack![
-        list,
-        container(jump)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(iced::Alignment::End)
-            .align_y(iced::Alignment::End)
-            .padding(SPACE_4)
-    ]
-    .into()
+    let layer: Element<'a, M> = match jump {
+        Some((label, on_press)) => {
+            let jump = button(
+                hrow![
+                    icon::sized(Icon::ArrowDown, 14.0),
+                    text(label).size(TEXT_SMALL)
+                ]
+                .spacing(SPACE_2)
+                .align_y(iced::Alignment::Center),
+            )
+            .padding([6, 12])
+            .style(style::button_primary)
+            .on_press(on_press);
+            container(jump)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced::Alignment::End)
+                .align_y(iced::Alignment::End)
+                .padding(SPACE_4)
+                .into()
+        }
+        None => space().into(),
+    };
+    stack![list, layer].into()
 }
 
 #[cfg(test)]

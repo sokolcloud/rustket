@@ -29,7 +29,7 @@ use rustket_ui::theme::{
     FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL,
 };
 use rustket_ui::widget::{
-    BannerKind, Placement, TooltipPosition, danger_button, icon_button_with, modal, popover,
+    BannerKind, Placement, TooltipPosition, above, danger_button, icon_button_with, modal, popover,
     primary_button, secondary_button, tooltip,
 };
 use rustket_ui::{Icon, icon, style};
@@ -1411,32 +1411,35 @@ impl Composer {
         if let Some(n) = crate::e2e::room::composer_block(ctx.workspace, &self.rid) {
             return container(n).padding([SPACE_2, SPACE_4]).into();
         }
-        let mut col = column![].spacing(SPACE_1);
+        // Bars above the editor, in one slot so the editor keeps its tree
+        // position (and focus) when they come and go.
+        let mut bars: Vec<Element<'a, Message>> = Vec::new();
         if let Some(h) = crate::e2e::room::composer_hint(ctx.workspace, &self.rid) {
-            col = col.push(h);
+            bars.push(h);
         }
         let slash = self
             .content
             .line(0)
             .is_some_and(|l| l.text.starts_with('/'));
         if let Some(h) = crate::e2e::room::slash_hint(ctx.workspace, &self.rid, slash) {
-            col = col.push(h);
+            bars.push(h);
         }
         if let Some(l) = ctx
             .workspace
             .typing_label(&self.rid, self.tmid.as_deref(), ctx.now)
         {
-            col = col.push(
+            bars.push(
                 label(crate::workspace::sidebar::typing_text(&l))
                     .size(TEXT_CAPTION)
-                    .style(style::text_secondary),
+                    .style(style::text_secondary)
+                    .into(),
             );
         }
         if let Some(t) = self.uploads.transfers_view() {
-            col = col.push(t.map(Message::Upload));
+            bars.push(t.map(Message::Upload));
         }
         if let Some(e) = &self.editing {
-            col = col.push(bar(
+            bars.push(bar(
                 Icon::Pencil,
                 t!("room_composer.editing").into_owned(),
                 e.original.lines().next().unwrap_or_default().to_owned(),
@@ -1444,7 +1447,7 @@ impl Composer {
             ));
         }
         for q in &self.quotes {
-            col = col.push(bar(
+            bars.push(bar(
                 Icon::Quote,
                 t!("room_composer.quoting", user = q.author.as_str()).into_owned(),
                 q.excerpt.clone(),
@@ -1465,8 +1468,9 @@ impl Composer {
             Placement::AboveStart,
             Message::AcClose,
         );
+        let bars = (!bars.is_empty()).then(|| column(bars).spacing(SPACE_1).into());
         // The emoji picker opens above the whole composer frame.
-        col = col.push(self.with_picker(framed, ctx));
+        let col = above(bars, SPACE_1, self.with_picker(framed, ctx));
         let body = container(col)
             .padding([SPACE_2, SPACE_4])
             .width(Length::Fill);

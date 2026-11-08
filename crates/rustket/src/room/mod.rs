@@ -14,7 +14,7 @@ pub mod upload;
 use std::sync::Arc;
 use std::time::Instant;
 
-use iced::widget::{column, container, opaque, row, stack};
+use iced::widget::{column, container, opaque, row, space, stack};
 use iced::{Element, Length, Subscription, Task};
 use rocketchat::rest::HistoryCursor;
 use rocketchat::session::RoomWatch;
@@ -727,10 +727,20 @@ impl RoomView {
                 t!("app.preview_not_allowed"),
                 t!("app.preview_join_hint"),
             )
-        } else if let Some(b) = self.header.e2e_body(ctx) {
-            b.map(Message::Header)
         } else {
-            self.timeline.view(ctx).map(Message::Timeline)
+            // The E2E body ("check back later", enter password) covers the
+            // timeline instead of replacing it, so the timeline keeps its
+            // widget state when the room becomes readable.
+            let cover: Element<'a, Message> = match self.header.e2e_body(ctx) {
+                Some(b) => opaque(
+                    container(b.map(Message::Header))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .style(style::container_room),
+                ),
+                None => space().into(),
+            };
+            stack![self.timeline.view(ctx).map(Message::Timeline), cover].into()
         };
         let main = column![
             self.header.view(ctx).map(Message::Header),
@@ -740,43 +750,59 @@ impl RoomView {
         ]
         .width(Length::Fill)
         .height(Length::Fill);
-        let body: Element<'a, Message> = match self.panel.view(ctx) {
-            // The expanded thread covers the room column (up to a maximum
-            // width) instead of squeezing it, like the web.
-            Some(panel) if self.panel.expanded() => stack![
-                main,
-                container(
-                    container(opaque(
-                        row![
-                            vertical_divider(),
-                            container(panel.map(Message::Panel))
-                                .width(Length::Fill)
-                                .height(Length::Fill)
-                                .style(style::container_sidebar),
-                        ]
+        // One tree shape with and without a panel and for both panel layouts
+        // (iced diffs children by position): the room column stays the first
+        // child of a stack, so opening, closing or expanding a panel keeps
+        // its widget state (timeline scroll, composer focus), and the panel
+        // keeps its own when the thread is expanded or collapsed.
+        let (side, main_padding): (Element<'a, Message>, f32) = match self.panel.view(ctx) {
+            Some(panel) => {
+                let side = container(opaque(
+                    row![
+                        vertical_divider(),
+                        container(panel.map(Message::Panel))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .style(style::container_sidebar),
+                    ]
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+                ))
+                .height(Length::Fill);
+                // The expanded thread covers the room column (up to a maximum
+                // width) instead of squeezing it, like the web.
+                let (side, padding) = if self.panel.expanded() {
+                    let side = side
+                        .width(Length::Fill)
+                        .max_width(panel::thread::WIDTH_EXPANDED);
+                    (side, 0.0)
+                } else {
+                    // The panel plus its 1px divider.
+                    let width = self.panel.width() + 1.0;
+                    (side.width(Length::Fixed(width)), width)
+                };
+                (
+                    container(side)
                         .width(Length::Fill)
                         .height(Length::Fill)
-                    ))
-                    .width(Length::Fill)
-                    .max_width(panel::thread::WIDTH_EXPANDED)
-                    .height(Length::Fill)
+                        .align_x(iced::Alignment::End)
+                        .into(),
+                    padding,
                 )
+            }
+            None => (space().into(), 0.0),
+        };
+        let body: Element<'a, Message> = stack![
+            container(main)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .align_x(iced::Alignment::End),
-            ]
-            .into(),
-            Some(panel) => row![
-                main,
-                vertical_divider(),
-                container(panel.map(Message::Panel))
-                    .width(Length::Fixed(self.panel.width()))
-                    .height(Length::Fill)
-                    .style(style::container_sidebar),
-            ]
-            .into(),
-            None => main.into(),
-        };
+                .padding(iced::Padding {
+                    right: main_padding,
+                    ..iced::Padding::ZERO
+                }),
+            side,
+        ]
+        .into();
         // Dialogs and the image lightbox of the timeline and the panel
         // cover the whole room.
         let overlay = self
@@ -936,5 +962,159 @@ mod tests {
         let _ = rv.handle_effects(pinned(), &mut ctx);
         let _ = rv.handle_effects(pinned(), &mut ctx);
         assert_eq!(rv.panel.kind(), None);
+    }
+
+    fn view_ctx<'a>(
+        ws: &'a Workspace,
+        sid: &'a ServerId,
+        url: &'a ServerUrl,
+        images: &'a Images,
+        prefs: &'a UiPrefs,
+    ) -> ViewCtx<'a> {
+        ViewCtx {
+            server_id: sid,
+            server: url,
+            rid: "R1",
+            workspace: ws,
+            images,
+            prefs,
+            connected: true,
+            panel: None,
+            now: std::time::Instant::now(),
+        }
+    }
+
+    /// The room as the app shows it: under the connection strip, a dialog
+    /// and the toasts (`App::view`).
+    fn in_app<'a>(
+        rv: &'a RoomView,
+        ctx: &ViewCtx<'a>,
+        toasts: &'a [rustket_ui::widget::Toast],
+        strip: bool,
+        dialog: bool,
+    ) -> Element<'a, Message> {
+        use iced::widget::text;
+        let strip = strip.then(|| text("offline").into());
+        let base = rustket_ui::widget::above(strip, 0.0, rv.view(ctx)).into();
+        let overlay = dialog.then(|| (String::from("app"), text("dialog").into()));
+        let dismiss = dialog.then_some(Message::Timeline(timeline::Message::JumpToLatest));
+        // The call layer: always a stack over the modal.
+        let calls = |c: Element<'a, Message>| iced::widget::stack![c, iced::widget::space()].into();
+        crate::app::layered(base, overlay, dismiss, calls, toasts, |_| {
+            Message::Timeline(timeline::Message::JumpToLatest)
+        })
+    }
+
+    /// Opening a panel used to turn the room's body from the room column into
+    /// a row (or a stack for the expanded thread) around it, rebuilding the
+    /// timeline (scroll offset) and the composer (focus); expanding or
+    /// collapsing the thread rebuilt the panel. Toasts, dialogs and the
+    /// connection strip must not touch either.
+    #[test]
+    fn room_keeps_timeline_and_editor_trees() {
+        use crate::tree_probe::{assert_first_kept, assert_kept, scrollable_tag, text_editor_tag};
+        use iced::advanced::widget::Tree;
+        use rustket_ui::widget::{BannerKind, Toast};
+        let mut ws = workspace();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let uctx = |ws: &mut Workspace, f: &mut dyn FnMut(&mut UpdateCtx<'_>)| {
+            let mut ctx = UpdateCtx {
+                server_id: &sid,
+                server: &url,
+                rid: "R1",
+                workspace: ws,
+                session: None,
+                images: &images,
+                prefs: &prefs,
+            };
+            f(&mut ctx);
+        };
+        let mut rv = None;
+        uctx(&mut ws, &mut |ctx| rv = Some(RoomView::open(ctx).0));
+        let mut rv = rv.unwrap();
+        ws.apply_message(message("a", 1_000_000));
+        ws.apply_message(message("b", 2_000_000));
+        let mut p = message("P", 3_000_000);
+        p.tcount = Some(0);
+        ws.apply_message(p);
+        let toast = [Toast {
+            id: 1,
+            kind: BannerKind::Info,
+            title: "toast".into(),
+            body: String::new(),
+        }];
+        let (s, ed) = (scrollable_tag(), text_editor_tag());
+        let mut tree = {
+            let ctx = view_ctx(&ws, &sid, &url, &images, &prefs);
+            Tree::new(in_app(&rv, &ctx, &[], false, false).as_widget())
+        };
+        type Step<'s> = (&'s str, bool, bool, bool, Option<Effect>);
+        let open = |k: panel::Kind| Some(Effect::OpenPanel(k));
+        let steps: Vec<Step<'_>> = vec![
+            ("toast", true, false, false, None),
+            ("dialog", true, false, true, None),
+            ("strip", true, true, true, None),
+            ("layers gone", false, false, false, None),
+            (
+                "members panel",
+                false,
+                false,
+                false,
+                open(panel::Kind::Members),
+            ),
+            (
+                "thread panel",
+                false,
+                false,
+                false,
+                open(panel::Kind::Thread("P".into())),
+            ),
+        ];
+        for (step, toasts, strip, dialog, effect) in steps {
+            if let Some(e) = effect {
+                uctx(&mut ws, &mut |ctx| {
+                    let _ = rv.handle_effects(Action::effect(e.clone()), ctx);
+                    let g = rv.panel.generation();
+                    let _ = rv.update(Message::Panel(panel::Message::Activate(g)), ctx);
+                });
+            }
+            let ctx = view_ctx(&ws, &sid, &url, &images, &prefs);
+            let list: &[Toast] = if toasts { &toast } else { &[] };
+            let view = in_app(&rv, &ctx, list, strip, dialog);
+            // The room's timeline and composer come first; another panel
+            // replaces the previous panel's widgets.
+            assert_first_kept(&mut tree, &view, s, 1, step);
+            assert_first_kept(&mut tree, &view, ed, 1, step);
+        }
+        // The thread shows its composer: expanding and collapsing it keeps
+        // both editors (and the scrollables).
+        assert_eq!(crate::tree_probe::states(&tree, ed).len(), 2);
+        for step in ["expanded", "collapsed"] {
+            let g = rv.panel.generation();
+            let m = Message::Panel(panel::Message::Body(
+                g,
+                panel::BodyMsg::Thread(panel::thread::Msg::ToggleExpand),
+            ));
+            uctx(&mut ws, &mut |ctx| {
+                let _ = rv.update(m.clone(), ctx);
+            });
+            let ctx = view_ctx(&ws, &sid, &url, &images, &prefs);
+            let view = in_app(&rv, &ctx, &[], false, false);
+            assert_kept(&mut tree, &view, s, step);
+            assert_kept(&mut tree, &view, ed, step);
+        }
+        assert!(!rv.panel.expanded());
+        uctx(&mut ws, &mut |ctx| {
+            let _ = rv.update(Message::Panel(panel::Message::Close), ctx);
+        });
+        let ctx = view_ctx(&ws, &sid, &url, &images, &prefs);
+        let view = in_app(&rv, &ctx, &[], false, false);
+        // The room's own editor and timeline survive closing the panel.
+        let before = crate::tree_probe::states(&tree, ed);
+        tree.diff(view.as_widget());
+        assert_eq!(crate::tree_probe::states(&tree, ed), before[..1]);
     }
 }
