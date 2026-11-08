@@ -1553,3 +1553,72 @@ admin.ws.version:
 admin.yes:
   en: "Yes"
   ru: "Да"
+admin.apps.st.unknown:
+  en: "Unknown"
+  ru: "Неизвестно"
+admin.apps.st.constructed:
+  en: "Constructed"
+  ru: "Создано"
+admin.apps.st.initialized:
+  en: "Initialized"
+  ru: "Инициализировано"
+admin.apps.st.auto_enabled:
+  en: "Enabled"
+  ru: "Включено"
+admin.apps.st.manually_enabled:
+  en: "Enabled"
+  ru: "Включено"
+admin.apps.st.compiler_error_disabled:
+  en: "Disabled: compiler error"
+  ru: "Отключено: ошибка компиляции"
+admin.apps.st.invalid_license_disabled:
+  en: "Disabled: invalid license"
+  ru: "Отключено: недействительная лицензия"
+admin.apps.st.invalid_installation_disabled:
+  en: "Disabled: invalid installation"
+  ru: "Отключено: некорректная установка"
+admin.apps.st.error_disabled:
+  en: "Disabled: error"
+  ru: "Отключено: ошибка"
+admin.apps.st.manually_disabled:
+  en: "Disabled"
+  ru: "Отключено"
+admin.apps.st.invalid_settings_disabled:
+  en: "Disabled: invalid settings"
+  ru: "Отключено: некорректные настройки"
+admin.apps.st.disabled:
+  en: "Disabled"
+  ru: "Отключено"
+admin.settings.invalid:
+  en: "Fix %{n} invalid setting(s): %{names}"
+  ru: "Исправьте неверные настройки (%{n}): %{names}"
+admin.settings.save:
+  en: "Save changes"
+  ru: "Сохранить изменения"
+admin.settings.restore_defaults:
+  en: "Restore defaults"
+  ru: "Восстановить по умолчанию"
+admin.mailer.confirm_title:
+  en: "Send e-mail?"
+  ru: "Отправить письмо?"
+admin.mailer.confirm_all:
+  en: "Dry run is off: every user will receive this e-mail. This cannot be undone."
+  ru: "Тестовый режим выключен: письмо получат все пользователи. Это нельзя отменить."
+admin.mailer.confirm_query:
+  en: "Dry run is off: every user matching the query will receive this e-mail. This cannot be undone."
+  ru: "Тестовый режим выключен: письмо получат все пользователи, подходящие под запрос. Это нельзя отменить."
+admin.mod.show_reports:
+  en: "Show reports"
+  ru: "Показать жалобы"
+admin.mod.hide_reports:
+  en: "Hide reports"
+  ru: "Скрыть жалобы"
+admin.mod.no_reports:
+  en: "No reports."
+  ru: "Жалоб нет."
+admin.mod.reported_by:
+  en: "Reported by %{user}"
+  ru: "Пожаловался: %{user}"
+admin.mod.unknown_reporter:
+  en: "Unknown user"
+  ru: "Неизвестный пользователь"

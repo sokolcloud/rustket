@@ -3,9 +3,13 @@
 //! sequences (delete message + dismiss, delete all + deactivate + dismiss, …).
 
 use iced::widget::{button, column, container, row, text};
-use iced::{Alignment, Element, Length, Task};
+use iced::{Element, Length, Task};
 use rocketchat::models::Paginated;
-use rocketchat::models::admin::{ReportedMessagesRow, UserReportedMessages, UserReportsRow};
+use std::collections::HashMap;
+
+use rocketchat::models::admin::{
+    ModerationReport, ReportedMessagesRow, UserReportedMessages, UserReportsByUser, UserReportsRow,
+};
 use rocketchat::rest::admin::{ModerationFilter, Page as RestPage};
 use rust_i18n::t;
 use rustket_core::permissions::has_permission;
@@ -45,18 +49,49 @@ pub enum Msg {
     MessagesLoaded(u64, Res<Paginated<ReportedMessagesRow>>),
     UsersLoaded(u64, Res<Paginated<UserReportsRow>>),
     Tab(Tab),
+    /// Reported messages of a user (tab "Messages").
     Open(String, String),
-    Details(Res<Box<UserReportedMessages>>),
+    /// Reports about a user (tab "Users").
+    OpenUser(String, String),
+    Details(String, Res<Box<UserReportedMessages>>),
+    UserReports(String, Res<Box<UserReportsByUser>>),
+    /// Shows / hides who reported a message and why.
+    ToggleReports(String),
+    MsgReports(String, Res<Paginated<ModerationReport>>),
     CloseDialog,
     Ask(Action),
     Run(Action),
-    Ran(Res<()>),
+    /// An action finished; `true` closes the details (the reports are gone).
+    Ran(bool, Res<()>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailKind {
+    Messages,
+    Users,
 }
 
 pub struct Details {
+    pub kind: DetailKind,
     pub user_id: String,
     pub name: String,
     pub data: Option<UserReportedMessages>,
+    pub user_reports: Option<UserReportsByUser>,
+    /// Reports per message id: `None` while loading.
+    pub msg_reports: HashMap<String, Option<Vec<ModerationReport>>>,
+}
+
+impl Details {
+    fn new(kind: DetailKind, user_id: String, name: String) -> Self {
+        Self {
+            kind,
+            user_id,
+            name,
+            data: None,
+            user_reports: None,
+            msg_reports: HashMap::new(),
+        }
+    }
 }
 
 pub struct State {
@@ -124,13 +159,35 @@ impl State {
             return Task::none();
         };
         let id = d.user_id.clone();
+        let id2 = id.clone();
+        match d.kind {
+            DetailKind::Messages => cx.ctx.rest_task(
+                move |r| async move {
+                    r.moderation_user_reported_messages(&id, None, &RestPage::new(0, 50))
+                        .await
+                        .map(Box::new)
+                },
+                move |r| Message::Moderation(Msg::Details(id2, r)),
+            ),
+            DetailKind::Users => cx.ctx.rest_task(
+                move |r| async move {
+                    r.moderation_user_reports_by_user_id(&id, &RestPage::new(0, 50))
+                        .await
+                        .map(Box::new)
+                },
+                move |r| Message::Moderation(Msg::UserReports(id2, r)),
+            ),
+        }
+    }
+
+    fn msg_reports(&self, mid: String, cx: &mut Cx<'_, '_>) -> Task<Message> {
+        let mid2 = mid.clone();
         cx.ctx.rest_task(
             move |r| async move {
-                r.moderation_user_reported_messages(&id, None, &RestPage::new(0, 50))
+                r.moderation_message_reports(&mid, &RestPage::new(0, 50))
                     .await
-                    .map(Box::new)
             },
-            |r| Message::Moderation(Msg::Details(r)),
+            move |r| Message::Moderation(Msg::MsgReports(mid2, r)),
         )
     }
 
@@ -148,32 +205,86 @@ impl State {
                 };
             }
             Msg::MessagesLoaded(req, r) => {
-                self.messages
-                    .finish(req, r.map_err(|f| err_text(&f, cx.i18n)));
+                if self
+                    .messages
+                    .finish(req, r.map_err(|f| err_text(&f, cx.i18n)))
+                    && self.tab == Tab::Messages
+                {
+                    return self.load(cx);
+                }
             }
             Msg::UsersLoaded(req, r) => {
-                self.users.finish(req, r.map_err(|f| err_text(&f, cx.i18n)));
+                if self.users.finish(req, r.map_err(|f| err_text(&f, cx.i18n)))
+                    && self.tab == Tab::Users
+                {
+                    return self.load(cx);
+                }
             }
             Msg::Tab(t) => {
                 self.tab = t;
                 return self.load(cx);
             }
             Msg::Open(user_id, name) => {
-                self.details = Some(Details {
-                    user_id,
-                    name,
-                    data: None,
-                });
+                self.details = Some(Details::new(DetailKind::Messages, user_id, name));
                 return self.details(cx);
             }
-            Msg::Details(r) => match r {
-                Ok(d) => {
-                    if let Some(x) = &mut self.details {
+            Msg::OpenUser(user_id, name) => {
+                self.details = Some(Details::new(DetailKind::Users, user_id, name));
+                return self.details(cx);
+            }
+            Msg::Details(uid, r) => {
+                let Some(x) = self.details.as_mut().filter(|x| x.user_id == uid) else {
+                    return Task::none();
+                };
+                match r {
+                    Ok(d) => {
+                        // Reload the opened report lists too.
+                        x.msg_reports.retain(|mid, _| {
+                            d.messages
+                                .iter()
+                                .any(|m| m.message.as_ref().is_some_and(|m| m.id == *mid))
+                        });
                         x.data = Some(*d);
+                        let mids: Vec<String> = x.msg_reports.keys().cloned().collect();
+                        return Task::batch(mids.into_iter().map(|mid| self.msg_reports(mid, cx)));
+                    }
+                    Err(f) => cx.fail(&f),
+                }
+            }
+            Msg::UserReports(uid, r) => {
+                let Some(x) = self.details.as_mut().filter(|x| x.user_id == uid) else {
+                    return Task::none();
+                };
+                match r {
+                    Ok(d) => x.user_reports = Some(*d),
+                    Err(f) => cx.fail(&f),
+                }
+            }
+            Msg::ToggleReports(mid) => {
+                let Some(x) = &mut self.details else {
+                    return Task::none();
+                };
+                if x.msg_reports.remove(&mid).is_none() {
+                    x.msg_reports.insert(mid.clone(), None);
+                    return self.msg_reports(mid, cx);
+                }
+            }
+            Msg::MsgReports(mid, r) => {
+                let Some(slot) = self
+                    .details
+                    .as_mut()
+                    .and_then(|x| x.msg_reports.get_mut(&mid))
+                else {
+                    return Task::none();
+                };
+                match r {
+                    Ok(p) => *slot = Some(p.items),
+                    Err(f) => {
+                        *slot = Some(Vec::new());
+                        cx.fail(&f);
                     }
                 }
-                Err(f) => cx.fail(&f),
-            },
+            }
             Msg::CloseDialog => self.details = None,
             Msg::Ask(a) => {
                 let (title, body) = match &a {
@@ -205,11 +316,12 @@ impl State {
             }
             Msg::Run(a) => {
                 self.busy = true;
+                let close = matches!(a, Action::DismissUser { .. } | Action::Deactivate { .. });
                 return cx.ctx.rest_task(
                     move |r| async move {
                         match a {
                             Action::DeleteMessage { rid, mid } => {
-                                r.delete_message(&rid, &mid).await?;
+                                r.moderation_delete_message(&rid, &mid).await?;
                                 r.moderation_dismiss_message_reports(&mid, None, None).await
                             }
                             Action::DismissMessage(mid) => {
@@ -246,13 +358,16 @@ impl State {
                             Action::ResetAvatar(user_id) => r.users_reset_avatar(&user_id).await,
                         }
                     },
-                    |r| Message::Moderation(Msg::Ran(r)),
+                    move |r| Message::Moderation(Msg::Ran(close, r)),
                 );
             }
-            Msg::Ran(r) => {
+            Msg::Ran(close, r) => {
                 self.busy = false;
                 if cx.check(&r) {
                     cx.ok(t!("admin.mod.done").into_owned());
+                    if close {
+                        self.details = None;
+                    }
                     let d = self.details(cx);
                     return Task::batch([self.load(cx), d]);
                 }
@@ -373,7 +488,10 @@ impl State {
                                 ),]
                                 .into(),
                             ],
-                            None,
+                            Some(m(Msg::OpenUser(
+                                u.id.clone(),
+                                u.username.clone().unwrap_or_default(),
+                            ))),
                         )
                     })
                     .collect();
@@ -422,88 +540,82 @@ impl State {
         let ws = v.ctx.workspace;
         let can_act = has_permission(ws, "manage-moderation-actions", None);
         let can_deactivate = has_permission(ws, "edit-other-user-active-status", None);
-        let mut body = column![].spacing(SPACE_3);
-        match &d.data {
-            None => body = body.push(muted(t!("admin.loading"))),
-            Some(data) => {
-                for rm in &data.messages {
-                    let Some(msg) = &rm.message else { continue };
-                    let room = rm
-                        .room
-                        .as_ref()
-                        .and_then(|r| r.fname.clone().or(r.name.clone()))
-                        .unwrap_or_default();
-                    body = body.push(
-                        container(
-                            column![
-                                row![
-                                    muted(format!("#{room}")),
-                                    container(muted(date(rm.ts)))
-                                        .width(Length::Fill)
-                                        .align_right(Length::Fill),
-                                ],
-                                text(crate::room::render::plain_text(msg)).size(TEXT_SMALL),
-                                row![
-                                    ghost_button(
-                                        t!("admin.mod.dismiss"),
-                                        can_act.then(|| m(Msg::Ask(Action::DismissMessage(
-                                            msg.id.clone()
-                                        ))))
-                                    ),
-                                    ghost_button(
-                                        t!("admin.mod.delete_message"),
-                                        can_act.then(|| m(Msg::Ask(Action::DeleteMessage {
-                                            rid: msg.rid.clone(),
-                                            mid: msg.id.clone()
-                                        })))
-                                    ),
-                                ]
-                                .spacing(SPACE_1),
-                            ]
-                            .spacing(SPACE_1),
-                        )
-                        .padding(SPACE_3)
-                        .width(Length::Fill)
-                        .style(style::container_card),
-                    );
-                }
-                if data.messages.is_empty() {
-                    body = body.push(muted(t!("admin.mod.no_messages")));
-                }
-            }
-        }
+        let act = |ok: bool, a: Action| (ok && can_act && !self.busy).then(|| m(Msg::Ask(a)));
         let uid = d.user_id.clone();
-        let actions = row![
+        let mut body = column![].spacing(SPACE_3);
+        match d.kind {
+            DetailKind::Messages => match &d.data {
+                None => body = body.push(muted(t!("admin.loading"))),
+                Some(data) => {
+                    for rm in &data.messages {
+                        let Some(msg) = &rm.message else { continue };
+                        body =
+                            body.push(message_card(rm, msg, d.msg_reports.get(&msg.id), can_act));
+                    }
+                    if data.messages.is_empty() {
+                        body = body.push(muted(t!("admin.mod.no_messages")));
+                    }
+                }
+            },
+            DetailKind::Users => match &d.user_reports {
+                None => body = body.push(muted(t!("admin.loading"))),
+                Some(data) => {
+                    for r in &data.reports {
+                        body = body.push(
+                            container(report_entry(r))
+                                .padding(SPACE_3)
+                                .width(Length::Fill)
+                                .style(style::container_card),
+                        );
+                    }
+                    if data.reports.is_empty() {
+                        body = body.push(muted(t!("admin.mod.no_reports")));
+                    }
+                }
+            },
+        }
+        let user_reports = d.kind == DetailKind::Users;
+        let mut actions = row![
             secondary_button(
-                t!("admin.mod.dismiss_all"),
-                (can_act && !self.busy).then(|| m(Msg::Ask(Action::DismissUser {
-                    user_id: uid.clone(),
-                    user_reports: false
-                })))
+                if user_reports {
+                    t!("admin.mod.dismiss")
+                } else {
+                    t!("admin.mod.dismiss_all")
+                },
+                act(
+                    true,
+                    Action::DismissUser {
+                        user_id: uid.clone(),
+                        user_reports,
+                    }
+                )
             ),
             secondary_button(
                 t!("admin.mod.reset_avatar"),
-                (can_act && !self.busy).then(|| m(Msg::Ask(Action::ResetAvatar(uid.clone()))))
+                act(true, Action::ResetAvatar(uid.clone()))
             ),
-            danger_button(
+        ]
+        .spacing(SPACE_2);
+        if !user_reports {
+            actions = actions.push(danger_button(
                 t!("admin.mod.delete_all"),
-                (can_act && !self.busy).then(|| m(Msg::Ask(Action::DeleteAll(uid.clone()))))
-            ),
+                act(true, Action::DeleteAll(uid.clone())),
+            ));
+        }
+        actions = actions.push(
             danger_button(
                 t!("admin.mod.deactivate"),
-                (can_act && can_deactivate && !self.busy).then(|| m(Msg::Ask(
+                act(
+                    can_deactivate,
                     Action::Deactivate {
                         user_id: uid.clone(),
-                        user_reports: false
-                    }
-                )))
+                        user_reports,
+                    },
+                ),
             )
             .icon(Icon::Ban),
-        ]
-        .spacing(SPACE_2)
-        .wrap();
-        body = body.push(actions);
-        let _ = Alignment::Center;
+        );
+        body = body.push(actions.wrap());
         Some(dialog(
             t!("admin.mod.details", user = d.name.clone()),
             body,
@@ -511,4 +623,96 @@ impl State {
             Some(m(Msg::CloseDialog)),
         ))
     }
+}
+
+/// One reported message with its actions and (when opened) its reports.
+fn message_card<'a>(
+    rm: &'a rocketchat::models::admin::ReportedMessage,
+    msg: &'a rocketchat::models::Message,
+    reports: Option<&'a Option<Vec<ModerationReport>>>,
+    can_act: bool,
+) -> Element<'a, Message> {
+    let m = Message::Moderation;
+    let room = rm
+        .room
+        .as_ref()
+        .and_then(|r| r.fname.clone().or(r.name.clone()))
+        .unwrap_or_default();
+    let mut c = column![
+        row![
+            muted(format!("#{room}")),
+            container(muted(date(rm.ts)))
+                .width(Length::Fill)
+                .align_right(Length::Fill),
+        ],
+        text(crate::room::render::plain_text(msg)).size(TEXT_SMALL),
+        row![
+            ghost_button(
+                if reports.is_some() {
+                    t!("admin.mod.hide_reports")
+                } else {
+                    t!("admin.mod.show_reports")
+                },
+                Some(m(Msg::ToggleReports(msg.id.clone())))
+            ),
+            ghost_button(
+                t!("admin.mod.dismiss"),
+                can_act.then(|| m(Msg::Ask(Action::DismissMessage(msg.id.clone()))))
+            ),
+            ghost_button(
+                t!("admin.mod.delete_message"),
+                can_act.then(|| m(Msg::Ask(Action::DeleteMessage {
+                    rid: msg.rid.clone(),
+                    mid: msg.id.clone()
+                })))
+            ),
+        ]
+        .spacing(SPACE_1),
+    ]
+    .spacing(SPACE_1);
+    match reports {
+        None => {}
+        Some(None) => c = c.push(muted(t!("admin.loading"))),
+        Some(Some(list)) if list.is_empty() => c = c.push(muted(t!("admin.mod.no_reports"))),
+        Some(Some(list)) => {
+            let mut l = column![].spacing(SPACE_2);
+            for r in list {
+                l = l.push(report_entry(r));
+            }
+            c = c.push(container(l).padding([0.0, SPACE_3]));
+        }
+    }
+    container(c)
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .style(style::container_card)
+        .into()
+}
+
+/// Reporter, date and reason of one report.
+fn report_entry<'a>(r: &'a ModerationReport) -> Element<'a, Message> {
+    let by = r
+        .reported_by
+        .as_ref()
+        .map(|u| {
+            let username = u.username.clone().unwrap_or_default();
+            match u.name.as_deref().filter(|n| !n.is_empty()) {
+                Some(n) => format!("{n} (@{username})"),
+                None => format!("@{username}"),
+            }
+        })
+        .unwrap_or_else(|| t!("admin.mod.unknown_reporter").into_owned());
+    column![
+        row![
+            text(t!("admin.mod.reported_by", user = by))
+                .size(TEXT_SMALL)
+                .font(FONT_MEDIUM)
+                .width(Length::Fill),
+            muted(date(r.ts)),
+        ]
+        .spacing(SPACE_2),
+        text(r.description.clone().unwrap_or_default()).size(TEXT_SMALL),
+    ]
+    .spacing(SPACE_1)
+    .into()
 }

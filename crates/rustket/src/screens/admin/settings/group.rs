@@ -75,7 +75,7 @@ pub fn list_view<'a>(s: &'a State, v: &V<'a>) -> Element<'a, Message> {
                 .and_then(|k| i18n.t(k))
                 .map(strip_tags)
                 .unwrap_or_default();
-            let desc: String = desc.chars().take(140).collect();
+            let desc = ellipsize(&desc, 140);
             r = r.push(
                 button(
                     column![
@@ -100,6 +100,19 @@ pub fn list_view<'a>(s: &'a State, v: &V<'a>) -> Element<'a, Message> {
     col.push(grid).into()
 }
 
+/// Cuts `s` to at most `max` characters at a word boundary, adding "…".
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let cut: String = s.chars().take(max).collect();
+    let cut = match cut.rfind(char::is_whitespace) {
+        Some(i) if i > max / 2 => &cut[..i],
+        _ => cut.as_str(),
+    };
+    format!("{}…", cut.trim_end_matches([' ', ',', '.', ';', ':']))
+}
+
 pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, Message> {
     let m = Message::Settings;
     let i18n = v.i18n;
@@ -111,9 +124,12 @@ pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, M
     let ldap_on = s.store.value("LDAP_Enable").and_then(|v| v.as_bool()) == Some(true);
     let mut buttons: Vec<Element<'a, Message>> = Vec::new();
     let enabled = |on: bool, msg: Msg| (on && !g.busy).then_some(m(msg));
+    let perm = |p: &str| rustket_core::permissions::has_permission(v.ctx.workspace, p, None);
+    let can_test = perm("test-admin-options");
+    let can_oauth = perm("add-oauth-service");
     match g.page.group.as_str() {
         "LDAP" => {
-            let ok = ldap_on && clean;
+            let ok = ldap_on && clean && can_test;
             buttons.push(
                 secondary_button(t!("admin.settings.ldap_test"), enabled(ok, Msg::LdapTest)).into(),
             );
@@ -125,15 +141,18 @@ pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, M
                 .into(),
             );
             buttons.push(
-                secondary_button(t!("admin.settings.ldap_sync"), enabled(ok, Msg::LdapSync)).into(),
+                secondary_button(
+                    t!("admin.settings.ldap_sync"),
+                    enabled(
+                        ldap_on && clean && perm("sync-auth-services-users"),
+                        Msg::LdapSync,
+                    ),
+                )
+                .into(),
             );
         }
         "OAuth" => {
-            let can = rustket_core::permissions::has_permission(
-                v.ctx.workspace,
-                "add-oauth-service",
-                None,
-            );
+            let can = can_oauth;
             buttons.push(
                 secondary_button(
                     t!("admin.settings.oauth_refresh"),
@@ -150,8 +169,11 @@ pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, M
         }
         "SAML" => {
             buttons.push(
-                secondary_button(t!("admin.settings.saml_metadata"), enabled(true, Msg::Saml))
-                    .into(),
+                secondary_button(
+                    t!("admin.settings.saml_metadata"),
+                    enabled(can_test, Msg::Saml),
+                )
+                .into(),
             );
         }
         _ => {}
@@ -221,8 +243,8 @@ pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, M
                 foot = foot.push(
                     ghost_button(
                         i18n.t("Reset_section_settings")
-                            .unwrap_or("Restore defaults")
-                            .to_owned(),
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| t!("admin.settings.restore_defaults").into_owned()),
                         Some(m(Msg::ResetSection(g.tab, si))),
                     )
                     .icon(Icon::RotateCcw),
@@ -245,7 +267,7 @@ pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, M
                 foot = foot.push(
                     ghost_button(
                         t!("admin.settings.oauth_remove"),
-                        Some(m(Msg::RemoveOAuth(oauth.to_owned()))),
+                        can_oauth.then(|| m(Msg::RemoveOAuth(oauth.to_owned()))),
                     )
                     .icon(Icon::Trash2),
                 );
@@ -311,22 +333,44 @@ pub fn footer<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Option<Element<'
         .setting_ids()
         .filter(|id| g.session.is_changed(&s.store, id))
         .count();
-    let has_errors = !g.errors.is_empty() || !g.session.validate(&s.store).is_empty();
-    let _ = v;
+    let invalid: Vec<String> = g
+        .invalid_ids()
+        .into_iter()
+        .map(|id| {
+            s.store
+                .get(id)
+                .map(|d| v.i18n.label_for(d))
+                .unwrap_or_else(|| id.to_owned())
+        })
+        .collect();
+    let status: Element<'a, Message> = if invalid.is_empty() {
+        text(t!("admin.settings.n_changed", n = n))
+            .size(TEXT_SMALL)
+            .style(style::text_secondary)
+            .width(Length::Fill)
+            .into()
+    } else {
+        text(t!(
+            "admin.settings.invalid",
+            n = invalid.len(),
+            names = invalid.join(", ")
+        ))
+        .size(TEXT_SMALL)
+        .style(style::text_danger)
+        .width(Length::Fill)
+        .into()
+    };
     Some(
         container(
             row![
-                text(t!("admin.settings.n_changed", n = n))
-                    .size(TEXT_SMALL)
-                    .style(style::text_secondary)
-                    .width(Length::Fill),
+                status,
                 secondary_button(t!("admin.cancel"), Some(m(Msg::Cancel))),
                 primary_button(
                     v.i18n
                         .t("Save_changes")
-                        .unwrap_or("Save changes")
-                        .to_owned(),
-                    (!g.saving && !has_errors).then_some(m(Msg::Save))
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| t!("admin.settings.save").into_owned()),
+                    (!g.saving).then_some(m(Msg::Save))
                 )
                 .loading(g.saving),
             ]

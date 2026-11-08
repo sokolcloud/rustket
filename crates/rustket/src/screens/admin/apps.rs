@@ -32,14 +32,14 @@ pub enum Msg {
     Toggle(String, bool),
     Toggled(Res<()>),
     Open(String),
-    Settings(Res<Vec<AppSetting>>),
-    Languages(Res<LanguageMap>),
-    Logs(Res<AppLogs>),
+    Settings(String, Res<Vec<AppSetting>>),
+    Languages(String, Res<LanguageMap>),
+    Logs(String, Res<AppLogs>),
     Back,
     Value(String, Value),
     Text(String, String),
     SaveSettings,
-    SettingsSaved(Res<Vec<AppSetting>>),
+    SettingsSaved(String, Res<Vec<AppSetting>>),
     Uninstall,
     UninstallNow(String),
     Uninstalled(Res<()>),
@@ -53,10 +53,26 @@ pub struct Detail {
     pub edits: Vec<(String, Value)>,
     /// Text of the input widgets per setting id.
     pub texts: std::collections::HashMap<String, String>,
+    /// Number settings whose text does not parse.
+    pub invalid: std::collections::HashSet<String>,
     pub languages: LanguageMap,
     pub logs: Option<AppLogs>,
     pub busy: bool,
     pub error: Option<String>,
+}
+
+/// Translated app status.
+fn status_label(s: rocketchat::models::AppStatus) -> String {
+    t!(format!("admin.apps.st.{}", s.as_str())).into_owned()
+}
+
+/// App setting types edited as text; others (multiSelect, roomPick, …) are
+/// shown read-only so their JSON is never saved back as a string.
+fn is_text_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "string" | "password" | "code" | "color" | "font" | "int" | "number"
+    )
 }
 
 impl Detail {
@@ -132,16 +148,17 @@ impl State {
     }
 
     fn open(&mut self, cx: &mut Cx<'_, '_>, id: String) -> Task<Message> {
-        let (a, b, c) = (id.clone(), id.clone(), id);
+        let (a, b, c) = (id.clone(), id.clone(), id.clone());
+        let (a2, b2, c2) = (id.clone(), id.clone(), id);
         let can_manage = has_permission(cx.ctx.workspace, "manage-apps", None);
         let mut tasks = vec![
             cx.ctx.rest_task(
                 move |r| async move { r.app_settings(&a).await },
-                |r| Message::Apps(Msg::Settings(r)),
+                move |r| Message::Apps(Msg::Settings(a2, r)),
             ),
             cx.ctx.rest_task(
                 move |r| async move { r.app_languages(&b).await },
-                |r| Message::Apps(Msg::Languages(r)),
+                move |r| Message::Apps(Msg::Languages(b2, r)),
             ),
         ];
         if can_manage {
@@ -153,13 +170,23 @@ impl State {
                     };
                     r.app_logs(&c, &q).await
                 },
-                |r| Message::Apps(Msg::Logs(r)),
+                move |r| Message::Apps(Msg::Logs(c2, r)),
             ));
         }
         Task::batch(tasks)
     }
 
     pub fn update(&mut self, m: Msg, cx: &mut Cx<'_, '_>) -> Task<Message> {
+        // Answers for an app that is no longer open are dropped.
+        let for_open = |id: &str, d: &Option<Detail>| d.as_ref().is_some_and(|d| d.app.id == id);
+        if let Msg::Settings(id, _)
+        | Msg::Languages(id, _)
+        | Msg::Logs(id, _)
+        | Msg::SettingsSaved(id, _) = &m
+            && !for_open(id, &self.detail)
+        {
+            return Task::none();
+        }
         let detail = self.detail.as_mut();
         match m {
             Msg::Loaded(r) => {
@@ -193,6 +220,7 @@ impl State {
                         settings: Vec::new(),
                         edits: Vec::new(),
                         texts: Default::default(),
+                        invalid: Default::default(),
                         languages: LanguageMap::new(),
                         logs: None,
                         busy: false,
@@ -201,7 +229,7 @@ impl State {
                     return self.open(cx, id);
                 }
             }
-            Msg::Settings(r) => {
+            Msg::Settings(_, r) => {
                 if let Some(d) = detail {
                     match r {
                         Ok(s) => {
@@ -222,12 +250,12 @@ impl State {
                     }
                 }
             }
-            Msg::Languages(r) => {
+            Msg::Languages(_, r) => {
                 if let (Some(d), Ok(l)) = (detail, r) {
                     d.languages = l;
                 }
             }
-            Msg::Logs(r) => {
+            Msg::Logs(_, r) => {
                 if let Some(d) = detail {
                     d.logs = r.ok();
                 }
@@ -235,16 +263,30 @@ impl State {
             Msg::Back | Msg::CloseDialog => self.detail = None,
             Msg::Text(id, text) => {
                 if let Some(d) = detail {
-                    let int = d
+                    let Some(kind) = d
                         .settings
                         .iter()
-                        .any(|s| s.id == id && matches!(s.kind.as_str(), "int" | "number"));
-                    let v = match text.trim().parse::<i64>() {
-                        Ok(n) if int => Value::from(n),
-                        _ => Value::String(text.clone()),
+                        .find(|s| s.id == id)
+                        .map(|s| s.kind.clone())
+                    else {
+                        return Task::none();
+                    };
+                    if !is_text_kind(&kind) {
+                        return Task::none();
+                    }
+                    let v = match kind.as_str() {
+                        "int" => text.trim().parse::<i64>().map(Value::from).ok(),
+                        "number" => text.trim().parse::<f64>().ok().map(Value::from),
+                        _ => Some(Value::String(text.clone())),
                     };
                     d.texts.insert(id.clone(), text);
                     d.edits.retain(|(x, _)| *x != id);
+                    // Unparsable numbers are not saved (shown as invalid).
+                    let Some(v) = v else {
+                        d.invalid.insert(id);
+                        return Task::none();
+                    };
+                    d.invalid.remove(&id);
                     d.edits.push((id, v));
                 }
             }
@@ -262,13 +304,14 @@ impl State {
                     }
                     d.busy = true;
                     let id = d.app.id.clone();
+                    let id2 = id.clone();
                     return cx.ctx.rest_task(
                         move |r| async move { r.set_app_settings(&id, &changed).await },
-                        |r| Message::Apps(Msg::SettingsSaved(r)),
+                        move |r| Message::Apps(Msg::SettingsSaved(id2, r)),
                     );
                 }
             }
-            Msg::SettingsSaved(r) => {
+            Msg::SettingsSaved(_, r) => {
                 if let Some(d) = detail {
                     d.busy = false;
                     match r {
@@ -368,7 +411,7 @@ impl State {
                             .spacing(SPACE_2)
                             .align_y(Alignment::Center),
                             muted(a.description.clone()),
-                            muted(format!("{} · {}", a.author.name, a.status.as_str())),
+                            muted(format!("{} · {}", a.author.name, status_label(a.status))),
                         ]
                         .spacing(2),
                     )
@@ -428,7 +471,7 @@ fn detail_view<'a>(d: &'a Detail, can_manage: bool) -> Element<'a, Message> {
             ),
             kv(
                 t!("admin.apps.status").into_owned(),
-                d.app.status.as_str().to_owned()
+                status_label(d.app.status)
             ),
             kv("ID".into(), d.app.id.clone()),
             muted(d.app.description.clone()),
@@ -480,12 +523,17 @@ fn detail_view<'a>(d: &'a Detail, can_manage: bool) -> Element<'a, Message> {
                 let txt = d.texts.get(&s.id).map(String::as_str).unwrap_or_default();
                 let secure = s.kind == "password";
                 let id = s.id.clone();
+                let hint = if d.invalid.contains(&s.id) {
+                    Some(t!("admin.settings.error.wrong_type").into_owned())
+                } else {
+                    hint.clone()
+                };
                 field(
                     label.clone(),
-                    hint.clone(),
+                    hint,
                     input(
                         txt,
-                        can_manage
+                        (can_manage && is_text_kind(&s.kind))
                             .then_some(move |x: String| Message::Apps(Msg::Text(id.clone(), x))),
                     )
                     .secure(secure)
@@ -511,7 +559,8 @@ fn detail_view<'a>(d: &'a Detail, can_manage: bool) -> Element<'a, Message> {
             container(text("")).width(Length::Fill),
             primary_button(
                 t!("admin.save"),
-                (!d.busy && !d.changed().is_empty()).then_some(m(Msg::SaveSettings))
+                (!d.busy && d.invalid.is_empty() && !d.changed().is_empty())
+                    .then_some(m(Msg::SaveSettings))
             )
             .loading(d.busy)
         ]);

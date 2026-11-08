@@ -12,7 +12,7 @@ use rustket_ui::style;
 use rustket_ui::theme::{MONOSPACE_FONT, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
 use rustket_ui::widget::{BannerKind, banner, dialog, loading_placeholder, secondary_button};
 
-use super::common::{Cx, card, date, kv, num, size, title_row};
+use super::common::{Cx, card, date, kv, num, size, title_row, yes_no_text};
 use super::{Message, V};
 use crate::error::Res;
 
@@ -227,8 +227,8 @@ impl State {
                         .and_then(|b| b.build.as_ref())
                         .and_then(|b| b.get("date"))
                         .and_then(|d| d.as_str())
-                        .unwrap_or("—")
-                        .to_owned()
+                        .map(local_time)
+                        .unwrap_or_else(|| "—".into())
                 ),
             ]
             .spacing(SPACE_2),
@@ -403,11 +403,11 @@ impl State {
                     ),
                     kv(
                         t!("admin.ws.connected_flag").into_owned(),
-                        i.current_status.connected.unwrap_or(false).to_string()
+                        yes_no_text(i.current_status.connected.unwrap_or(false))
                     ),
                     kv(
                         t!("admin.ws.local").into_owned(),
-                        i.current_status.local.unwrap_or(false).to_string()
+                        yes_no_text(i.current_status.local.unwrap_or(false))
                     ),
                     kv(
                         t!("admin.ws.heartbeat").into_owned(),
@@ -432,4 +432,15 @@ impl State {
             Some(Message::Workspace(Msg::CloseDialog)),
         ))
     }
+}
+
+/// An ISO timestamp in local time, or the text as is.
+fn local_time(iso: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|d| {
+            d.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| iso.to_owned())
 }

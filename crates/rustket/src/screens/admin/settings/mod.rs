@@ -93,6 +93,7 @@ pub enum Msg {
     DialogText(String),
     CloseDialog,
     DiscardAndGo(Option<AdminSection>),
+    DiscardAndBack,
     DiscardAndClose,
 }
 
@@ -196,7 +197,10 @@ impl GroupView {
                     }
                 }
                 SettingType::Timespan => {
-                    let ms = value.as_u64().unwrap_or(0);
+                    // An invalid text (kept as a string value) stays as typed.
+                    let Some(ms) = value.as_u64().or(value.is_null().then_some(0)) else {
+                        continue;
+                    };
                     let unit = *self
                         .units
                         .entry(id.clone())
@@ -207,16 +211,55 @@ impl GroupView {
                         .and_then(|t| t.trim().parse::<f64>().ok())
                         .map(|n| timespan::to_ms(n, unit));
                     if cur != Some(ms) {
-                        let n = timespan::from_ms(ms, unit);
-                        let text = if n.fract() == 0.0 {
-                            format!("{}", n as u64)
-                        } else {
-                            format!("{n}")
-                        };
-                        self.texts.insert(id.clone(), text);
+                        self.texts.insert(id.clone(), timespan_text(ms, unit));
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Recomputes the inline validation errors from the edited values.
+    fn revalidate(&mut self, store: &SettingsStore) {
+        use rustket_core::admin::settings_editor::SettingError;
+        self.errors = self
+            .session
+            .validate(store)
+            .into_iter()
+            .map(|(id, e)| {
+                let text = match &e {
+                    SettingError::OutOfRange { min, max } => t!(
+                        e.i18n_key(),
+                        min = min.unwrap_or_default(),
+                        max = max.unwrap_or_default()
+                    )
+                    .into_owned(),
+                    _ => t!(e.i18n_key()).into_owned(),
+                };
+                (id, text)
+            })
+            .collect();
+    }
+
+    /// Ids of invalid settings in display order.
+    pub fn invalid_ids(&self) -> Vec<&str> {
+        self.page
+            .setting_ids()
+            .filter(|id| self.errors.contains_key(*id))
+            .collect()
+    }
+
+    /// Switches to the tab of the first invalid setting and expands its section.
+    fn reveal_first_error(&mut self, store: &SettingsStore) {
+        let Some(first) = self.invalid_ids().first().map(|s| (*s).to_owned()) else {
+            return;
+        };
+        let _ = store;
+        for (ti, tab) in self.page.tabs.iter().enumerate() {
+            if let Some(sec) = tab.sections.iter().find(|s| s.setting_ids.contains(&first)) {
+                self.tab = ti;
+                self.collapsed.remove(&sec.name);
+                return;
             }
         }
     }
@@ -227,6 +270,16 @@ impl GroupView {
         section: usize,
     ) -> Option<&rustket_core::admin::settings_editor::Section> {
         self.page.tabs.get(tab)?.sections.get(section)
+    }
+}
+
+/// `ms` in `unit`, exact (fractions shown rather than truncated).
+fn timespan_text(ms: u64, unit: TimeUnit) -> String {
+    let n = timespan::from_ms(ms, unit);
+    if n.fract() == 0.0 {
+        format!("{}", n as u64)
+    } else {
+        format!("{n}")
     }
 }
 
@@ -358,7 +411,7 @@ impl State {
     fn after_change(&mut self) {
         if let Some(g) = &mut self.group {
             g.sync(&self.store);
-            g.errors.clear();
+            g.revalidate(&self.store);
         }
     }
 
@@ -433,16 +486,25 @@ impl State {
                         t!("admin.unsaved_title").into_owned(),
                         t!("admin.unsaved_body").into_owned(),
                         t!("admin.discard").into_owned(),
-                        Message::Settings(Msg::Cancel),
+                        Message::Settings(Msg::DiscardAndBack),
                     ));
-                    // After discarding, Back again leaves.
                     return Task::none();
                 }
                 self.group = None;
             }
+            Msg::DiscardAndBack => {
+                self.discard();
+                self.group = None;
+            }
             Msg::DiscardAndGo(_) | Msg::DiscardAndClose => {}
             Msg::Link(link) => return self.link(link, cx),
-            m => return self.group_update(m, cx),
+            m => {
+                let task = self.group_update(m, cx);
+                if let Some(g) = &mut self.group {
+                    g.revalidate(&self.store);
+                }
+                return task;
+            }
         }
         Task::none()
     }
@@ -498,9 +560,13 @@ impl State {
                 let value = match def.kind {
                     SettingType::Timespan => {
                         let unit = g.units.get(&id).copied().unwrap_or(TimeUnit::Minutes);
-                        // Clamped to a non-negative integer like the web input.
-                        let n = text.trim().parse::<f64>().unwrap_or(0.0);
-                        json!(timespan::to_ms(n, unit))
+                        // Whole non-negative numbers only (like the web input);
+                        // anything else stays a string and fails validation.
+                        match text.trim().parse::<u64>() {
+                            Ok(n) => json!(n.saturating_mul(unit.millis())),
+                            Err(_) if text.trim().is_empty() => json!(0),
+                            Err(_) => Value::String(text.clone()),
+                        }
                     }
                     // NaN / empty stays a string and fails validation (no NaN sent).
                     _ => match text.trim().parse::<i64>() {
@@ -513,14 +579,11 @@ impl State {
                 g.errors.remove(&id);
             }
             Msg::Unit(id, unit) => {
-                let ms = g
-                    .session
-                    .effective(store, &id)
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
                 g.units.insert(id.clone(), unit);
-                let n = timespan::from_ms(ms, unit);
-                g.texts.insert(id, format!("{}", n.trunc() as u64));
+                // The value stays; only its display changes.
+                if let Some(ms) = g.session.effective(store, &id).and_then(Value::as_u64) {
+                    g.texts.insert(id, timespan_text(ms, unit));
+                }
             }
             Msg::Editor(id, action) => {
                 let edit = action.is_edit();
@@ -587,28 +650,9 @@ impl State {
                 g.sync(store);
             }
             Msg::Save => {
-                let errors = g.session.validate(store);
-                g.errors = errors
-                    .into_iter()
-                    .map(|(id, e)| {
-                        let def = store.get(&id);
-                        let text = match &e {
-                            rustket_core::admin::settings_editor::SettingError::OutOfRange {
-                                min,
-                                max,
-                            } => t!(
-                                e.i18n_key(),
-                                min = min.unwrap_or_default(),
-                                max = max.unwrap_or_default()
-                            )
-                            .into_owned(),
-                            _ => t!(e.i18n_key()).into_owned(),
-                        };
-                        let _ = def;
-                        (id, text)
-                    })
-                    .collect();
+                g.revalidate(store);
                 if !g.errors.is_empty() {
+                    g.reveal_first_error(store);
                     return Task::none();
                 }
                 let alerts: Vec<(String, String)> = g

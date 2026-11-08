@@ -58,6 +58,8 @@ pub enum Msg {
 pub struct Form {
     pub room: AdminRoom,
     pub name: String,
+    /// The value `name` was pre-filled with.
+    pub base_name: Option<String>,
     pub topic: String,
     pub announcement: String,
     pub description: String,
@@ -71,10 +73,28 @@ pub struct Form {
     pub error: Option<String>,
 }
 
+/// The editable room name like the web's `roomName`: `fname` for
+/// discussions and federated rooms, `fname || name` when special-character
+/// names are allowed, else `name`.
+fn base_name(r: &AdminRoom, special_chars: bool) -> Option<String> {
+    if r.prid.is_some() || r.federated == Some(true) {
+        r.fname.clone()
+    } else if special_chars {
+        r.fname
+            .clone()
+            .filter(|n| !n.is_empty())
+            .or_else(|| r.name.clone())
+    } else {
+        r.name.clone()
+    }
+}
+
 impl Form {
-    pub fn of(r: AdminRoom) -> Self {
+    pub fn of(r: AdminRoom, special_chars: bool) -> Self {
+        let base = base_name(&r, special_chars);
         Self {
-            name: r.name.clone().unwrap_or_default(),
+            name: base.clone().unwrap_or_default(),
+            base_name: base,
             topic: r.topic.clone().unwrap_or_default(),
             announcement: r.announcement.clone().unwrap_or_default(),
             description: r.description.clone().unwrap_or_default(),
@@ -101,7 +121,7 @@ impl Form {
             (new.trim() != old.as_deref().unwrap_or("").trim()).then(|| new.trim().to_owned())
         };
         let mut up = RoomSettingsUpdate {
-            room_name: ch(&self.name, &r.name),
+            room_name: ch(&self.name, &self.base_name),
             room_topic: ch(&self.topic, &r.topic),
             room_announcement: ch(&self.announcement, &r.announcement),
             room_description: ch(&self.description, &r.description),
@@ -136,6 +156,8 @@ pub struct State {
     pub list: List<AdminRoom>,
     pub types: Vec<AdminRoomType>,
     pub form: Option<Form>,
+    /// Room whose details were requested last.
+    pub opening: Option<String>,
 }
 
 impl Default for State {
@@ -150,6 +172,7 @@ impl State {
             list: List::new(Some(("name", true))),
             types: Vec::new(),
             form: None,
+            opening: None,
         }
     }
 
@@ -181,7 +204,9 @@ impl State {
                 Step::Load => self.fetch(cx),
             },
             Msg::Loaded(req, r) => {
-                self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n)));
+                if self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n))) {
+                    return self.fetch(cx);
+                }
                 Task::none()
             }
             Msg::Type(t, on) => {
@@ -192,14 +217,31 @@ impl State {
                 self.list.offset = 0;
                 self.fetch(cx)
             }
-            Msg::Open(rid) => cx.ctx.rest_task(
-                move |r| async move { r.admin_room(&rid).await.map(Box::new) },
-                |r| Message::Rooms(Msg::Room(r)),
-            ),
+            Msg::Open(rid) => {
+                self.opening = Some(rid.clone());
+                cx.ctx.rest_task(
+                    move |r| async move { r.admin_room(&rid).await.map(Box::new) },
+                    |r| Message::Rooms(Msg::Room(r)),
+                )
+            }
             Msg::Room(r) => {
+                // Only the last clicked row opens.
+                let wanted = self.opening.take();
                 match r {
-                    Ok(room) => self.form = Some(Form::of(*room)),
-                    Err(f) => cx.fail(&f),
+                    Ok(room) if wanted.as_deref() == Some(room.id.as_str()) => {
+                        let special = cx
+                            .ctx
+                            .workspace
+                            .settings()
+                            .bool_or("UI_Allow_room_names_with_special_chars", false);
+                        self.form = Some(Form::of(*room, special));
+                    }
+                    Ok(_) => self.opening = wanted,
+                    Err(f) => {
+                        if wanted.is_some() {
+                            cx.fail(&f);
+                        }
+                    }
                 }
                 Task::none()
             }
@@ -547,7 +589,7 @@ mod tests {
             topic: Some("t".into()),
             ..AdminRoom::default()
         };
-        let mut f = Form::of(room);
+        let mut f = Form::of(room, false);
         let up = f.update();
         assert!(up.room_name.is_none() && up.room_topic.is_none() && up.room_type.is_none());
         assert_eq!(up.default, Some(false));
@@ -560,5 +602,22 @@ mod tests {
         assert!(!up.favorite.unwrap().favorite);
         f.archived = true;
         assert_eq!(f.archive_change(), Some(true));
+    }
+
+    #[test]
+    fn discussion_name_is_fname() {
+        let room = AdminRoom {
+            id: "d1".into(),
+            t: RoomType::Private,
+            name: Some("FbWCfgBpLnQuSSSfb".into()),
+            fname: Some("Retro agenda".into()),
+            prid: Some("p".into()),
+            ..AdminRoom::default()
+        };
+        let mut f = Form::of(room, false);
+        assert_eq!(f.name, "Retro agenda");
+        assert!(f.update().room_name.is_none());
+        f.name = "Retro".into();
+        assert_eq!(f.update().room_name.as_deref(), Some("Retro"));
     }
 }

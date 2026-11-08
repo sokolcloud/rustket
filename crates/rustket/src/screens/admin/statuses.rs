@@ -120,7 +120,11 @@ impl State {
                     Step::Load => self.fetch(cx),
                 };
             }
-            Msg::Loaded(req, r) => self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n))),
+            Msg::Loaded(req, r) => {
+                if self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n))) {
+                    return self.fetch(cx);
+                }
+            }
             Msg::New => {
                 self.form = Some(Form {
                     status: None,

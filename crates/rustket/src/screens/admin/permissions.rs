@@ -304,8 +304,10 @@ impl State {
                 };
             }
             Msg::UsersLoaded(req, r) => {
-                if let Some(e) = &mut self.role {
-                    e.users.finish(req, r.map_err(|f| err_text(&f, cx.i18n)));
+                if let Some(e) = &mut self.role
+                    && e.users.finish(req, r.map_err(|f| err_text(&f, cx.i18n)))
+                {
+                    return self.users(cx);
                 }
             }
             Msg::AddUser(s) => {
@@ -396,11 +398,16 @@ impl State {
         let mut col = column![
             title_row(
                 t!("admin.section.permissions").into_owned(),
-                vec![icon_button(
-                    Icon::RefreshCw,
-                    Some(m(Msg::Reload)),
-                    t!("admin.refresh")
-                )]
+                if self.tab == Tab::Roles {
+                    vec![icon_button(
+                        Icon::RefreshCw,
+                        Some(m(Msg::Reload)),
+                        t!("admin.refresh"),
+                    )]
+                } else {
+                    // The search bar carries the refresh button.
+                    vec![]
+                }
             ),
             tabs
         ]

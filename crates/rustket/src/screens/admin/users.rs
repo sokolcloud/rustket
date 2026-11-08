@@ -23,6 +23,8 @@ use super::common::{
 use super::guard::{Done, Op};
 use super::{Message, V};
 use crate::error::Res;
+use crate::room::panel::common::{presence_of, status_label};
+use rocketchat::models::UserStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
@@ -84,7 +86,8 @@ pub enum Msg {
     Pending(Res<Paginated<AdminUser>>),
     Smtp(Res<bool>),
     Open(String),
-    Info(Res<AdminUser>),
+    /// users.info of `id`; `open` when the list row asked for it.
+    Info(String, bool, Res<AdminUser>),
     CloseDialog,
     New,
     Edit,
@@ -213,7 +216,8 @@ impl Form {
             nickname: changed(&self.nickname, u.nickname.as_deref()),
             ..UserUpdate::default()
         };
-        if self.verified != old_email.is_some_and(|e| e.verified) {
+        // A changed address is stored unverified unless `verified` is sent.
+        if up.email.is_some() || self.verified != old_email.is_some_and(|e| e.verified) {
             up.verified = Some(self.verified);
         }
         if self.random_password {
@@ -233,6 +237,18 @@ impl Form {
         }
         up
     }
+}
+
+/// Presence bullet plus translated status.
+fn status_cell<'a>(s: Option<UserStatus>) -> Element<'a, Message> {
+    let s = s.unwrap_or(UserStatus::Offline);
+    row![
+        rustket_ui::widget::presence_dot(presence_of(s), 8.0),
+        muted(status_label(s))
+    ]
+    .spacing(SPACE_1)
+    .align_y(iced::Alignment::Center)
+    .into()
 }
 
 fn non_empty(s: &str) -> Option<String> {
@@ -301,10 +317,11 @@ impl State {
         )
     }
 
-    fn info(&self, cx: &mut Cx<'_, '_>, id: String) -> Task<Message> {
+    fn info(&self, cx: &mut Cx<'_, '_>, id: String, open: bool) -> Task<Message> {
+        let id2 = id.clone();
         cx.ctx.rest_task(
             move |r| async move { r.admin_user_info(UserLookup::Id(&id)).await },
-            |r| Message::Users(Msg::Info(r)),
+            move |r| Message::Users(Msg::Info(id2, open, r)),
         )
     }
 
@@ -323,7 +340,9 @@ impl State {
                 Step::Load => self.fetch(cx),
             },
             Msg::Loaded(req, r) => {
-                self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n)));
+                if self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n))) {
+                    return self.fetch(cx);
+                }
                 Task::none()
             }
             Msg::Tab(tab) => {
@@ -345,18 +364,23 @@ impl State {
                 self.smtp = r.unwrap_or(true);
                 Task::none()
             }
-            Msg::Open(id) => self.info(cx, id),
-            Msg::Info(r) => {
+            Msg::Open(id) => self.info(cx, id, true),
+            Msg::Info(id, open, r) => {
+                // Late answers must not land in another user's dialog or turn
+                // a create form into an edit form.
+                let current = self.open_id();
+                let is_form = matches!(self.dialog, Some(Dialog::Form(_)));
                 match r {
-                    Ok(u) => {
-                        // Refresh an open form's base too.
-                        if let Some(f) = self.form() {
-                            f.user = Some(u.clone());
-                        } else {
-                            self.dialog = Some(Dialog::Details(Box::new(u)));
-                        }
+                    Ok(u) if current.as_deref() == Some(id.as_str()) => match &mut self.dialog {
+                        Some(Dialog::Form(f)) => f.user = Some(u),
+                        _ => self.dialog = Some(Dialog::Details(Box::new(u))),
+                    },
+                    Ok(u) if open && !is_form => {
+                        self.dialog = Some(Dialog::Details(Box::new(u)));
                     }
-                    Err(f) => cx.fail(&f),
+                    Ok(_) => {}
+                    Err(f) if open || current.as_deref() == Some(id.as_str()) => cx.fail(&f),
+                    Err(_) => {}
                 }
                 Task::none()
             }
@@ -604,7 +628,7 @@ impl State {
 
     fn reopen(&self, cx: &mut Cx<'_, '_>) -> Task<Message> {
         match self.open_id() {
-            Some(id) => self.info(cx, id),
+            Some(id) => self.info(cx, id, false),
             None => Task::none(),
         }
     }
@@ -681,7 +705,7 @@ impl State {
                     roles = roles.push(chip(r.clone(), ChipKind::Neutral));
                 }
                 let status: Element<'a, Message> = if u.is_active() {
-                    muted(u.status.map(|s| s.as_str().to_owned()).unwrap_or_default())
+                    status_cell(u.status)
                 } else if u.reason.is_some() || self.tab == Tab::Pending {
                     row![
                         chip(t!("admin.users.pending_chip"), ChipKind::Warning),
@@ -797,7 +821,7 @@ impl State {
             kv(
                 t!("admin.users.status").into_owned(),
                 if u.is_active() {
-                    u.status.map(|s| s.as_str().to_owned()).unwrap_or_default()
+                    u.status.map(status_label).unwrap_or_default()
                 } else {
                     t!("admin.users.deactivated_chip").into_owned()
                 }
@@ -824,9 +848,16 @@ impl State {
         if !u.rooms.is_empty() {
             info = info.push(kv(
                 t!("admin.users.rooms").into_owned(),
+                // Subscriptions carry only `name` (a random id for discussions):
+                // prefer the room title known locally.
                 u.rooms
                     .iter()
-                    .filter_map(|r| r.name.clone())
+                    .filter_map(|r| {
+                        ws.room(&r.rid)
+                            .and_then(|e| e.fname())
+                            .map(str::to_owned)
+                            .or_else(|| r.name.clone())
+                    })
                     .take(12)
                     .collect::<Vec<_>>()
                     .join(", "),
@@ -1096,6 +1127,17 @@ mod tests {
         let up = f.update();
         assert_eq!(up.set_random_password, Some(true));
         assert!(up.password.is_none());
+    }
+
+    #[test]
+    fn email_change_keeps_verified_flag() {
+        let mut f = Form::edit(&user());
+        f.email = "bob2@x.io".into();
+        let up = f.update();
+        assert_eq!(up.email.as_deref(), Some("bob2@x.io"));
+        assert_eq!(up.verified, Some(true));
+        f.verified = false;
+        assert_eq!(f.update().verified, Some(false));
     }
 
     #[test]

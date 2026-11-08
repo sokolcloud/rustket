@@ -445,6 +445,9 @@ async fn main() {
     let work = {
         let (server, ledger) = (server.clone(), ledger.clone());
         tokio::spawn(async move {
+            if admin_shots::admin_shots(&server, &out).await {
+                return;
+            }
             let fixture = setup(&server, ledger).await;
             run(server, out, fixture).await;
         })
@@ -490,9 +493,6 @@ fn confirm_modals(app: &App) -> usize {
 }
 
 async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
-    if admin_shots::admin_shots(&server, &out).await {
-        return;
-    }
     let user = fixture.user;
     let cache = tempfile::tempdir().expect("cache dir");
     let mut d = Driver::new(Flags {

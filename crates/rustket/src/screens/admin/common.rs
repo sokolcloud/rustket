@@ -320,9 +320,12 @@ impl<T> List<T> {
         }
     }
 
-    pub fn finish(&mut self, request: u64, r: Result<Paginated<T>, String>) {
+    /// Applies a page; returns true when a deletion emptied the last page and
+    /// the caller must fetch again (the offset already stepped back).
+    #[must_use]
+    pub fn finish(&mut self, request: u64, r: Result<Paginated<T>, String>) -> bool {
         if request != self.request {
-            return;
+            return false;
         }
         self.loading = false;
         self.loaded = true;
@@ -334,10 +337,12 @@ impl<T> List<T> {
                 // A deletion emptied the last page: step back.
                 if self.items.is_empty() && self.offset > 0 && self.offset >= self.total {
                     self.offset = self.total.saturating_sub(1) / self.page_size * self.page_size;
+                    return true;
                 }
             }
             Err(e) => self.error = Some(e),
         }
+        false
     }
 
     /// Fills the list from a complete, client-side array (no paging server-side).
@@ -639,7 +644,11 @@ pub fn muted<'a, M: 'a>(s: impl Into<String>) -> Element<'a, M> {
 }
 
 pub fn yes_no<'a, M: 'a>(b: bool) -> Element<'a, M> {
-    muted(if b { t!("admin.yes") } else { t!("admin.no") })
+    muted(yes_no_text(b))
+}
+
+pub fn yes_no_text(b: bool) -> String {
+    if b { t!("admin.yes") } else { t!("admin.no") }.into_owned()
 }
 
 /// A form dialog with Cancel / Save (and optional extra left actions).
@@ -686,6 +695,15 @@ pub fn back_row<'a, M: Clone + 'a>(
 }
 
 /// A selectable-looking read-only value (secrets, URLs) in monospace.
+/// A disabled input showing `value` (for disabled selects and the like).
+pub fn disabled_value<'a, M: Clone + 'a>(value: String) -> Element<'a, M> {
+    text_input("", &value)
+        .padding([6, 10])
+        .size(TEXT_BODY)
+        .style(style::text_input)
+        .into()
+}
+
 pub fn readonly<'a, M: 'a>(value: String) -> Element<'a, M> {
     container(
         text(value)
@@ -795,7 +813,7 @@ mod tests {
         let mut l: List<u32> = List::new(Some(("name", true)));
         assert!(matches!(l.update(ListMsg::Next), Step::None));
         let r = l.begin();
-        l.finish(
+        let _ = l.finish(
             r,
             Ok(Paginated {
                 items: (0..25).collect(),
@@ -814,9 +832,9 @@ mod tests {
         // A stale response is ignored.
         let old = l.begin();
         let new = l.begin();
-        l.finish(old, Err("x".into()));
+        let _ = l.finish(old, Err("x".into()));
         assert!(l.error.is_none());
-        l.finish(new, Err("boom".into()));
+        let _ = l.finish(new, Err("boom".into()));
         assert_eq!(l.error.as_deref(), Some("boom"));
         // Debounce: only the latest stamp loads.
         let _ = l.update(ListMsg::Search("a".into()));

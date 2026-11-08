@@ -23,7 +23,7 @@ use rustket_ui::widget::{
 };
 use serde_json::Value;
 
-use super::super::common::{readonly, strip_tags};
+use super::super::common::{disabled_value, readonly, strip_tags};
 use super::super::{Message, V};
 use super::{GroupView, Msg, State, room_ids};
 
@@ -284,7 +284,7 @@ pub fn setting<'a>(
                 pick.into()
             } else {
                 // A disabled pick list: show the value only.
-                readonly(sel_label(def, &cur, st, v))
+                disabled_value(sel_label(def, &cur, st, v))
             })
         }
         SettingType::MultiSelect => {
@@ -501,7 +501,8 @@ pub fn setting<'a>(
             Some(c.into())
         }
         SettingType::Range => {
-            let (lo, hi) = (def.min_value.unwrap_or(0), def.max_value.unwrap_or(100));
+            let lo = def.min_value.unwrap_or(0);
+            let hi = def.max_value.unwrap_or(100).max(lo);
             let n = value.and_then(Value::as_i64).unwrap_or(lo).clamp(lo, hi);
             let sid = id.to_owned();
             let sl = slider(lo as f64..=hi as f64, n as f64, move |x: f64| {

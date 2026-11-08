@@ -5,7 +5,7 @@
 //! webhook editor (never saved). Read-only on the shared server; the login
 //! token is revoked at the end.
 //!
-//! `RUSTKET_SNAPSHOT_ONLY=admin` renders only these shots.
+//! Runs only with `RUSTKET_SNAPSHOT_ONLY=admin` (no shared fixture is set up).
 
 use std::path::Path;
 use std::time::Duration;
@@ -43,12 +43,11 @@ fn adm(app: &App) -> Option<&admin::Admin> {
     }
 }
 
-/// Returns `true` when only the admin shots were asked for.
+/// Renders the admin shots only for `RUSTKET_SNAPSHOT_ONLY=admin` (before
+/// and instead of the shared fixture setup); returns whether it ran.
 pub async fn admin_shots(server: &ServerUrl, out: &Path) -> bool {
-    let only = std::env::var("RUSTKET_SNAPSHOT_ONLY").ok();
-    match only.as_deref() {
-        None | Some("admin") => {}
-        Some(_) => return false,
+    if std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() != Ok("admin") {
+        return false;
     }
     let cache = tempfile::tempdir().expect("cache dir");
     let mut d = Driver::new(Flags {
@@ -179,6 +178,18 @@ pub async fn admin_shots(server: &ServerUrl, out: &Path) -> bool {
     d.send(sm(St::Text("Accounts_LoginExpiration".into(), "30".into())));
     d.settle(Duration::from_millis(500)).await;
     both_tall(&mut d, out, "admin-08-settings-accounts", 2400.0);
+    // An invalid number: inline error and the footer hint.
+    d.send(sm(St::Text(
+        "Accounts_LoginExpiration".into(),
+        "abc".into(),
+    )));
+    d.settle(Duration::from_millis(300)).await;
+    d.app.config.ui.theme = Theme::Light;
+    d.shoot_at(
+        out,
+        "admin-08b-settings-invalid-light",
+        iced::Size::new(1280.0, 2400.0),
+    );
     // A tabbed group (LDAP) for the tab bar and the header buttons.
     d.send(sm(St::Cancel));
     d.send(sm(St::OpenGroup("LDAP".into())));
@@ -227,5 +238,5 @@ pub async fn admin_shots(server: &ServerUrl, out: &Path) -> bool {
         a.servers[&sid].login.is_some()
     })
     .await;
-    only.is_some()
+    true
 }

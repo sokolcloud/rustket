@@ -307,7 +307,14 @@ impl Admin {
     pub fn update(&mut self, msg: Message, ctx: &mut Ctx<'_>) -> Action<Message> {
         match msg {
             Message::Select(s) => {
-                if self.dirty_settings(ctx) && s != self.section {
+                // Re-selecting Settings on a group page means "back to the group list".
+                if s == Some(AdminSection::Settings)
+                    && self.section == s
+                    && matches!(&self.page, Page::Settings(p) if p.group.is_some())
+                {
+                    return self.update(Message::Settings(settings::Msg::Back), ctx);
+                }
+                if self.dirty_settings(ctx) {
                     self.confirm = Some(Confirm::ask(
                         t!("admin.unsaved_title").into_owned(),
                         t!("admin.unsaved_body").into_owned(),

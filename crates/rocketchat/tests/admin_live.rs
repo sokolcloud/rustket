@@ -464,6 +464,33 @@ async fn admin_room_settings_and_invites() {
                 .await
                 .unwrap();
             assert_eq!(found.items.len(), 1);
+
+            // Moderation: report a message, read its reports, delete it as the author.
+            let msg = c
+                .send_message(&rocketchat::models::OutgoingMessage::new(
+                    rid.clone(),
+                    "rkadm reported",
+                ))
+                .await
+                .unwrap();
+            c.moderation_report_message(&msg.id, "rkadm live test")
+                .await
+                .unwrap();
+            let reports = c
+                .moderation_message_reports(&msg.id, &Page::new(0, 10))
+                .await
+                .unwrap();
+            assert!(
+                reports
+                    .items
+                    .iter()
+                    .any(|r| r.description.as_deref() == Some("rkadm live test"))
+            );
+            c.moderation_delete_message(&rid, &msg.id).await.unwrap();
+            c.moderation_dismiss_message_reports(&msg.id, None, None)
+                .await
+                .unwrap();
+
             c.admin_save_room_settings(
                 &rid,
                 &RoomSettingsUpdate {

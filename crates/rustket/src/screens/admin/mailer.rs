@@ -25,6 +25,7 @@ pub enum Msg {
     DryRun(bool),
     Body(text_editor::Action),
     Send,
+    SendNow,
     Sent(Res<()>),
 }
 
@@ -90,6 +91,26 @@ impl State {
             Msg::DryRun(b) => self.dry_run = b,
             Msg::Body(a) => self.body.perform(a),
             Msg::Send => match self.request() {
+                Err(e) => self.error = Some(e),
+                // A real send cannot be undone: confirm first.
+                Ok(req) if req.dryrun != Some(true) => {
+                    self.error = None;
+                    let body = if req.query.is_some() {
+                        t!("admin.mailer.confirm_query")
+                    } else {
+                        t!("admin.mailer.confirm_all")
+                    };
+                    cx.ask(Confirm {
+                        title: t!("admin.mailer.confirm_title").into_owned(),
+                        body: body.into_owned(),
+                        danger: true,
+                        yes_label: t!("admin.mailer.send").into_owned(),
+                        yes: Box::new(Message::Mailer(Msg::SendNow)),
+                    });
+                }
+                Ok(_) => return self.update(Msg::SendNow, cx),
+            },
+            Msg::SendNow => match self.request() {
                 Err(e) => self.error = Some(e),
                 Ok(req) => {
                     self.error = None;
@@ -292,7 +313,9 @@ impl Inboxes {
                 };
             }
             InboxMsg::Loaded(req, r) => {
-                self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n)));
+                if self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n))) {
+                    return self.load(cx);
+                }
             }
             InboxMsg::New => {
                 self.form = Some(InboxForm::of(EmailInbox {

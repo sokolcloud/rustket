@@ -22,6 +22,7 @@ use rustket_ui::widget::{
 use super::common::{
     Confirm, Cx, List, ListMsg, Step, back_row, card, col, date, err_text, field, input, kv,
     list_view, muted, readonly, search_bar, small, sortable, switch, table, title_row, yes_no,
+    yes_no_text,
 };
 use super::{Message, V};
 use crate::error::Res;
@@ -230,6 +231,12 @@ impl Editor {
             }
         } else if p.channel.trim().is_empty() {
             return Err(t!("admin.integrations.channel_required").into_owned());
+        } else if self.integration.is_some() {
+            // Incoming updates only touch the keys that are present: a cleared
+            // field must be sent as "" or the old value stays.
+            for f in [&mut p.alias, &mut p.avatar, &mut p.emoji, &mut p.script] {
+                f.get_or_insert_with(String::new);
+            }
         }
         Ok(p)
     }
@@ -245,6 +252,8 @@ pub struct State {
     pub list: List<Integration>,
     pub filter: Option<IntegrationType>,
     pub view: View,
+    /// Integration whose editor was requested last.
+    pub opening: Option<String>,
 }
 
 impl Default for State {
@@ -259,6 +268,7 @@ impl State {
             list: List::new(Some(("name", true))),
             filter: None,
             view: View::List,
+            opening: None,
         }
     }
 
@@ -301,7 +311,11 @@ impl State {
                     Step::Load => self.load(cx),
                 };
             }
-            Msg::Loaded(req, r) => self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n))),
+            Msg::Loaded(req, r) => {
+                if self.list.finish(req, r.map_err(|f| err_text(&f, cx.i18n))) {
+                    return self.load(cx);
+                }
+            }
             Msg::Filter(f) => {
                 self.filter = f;
                 self.list.offset = 0;
@@ -314,19 +328,30 @@ impl State {
                     .username()
                     .unwrap_or("rocket.cat")
                     .to_owned();
+                self.opening = None;
                 self.view = View::Edit(Box::new(Editor::new(kind, &me)));
             }
             Msg::Open(id) => {
+                self.opening = Some(id.clone());
                 return cx.ctx.rest_task(
                     move |r| async move { r.integration_get(&id).await },
                     |r| Message::Integrations(Msg::Got(r)),
                 );
             }
-            Msg::Got(r) => match r {
-                Ok(i) => self.view = View::Edit(Box::new(Editor::of(i))),
-                Err(f) => cx.fail(&f),
-            },
+            Msg::Got(r) => {
+                // Ignored after Back / New or another row was clicked.
+                let wanted = self.opening.take();
+                match r {
+                    Ok(i) if wanted.as_deref() == Some(i.id.as_str()) => {
+                        self.view = View::Edit(Box::new(Editor::of(i)));
+                    }
+                    Ok(_) => self.opening = wanted,
+                    Err(f) if wanted.is_some() => cx.fail(&f),
+                    Err(_) => {}
+                }
+            }
             Msg::Back => {
+                self.opening = None;
                 self.view = View::List;
                 return self.load(cx);
             }
@@ -469,8 +494,10 @@ impl State {
                 };
             }
             Msg::HistoryLoaded(req, r) => {
-                if let View::History(_, list) = &mut self.view {
-                    list.finish(req, r.map_err(|f| err_text(&f, cx.i18n)));
+                if let View::History(_, list) = &mut self.view
+                    && list.finish(req, r.map_err(|f| err_text(&f, cx.i18n)))
+                {
+                    return self.history(cx);
                 }
             }
             Msg::Replay(hid) => {
@@ -944,7 +971,7 @@ fn history_view<'a>(list: &'a List<IntegrationHistory>) -> Element<'a, Message> 
             kv("URL".into(), h.url.clone().unwrap_or_default()),
             kv(
                 t!("admin.integrations.finished").into_owned(),
-                h.finished.unwrap_or(false).to_string()
+                yes_no_text(h.finished.unwrap_or(false))
             ),
         ]
         .spacing(SPACE_2);
@@ -1003,5 +1030,26 @@ mod tests {
         e.script = text_editor::Content::with_text("class Script {}");
         let p = e.params().unwrap();
         assert_eq!(p.script.as_deref(), Some("class Script {}"));
+    }
+
+    #[test]
+    fn incoming_update_sends_cleared_fields() {
+        let i = Integration {
+            kind: IntegrationType::Incoming,
+            id: "i1".into(),
+            name: Some("in".into()),
+            username: Some("admin".into()),
+            alias: Some("old".into()),
+            script: Some("class Script {}".into()),
+            ..Integration::default()
+        };
+        let mut e = Editor::of(i);
+        e.p.channel = "#general".into();
+        e.p.alias = None;
+        e.script = text_editor::Content::with_text("");
+        let p = e.params().unwrap();
+        assert_eq!(p.alias.as_deref(), Some(""));
+        assert_eq!(p.script.as_deref(), Some(""));
+        assert_eq!(p.emoji.as_deref(), Some(""));
     }
 }
