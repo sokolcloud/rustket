@@ -16,10 +16,31 @@ pub enum DlEvent {
     Failed(String),
 }
 
-/// A file name safe to create in a directory (no separators, no leading dots).
+/// Invisible formatting characters: bidi marks, embeddings, overrides and
+/// isolates (which can show `invoice\u{202E}fdp.sh` as `invoicehs.pdf`),
+/// zero-width characters and other Unicode format (Cf) controls.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
+}
+
+/// A file name safe to create in a directory and to show in a file dialog:
+/// no separators, no leading dots, no control or invisible formatting
+/// characters.
 pub fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
+        .filter(|c| !is_format_char(*c))
         .map(|c| {
             if c == '/' || c == '\\' || c.is_control() {
                 '_'
@@ -90,6 +111,52 @@ pub fn media_dir(images_dir: Option<&Path>) -> Option<PathBuf> {
             directories::ProjectDirs::from("", "", "rustket").map(|d| d.cache_dir().to_path_buf())
         })?;
     Some(base.join("media"))
+}
+
+/// Media files opened with the system player are deleted after this age.
+pub const MEDIA_TTL: Duration = Duration::from_secs(24 * 3600);
+
+/// Deletes the media opened with the system player from `dir` (see
+/// [`media_dir`]): everything, including decrypted end-to-end media, or only
+/// files older than [`MEDIA_TTL`] when `stale_only`. Run off the UI thread.
+pub fn purge_media(dir: &Path, stale_only: bool) {
+    if !stale_only {
+        let _ = std::fs::remove_dir_all(dir);
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let Ok(meta) = e.metadata() else {
+            continue;
+        };
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_none_or(|age| age >= MEDIA_TTL);
+        if meta.is_file() && stale {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// [`purge_media`] for the media directory next to `images_dir`, as a task.
+pub fn purge_media_task<M: Send + 'static>(
+    images_dir: Option<&Path>,
+    stale_only: bool,
+    done: M,
+) -> iced::Task<M> {
+    let Some(dir) = media_dir(images_dir) else {
+        return iced::Task::none();
+    };
+    iced::Task::perform(
+        async move {
+            let _ = tokio::task::spawn_blocking(move || purge_media(&dir, stale_only)).await;
+        },
+        move |()| done,
+    )
 }
 
 /// A fresh random file name with extension `ext` in `dir`.
@@ -282,6 +349,56 @@ mod tests {
         assert_eq!(safe_file_name(".hidden"), "hidden");
         assert_eq!(safe_file_name("  "), "download");
         assert_eq!(safe_file_name("a\nb"), "a_b");
+        // Bidi overrides would show `invoice\u{202E}fdp.desktop` as a PDF.
+        assert_eq!(
+            safe_file_name("invoice\u{202E}fdp.desktop"),
+            "invoicefdp.desktop"
+        );
+        for c in [
+            '\u{202A}',
+            '\u{202B}',
+            '\u{202C}',
+            '\u{202D}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{200E}',
+            '\u{200F}',
+            '\u{061C}',
+            '\u{200B}',
+            '\u{FEFF}',
+            '\u{E0041}',
+        ] {
+            assert_eq!(safe_file_name(&format!("a{c}b.txt")), "ab.txt", "{c:?}");
+        }
+        assert_eq!(safe_file_name("\u{202E}.\u{202E}hidden"), "hidden");
+        assert_eq!(safe_file_name("отчёт.pdf"), "отчёт.pdf");
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn media_purge() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("media");
+        std::fs::create_dir_all(dir.join("e2e")).unwrap();
+        let old = dir.join("old.mp4");
+        let fresh = dir.join("fresh.mp4");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&fresh, b"x").unwrap();
+        std::fs::write(dir.join("e2e").join("d.mp4"), b"x").unwrap();
+        let past = std::time::SystemTime::now() - MEDIA_TTL - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        purge_media(&dir, true);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        purge_media(&dir, false);
+        assert!(!dir.exists());
     }
 
     #[test]

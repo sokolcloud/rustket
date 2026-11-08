@@ -546,16 +546,22 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// Drops every server's image cache (memory and disk).
+    /// Drops every server's image cache (memory and disk) and the media
+    /// opened with the system player.
     fn clear_image_cache(&mut self) -> Task<Message> {
         let mut dirs = Vec::new();
         for s in self.servers.values() {
             dirs.extend(self.images.purge_server(&s.id, &s.url));
         }
+        let media = crate::room::timeline::transfer::purge_media_task(
+            self.images.disk_dir(),
+            false,
+            Message::Noop,
+        );
         if dirs.is_empty() {
-            return Task::none();
+            return media;
         }
-        Task::perform(
+        let images = Task::perform(
             async move {
                 let _ = tokio::task::spawn_blocking(move || {
                     for d in dirs {
@@ -565,7 +571,8 @@ impl App {
                 .await;
             },
             |_| Message::Noop,
-        )
+        );
+        Task::batch([images, media])
     }
 
     /// Unread totals over all servers changed: tell the desktop layer.

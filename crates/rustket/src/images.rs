@@ -16,6 +16,8 @@
 //!   results of older generations are dropped by the app, which also does the
 //!   disk write, so in-flight fetches cannot repopulate a purged cache.
 //! - The memory LRU is bounded by entry count and bytes.
+//! - At most [`MAX_FETCHES_PER_SERVER`] fetches run per server; the rest wait
+//!   in a queue served newest request first (what the last frame showed).
 //!
 //! Views only read ([`Images::get`], [`Images::avatar`]). Misses are recorded
 //! and fetched after the next update, or right after the next frame (the app
@@ -60,6 +62,8 @@ pub const MAX_DIMENSION: u32 = 10_000;
 pub const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
 /// Raster decodes running at the same time.
 pub const MAX_CONCURRENT_DECODES: usize = 4;
+/// Fetches (disk or network) running at the same time per server.
+pub const MAX_FETCHES_PER_SERVER: usize = 12;
 
 /// Set when a view recorded a miss; the app flushes it after the next frame.
 pub static VIEW_MISSES: AtomicBool = AtomicBool::new(false);
@@ -115,11 +119,18 @@ pub struct Images {
     clock: Cell<u64>,
     capacity: usize,
     budget: usize,
-    in_flight: HashSet<String>,
+    /// URL → server of the running fetches.
+    in_flight: HashMap<String, ServerId>,
     failed: HashMap<String, Instant>,
-    wanted: RefCell<Vec<ImageRequest>>,
+    /// Queued requests → (batch, order): later batches are served first.
+    wanted: RefCell<HashMap<ImageRequest, (u64, u64)>>,
+    /// Current batch (bumped by every [`Self::take_wanted`]) and order counter.
+    want_batch: Cell<u64>,
+    want_seq: Cell<u64>,
     generations: HashMap<ServerId, u64>,
     disk_dir: Option<PathBuf>,
+    /// Bumped whenever what [`Self::get`] returns may have changed.
+    revision: u64,
 }
 
 impl Default for Images {
@@ -141,11 +152,14 @@ impl Images {
             clock: Cell::new(0),
             capacity: MEMORY_CAPACITY,
             budget: MEMORY_BUDGET,
-            in_flight: HashSet::new(),
+            in_flight: HashMap::new(),
             failed: HashMap::new(),
-            wanted: RefCell::new(Vec::new()),
+            wanted: RefCell::new(HashMap::new()),
+            want_batch: Cell::new(0),
+            want_seq: Cell::new(0),
             generations: HashMap::new(),
             disk_dir,
+            revision: 0,
         }
     }
 
@@ -194,6 +208,12 @@ impl Images {
         self.cache.contains_key(url)
     }
 
+    /// Changes whenever a cached image or initials decision was added or
+    /// dropped: a key for memoised views that show images.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn shows_initials(&self, url: &str) -> bool {
         self.initials.contains(url)
     }
@@ -222,7 +242,7 @@ impl Images {
             self.touch(e);
             return;
         }
-        if self.initials.contains(&req.url) || self.in_flight.contains(&req.url) {
+        if self.initials.contains(&req.url) || self.in_flight.contains_key(&req.url) {
             return;
         }
         if let Some(t) = self.failed.get(&req.url)
@@ -230,9 +250,17 @@ impl Images {
         {
             return;
         }
+        let batch = self.want_batch.get();
+        let seq = self.want_seq.get();
+        self.want_seq.set(seq.wrapping_add(1));
         let mut w = self.wanted.borrow_mut();
-        if !w.contains(&req) {
-            w.push(req);
+        match w.get_mut(&req) {
+            // Asked again in a later frame: it is still on screen.
+            Some(at) if at.0 != batch => *at = (batch, seq),
+            Some(_) => {}
+            None => {
+                w.insert(req, (batch, seq));
+            }
         }
     }
 
@@ -240,13 +268,39 @@ impl Images {
         !self.wanted.borrow().is_empty()
     }
 
-    /// Requests recorded since the last call, marked in flight (deduplicated).
+    /// Requests to start now, marked in flight: at most
+    /// [`MAX_FETCHES_PER_SERVER`] running per server, the most recently
+    /// requested first (in request order within a batch). The rest stay queued.
     pub fn take_wanted(&mut self) -> Vec<ImageRequest> {
-        let wanted = std::mem::take(&mut *self.wanted.borrow_mut());
-        wanted
-            .into_iter()
-            .filter(|r| self.in_flight.insert(r.url.clone()))
-            .collect()
+        self.want_batch.set(self.want_batch.get().wrapping_add(1));
+        let mut running: HashMap<ServerId, usize> = HashMap::new();
+        for sid in self.in_flight.values() {
+            *running.entry(sid.clone()).or_default() += 1;
+        }
+        let full = |sid: &ServerId, running: &HashMap<ServerId, usize>| {
+            running.get(sid).copied().unwrap_or(0) >= MAX_FETCHES_PER_SERVER
+        };
+        let mut w = self.wanted.borrow_mut();
+        if w.keys().all(|r| full(&r.server_id, &running)) {
+            return Vec::new();
+        }
+        let mut queued: Vec<(ImageRequest, (u64, u64))> = w.drain().collect();
+        queued.sort_unstable_by(|a, b| b.1.0.cmp(&a.1.0).then(a.1.1.cmp(&b.1.1)));
+        let mut out = Vec::new();
+        for (req, at) in queued {
+            if self.in_flight.contains_key(&req.url) {
+                continue;
+            }
+            if full(&req.server_id, &running) {
+                w.insert(req, at);
+                continue;
+            }
+            *running.entry(req.server_id.clone()).or_default() += 1;
+            self.in_flight
+                .insert(req.url.clone(), req.server_id.clone());
+            out.push(req);
+        }
+        out
     }
 
     pub fn disk_dir(&self) -> Option<&Path> {
@@ -292,6 +346,7 @@ impl Images {
         if generation != self.generation(server_id) {
             return false;
         }
+        self.revision = self.revision.wrapping_add(1);
         match result {
             Ok(Fetched::Image(img)) => {
                 self.failed.remove(&url);
@@ -311,6 +366,7 @@ impl Images {
     }
 
     fn insert(&mut self, url: String, img: Loaded) {
+        self.revision = self.revision.wrapping_add(1);
         self.clock.set(self.clock.get() + 1);
         self.bytes += img.bytes();
         if let Some(old) = self.cache.insert(
@@ -371,6 +427,9 @@ impl Images {
         };
         let mut dropped: Vec<String> = self.cache.keys().filter(|u| matches(u)).cloned().collect();
         dropped.extend(self.initials.iter().filter(|u| matches(u)).cloned());
+        if !dropped.is_empty() {
+            self.revision = self.revision.wrapping_add(1);
+        }
         let dir = self.server_dir(server_id);
         for url in &dropped {
             if let Some(e) = self.cache.remove(url) {
@@ -397,6 +456,7 @@ impl Images {
     /// generation. Returns the disk directory to delete (off the UI thread).
     pub fn purge_server(&mut self, server_id: &ServerId, server: &ServerUrl) -> Option<PathBuf> {
         *self.generations.entry(server_id.clone()).or_default() += 1;
+        self.revision = self.revision.wrapping_add(1);
         let prefix = format!("{}/", server.as_str());
         let mut freed = 0;
         self.cache.retain(|k, e| {
@@ -409,10 +469,11 @@ impl Images {
         self.bytes -= freed;
         self.initials.retain(|k| !k.starts_with(&prefix));
         self.failed.retain(|k, _| !k.starts_with(&prefix));
-        self.in_flight.retain(|k| !k.starts_with(&prefix));
+        self.in_flight
+            .retain(|k, sid| !k.starts_with(&prefix) && sid != server_id);
         self.wanted
             .borrow_mut()
-            .retain(|r| &r.server_id != server_id);
+            .retain(|r, _| &r.server_id != server_id);
         self.server_dir(server_id)
     }
 
@@ -780,6 +841,39 @@ mod tests {
         assert!(images.get(&sid, "svg").is_none());
         assert!(images.shows_initials("svg"));
         assert!(images.take_wanted().is_empty());
+    }
+
+    /// App review #57: a sidebar of 2000 rows does not start 2000 fetches at
+    /// once; what the latest frame asked for goes first.
+    #[test]
+    fn fetches_are_bounded_per_server_newest_first() {
+        let mut images = Images::new(None);
+        let (a, b) = (ServerId("a".into()), ServerId("b".into()));
+        for i in 0..2000 {
+            images.get(&a, &format!("a{i}"));
+        }
+        images.get(&b, "b0");
+        let first = images.take_wanted();
+        assert_eq!(first.len(), MAX_FETCHES_PER_SERVER + 1);
+        assert_eq!(first[0].url, "a0", "request order within a frame");
+        assert!(
+            first.iter().any(|r| r.url == "b0"),
+            "servers are independent"
+        );
+        assert!(images.take_wanted().is_empty(), "all slots busy");
+        // The next frame shows a room: its image jumps the queue.
+        images.get(&a, "room-image");
+        images.finish(&a, 0, "a0".into(), Err("x".into()));
+        let next = images.take_wanted();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].url, "room-image");
+        // Duplicates are not queued twice.
+        let queued = images.wanted.borrow().len();
+        images.get(&a, "a1999");
+        assert_eq!(images.wanted.borrow().len(), queued);
+        let rev = images.revision();
+        images.finish(&a, 0, "a1".into(), Ok(Fetched::Image(img(1))));
+        assert_ne!(images.revision(), rev);
     }
 
     /// Re-review #12/#7: LRU bounded by entries and bytes; used entries stay.

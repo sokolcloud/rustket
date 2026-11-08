@@ -203,6 +203,33 @@ impl ServerUrl {
                 || u.path().starts_with(&format!("{}/", self.path_prefix())))
     }
 
+    /// Whether `url` (absolute) is one of this server's file or image routes
+    /// that the web client loads with the login cookies: uploads
+    /// (`/file-upload/`, `/ufs/`), avatars, custom emoji and sounds, assets.
+    /// Only these get the user's credentials on a download; any other path
+    /// (`/api/…`, app endpoints) may come from untrusted message content and
+    /// is fetched anonymously.
+    pub fn is_credentialed_asset(&self, url: &str) -> bool {
+        const ROUTES: [&str; 6] = [
+            "/file-upload/",
+            "/ufs/",
+            "/avatar/",
+            "/emoji-custom/",
+            "/custom-sounds/",
+            "/assets/",
+        ];
+        let Ok(u) = Url::parse(url) else {
+            return false;
+        };
+        if !crate::rest::same_origin(&u, &self.url) {
+            return false;
+        }
+        let Some(path) = u.path().strip_prefix(self.path_prefix()) else {
+            return false;
+        };
+        ROUTES.iter().any(|r| path.starts_with(r))
+    }
+
     /// Same scheme, host (lowercase, punycode, no trailing dot) and effective port.
     pub fn same_origin(&self, other: &ServerUrl) -> bool {
         crate::rest::same_origin(&self.url, &other.url)
@@ -330,6 +357,30 @@ mod tests {
         assert!(s.owns("https://example.com/chat/file-upload/x"));
         assert!(!s.owns("https://example.com/other"));
         assert!(!s.owns("https://evil.com/chat/x"));
+        for (url, ok) in [
+            ("https://example.com/chat/file-upload/abc/x.png", true),
+            ("https://example.com/chat/avatar/alice?size=64", true),
+            ("https://example.com/chat/avatar/room/R1", true),
+            ("https://example.com/chat/emoji-custom/party.png", true),
+            ("https://example.com/chat/ufs/GridFS:Uploads/x", true),
+            ("https://example.com/chat/api/v1/logout", false),
+            ("https://example.com/chat/api/apps/private/a/b/x", false),
+            (
+                "https://example.com/chat/file-upload/../api/v1/logout",
+                false,
+            ),
+            (
+                "https://example.com/chat/file-upload/%2e%2e/api/v1/logout",
+                false,
+            ),
+            ("https://example.com/chat/api/v1/x?u=/file-upload/", false),
+            ("https://example.com/chatfile-upload/x", false),
+            ("https://example.com/file-upload/x", false),
+            ("https://evil.com/chat/file-upload/x", false),
+            ("http://example.com/chat/file-upload/x", false),
+        ] {
+            assert_eq!(s.is_credentialed_asset(url), ok, "{url}");
+        }
 
         let l = ServerUrl::parse("http://localhost:3000").unwrap();
         assert_eq!(l.websocket(), "ws://localhost:3000/websocket");

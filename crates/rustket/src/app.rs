@@ -320,7 +320,13 @@ impl App {
         );
         let theme = iced::system::theme().map(Message::SystemTheme);
         let handler = query_handler_task();
-        (app, Task::batch([open, theme, handler]))
+        // Media opened with the system player in earlier runs.
+        let media = crate::room::timeline::transfer::purge_media_task(
+            app.images.disk_dir(),
+            true,
+            Message::Noop,
+        );
+        (app, Task::batch([open, theme, handler, media]))
     }
 
     // --- helpers ---------------------------------------------------------------
@@ -1224,7 +1230,13 @@ impl App {
         let Some(url) = self.servers.get(sid).map(|s| s.url.clone()) else {
             return Task::none();
         };
-        match self.images.purge_server(sid, &url) {
+        // Opened media is not kept per server: all of it goes.
+        let media = crate::room::timeline::transfer::purge_media_task(
+            self.images.disk_dir(),
+            false,
+            Message::Noop,
+        );
+        let images = match self.images.purge_server(sid, &url) {
             Some(dir) => Task::perform(
                 async move {
                     let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir)).await;
@@ -1232,7 +1244,8 @@ impl App {
                 |_| Message::Noop,
             ),
             None => Task::none(),
-        }
+        };
+        Task::batch([images, media])
     }
 
     fn delete_token(&mut self, sid: &ServerId) -> Task<Message> {

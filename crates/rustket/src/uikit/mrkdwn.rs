@@ -156,6 +156,8 @@ struct Memo {
     failed: Vec<(&'static str, usize)>,
     /// Per pattern: (search start, first match at or after it).
     next: Vec<(&'static str, usize, Option<usize>)>,
+    /// Position of a `](` whose link source was rejected.
+    bad_src: Option<usize>,
 }
 
 impl Memo {
@@ -278,11 +280,15 @@ fn inlines(text: &str, depth: usize) -> Vec<Inline> {
             }
         } else if rest.starts_with('[') {
             if let Some(mid) = memo.find(text, "](", i).map(|at| at - i)
+                && memo.bad_src != Some(i + mid)
                 && let Some(close) = memo.find(text, ")", i + mid + 2).map(|at| at - i - mid - 2)
             {
                 let label = &rest[1..mid];
                 let src = &rest[mid + 2..mid + 2 + close];
-                if !src.is_empty() && !src.contains(char::is_whitespace) {
+                // Every later `[` before this `](` gets the same source.
+                if src.is_empty() || src.contains(char::is_whitespace) {
+                    memo.bad_src = Some(i + mid);
+                } else {
                     let label = if label.trim().is_empty() {
                         vec![Inline::PlainText {
                             value: src.to_owned(),
@@ -294,7 +300,13 @@ fn inlines(text: &str, depth: usize) -> Vec<Inline> {
                 }
             }
         } else if rest.starts_with('<') {
-            if let Some(close) = memo.find(text, ">", i).map(|at| at - i) {
+            // Only the last `<` before a `>` can open a link, so each
+            // candidate's content is looked at once.
+            if let Some(close) = memo.find(text, ">", i).map(|at| at - i)
+                && memo
+                    .find(text, "<", i + 1)
+                    .is_none_or(|next| next > i + close)
+            {
                 let inner = &rest[1..close];
                 let (src, label) = inner.split_once('|').unwrap_or((inner, inner));
                 if !src.is_empty()
@@ -485,6 +497,10 @@ mod tests {
             ":a ".repeat(6666),
             "~~a ".repeat(5000),
             "[a](".repeat(5000),
+            "<".repeat(19_990) + "a b>",
+            "<".repeat(19_990) + "a|b>",
+            "[".repeat(10_000) + "](" + &"a".repeat(9_990) + " )",
+            "[".repeat(10_000) + "](" + &"a ".repeat(4_990) + ")",
         ] {
             let started = std::time::Instant::now();
             let b = parse(&s);
