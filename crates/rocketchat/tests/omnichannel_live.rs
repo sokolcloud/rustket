@@ -178,7 +178,12 @@ async fn scenario(server: ServerUrl, admin: RestClient, created: Arc<Mutex<Creat
             .unwrap(),
         AgentStatus::NotAvailable
     );
-    let ev = expect(&mut a.events, |e| e.agent_status().is_some()).await;
+    // The agent's own setup (role, login) may still deliver an earlier
+    // `available` status first.
+    let ev = expect(&mut a.events, |e| {
+        e.agent_status() == Some(AgentStatus::NotAvailable)
+    })
+    .await;
     assert_eq!(ev.agent_status(), Some(AgentStatus::NotAvailable));
     assert_eq!(
         a.rest.livechat_agent_status(None).await.unwrap(),
