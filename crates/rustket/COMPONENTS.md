@@ -48,9 +48,11 @@ thread/discussion summaries) already wrap themselves; wrap your own
 around a styled box whose inner (borderless) input has the focus. Custom
 menus use `menu_nav(column, actions)` for Up/Down/Enter (the status menu
 does). Hover toolbars (`hover_box`) show while one of their buttons has the
-focus. Regions for F6 are containers with the ids in `crate::focus`
-(sidebar, timeline, composer, panel); Escape that no widget took closes the
-right panel (`Message::Escape`).
+focus. Tab and F6 scroll the focused widget into view; `side_panel` hides
+the room column's focusables while a panel covers it. Regions for F6 are
+containers with the ids in `crate::focus` (sidebar, timeline, composer,
+panel); Escape that no widget took closes the right panel or the open page
+(`Message::Escape`). A widget that handles Escape itself must capture it.
 
 ## App-level components (`src/component.rs`)
 

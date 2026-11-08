@@ -590,7 +590,7 @@ fn switch<'a>(
     .into()
 }
 
-/// "100 MB", "1 GB" …
+/// "100 MB", "1 GB" … (decimal units, like the cap: [`crate::images::MB`]).
 pub fn size_label(mb: u64) -> String {
     if mb >= 1000 && mb.is_multiple_of(1000) {
         t!("settings.size_gb", n = mb / 1000).into_owned()
@@ -618,7 +618,7 @@ fn cache_limit_help(cap_mb: u32) -> String {
             "{help}\n{}",
             t!(
                 "settings.cache_used",
-                used = size_label(bytes.div_ceil(1024 * 1024)),
+                used = size_label(bytes.div_ceil(crate::images::MB)),
                 limit = size_label(u64::from(cap_mb))
             )
         ),

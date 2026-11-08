@@ -1542,13 +1542,27 @@ impl App {
     }
 
     /// Escape no widget took (popovers, dialogs and focused inputs handle
-    /// their own): close the active room's right panel, or the settings page.
+    /// their own): close the active room's right panel, or the settings,
+    /// account, directory or administration page.
     fn on_escape(&mut self) -> Task<Message> {
         if !self.modals.is_empty() {
             return Task::none();
         }
         match &self.screen {
             Screen::Settings(_) => self.on_settings(crate::screens::settings::Message::Close),
+            // Admin asks first when settings edits are unsaved.
+            Screen::Account(sid, _) => Task::done(Message::Account(
+                sid.clone(),
+                crate::screens::account::Message::Close,
+            )),
+            Screen::Directory(sid, _) => Task::done(Message::Directory(
+                sid.clone(),
+                crate::screens::directory::Message::Close,
+            )),
+            Screen::Admin(sid, _) => Task::done(Message::Admin(
+                sid.clone(),
+                crate::screens::admin::Message::Close,
+            )),
             Screen::Server => {
                 let Some(s) = self.active.as_ref().and_then(|sid| self.servers.get(sid)) else {
                     return Task::none();
@@ -1566,7 +1580,7 @@ impl App {
                     room::Message::Panel(room::panel::Message::Close),
                 ))
             }
-            _ => Task::none(),
+            Screen::Loading | Screen::AddServer(_) => Task::none(),
         }
     }
 

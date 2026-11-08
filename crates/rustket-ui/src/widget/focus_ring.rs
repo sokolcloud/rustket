@@ -313,11 +313,13 @@ impl<'a, Message: Clone + 'a> From<FocusRing<'a, Message>> for Element<'a, Messa
 }
 
 /// A part of the window that F6 / Shift+F6 move between: a container with
-/// `id`; `prefer` is focused when it is inside, else the first focusable.
+/// `id`; `prefer` is focused when it is inside, else (with `last_visible`)
+/// the last line of focusables on screen, else the first focusable.
 #[derive(Debug, Clone)]
 pub struct FocusRegion {
     pub id: Id,
     pub prefer: Option<Id>,
+    pub last_visible: bool,
 }
 
 impl FocusRegion {
@@ -325,12 +327,222 @@ impl FocusRegion {
         Self {
             id: id.into(),
             prefer: None,
+            last_visible: false,
         }
     }
 
     pub fn prefer(mut self, id: impl Into<Id>) -> Self {
         self.prefer = Some(id.into());
         self
+    }
+
+    /// Targets the first focusable of the last line visible in its
+    /// scrollable (a timeline anchored at the newest message), not the
+    /// first one built.
+    pub fn last_visible(mut self) -> Self {
+        self.last_visible = true;
+        self
+    }
+}
+
+/// A scrollable around the current point of a traversal.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScrollFrame {
+    /// Position among all scrollables of the traversal.
+    ordinal: usize,
+    bounds: Rectangle,
+    content: Rectangle,
+    translation: Vector,
+    /// Visible area, in the content's (untranslated) coordinates.
+    clip: Rectangle,
+}
+
+/// Follows the scrollables of a traversal: an operation reports
+/// `scrollable`, then `enter`/`leave` around each `traverse`.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ScrollTrack {
+    pending: Option<ScrollFrame>,
+    stack: Vec<ScrollFrame>,
+    seen: usize,
+}
+
+impl ScrollTrack {
+    pub(crate) fn scrollable(
+        &mut self,
+        bounds: Rectangle,
+        content: Rectangle,
+        translation: Vector,
+    ) {
+        let visible = match self.stack.last() {
+            Some(outer) => outer.clip.intersection(&bounds).unwrap_or(Rectangle {
+                width: 0.0,
+                height: 0.0,
+                ..bounds
+            }),
+            None => bounds,
+        };
+        self.pending = Some(ScrollFrame {
+            ordinal: self.seen,
+            bounds,
+            content,
+            translation,
+            clip: visible + translation,
+        });
+        self.seen += 1;
+    }
+
+    /// Another call came between `scrollable` and `traverse`.
+    pub(crate) fn interrupt(&mut self) {
+        self.pending = None;
+    }
+
+    pub(crate) fn enter(&mut self) -> bool {
+        match self.pending.take() {
+            Some(frame) => {
+                self.stack.push(frame);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn leave(&mut self, entered: bool) {
+        if entered {
+            self.stack.pop();
+        }
+    }
+
+    /// Whether `bounds` shows in the enclosing scrollables.
+    pub(crate) fn is_visible(&self, bounds: Rectangle) -> bool {
+        self.stack.last().is_none_or(|f| {
+            f.clip
+                .intersection(&bounds)
+                .is_some_and(|r| r.width >= 1.0 && r.height >= 1.0)
+        })
+    }
+
+    /// The scroll that brings `bounds` into view in the innermost enclosing
+    /// scrollable, if it is not visible yet.
+    pub(crate) fn reveal(&self, bounds: Rectangle) -> Option<ScrollFix> {
+        let f = self.stack.last()?;
+        let target = reveal_translation(f.bounds, f.content, f.translation.y, bounds)?;
+        Some(ScrollFix {
+            ordinal: f.ordinal,
+            target,
+            max: (f.content.height - f.bounds.height).max(0.0),
+            verify: false,
+            seen: 0,
+        })
+    }
+}
+
+/// Spacing kept around a focusable scrolled into view.
+const REVEAL_MARGIN: f32 = 8.0;
+
+/// The vertical translation of a scrollable (`viewport`, `content`, current
+/// `translation`) that shows `target`; `None` when it is fully visible.
+fn reveal_translation(
+    viewport: Rectangle,
+    content: Rectangle,
+    translation: f32,
+    target: Rectangle,
+) -> Option<f32> {
+    let top = viewport.y + translation;
+    let bottom = top + viewport.height;
+    let below = target.y + target.height;
+    if target.y >= top && below <= bottom {
+        return None;
+    }
+    let to_top = target.y - viewport.y - REVEAL_MARGIN;
+    let t = if target.height + 2.0 * REVEAL_MARGIN > viewport.height {
+        if target.y < bottom && below > top {
+            return None;
+        }
+        to_top
+    } else if target.y < top {
+        to_top
+    } else {
+        below - viewport.y - viewport.height + REVEAL_MARGIN
+    };
+    let max = (content.height - viewport.height).max(0.0);
+    Some(t.clamp(0.0, max).round())
+}
+
+/// Scrolls the `ordinal`-th scrollable to show a focused widget. The
+/// operation does not know whether the scrollable is anchored at the start
+/// or the end, so it sets the offset for the start, checks the resulting
+/// translation in a second pass and mirrors it for an end anchor.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScrollFix {
+    ordinal: usize,
+    target: f32,
+    max: f32,
+    verify: bool,
+    seen: usize,
+}
+
+impl<T> Operation<T> for ScrollFix {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        _id: Option<&Id>,
+        _bounds: Rectangle,
+        _content: Rectangle,
+        translation: Vector,
+        state: &mut dyn operation::Scrollable,
+    ) {
+        if self.seen == self.ordinal {
+            use iced::widget::scrollable::AbsoluteOffset;
+            if !self.verify {
+                state.scroll_to(AbsoluteOffset {
+                    x: None,
+                    y: Some(self.target),
+                });
+            } else if (translation.y - self.target).abs() > 0.5 {
+                state.scroll_to(AbsoluteOffset {
+                    x: None,
+                    y: Some((self.max - self.target).max(0.0)),
+                });
+            }
+        }
+        self.seen += 1;
+    }
+
+    fn finish(&self) -> operation::Outcome<T> {
+        if self.verify {
+            operation::Outcome::None
+        } else {
+            operation::Outcome::Chain(Box::new(ScrollFix {
+                verify: true,
+                seen: 0,
+                ..*self
+            }))
+        }
+    }
+}
+
+/// What a region holds, found by [`RegionScan`].
+#[derive(Debug, Default, Clone, Copy)]
+struct Found {
+    count: usize,
+    prefer: Option<usize>,
+    last_visible: Option<usize>,
+    last_visible_y: Option<f32>,
+}
+
+impl Found {
+    /// Index (among the region's focusables) of the one F6 focuses.
+    fn target(&self, region: &FocusRegion) -> usize {
+        self.prefer
+            .or(if region.last_visible {
+                self.last_visible.or(self.count.checked_sub(1))
+            } else {
+                None
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -342,10 +554,10 @@ struct RegionScan {
     pending: Option<Id>,
     /// Indices of the regions the traversal is inside.
     stack: Vec<usize>,
-    /// Per region: (has a focusable, has the preferred one).
-    found: Vec<(bool, bool)>,
+    found: Vec<Found>,
     focused: Option<usize>,
     forward: bool,
+    scroll: ScrollTrack,
 }
 
 impl RegionScan {
@@ -363,7 +575,9 @@ impl<T: Send + 'static> Operation<T> for RegionScan {
         if let Some(i) = entered {
             self.stack.push(i);
         }
+        let scrolled = self.scroll.enter();
         operate(self);
+        self.scroll.leave(scrolled);
         if entered.is_some() {
             self.stack.pop();
         }
@@ -371,22 +585,37 @@ impl<T: Send + 'static> Operation<T> for RegionScan {
 
     fn container(&mut self, id: Option<&Id>, _bounds: Rectangle) {
         self.pending = id.cloned();
+        self.scroll.interrupt();
     }
 
     fn focusable(
         &mut self,
         id: Option<&Id>,
-        _bounds: Rectangle,
+        bounds: Rectangle,
         state: &mut dyn operation::Focusable,
     ) {
         self.pending = None;
+        self.scroll.interrupt();
         let Some(i) = self.current() else {
             return;
         };
-        self.found[i].0 = true;
-        if id.is_some() && id == self.regions[i].prefer.as_ref() {
-            self.found[i].1 = true;
+        let visible = self.scroll.is_visible(bounds);
+        let found = &mut self.found[i];
+        if id.is_some() && id == self.regions[i].prefer.as_ref() && found.prefer.is_none() {
+            found.prefer = Some(found.count);
         }
+        if visible {
+            // The first of the last line on screen (a message toolbar's
+            // first button, not its "more" button).
+            let same_line = found
+                .last_visible_y
+                .is_some_and(|y| (y - bounds.y).abs() < 1.0);
+            if !same_line {
+                found.last_visible = Some(found.count);
+            }
+            found.last_visible_y = Some(bounds.y);
+        }
+        found.count += 1;
         if state.is_focused() {
             self.focused = Some(i);
         }
@@ -395,33 +624,38 @@ impl<T: Send + 'static> Operation<T> for RegionScan {
     fn scrollable(
         &mut self,
         _id: Option<&Id>,
-        _bounds: Rectangle,
-        _content: Rectangle,
-        _translation: Vector,
+        bounds: Rectangle,
+        content: Rectangle,
+        translation: Vector,
         _state: &mut dyn operation::Scrollable,
     ) {
         self.pending = None;
+        self.scroll.scrollable(bounds, content, translation);
     }
 
     fn finish(&self) -> operation::Outcome<T> {
-        let Some(target) = next_region(&self.found, self.focused, self.forward) else {
+        let has: Vec<bool> = self.found.iter().map(|f| f.count > 0).collect();
+        let Some(target) = next_region(&has, self.focused, self.forward) else {
             return operation::Outcome::None;
         };
+        let region = self.regions[target].clone();
         operation::Outcome::Chain(Box::new(FocusIn {
-            region: self.regions[target].clone(),
-            use_prefer: self.found[target].1,
+            index: self.found[target].target(&region),
+            region,
+            current: 0,
             pending: None,
             depth_inside: 0,
             inside: false,
-            done: false,
+            scroll: ScrollTrack::default(),
+            reveal: None,
         }))
     }
 }
 
 /// Target index for [`focus_region`]: the next region (in `step` direction)
 /// after `current` that holds a focusable.
-fn next_region(found: &[(bool, bool)], current: Option<usize>, forward: bool) -> Option<usize> {
-    let n = found.len();
+fn next_region(has: &[bool], current: Option<usize>, forward: bool) -> Option<usize> {
+    let n = has.len();
     if n == 0 {
         return None;
     }
@@ -438,18 +672,21 @@ fn next_region(found: &[(bool, bool)], current: Option<usize>, forward: bool) ->
                 (start + n - k % n) % n
             }
         })
-        .find(|&i| found[i].0)
+        .find(|&i| has[i])
 }
 
-/// Focuses the preferred (or first) focusable of region `target` and
-/// unfocuses everything else.
+/// Focuses the `index`-th focusable of region `target`, unfocuses
+/// everything else and scrolls the focused one into view.
 struct FocusIn {
     region: FocusRegion,
-    use_prefer: bool,
+    index: usize,
+    /// Focusables of the region seen so far.
+    current: usize,
     pending: Option<Id>,
     depth_inside: usize,
     inside: bool,
-    done: bool,
+    scroll: ScrollTrack,
+    reveal: Option<ScrollFix>,
 }
 
 impl<T> Operation<T> for FocusIn {
@@ -461,7 +698,9 @@ impl<T> Operation<T> for FocusIn {
         if self.inside {
             self.depth_inside += 1;
         }
+        let scrolled = self.scroll.enter();
         operate(self);
+        self.scroll.leave(scrolled);
         if self.inside {
             self.depth_inside -= 1;
             if self.depth_inside == 0 {
@@ -472,35 +711,46 @@ impl<T> Operation<T> for FocusIn {
 
     fn container(&mut self, id: Option<&Id>, _bounds: Rectangle) {
         self.pending = id.cloned();
+        self.scroll.interrupt();
     }
 
     fn focusable(
         &mut self,
-        id: Option<&Id>,
-        _bounds: Rectangle,
+        _id: Option<&Id>,
+        bounds: Rectangle,
         state: &mut dyn operation::Focusable,
     ) {
         self.pending = None;
-        let wanted = self.inside
-            && !self.done
-            && (!self.use_prefer || (id.is_some() && id == self.region.prefer.as_ref()));
-        if wanted {
-            state.focus();
-            self.done = true;
-        } else {
-            state.unfocus();
+        self.scroll.interrupt();
+        if self.inside {
+            let wanted = self.current == self.index;
+            self.current += 1;
+            if wanted {
+                state.focus();
+                self.reveal = self.scroll.reveal(bounds);
+                return;
+            }
         }
+        state.unfocus();
     }
 
     fn scrollable(
         &mut self,
         _id: Option<&Id>,
-        _bounds: Rectangle,
-        _content: Rectangle,
-        _translation: Vector,
+        bounds: Rectangle,
+        content: Rectangle,
+        translation: Vector,
         _state: &mut dyn operation::Scrollable,
     ) {
         self.pending = None;
+        self.scroll.scrollable(bounds, content, translation);
+    }
+
+    fn finish(&self) -> operation::Outcome<T> {
+        match self.reveal {
+            Some(fix) => operation::Outcome::Chain(Box::new(fix)),
+            None => operation::Outcome::None,
+        }
     }
 }
 
@@ -508,7 +758,7 @@ impl<T> Operation<T> for FocusIn {
 /// (wrapping) that holds something focusable.
 pub fn focus_region<T: Send + 'static>(regions: Vec<FocusRegion>, forward: bool) -> iced::Task<T> {
     iced::advanced::widget::operate(RegionScan {
-        found: vec![(false, false); regions.len()],
+        found: vec![Found::default(); regions.len()],
         regions,
         forward,
         ..RegionScan::default()
@@ -521,14 +771,42 @@ mod tests {
 
     #[test]
     fn regions_wrap_and_skip_empty_ones() {
-        let found = [(true, false), (false, false), (true, true)];
+        let found = [true, false, true];
         assert_eq!(next_region(&found, None, true), Some(0));
         assert_eq!(next_region(&found, None, false), Some(2));
         assert_eq!(next_region(&found, Some(0), true), Some(2));
         assert_eq!(next_region(&found, Some(2), true), Some(0));
         assert_eq!(next_region(&found, Some(0), false), Some(2));
         assert_eq!(next_region(&found, Some(2), false), Some(0));
-        assert_eq!(next_region(&[(false, false)], None, true), None);
+        assert_eq!(next_region(&[false], None, true), None);
         assert_eq!(next_region(&[], Some(0), true), None);
+    }
+
+    #[test]
+    fn reveal_scrolls_only_what_is_hidden() {
+        let viewport = Rectangle::new(iced::Point::new(0.0, 100.0), Size::new(200.0, 300.0));
+        let content = Rectangle::new(iced::Point::new(0.0, 100.0), Size::new(200.0, 1000.0));
+        let at = |y: f32| Rectangle::new(iced::Point::new(0.0, y), Size::new(200.0, 30.0));
+        // Visible: content y 100..400 at translation 0.
+        assert_eq!(reveal_translation(viewport, content, 0.0, at(150.0)), None);
+        // Below: its bottom lands at the viewport bottom (plus margin).
+        assert_eq!(
+            reveal_translation(viewport, content, 0.0, at(420.0)),
+            Some(450.0 - 400.0 + REVEAL_MARGIN)
+        );
+        // Above: its top lands at the viewport top (minus margin).
+        assert_eq!(
+            reveal_translation(viewport, content, 500.0, at(300.0)),
+            Some(200.0 - REVEAL_MARGIN)
+        );
+        // Clamped to the content.
+        assert_eq!(
+            reveal_translation(viewport, content, 500.0, at(102.0)),
+            Some(0.0)
+        );
+        assert_eq!(
+            reveal_translation(viewport, content, 0.0, at(1066.0)),
+            Some(700.0)
+        );
     }
 }

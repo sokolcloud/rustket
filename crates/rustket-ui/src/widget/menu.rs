@@ -321,7 +321,17 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for MenuNav<'_, Mess
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let highlighted = tree.state.downcast_ref::<NavState>().highlighted;
+        let mut highlighted = tree.state.downcast_ref::<NavState>().highlighted;
+        // An input of the menu (the status text) has the keyboard: its
+        // Home/End/Space/Enter are its own, and a highlight left from an
+        // earlier opening is dropped.
+        let input_focused =
+            super::layer::has_focus(&mut self.content, &mut tree.children[0], layout, renderer);
+        if input_focused && highlighted.is_some() {
+            highlighted = None;
+            tree.state.downcast_mut::<NavState>().highlighted = None;
+            shell.request_redraw();
+        }
         match event {
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(named),
@@ -332,8 +342,8 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for MenuNav<'_, Mess
                 let moved = match named {
                     Named::ArrowDown => Some(self.next(highlighted, 1)),
                     Named::ArrowUp => Some(self.next(highlighted, -1)),
-                    Named::Home => Some(self.next(None, 1)),
-                    Named::End => Some(self.next(None, -1)),
+                    Named::Home if !input_focused => Some(self.next(None, 1)),
+                    Named::End if !input_focused => Some(self.next(None, -1)),
                     _ => None,
                 };
                 if let Some(to) = moved {

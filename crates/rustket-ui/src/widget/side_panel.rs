@@ -48,6 +48,75 @@ pub fn widths(width: f32, side_width: Option<f32>) -> (f32, Option<f32>) {
     }
 }
 
+/// Whether the panel is drawn over part of the room column.
+fn covers(layout: Layout<'_>) -> bool {
+    let mut parts = layout.children();
+    let (Some(main), Some(side)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let (main, side) = (main.bounds(), side.bounds());
+    side.width >= 1.0 && side.x < main.x + main.width - 0.5
+}
+
+/// Forwards an operation, but hides the focusables (and drops a focus they
+/// still hold) of the covered room column.
+struct Covered<'a>(&'a mut dyn Operation);
+
+impl Operation for Covered<'_> {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        self.0.traverse(&mut |op| operate(&mut Covered(op)));
+    }
+
+    fn container(&mut self, id: Option<&iced::advanced::widget::Id>, bounds: Rectangle) {
+        self.0.container(id, bounds);
+    }
+
+    fn focusable(
+        &mut self,
+        _id: Option<&iced::advanced::widget::Id>,
+        _bounds: Rectangle,
+        state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        if state.is_focused() {
+            state.unfocus();
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        self.0
+            .scrollable(id, bounds, content_bounds, translation, state);
+    }
+
+    fn text(&mut self, id: Option<&iced::advanced::widget::Id>, bounds: Rectangle, text: &str) {
+        self.0.text(id, bounds, text);
+    }
+
+    fn text_input(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        bounds: Rectangle,
+        state: &mut dyn iced::advanced::widget::operation::TextInput,
+    ) {
+        self.0.text_input(id, bounds, state);
+    }
+
+    fn custom(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        bounds: Rectangle,
+        state: &mut dyn std::any::Any,
+    ) {
+        self.0.custom(id, bounds, state);
+    }
+}
+
 struct SidePanel<'a, Message> {
     children: [Element<'a, Message>; 2],
     side_width: Option<f32>,
@@ -98,16 +167,25 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidePanel<'_, Message> 
         operation: &mut dyn Operation,
     ) {
         operation.container(None, layout.bounds());
+        let covered = covers(layout);
         operation.traverse(&mut |operation| {
-            for ((child, state), layout) in self
+            for (i, ((child, state), layout)) in self
                 .children
                 .iter_mut()
                 .zip(&mut tree.children)
                 .zip(layout.children())
+                .enumerate()
             {
-                child
-                    .as_widget_mut()
-                    .operate(state, layout, renderer, operation);
+                if i == 0 && covered {
+                    // Keyboard focus (Tab, F6) never goes under the panel.
+                    child
+                        .as_widget_mut()
+                        .operate(state, layout, renderer, &mut Covered(operation));
+                } else {
+                    child
+                        .as_widget_mut()
+                        .operate(state, layout, renderer, operation);
+                }
             }
         });
     }
@@ -138,6 +216,31 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidePanel<'_, Message> 
                 state, event, layout, cursor, renderer, clipboard, shell, viewport,
             );
             if shell.is_event_captured() {
+                // A press inside the panel is still a press outside the room
+                // column: its inputs and focus rings drop the focus.
+                if i == 0
+                    && matches!(
+                        event,
+                        Event::Mouse(mouse::Event::ButtonPressed(_))
+                            | Event::Touch(iced::touch::Event::FingerPressed { .. })
+                    )
+                    && let (Some(main), Some(main_state), Some(main_layout)) = (
+                        self.children.first_mut(),
+                        tree.children.first_mut(),
+                        layout.children().next(),
+                    )
+                {
+                    main.as_widget_mut().update(
+                        main_state,
+                        event,
+                        main_layout,
+                        mouse::Cursor::Unavailable,
+                        renderer,
+                        clipboard,
+                        shell,
+                        viewport,
+                    );
+                }
                 return;
             }
             if i == 0 && is_over && !cursor.is_levitating() {

@@ -222,10 +222,11 @@ fn up_edits_last_only_when_empty_and_escape_cancels() {
         Some(Binding::Move(_))
     ));
     let esc = Key::Named(key::Named::Escape);
-    assert!(matches!(
-        press(esc.clone(), Modifiers::empty(), Keys::default()),
-        Some(Binding::Unfocus)
-    ));
+    // Nothing to cancel: a captured unfocus (the right panel stays open).
+    assert_eq!(
+        custom(press(esc.clone(), Modifiers::empty(), Keys::default())).as_deref(),
+        Some("Leave")
+    );
     let editing = Keys {
         cancellable: true,
         ..Keys::default()
@@ -346,6 +347,24 @@ fn too_long_message_is_kept() {
     ));
     assert_eq!(c.text(), "abcd");
     assert!(env.ws.pending_messages("R1").is_empty());
+}
+
+/// Escape with nothing to cancel: an empty thread composer closes the
+/// thread (like the web); one holding a draft, or the room composer, only
+/// gives up the focus.
+#[test]
+fn escape_closes_only_an_empty_thread() {
+    let mut env = Env::new("t-leave");
+    env.ws.open_thread("R1", "T1");
+    let mut c = Composer::for_thread("R1", "T1");
+    let a = c.update(Message::Leave, &mut env.ctx());
+    assert!(matches!(a.effects.as_slice(), [Effect::ClosePanel]));
+    type_text(&mut c, &mut env, "draft");
+    let a = c.update(Message::Leave, &mut env.ctx());
+    assert!(a.effects.is_empty());
+    let mut room = Composer::new("R1");
+    let a = room.update(Message::Leave, &mut env.ctx());
+    assert!(a.effects.is_empty());
 }
 
 #[test]
@@ -800,7 +819,11 @@ fn escape_with_an_empty_popup_cancels_the_edit() {
 #[test]
 fn up_right_after_sending_does_not_edit_an_older_message() {
     let mut env = Env::new("t-up-pending");
-    env.ws.apply_message(msg("OLD", "me", "older message"));
+    // Older by a second: a pending message in the same millisecond may sort
+    // before it.
+    let mut old = msg("OLD", "me", "older message");
+    old.ts = RcDate::from_millis(RcDate::now().timestamp_millis() - 1000);
+    env.ws.apply_message(old);
     let mut c = Composer::new("R1");
     type_text(&mut c, &mut env, "helo wrld");
     let _ = c.update(Message::Send, &mut env.ctx());

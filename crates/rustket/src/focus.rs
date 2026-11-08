@@ -2,13 +2,17 @@
 //!
 //! - Tab / Shift+Tab move through every focusable widget of the window
 //!   (inputs, and buttons/rows wrapped in `rustket_ui::widget::focus_ring`);
-//!   modal dialogs keep Tab inside themselves.
+//!   modal dialogs keep Tab inside themselves. The focused widget is
+//!   scrolled into view. Nothing under a panel that covers the room column
+//!   (expanded thread, narrow window) takes the focus.
 //! - F6 / Shift+F6 move between the regions: sidebar (its search field),
-//!   timeline (its first focusable), composer, right panel (the thread
-//!   composer when a thread is open). Regions without anything focusable are
-//!   skipped. Ctrl+Shift+Arrow is not used: text fields select words with it.
+//!   timeline (the last focusable on screen, i.e. near the newest message),
+//!   composer, right panel (the thread composer when a thread is open).
+//!   Regions without anything focusable are skipped. Ctrl+Shift+Arrow is not
+//!   used: text fields select words with it.
 //! - Escape closes the innermost thing: popovers and menus, then dialogs, an
-//!   input's focus, then the right panel (and the settings page).
+//!   input's focus (an empty thread composer closes the thread), then the
+//!   right panel, or the settings/account/directory/administration page.
 //! - Alt+Up/Down open the previous/next room; the sidebar scrolls to it.
 
 use iced::widget::Id;
@@ -30,7 +34,7 @@ pub fn composer_id(rid: &str, tmid: Option<&str>) -> Id {
 pub fn regions(room: Option<(&str, Option<&str>)>) -> Vec<FocusRegion> {
     let mut v = vec![FocusRegion::new(SIDEBAR).prefer(crate::workspace::sidebar::SEARCH_INPUT_ID)];
     if let Some((rid, tmid)) = room {
-        v.push(FocusRegion::new(TIMELINE));
+        v.push(FocusRegion::new(TIMELINE).last_visible());
         v.push(FocusRegion::new(COMPOSER).prefer(composer_id(rid, None)));
         let panel = FocusRegion::new(PANEL);
         v.push(match tmid {

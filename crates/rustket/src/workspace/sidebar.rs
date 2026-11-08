@@ -1059,13 +1059,31 @@ mod tests {
         }
 
         /// Phase 13: the first build (and any full rebuild) of a 2000-room
-        /// list builds and lays out only the rows near the viewport.
-        /// "Before" is the list with a window covering the rows, which is
-        /// what the sidebar did without virtualisation; building all 2001
-        /// rows takes a minute in a debug build, so it is measured on 192
-        /// rows and extrapolated (rows cost the same each).
+        /// list builds and lays out only the rows near the viewport (without
+        /// virtualisation it built all 2001).
         #[test]
         fn first_build_lays_out_only_the_rows_on_screen() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(2000);
+            fx.refresh();
+            let total = total(&fx.sidebar);
+            fx.sidebar.viewport = Some((0.0, 800.0, total));
+            let (rows_virtual, _) = build_and_layout(&fx);
+            assert!(rows_virtual < 48, "{rows_virtual}");
+            // Scrolled to the middle: still only the rows around it.
+            fx.sidebar.viewport = Some((total / 2.0, 800.0, total));
+            let (rows_mid, _) = build_and_layout(&fx);
+            assert!(rows_mid < 64, "{rows_mid}");
+        }
+
+        /// The timings behind the row counts (wall clock, so not part of
+        /// the normal run). "Before" is the list with a window covering the
+        /// rows; building all 2001 takes a minute in a debug build, so it is
+        /// measured on 192 rows and extrapolated (rows cost the same each): `cargo test -p rustket sidebar_build_timings --
+        /// --ignored --nocapture`.
+        #[test]
+        #[ignore = "timing benchmark"]
+        fn sidebar_build_timings() {
             rust_i18n::set_locale("en");
             let mut fx = Fx::with_rooms(2000);
             fx.refresh();
@@ -1082,16 +1100,7 @@ mod tests {
                 "2000 rooms: virtual {rows_virtual} rows in {virtual_time:?}; \
                  {rows_many} rows in {many_time:?}, all 2001 ~{all_time:?}"
             );
-            assert!(rows_virtual < 48, "{rows_virtual}");
             assert!(rows_many >= 192, "{rows_many}");
-            assert!(
-                virtual_time * 3 < many_time,
-                "virtual {virtual_time:?} vs {rows_many} rows {many_time:?}"
-            );
-            // Scrolled to the middle: still only the rows around it.
-            fx.sidebar.viewport = Some((total / 2.0, 800.0, total));
-            let (rows_mid, _) = build_and_layout(&fx);
-            assert!(rows_mid < 64, "{rows_mid}");
         }
 
         /// Alt+Up/Down to a room off screen scrolls its row into view;

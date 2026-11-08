@@ -63,8 +63,8 @@ pub const MEMORY_BUDGET: usize = 256 * 1024 * 1024;
 pub const MAX_INITIALS: usize = 50_000;
 /// Most recent failures remembered for the backoff.
 pub const MAX_FAILED: usize = 4096;
-/// One MiB.
-const MIB: u64 = 1024 * 1024;
+/// One megabyte (decimal, as Settings → Storage labels the cap).
+pub const MB: u64 = 1_000_000;
 /// Disk entries of URLs without an `etag` are revalidated after this age.
 pub const UNVERSIONED_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 /// A failed URL is not retried for this long.
@@ -560,6 +560,7 @@ impl Images {
         self.wanted
             .borrow_mut()
             .retain(|r, _| &r.server_id != server_id);
+        PURGES.fetch_add(1, Ordering::AcqRel);
         DISK_USAGE.store(USAGE_UNKNOWN, Ordering::Relaxed);
         self.server_dir(server_id)
     }
@@ -680,10 +681,13 @@ pub fn write_cache_entry(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Default disk cache cap.
-pub const DEFAULT_DISK_CAP: u64 = rustket_core::config::DEFAULT_IMAGE_CACHE_MB as u64 * MIB;
+pub const DEFAULT_DISK_CAP: u64 = rustket_core::config::DEFAULT_IMAGE_CACHE_MB as u64 * MB;
 /// Unfinished temporary files older than this are removed by [`trim_disk`].
 const STALE_TMP: Duration = Duration::from_secs(3600);
 const USAGE_UNKNOWN: u64 = u64::MAX;
+/// Bumped by every purge: a trim scan that started before one does not
+/// report its (stale) total.
+static PURGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static DISK_CAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(DEFAULT_DISK_CAP);
 /// Bytes written since the last trim.
 static DISK_WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -694,7 +698,7 @@ static TRIMMING: AtomicBool = AtomicBool::new(false);
 /// Sets the disk cache cap (`UiPrefs::image_cache_mb`). Returns whether it
 /// went down (the caller then runs [`trim_task`]).
 pub fn set_disk_cap_mb(mb: u32) -> bool {
-    let cap = u64::from(mb.max(1)) * MIB;
+    let cap = u64::from(mb.max(1)) * MB;
     DISK_CAP.swap(cap, Ordering::Relaxed) > cap
 }
 
@@ -716,6 +720,7 @@ pub fn trim_disk(root: &Path, cap: u64) -> u64 {
         return DISK_USAGE.load(Ordering::Relaxed);
     }
     DISK_WRITTEN.store(0, Ordering::Relaxed);
+    let purges = PURGES.load(Ordering::Acquire);
     let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
     let now = SystemTime::now();
     for dir in std::fs::read_dir(root).into_iter().flatten().flatten() {
@@ -763,7 +768,9 @@ pub fn trim_disk(root: &Path, cap: u64) -> u64 {
         }
         tracing::debug!(removed, total, cap, "image disk cache trimmed");
     }
-    DISK_USAGE.store(total, Ordering::Relaxed);
+    if PURGES.load(Ordering::Acquire) == purges {
+        DISK_USAGE.store(total, Ordering::Relaxed);
+    }
     TRIMMING.store(false, Ordering::Release);
     total
 }
@@ -1364,7 +1371,7 @@ mod tests {
             rustket_core::config::DEFAULT_IMAGE_CACHE_MB
         ));
         assert!(set_disk_cap_mb(100));
-        assert_eq!(disk_cap(), 100 * MIB);
+        assert_eq!(disk_cap(), 100 * MB);
         assert!(!set_disk_cap_mb(
             rustket_core::config::DEFAULT_IMAGE_CACHE_MB
         ));

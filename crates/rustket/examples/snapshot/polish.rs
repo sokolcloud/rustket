@@ -249,4 +249,37 @@ pub async fn polish_shots(
         rid.to_owned(),
         rustket::room::Message::Panel(rustket::room::panel::Message::Close),
     ));
+
+    // A timeline longer than the window: F6 from the sidebar lands on the
+    // newest messages on screen (the timeline does not scroll).
+    let client = super::rest(server).await;
+    client
+        .login_password(&user.1, &user.2, None)
+        .await
+        .expect("user login");
+    let mut last = String::new();
+    for i in 0..30 {
+        let v: Value = client
+            .post(
+                "chat.postMessage",
+                &json!({"roomId": rid, "text": format!("Filler message {i} for a long timeline")}),
+            )
+            .await
+            .expect("post");
+        last = v["message"]["_id"].as_str().expect("mid").to_owned();
+    }
+    let _ = client.logout().await;
+    let r2 = rid.to_owned();
+    let s2 = sid.clone();
+    d.pump_until("long timeline", Duration::from_secs(15), move |a| {
+        a.servers[&s2]
+            .workspace
+            .timeline(&r2)
+            .is_some_and(|t| t.get(&last).is_some())
+    })
+    .await;
+    d.settle(Duration::from_secs(1)).await;
+    both(d, out, "polish-f6-long-timeline", SIZE, || {
+        vec![focus(SEARCH_INPUT_ID), f6()]
+    });
 }
