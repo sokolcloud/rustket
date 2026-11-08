@@ -166,6 +166,14 @@ async fn unsaved_admin_settings_hold_back_every_exit() {
         }),
         Message::Go(Go::Nav(rustket::component::Nav::Account)),
         Message::CloseRequested(iced::window::Id::unique()),
+        Message::Desktop(rustket::desktop::Message::Tray(
+            rustket::desktop::tray::Message::Quit,
+        )),
+        Message::Go(Go::Discussion {
+            sid: sid.clone(),
+            rid: "r1".into(),
+            pmid: None,
+        }),
     ];
     for m in exits {
         dirty_admin(&mut app, &sid);
@@ -311,6 +319,75 @@ async fn late_result_of_a_closed_dialog_skips_the_next_one() {
         Some(Modal::CreateRoom(_, c)) => assert!(c.error.is_none(), "A's error in B"),
         _ => panic!("dialog expected"),
     }
+}
+
+/// Runs `task` to completion and returns the messages it produced.
+async fn outputs(task: iced::Task<Message>) -> Vec<Message> {
+    use futures::StreamExt;
+    let Some(stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    stream
+        .filter_map(|a| async move {
+            match a {
+                iced_runtime::Action::Output(m) => Some(m),
+                _ => None,
+            }
+        })
+        .collect()
+        .await
+}
+
+/// The instance tags of the dialog results in `out`.
+fn dialog_tags(out: &[Message]) -> Vec<u64> {
+    out.iter()
+        .filter_map(|m| match m {
+            Message::Dialog(i, inner)
+                if matches!(
+                    **inner,
+                    Message::CreateRoom(..) | Message::QuickSwitcher(..)
+                ) =>
+            {
+                Some(*i)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn dialog_tasks_are_tagged_with_their_instance() {
+    use rustket::component::Nav;
+    use rustket::dialogs::{create_room, quick_switcher};
+    let (mut app, ids) = app_with(&["One"]);
+    let sid = ids[0].clone();
+    let mut tags = Vec::new();
+    for _ in 0..2 {
+        let _ = app.update(Message::Go(Go::Nav(Nav::CreateRoom(
+            create_room::Kind::Channel,
+        ))));
+        let t = app.update(Message::CreateRoom(
+            sid.clone(),
+            create_room::Message::Name("fresh-name".into()),
+        ));
+        let out = outputs(t).await;
+        assert_eq!(dialog_tags(&out).len(), 1, "untagged result: {out:?}");
+        tags.extend(dialog_tags(&out));
+        app.modals.clear();
+
+        let _ = app.update(Message::Go(Go::Nav(Nav::QuickSwitcher)));
+        let t = app.update(Message::QuickSwitcher(
+            sid.clone(),
+            quick_switcher::Message::Query("gen".into()),
+        ));
+        let out = outputs(t).await;
+        assert_eq!(dialog_tags(&out).len(), 1, "untagged result: {out:?}");
+        tags.extend(dialog_tags(&out));
+        app.modals.clear();
+    }
+    // Reopening a dialog gives its results a new tag.
+    assert_ne!(tags[0], tags[2], "create-room instances");
+    assert_ne!(tags[1], tags[3], "quick switcher instances");
 }
 
 /// The SAML metadata answer of a page that was left never lands in the

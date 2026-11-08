@@ -53,6 +53,14 @@ pub enum Go {
         sid: ServerId,
         everywhere: bool,
     },
+    /// The "create discussion" dialog of room `rid` on server `sid`.
+    Discussion {
+        sid: ServerId,
+        rid: String,
+        pmid: Option<String>,
+    },
+    /// Quit the application (tray menu).
+    Quit,
 }
 
 #[derive(Debug, Clone)]

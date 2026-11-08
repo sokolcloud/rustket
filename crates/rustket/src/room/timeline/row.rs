@@ -455,8 +455,38 @@ fn system_row(env: &Env<'_>, m: &RcMessage) -> El {
     )
 }
 
-/// Builds the row of `item`.
-pub(crate) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: DateTime<Utc>) -> El {
+/// The body of an ignored user's message: "This message was ignored", a
+/// click shows it (web `IgnoredContent`).
+fn ignored_body(mid: &str) -> El {
+    let reveal = Message::render(render::RenderMsg::ToggleCollapsed(
+        mid.to_owned(),
+        super::list::IGNORED_REVEAL,
+    ));
+    button(
+        row![
+            icon::sized(Icon::ChevronLeft, 14.0).style(style::text_hint),
+            text(t!("room_timeline.message_ignored").into_owned())
+                .size(TEXT_CAPTION)
+                .style(style::text_hint),
+        ]
+        .spacing(SPACE_1)
+        .align_y(Alignment::Center),
+    )
+    .padding(0)
+    .style(style::button_bare)
+    .on_press(reveal)
+    .into()
+}
+
+/// Builds the row of `item`. `ignored`: the author is ignored and the row is
+/// not revealed; the header and toolbar stay, the content is collapsed.
+pub(crate) fn build(
+    env: &Env<'_>,
+    item: &TimelineItem,
+    flags: RowFlags,
+    ignored: bool,
+    now: DateTime<Utc>,
+) -> El {
     let m = &item.message;
     if m.is_system() {
         return system_row(env, m);
@@ -464,7 +494,11 @@ pub(crate) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: Da
     let rc = env.rc();
     let name = author_name(m, rc.use_real_names);
     // Encrypted messages: the renderer shows their placeholder until decrypted.
-    let body: El = render::message_body_with(m, &rc).map(Message::render);
+    let body: El = if ignored {
+        ignored_body(&m.id)
+    } else {
+        render::message_body_with(m, &rc).map(Message::render)
+    };
     let mut p = MessageRowProps::new(
         author_avatar(env, m, &name),
         name,
@@ -520,14 +554,16 @@ pub(crate) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: Da
                 |x| Message::UiKit(Box::new(x)),
                 Message::Menu(None),
             );
-            let can_react = acts.contains(&Act::React);
-            p.reactions = reactions(env, m, can_react);
-            // The thread view shows the replies below the parent instead.
-            if *env.source == Source::Room {
-                p.thread_summary = thread_part(env, m, flags.thread_unread);
-            }
-            if let Some(d) = discussion_part(env, m) {
-                p.attachments.push(d);
+            if !ignored {
+                let can_react = acts.contains(&Act::React);
+                p.reactions = reactions(env, m, can_react);
+                // The thread view shows the replies below the parent instead.
+                if *env.source == Source::Room {
+                    p.thread_summary = thread_part(env, m, flags.thread_unread);
+                }
+                if let Some(d) = discussion_part(env, m) {
+                    p.attachments.push(d);
+                }
             }
             if !acts.is_empty() || !apps.is_empty() {
                 p.actions_toolbar = Some(toolbar(&acts, &m.id, flags.menu_open, &apps));

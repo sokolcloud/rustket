@@ -1705,15 +1705,11 @@ impl App {
         rid: &str,
         pmid: Option<String>,
     ) -> Task<Message> {
-        if !self.may_leave(Message::Noop) {
-            return Task::none();
-        }
-        let a = self.activate(sid.clone());
-        let nav = self.navigate(component::Nav::CreateDiscussion {
+        self.go(crate::message::Go::Discussion {
+            sid: sid.clone(),
             rid: rid.to_owned(),
             pmid,
-        });
-        Task::batch([a, nav])
+        })
     }
 
     /// Hands a dropped file to the composer of the active room.
@@ -2291,13 +2287,19 @@ impl App {
         ])
     }
 
-    fn complete_login(&mut self, sid: &ServerId, req: LoginRequest) -> Task<Message> {
-        // Unsaved admin settings keep the screen; the login goes on behind it.
-        let a = if self.admin_dirty() {
-            Task::none()
-        } else {
+    /// Shows server `sid` for a login that finishes from outside (browser
+    /// redirect, token link). Unsaved admin settings are asked about first;
+    /// if they are kept the login goes on behind the admin screen.
+    fn activate_for_login(&mut self, sid: &ServerId) -> Task<Message> {
+        if self.may_leave(Message::Rail(rail::Message::Select(sid.clone()))) {
             self.activate(sid.clone())
-        };
+        } else {
+            Task::none()
+        }
+    }
+
+    fn complete_login(&mut self, sid: &ServerId, req: LoginRequest) -> Task<Message> {
+        let a = self.activate_for_login(sid);
         let Some(l) = self.servers.get_mut(sid).and_then(|s| s.login.as_mut()) else {
             return a;
         };
@@ -2395,11 +2397,7 @@ impl App {
                 if !live {
                     return Task::none();
                 }
-                let a = if self.admin_dirty() {
-                    Task::none()
-                } else {
-                    self.activate(server_id.clone())
-                };
+                let a = self.activate_for_login(&server_id);
                 let r = LoginResult {
                     user_id: credentials.user_id,
                     auth_token: credentials.auth_token,

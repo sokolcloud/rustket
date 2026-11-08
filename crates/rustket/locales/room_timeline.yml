@@ -234,5 +234,5 @@ room_timeline.act_start_discussion:
   en: "Start a discussion"
   ru: "Начать обсуждение"
 room_timeline.message_ignored:
-  en: "Message ignored. Click to show it"
-  ru: "Сообщение скрыто. Нажмите, чтобы показать"
+  en: "This message was ignored"
+  ru: "Это сообщение было проигнорировано"

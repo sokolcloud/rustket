@@ -265,7 +265,7 @@ impl Hash for RowKey {
 
 /// `RenderState` toggle index of "show the ignored message" (the toggles
 /// of attachments use small indices).
-const IGNORED_REVEAL: usize = usize::MAX;
+pub(crate) const IGNORED_REVEAL: usize = usize::MAX;
 
 /// Whether `m` comes from a user the current user ignores in room `rid`
 /// (`subscription.ignored`); system messages are never hidden (web
@@ -276,35 +276,6 @@ pub(crate) fn is_ignored(ws: &Workspace, rid: &str, m: &RcMessage) -> bool {
             .subscription(rid)
             .and_then(|s| s.ignored.as_ref())
             .is_some_and(|list| list.contains(&m.u.id))
-}
-
-/// The collapsed row of an ignored user's message: "Message ignored", a
-/// click shows it (like the web client).
-fn ignored_row<'a>(mid: &str) -> Element<'a, Msg> {
-    use iced::widget::{button, container, row, text};
-    use rustket_ui::icon::{self, Icon};
-    use rustket_ui::style;
-    use rustket_ui::theme::{SPACE_1, SPACE_5, TEXT_CAPTION};
-    let reveal = Msg::View(super::viewer::ViewerMsg::Render(
-        render::RenderMsg::ToggleCollapsed(mid.to_owned(), IGNORED_REVEAL),
-    ));
-    let label = row![
-        icon::sized(Icon::EyeOff, 14.0).style(style::text_hint),
-        text(t!("room_timeline.message_ignored").into_owned())
-            .size(TEXT_CAPTION)
-            .style(style::text_hint),
-    ]
-    .spacing(SPACE_1)
-    .align_y(iced::Alignment::Center);
-    container(
-        button(label)
-            .padding([2.0, 0.0])
-            .style(style::button_bare)
-            .on_press(reveal),
-    )
-    .padding(iced::Padding::from([2.0, SPACE_5]).left(SPACE_5 + rustket_ui::widget::GUTTER))
-    .width(Length::Fill)
-    .into()
 }
 
 /// The `lazy` widget of planned row `r` (with its day separator and the
@@ -347,11 +318,7 @@ pub(crate) fn row<'a>(
     let now = common.now;
     let ignored = dep.ignored;
     lazy(dep, move |_| {
-        let row = if ignored {
-            ignored_row(&item.message.id)
-        } else {
-            row::build(&env, item, flags, now)
-        };
+        let row = row::build(&env, item, flags, ignored, now);
         if day.is_none() && !unread_before {
             return row;
         }

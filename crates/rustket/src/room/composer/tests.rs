@@ -866,6 +866,26 @@ fn join_code_rooms_need_a_code() {
 }
 
 #[test]
+fn private_discussions_are_joinable() {
+    let mut env = Env::new("t-join-discussion");
+    let mut d = room("D1", "talk", RoomType::Private);
+    d.prid = Some("P1".into());
+    env.ws.apply_room(rustket_core::Change::Updated, d);
+    env.ws.apply_room(
+        rustket_core::Change::Updated,
+        room("G1", "group", RoomType::Private),
+    );
+    assert!(can_join(&env.ws, "D1"));
+    assert!(can_join(&env.ws, "R2"));
+    assert!(!can_join(&env.ws, "G1"));
+    let mut c = Composer::new("D1");
+    let mut ctx = env.ctx();
+    ctx.rid = "D1";
+    let a = c.update(Message::Join, &mut ctx);
+    assert!(names(&outputs(a.task)).contains(&"Joined".to_owned()));
+}
+
+#[test]
 fn leaving_stops_typing_once() {
     let mut env = Env::new("t-leave");
     let mut c = Composer::for_thread("R1", "T1");

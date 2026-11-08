@@ -425,6 +425,15 @@ impl App {
                 ))
             }
             Go::Logout { sid, everywhere } => self.logout(&sid, everywhere),
+            Go::Discussion { sid, rid, pmid } => {
+                let a = self.activate(sid);
+                let nav = self.navigate(Nav::CreateDiscussion { rid, pmid });
+                Task::batch([a, nav])
+            }
+            Go::Quit => {
+                self.flush_config();
+                iced::exit()
+            }
         }
     }
 
@@ -547,10 +556,12 @@ impl App {
                     tmid: Some(tmid),
                 }),
                 desktop::Request::ShowWindow => self.desktop.show_window().map(Message::Desktop),
-                desktop::Request::Quit => {
-                    self.flush_config();
-                    iced::exit()
-                }
+                // Unsaved admin settings: the window comes back for the question.
+                desktop::Request::Quit if self.admin_dirty() => Task::batch([
+                    self.desktop.show_window().map(Message::Desktop),
+                    self.go(Go::Quit),
+                ]),
+                desktop::Request::Quit => self.go(Go::Quit),
                 desktop::Request::IdleTime(idle) => self.idle_presence(idle),
                 desktop::Request::SetStatus(status) => self.set_status_everywhere(status),
                 desktop::Request::RoomStep(step) => self.room_step(step),
