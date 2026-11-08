@@ -251,6 +251,26 @@ async fn forced_logout_shows_the_login_of_the_open_page() {
     }
 }
 
+/// Feeds the E2E messages `task` produces (the sign-out store check) back.
+async fn run_e2e_outputs(app: &mut App, task: iced::Task<Message>) {
+    use iced::futures::StreamExt;
+    let Some(stream) = iced_runtime::task::into_stream(task) else {
+        return;
+    };
+    let outputs: Vec<Message> = stream
+        .filter_map(|a| async move {
+            match a {
+                iced_runtime::Action::Output(m @ Message::E2e(..)) => Some(m),
+                _ => None,
+            }
+        })
+        .collect()
+        .await;
+    for m in outputs {
+        let _ = app.update(m);
+    }
+}
+
 #[tokio::test]
 async fn user_logout_from_the_account_page_shows_the_login() {
     let (mut app, ids) = app_with(&["One"]);
@@ -263,10 +283,12 @@ async fn user_logout_from_the_account_page_shows_the_login() {
         sid.clone(),
         Box::new(rustket::dialogs::quick_switcher::QuickSwitcher::new()),
     ));
-    let _ = app.update(Message::Go(Go::Logout {
+    // The logout first asks the secret store for an unsaved E2E passphrase.
+    let check = app.update(Message::Go(Go::Logout {
         sid: sid.clone(),
         everywhere: false,
     }));
+    run_e2e_outputs(&mut app, check).await;
     assert!(matches!(app.screen, Screen::Server));
     assert!(app.modals.is_empty());
     assert!(app.servers[&sid].login.is_some());
