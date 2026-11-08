@@ -204,6 +204,8 @@ pub struct UiPrefs {
     pub close_to_tray: bool,
     pub start_minimized: bool,
     pub zoom: f32,
+    /// Render with the GPU (wgpu); `false` restarts with the CPU renderer.
+    pub hardware_acceleration: bool,
 }
 
 impl Default for UiPrefs {
@@ -225,6 +227,7 @@ impl Default for UiPrefs {
             close_to_tray: true,
             start_minimized: false,
             zoom: 1.0,
+            hardware_acceleration: true,
         }
     }
 }
@@ -313,6 +316,7 @@ const UI_KEYS: &[&str] = &[
     "close_to_tray",
     "start_minimized",
     "zoom",
+    "hardware_acceleration",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -913,6 +917,23 @@ mod tests {
             keys(t["servers"][0].as_table().unwrap()),
             sorted(SERVER_KEYS)
         );
+    }
+
+    #[test]
+    fn hardware_acceleration_defaults_on() {
+        assert!(UiPrefs::default().hardware_acceleration);
+        assert!(
+            AppConfig::parse("[ui]\nzoom = 1.0")
+                .unwrap()
+                .ui
+                .hardware_acceleration
+        );
+        let c = AppConfig::parse("[ui]\nhardware_acceleration = false").unwrap();
+        assert!(!c.ui.hardware_acceleration);
+        let text = toml::to_string(&c).unwrap();
+        assert!(!AppConfig::parse(&text).unwrap().ui.hardware_acceleration);
+        let c = AppConfig::parse("[ui]\nhardware_acceleration = \"no\"").unwrap();
+        assert!(c.ui.hardware_acceleration, "invalid value falls back");
     }
 
     #[test]

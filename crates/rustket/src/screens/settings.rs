@@ -18,6 +18,7 @@ use rustket_ui::widget::{BannerKind, banner, divider, secondary_button};
 
 use crate::component::{Action, Effect};
 use crate::desktop::{TraySupport, autostart};
+use crate::renderer::Renderer;
 use crate::ui_state::UiState;
 
 /// Zoom step of the −/+ buttons.
@@ -43,6 +44,7 @@ pub enum Message {
     SetCloseToTray(bool),
     SetMinimizeToTray(bool),
     SetStartMinimized(bool),
+    SetHardwareAcceleration(bool),
     SetAutostart(bool),
     /// Whether the autostart entry exists (`None`: unknown).
     AutostartLoaded(Option<bool>),
@@ -145,6 +147,7 @@ impl Settings {
             Message::SetCloseToTray(v) => Self::pref(ctx, |p| p.close_to_tray = v),
             Message::SetMinimizeToTray(v) => Self::pref(ctx, |p| p.minimize_to_tray = v),
             Message::SetStartMinimized(v) => Self::pref(ctx, |p| p.start_minimized = v),
+            Message::SetHardwareAcceleration(v) => Self::pref(ctx, |p| p.hardware_acceleration = v),
             Message::SetAutostart(on) => {
                 let Some(home) = self.autostart_home.clone() else {
                     return Action::none();
@@ -309,6 +312,19 @@ impl Settings {
                     None,
                     ui.clock_24h,
                     Some(Message::SetClock24),
+                ),
+                switch(
+                    t!("settings.hardware_acceleration").into_owned(),
+                    Some(format!(
+                        "{}\n{}",
+                        t!("settings.hardware_acceleration_help"),
+                        t!(
+                            "settings.renderer_now",
+                            renderer = renderer_label(crate::renderer::active())
+                        )
+                    )),
+                    ui.hardware_acceleration,
+                    Some(Message::SetHardwareAcceleration),
                 ),
             ],
         ));
@@ -525,6 +541,13 @@ fn field<'a>(
     column![col, control].spacing(SPACE_2).into()
 }
 
+fn renderer_label(r: Renderer) -> std::borrow::Cow<'static, str> {
+    match r {
+        Renderer::Gpu => t!("settings.renderer_gpu"),
+        Renderer::Cpu => t!("settings.renderer_cpu"),
+    }
+}
+
 /// Label (+ help) with a switch on the right.
 fn switch<'a>(
     label: String,
@@ -618,6 +641,12 @@ mod tests {
             (Message::SetCloseToTray(false), |c| !c.close_to_tray),
             (Message::SetMinimizeToTray(true), |c| c.minimize_to_tray),
             (Message::SetStartMinimized(true), |c| c.start_minimized),
+            (Message::SetHardwareAcceleration(false), |c| {
+                !c.hardware_acceleration
+            }),
+            (Message::SetHardwareAcceleration(true), |c| {
+                c.hardware_acceleration
+            }),
         ] {
             let a = run(&mut s, &mut cfg, msg.clone());
             assert!(check(&cfg.ui), "{msg:?}");

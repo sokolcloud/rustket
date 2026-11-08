@@ -53,6 +53,21 @@ settings.show_avatars:
 settings.clock_24h:
   en: "24-hour clock"
   ru: "24-часовой формат времени"
+settings.hardware_acceleration:
+  en: "Hardware acceleration (GPU)"
+  ru: "Аппаратное ускорение (GPU)"
+settings.hardware_acceleration_help:
+  en: "Turn off if the window freezes or the desktop resets; takes effect after restart."
+  ru: "Отключите, если окно зависает или сбрасывается рабочий стол; вступает в силу после перезапуска."
+settings.renderer_now:
+  en: "Current renderer: %{renderer}"
+  ru: "Текущий рендерер: %{renderer}"
+settings.renderer_gpu:
+  en: "GPU (wgpu)"
+  ru: "GPU (wgpu)"
+settings.renderer_cpu:
+  en: "CPU (tiny-skia)"
+  ru: "CPU (tiny-skia)"
 settings.language:
   en: "Language"
   ru: "Язык"

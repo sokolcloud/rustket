@@ -1,4 +1,5 @@
 use rustket::app::{App, Flags};
+use rustket::renderer;
 use rustket::single_instance::{self, Instance, ListenerSlot};
 
 /// The log filter: the user's `RUST_LOG` (or the recommended default), always
@@ -16,7 +17,51 @@ fn log_filter(user: Option<&str>) -> String {
     }
 }
 
+/// Restarts the process with the CPU renderer when hardware acceleration is
+/// off. Returns only when no restart is needed or it failed (the error).
+fn software_reexec() -> Option<std::io::Error> {
+    let backend_set = std::env::var_os(renderer::BACKEND_VAR).is_some();
+    let marker_set = std::env::var_os(renderer::REEXEC_MARKER).is_some();
+    if backend_set || marker_set {
+        return None;
+    }
+    let dir = rustket_core::config::AppConfig::default_dir().ok();
+    let hw = renderer::saved_hardware_acceleration(dir.as_deref());
+    if !renderer::should_reexec(backend_set, marker_set, hw) {
+        return None;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return Some(e),
+    };
+    let mut args = std::env::args_os();
+    let arg0 = args.next();
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args)
+        .env(renderer::BACKEND_VAR, renderer::SOFTWARE_BACKEND)
+        .env(renderer::REEXEC_MARKER, "1");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        if let Some(arg0) = arg0 {
+            cmd.arg0(arg0);
+        }
+        // Replaces this process; returns only on failure.
+        Some(cmd.exec())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = arg0;
+        match cmd.status() {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(e) => Some(e),
+        }
+    }
+}
+
 fn main() -> iced::Result {
+    // Before anything else: the restarted process redoes all of it.
+    let reexec_error = software_reexec();
     let user_filter = std::env::var("RUST_LOG").ok();
     let filter = log_filter(user_filter.as_deref());
     tracing_subscriber::fmt()
@@ -26,6 +71,10 @@ fn main() -> iced::Result {
             }),
         )
         .init();
+    if let Some(e) = reexec_error {
+        tracing::warn!(error = %e, "cannot restart with the software renderer; using the default");
+    }
+    tracing::info!(renderer = ?renderer::active(), "renderer requested");
 
     let urls: Vec<String> = std::env::args()
         .skip(1)
