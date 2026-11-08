@@ -1,0 +1,37 @@
+_version: 2
+cache.updating:
+  en: "Showing saved data while connecting…"
+  ru: "Показаны сохранённые данные, идёт подключение…"
+cache.updating_from:
+  en: "Showing data saved at %{time} while connecting…"
+  ru: "Показаны данные, сохранённые в %{time}, идёт подключение…"
+cache.offline:
+  en: "Offline: showing saved messages. Messages you write are sent when the connection is back."
+  ru: "Нет связи: показаны сохранённые сообщения. Новые сообщения отправятся, когда связь восстановится."
+cache.offline_from:
+  en: "Offline: showing data saved at %{time}. Messages you write are sent when the connection is back."
+  ru: "Нет связи: показаны данные, сохранённые в %{time}. Новые сообщения отправятся, когда связь восстановится."
+cache.waiting:
+  en: "Waiting for the connection; sent automatically"
+  ru: "Ожидает подключения, отправится автоматически"
+cache.uploads_interrupted:
+  en: "Uploads were interrupted"
+  ru: "Загрузка файлов прервана"
+cache.uploads_interrupted_body:
+  en: "Rustket was closed while uploading, so these files were not sent: %{names}"
+  ru: "Rustket был закрыт во время загрузки, эти файлы не отправлены: %{names}"
+cache.settings_title:
+  en: "Offline cache"
+  ru: "Офлайн-кэш"
+cache.settings_help:
+  en: "Rooms and recent messages saved for a quick start and offline reading."
+  ru: "Комнаты и последние сообщения для быстрого запуска и чтения без сети."
+cache.settings_help_size:
+  en: "Rooms and recent messages saved for a quick start and offline reading (%{size})."
+  ru: "Комнаты и последние сообщения для быстрого запуска и чтения без сети (%{size})."
+cache.settings_clear:
+  en: "Clear"
+  ru: "Очистить"
+cache.cleared:
+  en: "Offline cache cleared"
+  ru: "Офлайн-кэш очищен"

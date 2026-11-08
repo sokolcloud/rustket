@@ -1509,6 +1509,34 @@ commands, decrypt-on-download for attachments with hash verification. Strings in
   between Rustket and the 8.9 web client in both directions, including a room key reset and a
   passphrase change on each side.
 
+### 15.1 Offline cache (phase 13)
+
+The SQLite offline cache (`rustket_core::cache`, `crates/rustket/src/cache`) stores ciphertext
+only. Every message passes `cache::sanitize::message` on its way into the database (the storage
+layer, so no caller can bypass it):
+
+- a message the app processed (any `rustket:` marker, i.e. decrypted in place) keeps `content`
+  (the envelope) and loses `msg`, `md`, `attachments`, `file`, `files`, `urls`, `blocks`,
+  `mentions`, `channels` and `e2e`; without an envelope it is not stored at all;
+- a processed `message_pinned_e2e` (pinned text decrypted into an attachment) is not stored;
+- an encrypted message the app has not processed is the server's form and is stored as is
+  (minus `e2e`); a room's `lastMessage` follows the same rules;
+- the current user is stored without `services` and `e2e`, subscriptions without `E2EKey`,
+  `E2ESuggestedKey`, `oldRoomKeys`, `suggestedOldRoomKeys` (the manager only works with the
+  server's copies, delivered by the initial load before it starts).
+
+Cached messages are seeded into timelines and decrypted on display as usual (`e2e::shown`); while
+the manager is not running (offline start) they show the locked placeholder.
+
+**Outbox decision:** pending messages of encrypted rooms are **not persisted** (nor any pending
+message that is encrypted, carries an `e2e` value, or belongs to a room the workspace does not
+know). A pending E2E message holds the plaintext until `outgoing::prepare_send` encrypts it at
+send time, and encrypting it at write time would bind it to a room key that may be rotated
+before it is sent. Within the running process such a message is still queued while offline and
+sent (encrypted with the current key, or refused) once the server is back; quitting drops it.
+`tests: rustket-core cache::tests::e2e_plaintext_never_reaches_the_file` scans the database and
+WAL files for the plaintext, the room key and the private key.
+
 ---
 
 ## 16. Open questions

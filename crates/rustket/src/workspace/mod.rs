@@ -53,6 +53,8 @@ pub struct ServerState {
     pub uikit: crate::uikit::Local,
     /// End-to-end encryption of this account.
     pub e2e: crate::e2e::ServerE2e,
+    /// Offline cache of this account (`crate::cache`).
+    pub cache: crate::cache::ServerCache,
 }
 
 impl ServerState {
@@ -99,6 +101,7 @@ impl ServerState {
             restoring: true,
             uikit: crate::uikit::Local::default(),
             e2e: Default::default(),
+            cache: Default::default(),
         })
     }
 

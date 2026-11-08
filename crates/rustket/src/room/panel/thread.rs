@@ -284,7 +284,12 @@ impl Thread {
     /// `chat.readThread` when the thread has unread replies, is on screen
     /// and the view is at the bottom.
     pub fn mark_read(&mut self, ctx: &UpdateCtx<'_>) -> Task<Msg> {
-        if !self.visible || !self.follow.at_bottom || !self.thread_unread(ctx.workspace, ctx.rid) {
+        // Not while the offline cache is shown (the server's state is unknown).
+        if !self.visible
+            || ctx.workspace.from_cache()
+            || !self.follow.at_bottom
+            || !self.thread_unread(ctx.workspace, ctx.rid)
+        {
             return Task::none();
         }
         if self.reading {

@@ -130,6 +130,16 @@ pub fn transfers(server: &str, rid: &str, tmid: Option<&str>) -> Vec<Transfer> {
         .collect()
 }
 
+/// File names of every running upload of `server` (reported on the next
+/// start when the app quits meanwhile, `crate::cache::on_quit`).
+pub fn running_names(server: &str) -> Vec<String> {
+    running()
+        .values()
+        .filter(|r| r.server == server)
+        .map(|r| r.transfer.name.clone())
+        .collect()
+}
+
 /// Adds a running upload. Its handle is not aborted when the composer goes
 /// away: only Cancel and [`cancel_server`] stop an upload.
 fn register(

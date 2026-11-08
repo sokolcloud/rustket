@@ -51,6 +51,7 @@ pub enum Message {
     AutostartSet(bool, Result<(), String>),
     RegisterHandler,
     ClearImageCache,
+    ClearOfflineCache,
     OpenUrl(String),
     Close,
 }
@@ -69,6 +70,9 @@ pub struct SettingsView<'a> {
     pub secrets_in_memory: bool,
     /// Whether a tray exists and the window can be hidden to it.
     pub tray: TraySupport,
+    /// Offline cache (`crate::cache`): `Some((bytes on disk, clearing))`
+    /// when it is enabled.
+    pub offline_cache: Option<(Option<u64>, bool)>,
 }
 
 #[derive(Debug)]
@@ -191,6 +195,13 @@ impl Settings {
                 Action::effect(Effect::ClearImageCache).with(Effect::Toast(
                     BannerKind::Success,
                     t!("settings.cache_cleared").into_owned(),
+                    String::new(),
+                ))
+            }
+            Message::ClearOfflineCache => {
+                Action::effect(Effect::ClearOfflineCache).with(Effect::Toast(
+                    BannerKind::Success,
+                    t!("cache.cleared").into_owned(),
                     String::new(),
                 ))
             }
@@ -460,10 +471,19 @@ impl Settings {
             ],
         ));
 
+        let mut storage: Vec<Element<'a, Message>> = Vec::new();
+        if let Some((size, clearing)) = v.offline_cache {
+            storage.push(crate::cache::view::storage_row(
+                size,
+                clearing,
+                Message::ClearOfflineCache,
+            ));
+        }
         body = body.push(section(
             t!("settings.storage").into_owned(),
-            vec![
-                row![
+            storage
+                .into_iter()
+                .chain([row![
                     column![
                         text(t!("settings.image_cache")).size(TEXT_BODY),
                         text(t!("settings.image_cache_help"))
@@ -476,8 +496,8 @@ impl Settings {
                 ]
                 .spacing(SPACE_3)
                 .align_y(Alignment::Center)
-                .into(),
-            ],
+                .into()])
+                .collect(),
         ));
 
         body = body.push(section(

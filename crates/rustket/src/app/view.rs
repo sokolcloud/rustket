@@ -162,19 +162,20 @@ impl App {
             active_room: s.active_room.as_deref(),
             now,
         };
-        let sidebar_view: Element<'a, Message> = if s.workspace.last_sync().is_none() && s.syncing {
-            container(loading_placeholder(Some(
-                t!("app.loading_rooms").into_owned(),
-            )))
-            .style(style::container_sidebar)
-            .into()
-        } else {
-            let sid = sid.clone();
-            let status = s.status_menu.view(&self.component_view_ctx(s));
-            s.sidebar
-                .view(&sidebar_ctx, status)
-                .map(move |m| Message::Sidebar(sid.clone(), m))
-        };
+        let sidebar_view: Element<'a, Message> =
+            if s.workspace.last_sync().is_none() && s.syncing && !s.workspace.from_cache() {
+                container(loading_placeholder(Some(
+                    t!("app.loading_rooms").into_owned(),
+                )))
+                .style(style::container_sidebar)
+                .into()
+            } else {
+                let sid = sid.clone();
+                let status = s.status_menu.view(&self.component_view_ctx(s));
+                s.sidebar
+                    .view(&sidebar_ctx, status)
+                    .map(move |m| Message::Sidebar(sid.clone(), m))
+            };
         let room_area: Element<'a, Message> =
             match s.active_room.as_ref().and_then(|r| s.rooms.get(r)) {
                 Some(rv) => {
@@ -210,6 +211,9 @@ impl App {
         // focus, timeline scroll) meanwhile. The UIKit busy pill floats.
         let mut strips: Vec<Element<'_, Message>> = Vec::new();
         if let Some(strip) = self.connection_strip(s) {
+            strips.push(strip);
+        }
+        if let Some(strip) = crate::cache::view::strip(s, self.config.ui.clock_24h) {
             strips.push(strip);
         }
         if let Some(b) = crate::e2e::view::banner(s) {

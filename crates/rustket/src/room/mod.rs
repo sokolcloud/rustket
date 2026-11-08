@@ -459,9 +459,10 @@ impl RoomView {
     /// its timeline is at the bottom (not the frozen view while scrolled
     /// up), not under the E2E cover and not covered by an expanded thread.
     /// The automatic read mark only runs then (like the web's
-    /// `attemptMarkAsRead`).
+    /// `attemptMarkAsRead`), and never while the offline cache is shown.
     pub fn readable(&self, ws: &Workspace) -> bool {
         self.visible
+            && !ws.from_cache()
             && !self.is_preview(ws)
             && self.timeline.at_bottom()
             && !self.panel.expanded()

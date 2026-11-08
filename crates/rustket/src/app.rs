@@ -84,6 +84,8 @@ pub struct Flags {
     /// Real desktop integration: tray, notifications, sounds, idle → away,
     /// window hiding (off for tests/snapshots).
     pub desktop: bool,
+    /// Base directory of the offline cache (`crate::cache`); `None`: off.
+    pub offline_cache: Option<PathBuf>,
 }
 
 pub enum Screen {
@@ -158,6 +160,8 @@ pub struct App {
     /// Instance of the create-room / quick-switcher dialog opened last: task
     /// results of a closed dialog never reach the next one.
     dialog_instances: (u64, u64),
+    /// Offline cache (`crate::cache`).
+    pub offline: crate::cache::Caches,
 }
 
 fn notice_text(n: &SecretNotice) -> String {
@@ -301,6 +305,7 @@ impl App {
             last_unread: (0, 0),
             calls: crate::videoconf::Calls::default(),
             dialog_instances: (0, 0),
+            offline: crate::cache::Caches::new(flags.offline_cache.clone()),
         };
         let wanted: Vec<(ServerId, String)> = app
             .config
@@ -665,6 +670,12 @@ impl App {
             };
             // E2E: start/feed the manager and decrypt what is shown.
             tasks.push(crate::e2e::after_update(s, self.secrets.as_ref()));
+            // Offline cache: open, write changes, outbox, offline reading.
+            let last_room = self
+                .config
+                .server(&sid)
+                .and_then(|e| e.last_room.as_deref());
+            tasks.push(crate::cache::after_update(s, &self.offline, last_room));
             s.sidebar.refresh(
                 &s.workspace,
                 &self.config.ui,
@@ -798,6 +809,7 @@ impl App {
             Message::Go(go) => self.go(go),
             Message::Dialog(instance, m) => self.on_dialog_result(instance, *m),
             Message::E2e(sid, epoch, m) => self.on_e2e(sid, epoch, m),
+            Message::Cache(m) => crate::cache::update(self, m),
             Message::SecretsReady(s) => self.on_secrets_ready(s),
             Message::SystemTheme(mode) => {
                 self.system_mode = match mode {
@@ -927,6 +939,7 @@ impl App {
                     return Task::none();
                 }
                 self.flush_config();
+                crate::cache::on_quit(self);
                 iced::window::close(id)
             }
             Message::FlushImages => Task::none(),
@@ -1340,6 +1353,7 @@ impl App {
         }
         let delete = self.delete_token(sid);
         let purge = self.purge_images(sid);
+        let purge = Task::batch([purge, crate::cache::purge(self, sid)]);
         let reason = reason.map(|r| match r.as_str() {
             "force_logout" => t!("app.force_logout").into_owned(),
             _ => t!("app.session_expired").into_owned(),
@@ -1452,6 +1466,7 @@ impl App {
         };
         let delete = self.delete_token(sid);
         let purge = self.purge_images(sid);
+        let purge = Task::batch([purge, crate::cache::purge(self, sid)]);
         let page = self.leave_pages_of(sid);
         Task::batch([
             typing,

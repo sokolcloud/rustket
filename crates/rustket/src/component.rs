@@ -144,6 +144,8 @@ pub enum Effect {
     RegisterUrlHandler,
     /// Drop the image cache (memory and disk) of every server.
     ClearImageCache,
+    /// Clear every server's offline cache (`crate::cache::clear_all`).
+    ClearOfflineCache,
     /// Show a test desktop notification.
     TestNotification,
     /// The recently used custom status texts changed (most recent first):

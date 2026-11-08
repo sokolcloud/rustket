@@ -17,6 +17,7 @@ in parallel, so ownership matters.
 | omnichannel agent | `src/omnichannel/` (controller, sidebar groups, room callouts/quick actions/dialogs, panels, contact center; see `docs/omnichannel.md` §22.3a) | `omnichannel.yml` |
 | uikit agent | `src/uikit/` (block renderer, mrkdwn parser, modal, contextual bar, banners, app buttons, slash-command triggers), `src/app/uikit.rs` (glue) | `uikit.yml` |
 | e2e agent | `src/e2e/`, `src/screens/account/e2e.rs` | `e2e.yml` |
+| cache agent | `src/cache/` (offline cache glue, offline strip, Settings → Storage row), `rustket-core/src/cache/` (SQLite store, worker) | `cache.yml` |
 | shell (shared) | `src/app.rs`, `src/app/*.rs`, `src/message.rs`, `src/room/mod.rs`, `src/component.rs`, `src/session.rs`, `src/workspace/{mod,sidebar,rail}.rs`, `src/screens/{login,add_server,page}.rs` | `app.yml`, `sidebar.yml`, … |
 
 Rules:
@@ -397,3 +398,30 @@ passphrase; `e2e::forget_keys` on every rejected token (failed resume,
 - Room UI: `e2e::room` (header key icon, menu entries and dialogs kept by
   `Header`, body replacement, composer notices, `filter_actions`). Room
   components ask for the account modal with `Effect::E2e(RoomRequest)`.
+
+### Offline cache (`src/cache/`, `rustket_core::cache`)
+
+One SQLite database per server and account (`<data dir>/<server id>/cache.sqlite`,
+`Flags::offline_cache`; off in tests and snapshots unless set), run on a worker
+thread (`CacheHandle`). `cache::after_update(s, ..)` (called by the app for
+every server before the changes are taken) opens it once the credentials are
+known, writes what the server delivered in this session (documents of changed
+areas, changed room entries, newest 100 messages of loaded timelines; E2E
+messages as ciphertext only, see `docs/e2e.md` §15.1), persists the outbox and,
+while the server is unreachable, seeds opened timelines without a first page
+(`Workspace::seed_cached_messages`; the first page replaces them).
+- Startup: a workspace without server data shows the cache
+  (`Workspace::apply_cached`, `from_cache()` until the initial load, which
+  replaces every cached room and drops the ones the server no longer lists);
+  the last room opens with its cached messages. `RoomView::readable` and the
+  thread read mark are false while `from_cache()`: cached state never marks
+  anything read; it never notifies (notifications only come from the stream).
+- Outbox: pending text messages (not of encrypted rooms) are persisted with
+  their client ids; those written offline or still sending at quit are sent
+  once online (`cache::Msg::Sent`), a failed resend checks `chat.getMessage`
+  (the server keeps the first message with an id). Restored ones show as
+  failed ("waiting for the connection") and stay retryable.
+- `cache::purge(app, sid)` on logout / rejected token / removal,
+  `cache::clear_all` (Settings → Storage, `Effect::ClearOfflineCache`; unsent
+  messages stay), `cache::on_quit` (flush, interrupted uploads reported on the
+  next start), `cache::view::strip` above the room.
