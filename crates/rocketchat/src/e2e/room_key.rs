@@ -84,11 +84,16 @@ impl Drop for OctJwkIn {
     }
 }
 
+/// A random UUID v4 key id (the web's `crypto.randomUUID()`).
+pub fn new_key_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 impl RoomKey {
     /// A new AES-256-GCM key with a random UUID v4 kid.
     pub fn generate() -> Self {
         Self {
-            kid: uuid::Uuid::new_v4().to_string(),
+            kid: new_key_id(),
             alg: RoomKeyAlg::A256Gcm,
             key: Zeroizing::new(random_bytes::<32>().to_vec()),
         }

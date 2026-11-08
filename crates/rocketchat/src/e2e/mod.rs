@@ -35,7 +35,7 @@ pub use keychain::{
 pub use mentions::{DEFAULT_USERNAME_PATTERN, E2eMentions, e2e_mentions};
 pub use passphrase::{BIP39_ENGLISH, generate_passphrase, word_list};
 pub use payload::{DecryptedMessage, FileHashes, FileMetadata};
-pub use room_key::{RoomKey, RoomKeyAlg};
+pub use room_key::{RoomKey, RoomKeyAlg, new_key_id};
 pub use user_key::{
     MAX_OAEP_PLAINTEXT, PrivateJwk, PublicJwk, UserKeyPair, UserPrivateKey, UserPublicKey,
 };

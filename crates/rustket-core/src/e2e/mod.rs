@@ -8,8 +8,11 @@
 //! [`E2eManager::update_subscription`] or [`E2eManager::handle_event`]) and call
 //! [`E2eManager::decrypt_message`] / [`E2eManager::encrypt_outgoing`].
 //!
-//! Blocking crypto (RSA, PBKDF2) runs on `spawn_blocking`. Key material is never
-//! logged; logs carry rid, kid, message id and state names only (debug level).
+//! Blocking crypto (RSA, PBKDF2) runs on `spawn_blocking`. The synchronous file
+//! helpers ([`E2eManager::prepare_upload`], [`decrypt_download`]) process the whole
+//! file on the calling thread; use their `_async` variants from UI code. Key
+//! material is never logged; logs carry rid, kid, message id and state names only
+//! (debug level).
 
 mod api;
 mod cache;
@@ -24,16 +27,17 @@ pub use cache::DecryptCache;
 pub use room::RoomE2eState;
 pub use store::{E2E_SECRET_PREFIX, E2eSecrets, pending_passphrase_secret, private_key_secret};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rocketchat::auth::TwoFactorCode;
 use rocketchat::e2e::{
     DEFAULT_USERNAME_PATTERN, DecryptedMessage, E2eError, E2eMentions, EncryptedContent, FileKey,
     FileMetadata, PrivateKeyEnvelope, RoomE2eKeyRequest, RoomKey, Sha256Hasher, UserKeyPair,
     UserPrivateKey, UserPublicKey, Zeroizing, e2e_mentions, encrypt_v2, generate_passphrase,
-    hashed_upload_name, sha256_hex, validate_new_passphrase,
+    hashed_upload_name, new_key_id, validate_new_passphrase,
 };
 use rocketchat::models::{
     FileInfo, Message, MessageAttachment, OldRoomKey, Room, Subscription, UploadedFile,
@@ -46,14 +50,18 @@ use tokio::sync::broadcast;
 
 use crate::config::ServerId;
 use crate::secrets::{SecretError, SecretStore};
-use room::{OldKey, RoomCrypto};
+use room::{OldKey, RoomCrypto, prefix_kid};
 
 /// Account E2E state (web `E2EEState`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AccountE2eState {
-    /// Not started, stopped, or `E2E_Enable` is off at start.
+    /// Not started, stopped, or `E2E_Enable` is off at start without cached keys.
     #[default]
     Disabled,
+    /// `E2E_Enable` is off but the cached private key is loaded: existing room
+    /// keys decrypt, nothing is encrypted, created, accepted or distributed
+    /// (§11.12). Call [`E2eManager::start`] again when `E2E_Enable` turns on.
+    DisabledReadOnly,
     LoadingKeys,
     /// The server has a key backup; the user must enter the E2E passphrase.
     /// `failed`: the last attempt was wrong.
@@ -70,6 +78,11 @@ impl AccountE2eState {
     /// `Ready` and `SavePassword` both have the private key loaded.
     pub fn is_ready(&self) -> bool {
         matches!(self, Self::Ready | Self::SavePassword)
+    }
+
+    /// The private key is loaded (ready, or read-only).
+    pub fn has_keys(&self) -> bool {
+        self.is_ready() || *self == Self::DisabledReadOnly
     }
 }
 
@@ -187,6 +200,12 @@ pub enum E2eManagerError {
     /// The room key is missing (waiting for another member or a reset).
     #[error("the room encryption key is not available")]
     RoomNotReady,
+    /// Encryption is turned off in this room (old keys still decrypt).
+    #[error("encryption is turned off in this room")]
+    RoomNotEncrypted,
+    /// The account was logged out or stopped while the operation ran.
+    #[error("the operation was cancelled")]
+    Cancelled,
     #[error("incorrect encryption password")]
     WrongPassword,
     /// The room has no key id yet (nothing to reset).
@@ -292,6 +311,7 @@ struct RoomSummary {
     state: RoomE2eState,
     waiting: Option<Vec<String>>,
     has_key: bool,
+    encrypted: bool,
 }
 
 struct Account {
@@ -317,6 +337,9 @@ impl Default for Account {
     }
 }
 
+/// One room's crypto state behind its async mutex.
+type RoomCell = Arc<tokio::sync::Mutex<RoomCrypto>>;
+
 struct Inner<A: E2eApi> {
     api: A,
     user_id: String,
@@ -326,7 +349,16 @@ struct Inner<A: E2eApi> {
     account: Mutex<Account>,
     /// Serializes account operations (start, unlock, change, reset).
     account_op: tokio::sync::Mutex<()>,
-    rooms: Mutex<HashMap<String, Arc<tokio::sync::Mutex<RoomCrypto>>>>,
+    /// Incremented by [`E2eManager::stop`]: in-flight operations started before
+    /// drop their result.
+    stops: AtomicU64,
+    /// Incremented by [`E2eManager::logout`]: secrets written by an operation
+    /// that raced a logout are deleted again.
+    logouts: AtomicU64,
+    next_cell: AtomicU64,
+    rooms: Mutex<HashMap<String, (u64, RoomCell)>>,
+    /// Last `e2e.keyRequest` handled per room (debounce).
+    key_requests: Mutex<HashMap<String, Instant>>,
     summaries: RwLock<HashMap<String, RoomSummary>>,
     keys: RwLock<HashMap<String, Arc<RoomKeySet>>>,
     cache: Mutex<DecryptCache>,
@@ -375,6 +407,17 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
         .map_err(|e| E2eManagerError::Task(e.to_string()))
 }
 
+/// Minimum time between two distributions triggered by `e2e.keyRequest` for the
+/// same room.
+const KEY_REQUEST_DEBOUNCE: Duration = Duration::from_secs(3);
+
+/// Snapshot of the stop/logout counters taken when an operation starts.
+#[derive(Debug, Clone, Copy)]
+struct Token {
+    stops: u64,
+    logouts: u64,
+}
+
 /// A random `u64` (std's per-process random hasher keys mixed with a counter).
 pub(crate) fn random_u64() -> u64 {
     use std::hash::{BuildHasher, Hasher};
@@ -406,7 +449,11 @@ impl<A: E2eApi> E2eManager<A> {
                 settings: RwLock::new(settings),
                 account: Mutex::new(Account::default()),
                 account_op: tokio::sync::Mutex::new(()),
+                stops: AtomicU64::new(0),
+                logouts: AtomicU64::new(0),
+                next_cell: AtomicU64::new(0),
                 rooms: Mutex::new(HashMap::new()),
+                key_requests: Mutex::new(HashMap::new()),
                 summaries: RwLock::new(HashMap::new()),
                 keys: RwLock::new(HashMap::new()),
                 cache: Mutex::new(cache),
@@ -448,10 +495,14 @@ impl<A: E2eApi> E2eManager<A> {
             .unwrap_or_default()
     }
 
-    /// Whether messages to `rid` can be encrypted now.
+    /// Whether messages to `rid` can be encrypted now (E2E on, account ready,
+    /// room encrypted and its key loaded).
     pub fn can_encrypt(&self, rid: &str) -> bool {
         self.settings().enabled
             && self.account_state().is_ready()
+            && read(&self.inner.summaries)
+                .get(rid)
+                .is_some_and(|s| s.encrypted)
             && read(&self.inner.keys)
                 .get(rid)
                 .is_some_and(|k| k.current.is_some())
@@ -474,9 +525,44 @@ impl<A: E2eApi> E2eManager<A> {
         }
     }
 
+    fn token(&self) -> Token {
+        Token {
+            stops: self.inner.stops.load(Ordering::SeqCst),
+            logouts: self.inner.logouts.load(Ordering::SeqCst),
+        }
+    }
+
+    fn alive(&self, t: Token) -> bool {
+        self.inner.stops.load(Ordering::SeqCst) == t.stops
+    }
+
+    fn check(&self, t: Token) -> Result<()> {
+        if self.alive(t) {
+            Ok(())
+        } else {
+            Err(E2eManagerError::Cancelled)
+        }
+    }
+
+    /// After writing secrets: if a logout happened meanwhile, delete them again.
+    async fn check_after_secret_write(&self, t: Token) -> Result<()> {
+        if self.inner.logouts.load(Ordering::SeqCst) != t.logouts
+            && let Err(e) = self.inner.secrets.clear().await
+        {
+            tracing::warn!(error = %e, "cannot delete E2E secrets after logout");
+        }
+        self.check(t)
+    }
+
+    /// Mutations of private-key state while `E2E_Enable` is on and the account
+    /// is ready (not read-only).
+    fn writable(&self) -> bool {
+        self.settings().enabled && self.account_state().is_ready()
+    }
+
     fn private_key(&self) -> Option<Arc<UserPrivateKey>> {
         let acc = lock(&self.inner.account);
-        if acc.state.is_ready() {
+        if acc.state.has_keys() {
             acc.private_key.clone()
         } else {
             None
@@ -491,37 +577,85 @@ impl<A: E2eApi> E2eManager<A> {
 
     /// Loads or creates the account keys (§7.1). Never generates keys when the
     /// server could not be asked. On success the rooms known so far are
-    /// handshaken and the distribution loop starts.
+    /// handshaken and the distribution loop starts. With `E2E_Enable` off only a
+    /// cached key is loaded, read-only ([`AccountE2eState::DisabledReadOnly`]).
+    /// Failures leave the account in [`AccountE2eState::Error`].
     pub async fn start(&self) -> Result<()> {
         let _op = self.inner.account_op.lock().await;
-        if !self.settings().enabled {
-            self.set_account_state(AccountE2eState::Disabled);
-            return Ok(());
+        let t = self.token();
+        let r = if self.settings().enabled {
+            self.set_account_state(AccountE2eState::LoadingKeys);
+            self.start_enabled(t).await
+        } else {
+            self.start_read_only(t).await
+        };
+        if let Err(e) = &r
+            && !matches!(e, E2eManagerError::Cancelled)
+            && self.alive(t)
+        {
+            self.set_account_state(AccountE2eState::Error(e.to_string()));
         }
-        self.set_account_state(AccountE2eState::LoadingKeys);
+        r
+    }
+
+    async fn cached_private_key(&self) -> Option<UserPrivateKey> {
         let cached = match self.inner.secrets.private_key().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "cannot read the cached E2E key");
                 None
             }
+        }?;
+        blocking(move || UserPrivateKey::from_jwk_str(&cached).ok())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// `E2E_Enable` off: load the cached key (if it still matches the server's
+    /// public key) for decryption only. Nothing is created or uploaded.
+    async fn start_read_only(&self, t: Token) -> Result<()> {
+        let Some(key) = self.cached_private_key().await else {
+            self.check(t)?;
+            self.set_account_state(AccountE2eState::Disabled);
+            return Ok(());
         };
-        let server = match self.inner.api.fetch_my_keys().await {
-            Ok(k) => k,
+        let matches = match self.inner.api.fetch_my_keys().await {
+            Ok(server) => server
+                .public_key
+                .and_then(|p| UserPublicKey::from_jwk_str(&p).ok())
+                .is_some_and(|p| p == key.public_key()),
+            // Offline: decrypting with the cached key is harmless.
             Err(e) => {
-                self.set_account_state(AccountE2eState::Error(e.to_string()));
-                return Err(e.into());
+                tracing::debug!(error = %e, "cannot reconcile the cached E2E key");
+                true
             }
         };
-        let cached_key = match cached {
-            Some(jwk) => blocking(move || UserPrivateKey::from_jwk_str(&jwk).ok()).await?,
-            None => None,
-        };
+        self.check(t)?;
+        if !matches {
+            self.set_account_state(AccountE2eState::Disabled);
+            return Ok(());
+        }
+        {
+            let mut acc = lock(&self.inner.account);
+            acc.public_key = Some(key.public_key());
+            acc.private_key = Some(Arc::new(key));
+        }
+        self.set_account_state(AccountE2eState::DisabledReadOnly);
+        self.handshake_all().await;
+        Ok(())
+    }
+
+    async fn start_enabled(&self, t: Token) -> Result<()> {
+        let cached_key = self.cached_private_key().await;
+        let server = self.inner.api.fetch_my_keys().await?;
+        self.check(t)?;
         let pending = self.inner.secrets.pending_passphrase().await.ok().flatten();
 
         if let (Some(server_pub), Some(envelope)) = (server.public_key, server.private_key) {
             let server_public = UserPublicKey::from_jwk_str(&server_pub).ok();
             let usable = cached_key.filter(|k| server_public.as_ref() == Some(&k.public_key()));
+            self.check(t)?;
             match usable {
                 Some(key) => {
                     {
@@ -532,13 +666,14 @@ impl<A: E2eApi> E2eManager<A> {
                         acc.server_envelope = Some(envelope);
                         acc.pending_passphrase = pending.clone();
                     }
-                    self.became_ready(pending.is_some()).await;
+                    self.became_ready(t, pending.is_some()).await;
                 }
                 None => {
                     // Keys were created or reset elsewhere: drop stale local secrets.
                     if let Err(e) = self.inner.secrets.clear().await {
                         tracing::warn!(error = %e, "cannot clear stale E2E secrets");
                     }
+                    self.check(t)?;
                     {
                         let mut acc = lock(&self.inner.account);
                         acc.public_key = None;
@@ -570,11 +705,16 @@ impl<A: E2eApi> E2eManager<A> {
             );
             blocking(move || encrypt_v2(&jwk, &pw, &uid)).await??
         };
-        self.inner.secrets.set_private_key(&private_jwk).await?;
-        self.inner
-            .secrets
-            .set_pending_passphrase(&passphrase)
-            .await?;
+        self.check(t)?;
+        // A secret store failure is not fatal: the key and the passphrase stay in
+        // memory for this session (the user is asked again next start).
+        if let Err(e) = self.inner.secrets.set_private_key(&private_jwk).await {
+            tracing::warn!(error = %e, "cannot cache the E2E key");
+        }
+        if let Err(e) = self.inner.secrets.set_pending_passphrase(&passphrase).await {
+            tracing::warn!(error = %e, "cannot store the generated E2E passphrase");
+        }
+        self.check_after_secret_write(t).await?;
         match self
             .inner
             .api
@@ -586,6 +726,7 @@ impl<A: E2eApi> E2eManager<A> {
                 // Another device uploaded keys meanwhile: unlock those instead.
                 let _ = self.inner.secrets.clear().await;
                 let theirs = self.inner.api.fetch_my_keys().await?;
+                self.check(t)?;
                 {
                     let mut acc = lock(&self.inner.account);
                     acc.server_public = theirs.public_key;
@@ -595,14 +736,13 @@ impl<A: E2eApi> E2eManager<A> {
                 self.set_account_state(AccountE2eState::EnterPassword { failed: false });
                 return Ok(());
             }
-            Err(e) => {
-                self.set_account_state(AccountE2eState::Error(e.to_string()));
-                return Err(e.into());
-            }
+            Err(e) => return Err(e.into()),
         }
+        self.check(t)?;
         if let Err(e) = self.inner.api.request_subscription_keys().await {
             tracing::debug!(error = %e, "e2e.requestSubscriptionKeys failed");
         }
+        self.check(t)?;
         {
             let mut acc = lock(&self.inner.account);
             acc.public_key = Some(pair.public.clone());
@@ -611,18 +751,21 @@ impl<A: E2eApi> E2eManager<A> {
             acc.server_envelope = Some(envelope);
             acc.pending_passphrase = Some(passphrase);
         }
-        self.became_ready(true).await;
+        self.became_ready(t, true).await;
         Ok(())
     }
 
-    async fn became_ready(&self, save_password: bool) {
+    async fn became_ready(&self, t: Token, save_password: bool) {
+        if !self.alive(t) {
+            return;
+        }
         self.set_account_state(if save_password {
             AccountE2eState::SavePassword
         } else {
             AccountE2eState::Ready
         });
         self.handshake_all().await;
-        if self.inner.config.auto_distribution {
+        if self.inner.config.auto_distribution && self.alive(t) {
             self.start_distribution();
         }
     }
@@ -630,6 +773,7 @@ impl<A: E2eApi> E2eManager<A> {
     /// Unlocks the key backup with the E2E passphrase (state `EnterPassword`).
     pub async fn submit_password(&self, password: &str) -> Result<()> {
         let _op = self.inner.account_op.lock().await;
+        let t = self.token();
         let (envelope, server_public) = {
             let acc = lock(&self.inner.account);
             if !matches!(acc.state, AccountE2eState::EnterPassword { .. }) {
@@ -651,11 +795,13 @@ impl<A: E2eApi> E2eManager<A> {
         let (key, jwk) = match decrypted {
             Ok(v) => v,
             Err(E2eManagerError::Crypto(E2eError::WrongPassword)) => {
+                self.check(t)?;
                 self.set_account_state(AccountE2eState::EnterPassword { failed: true });
                 return Err(E2eManagerError::WrongPassword);
             }
             Err(e) => return Err(e),
         };
+        self.check(t)?;
         if let Some(public) = server_public.and_then(|p| UserPublicKey::from_jwk_str(&p).ok())
             && public != key.public_key()
         {
@@ -663,14 +809,18 @@ impl<A: E2eApi> E2eManager<A> {
             self.set_account_state(AccountE2eState::EnterPassword { failed: true });
             return Err(E2eManagerError::WrongPassword);
         }
-        self.inner.secrets.set_private_key(&jwk).await?;
+        // Unlocking works without the secret store (asked again next start).
+        if let Err(e) = self.inner.secrets.set_private_key(&jwk).await {
+            tracing::warn!(error = %e, "cannot cache the E2E key");
+        }
+        self.check_after_secret_write(t).await?;
         {
             let mut acc = lock(&self.inner.account);
             acc.public_key = Some(key.public_key());
             acc.private_key = Some(Arc::new(key));
             acc.pending_passphrase = None;
         }
-        self.became_ready(false).await;
+        self.became_ready(t, false).await;
         Ok(())
     }
 
@@ -689,6 +839,7 @@ impl<A: E2eApi> E2eManager<A> {
     pub async fn change_passphrase(&self, new_passphrase: &str) -> Result<()> {
         validate_new_passphrase(new_passphrase)?;
         let _op = self.inner.account_op.lock().await;
+        let t = self.token();
         let (private, public) = {
             let acc = lock(&self.inner.account);
             if !acc.state.is_ready() {
@@ -703,10 +854,12 @@ impl<A: E2eApi> E2eManager<A> {
             self.inner.user_id.clone(),
         );
         let envelope = blocking(move || encrypt_v2(&jwk, &pw, &uid)).await??;
+        self.check(t)?;
         self.inner
             .api
             .set_user_keys(&public.to_jwk_string(), &envelope, true)
             .await?;
+        self.check(t)?;
         let _ = self.inner.secrets.delete_pending_passphrase().await;
         {
             let mut acc = lock(&self.inner.account);
@@ -728,12 +881,15 @@ impl<A: E2eApi> E2eManager<A> {
     }
 
     /// Stops the manager and forgets keys in memory (keeps the secret store).
+    /// Operations still in flight drop their results.
     pub fn stop(&self) {
+        self.inner.stops.fetch_add(1, Ordering::SeqCst);
         if let Some(h) = lock(&self.inner.distribution).take() {
             h.abort();
         }
         *lock(&self.inner.account) = Account::default();
         lock(&self.inner.rooms).clear();
+        lock(&self.inner.key_requests).clear();
         write(&self.inner.summaries).clear();
         write(&self.inner.keys).clear();
         lock(&self.inner.cache).clear();
@@ -743,6 +899,7 @@ impl<A: E2eApi> E2eManager<A> {
     /// Explicit logout / `force_logout` / key reset: stop and delete the E2E
     /// secrets of this account.
     pub async fn logout(&self) {
+        self.inner.logouts.fetch_add(1, Ordering::SeqCst);
         self.stop();
         if let Err(e) = self.inner.secrets.clear().await {
             tracing::warn!(error = %e, "cannot delete E2E secrets");
@@ -786,6 +943,9 @@ impl<A: E2eApi> E2eManager<A> {
             }
             other => match RoomE2eKeyRequest::from_event(other) {
                 Some(req) => {
+                    if !self.should_answer_key_request(&req.rid) {
+                        return true;
+                    }
                     if let Err(e) = self.distribute_rooms(vec![req.rid]).await {
                         tracing::debug!(error = %e, "key distribution after a request failed");
                     }
@@ -794,6 +954,27 @@ impl<A: E2eApi> E2eManager<A> {
                 None => false,
             },
         }
+    }
+
+    /// Only rooms whose key this client holds, at most once per
+    /// [`KEY_REQUEST_DEBOUNCE`] (the server emits a request on every join).
+    fn should_answer_key_request(&self, rid: &str) -> bool {
+        let ready = read(&self.inner.summaries)
+            .get(rid)
+            .is_some_and(|s| s.has_key && s.state == RoomE2eState::Ready);
+        if !ready {
+            return false;
+        }
+        let now = Instant::now();
+        let mut last = lock(&self.inner.key_requests);
+        if last
+            .get(rid)
+            .is_some_and(|t| now.duration_since(*t) < KEY_REQUEST_DEBOUNCE)
+        {
+            return false;
+        }
+        last.insert(rid.to_owned(), now);
+        true
     }
 
     fn forget_room(&self, rid: &str) {
@@ -805,8 +986,24 @@ impl<A: E2eApi> E2eManager<A> {
     fn room_cell(&self, rid: &str) -> Arc<tokio::sync::Mutex<RoomCrypto>> {
         lock(&self.inner.rooms)
             .entry(rid.to_owned())
-            .or_default()
+            .or_insert_with(|| {
+                let id = self.inner.next_cell.fetch_add(1, Ordering::SeqCst) + 1;
+                let rc = RoomCrypto {
+                    cell_id: id,
+                    ..Default::default()
+                };
+                (id, Arc::new(tokio::sync::Mutex::new(rc)))
+            })
+            .1
             .clone()
+    }
+
+    /// `rc` is still the manager's cell for `rid` (not dropped by a logout,
+    /// `stop` or room removal while it was being worked on).
+    fn attached(&self, rid: &str, rc: &RoomCrypto) -> bool {
+        lock(&self.inner.rooms)
+            .get(rid)
+            .is_some_and(|(id, _)| *id == rc.cell_id)
     }
 
     /// Records rooms and subscriptions without handshaking (initial load before
@@ -857,6 +1054,9 @@ impl<A: E2eApi> E2eManager<A> {
 
     /// Publishes the room's state and keys for the synchronous getters.
     fn publish(&self, rid: &str, rc: &RoomCrypto) {
+        if !self.attached(rid, rc) {
+            return;
+        }
         let set = RoomKeySet {
             current: rc.current.clone(),
             old: rc
@@ -894,6 +1094,7 @@ impl<A: E2eApi> E2eManager<A> {
                 state: rc.state.clone(),
                 waiting: rc.info.waiting.clone(),
                 has_key: set.current.is_some(),
+                encrypted: rc.info.encrypted(),
             };
             changed
         };
@@ -918,14 +1119,15 @@ impl<A: E2eApi> E2eManager<A> {
         self.publish(rid, rc);
     }
 
-    /// §7.2 handshake, re-run after every update. Acts only when the account is
-    /// ready.
+    /// §7.2 handshake, re-run after every update. Acts only when the account
+    /// has keys; creating, accepting and rejecting keys only when it is writable
+    /// (E2E on, not read-only).
     async fn handshake(&self, rid: &str, rc: &mut RoomCrypto) {
         let Some(private) = self.private_key() else {
             self.publish(rid, rc);
             return;
         };
-        if !rc.info.have_room && !rc.info.have_sub {
+        if !self.attached(rid, rc) || (!rc.info.have_room && !rc.info.have_sub) {
             return;
         }
         if !rc.info.encryptable_type() {
@@ -933,51 +1135,95 @@ impl<A: E2eApi> E2eManager<A> {
             return;
         }
         self.refresh_old_keys(rid, rc, &private).await;
-
-        if rc.current.is_none()
-            && let Some(wrapped) = rc.info.sub_e2e_key.clone()
-            && rc.stale_e2e_key.as_ref() != Some(&wrapped)
-            && rc.failed_e2e_key.as_ref() != Some(&wrapped)
-        {
-            if rc.state != RoomE2eState::Ready {
-                self.set_room_state(rid, rc, RoomE2eState::Establishing);
-            }
-            let (p, w) = (private.clone(), wrapped.clone());
-            match blocking(move || RoomKey::unwrap(&p, &w)).await {
-                Ok(Ok(key)) => {
-                    let kid = rc
-                        .info
-                        .e2e_key_id
-                        .clone()
-                        .unwrap_or_else(|| key.kid.clone());
-                    rc.current = Some(key.with_kid(kid));
-                    rc.current_source = Some(wrapped);
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(%rid, error = %e, "cannot decrypt the own room key; waiting for a new one");
-                    rc.failed_e2e_key = Some(wrapped);
-                }
-                Err(e) => tracing::warn!(%rid, error = %e, "room key task failed"),
-            }
+        self.load_own_key(rid, rc, &private).await;
+        if !self.attached(rid, rc) {
+            return;
         }
+        let writable = self.writable();
 
-        if let Some(suggested) = rc.info.sub_suggested.clone()
+        if writable
+            && let Some(suggested) = rc.info.sub_suggested.clone()
             && rc.rejected_suggested.as_ref() != Some(&suggested)
         {
             self.process_suggested(rid, rc, &private, suggested).await;
         }
 
-        let next = if rc.current.is_some() {
-            RoomE2eState::Ready
-        } else if !rc.info.encrypted() {
+        if let Some((pending, _)) = &rc.pending_created
+            && (rc.current.is_some() || rc.info.e2e_key_id.as_ref() != Some(&pending.kid))
+        {
+            rc.pending_created = None;
+        }
+        if writable
+            && rc.info.encrypted()
+            && let Some((key, wrapped)) = rc.pending_created.take()
+        {
+            self.store_created_key(rid, rc, key, wrapped).await;
+            return;
+        }
+
+        let next = if !rc.info.encrypted() {
+            // Keys stay loaded for decrypting the history; nothing is encrypted.
             RoomE2eState::Disabled
-        } else if rc.info.have_room && rc.info.e2e_key_id.is_none() && self.settings().enabled {
+        } else if rc.current.is_some() {
+            RoomE2eState::Ready
+        } else if writable && rc.info.have_room && rc.info.e2e_key_id.is_none() {
             self.create_room_key(rid, rc).await;
             return;
         } else {
             RoomE2eState::WaitingKeys
         };
         self.set_room_state(rid, rc, next);
+    }
+
+    /// Unwraps the subscription's `E2EKey` into the current key. Its kid is the
+    /// wrapped prefix (the room's `e2eKeyId` for legacy keys without one, else a
+    /// random id like the web). A prefix that differs from the room's kid is a
+    /// reset whose subscription update came first: the key is kept as an old key
+    /// until the room update arrives.
+    async fn load_own_key(&self, rid: &str, rc: &mut RoomCrypto, private: &Arc<UserPrivateKey>) {
+        if rc.current.is_some() {
+            return;
+        }
+        let Some(wrapped) = rc.info.sub_e2e_key.clone() else {
+            return;
+        };
+        if rc.stale_e2e_key.as_ref() == Some(&wrapped)
+            || rc.failed_e2e_key.as_ref() == Some(&wrapped)
+        {
+            return;
+        }
+        let prefix = prefix_kid(&wrapped).unwrap_or_default();
+        let room_kid = rc.info.e2e_key_id.clone();
+        let mismatch = !prefix.is_empty() && room_kid.as_ref().is_some_and(|k| *k != prefix);
+        if mismatch && rc.deferred_e2e_key.as_ref() == Some(&wrapped) {
+            return;
+        }
+        if rc.state != RoomE2eState::Ready {
+            self.set_room_state(rid, rc, RoomE2eState::Establishing);
+        }
+        let (p, w) = (private.clone(), wrapped.clone());
+        match blocking(move || RoomKey::unwrap(&p, &w)).await {
+            Ok(Ok(key)) if mismatch => {
+                tracing::debug!(%rid, kid = %prefix, "own room key does not match the room key id yet");
+                rc.push_local_old(key);
+                rc.deferred_e2e_key = Some(wrapped);
+            }
+            Ok(Ok(key)) => {
+                let kid = if prefix.is_empty() {
+                    room_kid.unwrap_or_else(new_key_id)
+                } else {
+                    prefix
+                };
+                rc.current = Some(key.with_kid(kid));
+                rc.current_source = Some(wrapped);
+                rc.deferred_e2e_key = None;
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(%rid, error = %e, "cannot decrypt the own room key; waiting for a new one");
+                rc.failed_e2e_key = Some(wrapped);
+            }
+            Err(e) => tracing::warn!(%rid, error = %e, "room key task failed"),
+        }
     }
 
     /// Re-derives old keys when `oldRoomKeys` changed.
@@ -1057,6 +1303,9 @@ impl<A: E2eApi> E2eManager<A> {
                 }
             }
         };
+        if !self.attached(rid, rc) {
+            return;
+        }
         match accept {
             Some(key) => match self.inner.api.accept_suggested_group_key(rid).await {
                 Ok(()) => {
@@ -1096,6 +1345,16 @@ impl<A: E2eApi> E2eManager<A> {
         };
         self.set_room_state(rid, rc, RoomE2eState::CreatingKeys);
         let key = RoomKey::generate();
+        let wrapped = match key.wrap_for(&public) {
+            Ok(w) => w,
+            Err(e) => {
+                self.set_room_state(rid, rc, RoomE2eState::Error(e.to_string()));
+                return;
+            }
+        };
+        if !self.attached(rid, rc) {
+            return;
+        }
         match self.inner.api.set_room_key_id(rid, &key.kid).await {
             Ok(SetKeyIdOutcome::Set) => {}
             Ok(SetKeyIdOutcome::AlreadyExists) => {
@@ -1109,23 +1368,42 @@ impl<A: E2eApi> E2eManager<A> {
             }
         }
         rc.info.e2e_key_id = Some(key.kid.clone());
-        let me = self.inner.user_id.clone();
-        match key.wrap_for(&public) {
-            Ok(wrapped) => {
-                if let Err(e) = self.inner.api.update_group_key(rid, &me, &wrapped).await {
-                    tracing::warn!(%rid, error = %e, "storing the own room key failed");
-                }
-                rc.current_source = Some(wrapped);
-            }
-            Err(e) => tracing::warn!(%rid, error = %e, "wrapping the room key failed"),
+        self.store_created_key(rid, rc, key, wrapped).await;
+    }
+
+    /// Stores a created key in the own subscription, then makes it current and
+    /// provides it to the other members. Until the own copy is stored the room
+    /// stays in `Error` and nothing is encrypted (a key only in RAM would make
+    /// every message unreadable after a restart); the next handshake retries.
+    async fn store_created_key(
+        &self,
+        rid: &str,
+        rc: &mut RoomCrypto,
+        key: RoomKey,
+        wrapped: String,
+    ) {
+        if !self.attached(rid, rc) {
+            return;
         }
+        let me = self.inner.user_id.clone();
+        if let Err(e) = self.inner.api.update_group_key(rid, &me, &wrapped).await {
+            tracing::warn!(%rid, error = %e, "storing the own room key failed");
+            rc.pending_created = Some((key, wrapped));
+            self.set_room_state(rid, rc, RoomE2eState::Error(e.to_string()));
+            return;
+        }
+        rc.pending_created = None;
+        rc.current_source = Some(wrapped);
         rc.current = Some(key.clone());
         self.set_room_state(rid, rc, RoomE2eState::Ready);
+        if !self.attached(rid, rc) {
+            return;
+        }
         match self.inner.api.users_of_room_without_key(rid).await {
             Ok(users) => {
                 let users: Vec<_> = users.into_iter().filter(|u| u.user_id != me).collect();
                 let entries = wrap_for_users(key, Vec::new(), users).await;
-                if !entries.is_empty() {
+                if !entries.is_empty() && self.attached(rid, rc) {
                     let map = HashMap::from([(rid.to_owned(), entries)]);
                     if let Err(e) = self
                         .inner
@@ -1151,8 +1429,11 @@ impl<A: E2eApi> E2eManager<A> {
     /// Resets the room key (§7.5): the server call first, then the local switch;
     /// the previous key stays usable as an old key.
     pub async fn reset_room_key(&self, rid: &str) -> Result<()> {
+        if !self.settings().enabled {
+            return Err(E2eManagerError::Disabled);
+        }
         let public = self.public_key().ok_or(E2eManagerError::NotReady)?;
-        if self.private_key().is_none() {
+        if !self.account_state().is_ready() {
             return Err(E2eManagerError::NotReady);
         }
         let cell = self.room_cell(rid);
@@ -1179,6 +1460,8 @@ impl<A: E2eApi> E2eManager<A> {
         rc.current = Some(key);
         rc.current_source = Some(wrapped);
         rc.stale_e2e_key = None;
+        rc.deferred_e2e_key = None;
+        rc.pending_created = None;
         self.set_room_state(rid, &mut rc, RoomE2eState::Ready);
         Ok(())
     }
@@ -1191,6 +1474,12 @@ impl<A: E2eApi> E2eManager<A> {
         }
         if !self.account_state().is_ready() {
             return Err(E2eManagerError::NotReady);
+        }
+        if read(&self.inner.summaries)
+            .get(rid)
+            .is_some_and(|s| !s.encrypted)
+        {
+            return Err(E2eManagerError::RoomNotEncrypted);
         }
         read(&self.inner.keys)
             .get(rid)
@@ -1228,7 +1517,9 @@ impl<A: E2eApi> E2eManager<A> {
         Ok(OutgoingEncrypted { content, mentions })
     }
 
-    /// Encrypts a file for upload (§7.8 steps 2–4).
+    /// Encrypts a file for upload (§7.8 steps 2–4). **Blocking**: hashes and
+    /// encrypts the whole file on the calling thread (and copies it); prefer
+    /// [`Self::prepare_upload_async`] outside tests.
     pub fn prepare_upload(
         &self,
         rid: &str,
@@ -1237,22 +1528,19 @@ impl<A: E2eApi> E2eManager<A> {
         plaintext: &[u8],
     ) -> Result<PreparedUpload> {
         let room_key = self.current_key(rid)?;
-        let key = FileKey::generate();
-        let sha256 = sha256_hex(plaintext);
-        let mut encrypted = plaintext.to_vec();
-        key.apply(&mut encrypted);
-        let metadata = FileMetadata::new(name, mime, key.to_attachment(), sha256);
-        let file_content = room_key
-            .encrypt_json(&serde_json::to_value(&metadata).map_err(E2eError::from)?)?
-            .to_json();
-        Ok(PreparedUpload {
-            hashed_name: hashed_upload_name(name),
-            size: plaintext.len() as u64,
-            encrypted: encrypted.into(),
-            key,
-            metadata,
-            file_content,
-        })
+        encrypt_file(&room_key, name, mime, plaintext.to_vec())
+    }
+
+    /// [`Self::prepare_upload`] on a blocking thread, encrypting `data` in place.
+    pub async fn prepare_upload_async(
+        &self,
+        rid: &str,
+        name: String,
+        mime: String,
+        data: Vec<u8>,
+    ) -> Result<PreparedUpload> {
+        let room_key = self.current_key(rid)?;
+        blocking(move || encrypt_file(&room_key, &name, &mime, data)).await?
     }
 
     /// The `content` of `rooms.mediaConfirm` for an uploaded encrypted file
@@ -1293,8 +1581,25 @@ impl<A: E2eApi> E2eManager<A> {
             Some(Err(_)) => return DecryptResult::Failed(DecryptFailure::Malformed),
             Some(Ok(c)) => c,
         };
-        let plaintext_edit = msg.content.is_some() && !msg.msg.is_empty();
-        let result = self.decrypt_envelope(&msg.rid, &content, plaintext_edit);
+        // Legacy v1 senders put the same ciphertext into `msg` as well.
+        let plaintext_edit = !msg.msg.is_empty()
+            && msg
+                .content
+                .as_ref()
+                .and_then(|c| c.get("ciphertext"))
+                .and_then(Value::as_str)
+                != Some(msg.msg.as_str());
+        let mut result = self.decrypt_envelope(&msg.rid, &content, plaintext_edit);
+        if let DecryptResult::Decrypted(d) = &result
+            && let Some(server) = msg.attachments.as_deref()
+            && server
+                .iter()
+                .any(|a| a.kind.as_deref() == Some(REMOVED_FILE))
+        {
+            let mut c = (**d).clone();
+            substitute_removed_files(&mut c.message, server);
+            result = DecryptResult::Decrypted(Arc::new(c));
+        }
         match &result {
             DecryptResult::Decrypted(d) => {
                 lock(&self.inner.cache).insert(&msg.rid, &msg.id, updated, d.clone())
@@ -1419,7 +1724,7 @@ impl<A: E2eApi> E2eManager<A> {
     /// One distribution round over up to 10 random candidate rooms (§7.4).
     /// Returns the number of keys provided.
     pub async fn run_distribution_once(&self) -> Result<usize> {
-        if !self.settings().enabled || self.private_key().is_none() {
+        if !self.writable() || self.private_key().is_none() {
             return Ok(0);
         }
         let me = &self.inner.user_id;
@@ -1439,10 +1744,12 @@ impl<A: E2eApi> E2eManager<A> {
     /// Provides keys to the waiting members of `rids` (rooms without a loaded key
     /// are skipped).
     pub async fn distribute_rooms(&self, rids: Vec<String>) -> Result<usize> {
-        if rids.is_empty() || !self.settings().enabled || self.private_key().is_none() {
+        if rids.is_empty() || !self.writable() || self.private_key().is_none() {
             return Ok(0);
         }
+        let t = self.token();
         let waiting = self.inner.api.users_waiting_for_group_key(&rids).await?;
+        self.check(t)?;
         let mut map: HashMap<String, Vec<SuggestedKey>> = HashMap::new();
         for (rid, users) in waiting {
             let users: Vec<_> = users
@@ -1458,7 +1765,7 @@ impl<A: E2eApi> E2eManager<A> {
                 let Some(cur) = rc
                     .current
                     .clone()
-                    .filter(|_| rc.state == RoomE2eState::Ready)
+                    .filter(|_| rc.state == RoomE2eState::Ready && self.attached(&rid, &rc))
                 else {
                     continue;
                 };
@@ -1479,6 +1786,7 @@ impl<A: E2eApi> E2eManager<A> {
         }
         let count = map.values().map(Vec::len).sum();
         if count > 0 {
+            self.check(t)?;
             self.inner
                 .api
                 .provide_users_suggested_group_keys(&map)
@@ -1530,6 +1838,82 @@ fn select_key<'a>(keys: &'a RoomKeySet, env: &EncryptedContent) -> Option<&'a Ro
         .and_then(|k| keys.by_kid(k))
         .or(keys.current.as_ref())
 }
+
+/// `type` of the placeholder the server puts in place of a deleted file.
+const REMOVED_FILE: &str = "removed-file";
+
+/// Deleted files (§7.7): the server replaces file attachments with
+/// `removed-file` placeholders but keeps the encrypted content, so the decrypted
+/// file attachments are swapped for the placeholders (web
+/// `decryptMessageContent`) and the deleted files dropped from `files`/`file`.
+fn substitute_removed_files(message: &mut DecryptedMessage, server: &[MessageAttachment]) {
+    let removed: Vec<&MessageAttachment> = server
+        .iter()
+        .filter(|a| a.kind.as_deref() == Some(REMOVED_FILE))
+        .collect();
+    let all = removed.iter().find(|a| a.file_id.is_none()).copied();
+    let removed_ids: HashSet<&str> = removed
+        .iter()
+        .filter_map(|a| a.file_id.as_deref())
+        .collect();
+    let main_file = message.file.as_ref().map(|f| f.id.clone());
+    if let Some(atts) = &mut message.attachments {
+        for att in atts.iter_mut() {
+            if att.kind.as_deref() != Some("file") {
+                continue;
+            }
+            if let Some(placeholder) = all {
+                *att = placeholder.clone();
+                continue;
+            }
+            let Some(fid) = att.file_id.clone().or_else(|| main_file.clone()) else {
+                continue;
+            };
+            if let Some(placeholder) = removed.iter().find(|r| r.file_id.as_deref() == Some(&fid)) {
+                *att = (*placeholder).clone();
+            }
+        }
+    }
+    let gone = |id: &str| all.is_some() || removed_ids.contains(id);
+    if let Some(files) = &mut message.files {
+        files.retain(|f| !gone(&f.id));
+    }
+    if message.file.as_ref().is_some_and(|f| gone(&f.id)) {
+        message.file = message.files.as_ref().and_then(|f| f.first().cloned());
+    }
+}
+
+/// Hashes and encrypts a file in place (blocking).
+fn encrypt_file(
+    room_key: &RoomKey,
+    name: &str,
+    mime: &str,
+    mut data: Vec<u8>,
+) -> Result<PreparedUpload> {
+    let key = FileKey::generate();
+    let mut hasher = Sha256Hasher::new();
+    let mut cipher = key.cipher();
+    for chunk in data.chunks_mut(FILE_CHUNK) {
+        hasher.update(chunk);
+        cipher.apply(chunk);
+    }
+    let size = data.len() as u64;
+    let metadata = FileMetadata::new(name, mime, key.to_attachment(), hasher.finish_hex());
+    let file_content = room_key
+        .encrypt_json(&serde_json::to_value(&metadata).map_err(E2eError::from)?)?
+        .to_json();
+    Ok(PreparedUpload {
+        hashed_name: hashed_upload_name(name),
+        size,
+        encrypted: data.into(),
+        key,
+        metadata,
+        file_content,
+    })
+}
+
+/// Chunk size of in-memory file encryption/decryption.
+const FILE_CHUNK: usize = 64 * 1024;
 
 /// The decrypted payload of an upload message (web shape, §7.8 step 5).
 pub fn upload_payload(
@@ -1597,20 +1981,35 @@ pub fn upload_payload(
 }
 
 /// Decrypts a downloaded encrypted file and verifies `hashes.sha256` (when the
-/// attachment has one).
+/// attachment has one). **Blocking** (whole file, copied); prefer
+/// [`decrypt_download_async`] outside tests.
 pub fn decrypt_download(attachment: &MessageAttachment, ciphertext: &[u8]) -> Result<Vec<u8>> {
+    decrypt_download_owned(attachment, ciphertext.to_vec())
+}
+
+/// [`decrypt_download`] on a blocking thread, decrypting `ciphertext` in place.
+pub async fn decrypt_download_async(
+    attachment: MessageAttachment,
+    ciphertext: Vec<u8>,
+) -> Result<Vec<u8>> {
+    blocking(move || decrypt_download_owned(&attachment, ciphertext)).await?
+}
+
+fn decrypt_download_owned(attachment: &MessageAttachment, mut data: Vec<u8>) -> Result<Vec<u8>> {
     let enc = attachment
         .e2e_encryption()
         .ok_or(E2eError::Format("attachment has no encryption parameters"))?;
     let key = FileKey::from_attachment(&enc)?;
-    let mut data = ciphertext.to_vec();
-    key.apply(&mut data);
-    if let Some(expected) = attachment.e2e_sha256() {
-        let mut h = Sha256Hasher::new();
-        h.update(&data);
-        if !h.finish_hex().eq_ignore_ascii_case(expected) {
-            return Err(E2eError::Format("file hash mismatch").into());
-        }
+    let mut cipher = key.cipher();
+    let mut hasher = Sha256Hasher::new();
+    for chunk in data.chunks_mut(FILE_CHUNK) {
+        cipher.apply(chunk);
+        hasher.update(chunk);
+    }
+    if let Some(expected) = attachment.e2e_sha256()
+        && !hasher.finish_hex().eq_ignore_ascii_case(expected)
+    {
+        return Err(E2eError::Format("file hash mismatch").into());
     }
     Ok(data)
 }
@@ -1618,6 +2017,7 @@ pub fn decrypt_download(attachment: &MessageAttachment, ciphertext: &[u8]) -> Re
 fn state_name(s: &AccountE2eState) -> &'static str {
     match s {
         AccountE2eState::Disabled => "disabled",
+        AccountE2eState::DisabledReadOnly => "disabled_read_only",
         AccountE2eState::LoadingKeys => "loading_keys",
         AccountE2eState::EnterPassword { .. } => "enter_password",
         AccountE2eState::SavePassword => "save_password",

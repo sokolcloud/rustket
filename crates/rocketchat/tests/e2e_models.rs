@@ -132,9 +132,11 @@ fn webcrypto_interop() {
     use rocketchat::e2e::{PrivateKeyEnvelope, RoomKey, UserPrivateKey};
     let f = fixture("webcrypto_interop.json");
     let s = |k: &str| f[k].as_str().unwrap().to_owned();
-    // WebCrypto decrypted the key Rustket wrapped.
-    assert_eq!(s("node_unwrapped_rust_wrapped"), s("room_key"));
     let private = UserPrivateKey::from_jwk_str(&s("private_key")).unwrap();
+    // `node_unwrapped_rust_wrapped` is what WebCrypto got from unwrapping
+    // `rust_wrapped` when the fixture was made; Rustket must agree with it.
+    let ours = RoomKey::unwrap(&private, &s("rust_wrapped")).unwrap();
+    assert_eq!(*ours.to_jwk_string(), s("node_unwrapped_rust_wrapped"));
     let key = RoomKey::unwrap(&private, &s("node_wrapped")).unwrap();
     assert_eq!(key.kid, s("room_kid"));
     assert_eq!(*key.to_jwk_string(), s("room_key"));

@@ -560,7 +560,14 @@ async fn e2e_full_flow_with_e2e_enabled() {
             .rest
             .send_message(&OutgoingMessage::new(&rid, "plaintext"))
             .await;
-        assert!(plain.is_err(), "plaintext accepted in an encrypted room");
+        assert_eq!(
+            plain
+                .err()
+                .and_then(|e| e.api_error_code().map(str::to_owned))
+                .as_deref(),
+            Some("error-not-allowed"),
+            "plaintext must be refused in an encrypted room"
+        );
 
         let first = send_text(&ma, &a.rest, &rid, "secret one").await;
         assert_eq!(

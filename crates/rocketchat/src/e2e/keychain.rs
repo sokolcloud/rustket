@@ -142,9 +142,14 @@ impl PrivateKeyEnvelope {
         let Ok(text) = std::str::from_utf8(&plain) else {
             return Ok(None);
         };
-        let looks_like_jwk = serde_json::from_str::<Value>(text)
-            .ok()
-            .is_some_and(|v| v.get("kty").and_then(Value::as_str).is_some());
+        // Only `kty` is materialized: the private members are skipped, not copied
+        // into a non-zeroized `Value`.
+        #[derive(serde::Deserialize)]
+        struct KtyOnly {
+            #[allow(dead_code)]
+            kty: String,
+        }
+        let looks_like_jwk = serde_json::from_str::<KtyOnly>(text).is_ok();
         Ok(looks_like_jwk.then(|| Zeroizing::new(text.to_owned())))
     }
 }

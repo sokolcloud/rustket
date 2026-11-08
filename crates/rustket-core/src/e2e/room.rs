@@ -3,7 +3,7 @@
 //! this module is pure data and decisions.
 
 use rocketchat::RcDate;
-use rocketchat::e2e::RoomKey;
+use rocketchat::e2e::{RoomKey, WrappedKey};
 use rocketchat::models::{OldRoomKey, Room, RoomType, Subscription};
 
 /// Room crypto state (web `E2ERoomState`).
@@ -62,9 +62,17 @@ pub(crate) struct OldKey {
     pub key: Option<RoomKey>,
 }
 
+/// The kid prefix of a wrapped key (`""` when it has none), `None` if malformed.
+pub(crate) fn prefix_kid(wrapped: &str) -> Option<String> {
+    WrappedKey::parse(wrapped).ok().map(|w| w.kid)
+}
+
 /// Mutable per-room state, guarded by one async mutex per room.
 #[derive(Debug, Default)]
 pub(crate) struct RoomCrypto {
+    /// Identity of this cell in the manager's room map: work done on a cell that
+    /// was dropped (logout, room removed) must not be published.
+    pub cell_id: u64,
     pub info: RoomInfo,
     pub state: RoomE2eState,
     pub current: Option<RoomKey>,
@@ -81,6 +89,14 @@ pub(crate) struct RoomCrypto {
     pub failed_e2e_key: Option<String>,
     /// Suggested key already rejected: don't loop on it.
     pub rejected_suggested: Option<String>,
+    /// Own `E2EKey` whose kid prefix differs from the room's `e2eKeyId` (a reset
+    /// whose subscription update arrived before the room update): kept as an old
+    /// key until the room kid matches.
+    pub deferred_e2e_key: Option<String>,
+    /// A key this client created and claimed the kid for, but could not store in
+    /// its own subscription yet (`e2e.updateGroupKey` failed): retried before the
+    /// room may encrypt. `(key, wrapped for me)`.
+    pub pending_created: Option<(RoomKey, String)>,
 }
 
 /// What an update changed that needs action.
@@ -105,14 +121,14 @@ impl RoomCrypto {
         self.info.t = Some(room.t);
         self.info.room_encrypted = room.encrypted == Some(true);
         if new_kid.is_some() || !fx.reset {
-            self.info.e2e_key_id = new_kid.or(prev_kid);
+            self.info.e2e_key_id = new_kid.clone().or(prev_kid);
         }
         self.info.waiting = room
             .users_waiting_for_e2e_keys
             .as_ref()
             .map(|w| w.iter().map(|u| u.user_id.clone()).collect());
         if fx.reset {
-            self.on_reset();
+            self.on_reset(new_kid.as_deref().unwrap_or_default());
         }
         fx
     }
@@ -124,8 +140,11 @@ impl RoomCrypto {
         }
         let key = sub.e2e_key.clone().filter(|k| !k.is_empty());
         if key.is_some() && key != self.current_source {
-            // A different own key (accepted elsewhere, or after a reset).
-            self.current = None;
+            // A different own key (accepted elsewhere, or after a reset): the
+            // previous one stays usable for older messages.
+            if let Some(cur) = self.current.take() {
+                self.push_local_old(cur);
+            }
             self.current_source = None;
         }
         if key != self.info.sub_e2e_key {
@@ -143,13 +162,21 @@ impl RoomCrypto {
         }
     }
 
-    /// Someone reset the room key: keep the current key as an old key, wait for
-    /// the new one, and never reuse the current `E2EKey` string.
-    pub fn on_reset(&mut self) {
+    /// Someone reset the room key to `new_kid`: keep the current key as an old
+    /// key, wait for the new one, and never reuse an `E2EKey` string of an older
+    /// kid. An `E2EKey` already carrying `new_kid` (the subscription update of a
+    /// reset by my other device arrived first) stays usable.
+    pub fn on_reset(&mut self, new_kid: &str) {
         if let Some(cur) = self.current.take() {
             self.push_local_old(cur);
         }
-        self.stale_e2e_key = self.current_source.take().or(self.info.sub_e2e_key.clone());
+        let source = self.current_source.take();
+        self.stale_e2e_key = self
+            .info
+            .sub_e2e_key
+            .clone()
+            .or(source)
+            .filter(|w| prefix_kid(w).as_deref() != Some(new_kid));
         self.state = RoomE2eState::WaitingKeys;
     }
 

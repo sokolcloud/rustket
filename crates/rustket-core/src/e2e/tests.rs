@@ -78,6 +78,10 @@ struct MockState {
     group_keys: Vec<(String, String, String)>,
     provided: Vec<HashMap<String, Vec<SuggestedKey>>>,
     resets: Vec<(String, String, String)>,
+    fail_update_group_key: bool,
+    waiting_calls: usize,
+    /// `fetch_my_keys` waits for this before answering.
+    fetch_gate: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[derive(Clone, Default)]
@@ -97,6 +101,10 @@ impl E2eApi for MockApi {
         Some(ME.into())
     }
     async fn fetch_my_keys(&self) -> rocketchat::Result<MyKeys> {
+        let gate = self.st().fetch_gate.clone();
+        if let Some(g) = gate {
+            g.notified().await;
+        }
         let mut s = self.st();
         s.calls.push("fetch_my_keys".into());
         if s.fail_fetch {
@@ -139,6 +147,9 @@ impl E2eApi for MockApi {
     async fn update_group_key(&self, rid: &str, uid: &str, key: &str) -> rocketchat::Result<()> {
         let mut s = self.st();
         s.calls.push("update_group_key".into());
+        if s.fail_update_group_key {
+            return Err(Error::Timeout("mock"));
+        }
         s.group_keys.push((rid.into(), uid.into(), key.into()));
         Ok(())
     }
@@ -164,7 +175,8 @@ impl E2eApi for MockApi {
         &self,
         room_ids: &[String],
     ) -> rocketchat::Result<HashMap<String, Vec<UserPublicKeyEntry>>> {
-        let s = self.st();
+        let mut s = self.st();
+        s.waiting_calls += 1;
         Ok(room_ids
             .iter()
             .filter_map(|r| s.waiting.get(r).map(|u| (r.clone(), u.clone())))
@@ -1059,4 +1071,390 @@ fn settings_from_store() {
     assert!(e.apply("E2E_Allow_Unencrypted_Messages", &json!(true)));
     assert!(e.allow_unencrypted);
     assert!(!e.apply("Site_Url", &json!("x")));
+}
+
+fn enc(k: &RoomKey, t: &str) -> Value {
+    k.encrypt_json(&json!({"msg": t})).unwrap().to_json()
+}
+
+/// Reset from my other device: the server sends my subscription (new `E2EKey`)
+/// before the room with the new `e2eKeyId` (resetRoomKey.ts).
+#[tokio::test]
+async fn reset_by_my_other_device_subscription_first() {
+    let (m, _, _) = ready_manager().await;
+    let me = my_public();
+    let k1 = RoomKey::generate();
+    m.update_room(&room(Some(&k1.kid))).await;
+    m.update_subscription(&sub(Some(k1.wrap_for(&me).unwrap()), None))
+        .await;
+    assert_eq!(m.room_state(RID), RoomE2eState::Ready);
+    let k2 = RoomKey::generate();
+    let mut s = sub(Some(k2.wrap_for(&me).unwrap()), None);
+    s.old_room_keys = Some(vec![OldRoomKey {
+        e2e_key_id: k1.kid.clone(),
+        ts: Some(RcDate::now()),
+        e2e_key: k1.wrap_for_with_kid(&me, &k1.kid).unwrap(),
+    }]);
+    m.update_subscription(&s).await;
+    // Gap: never send under the old kid; both keys decrypt.
+    if let Ok(out) = m.encrypt_outgoing(RID, "gap") {
+        assert_eq!(out.content["kid"], k2.kid.as_str());
+    }
+    assert_eq!(
+        text(&m.decrypt_message(&e2e_msg("a", enc(&k1, "old"), 1))),
+        "old"
+    );
+    assert_eq!(
+        text(&m.decrypt_message(&e2e_msg("b", enc(&k2, "new"), 1))),
+        "new"
+    );
+    m.update_room(&room(Some(&k2.kid))).await;
+    assert_eq!(m.room_state(RID), RoomE2eState::Ready);
+    assert!(m.can_encrypt(RID));
+    assert_eq!(
+        m.encrypt_outgoing(RID, "x").unwrap().content["kid"],
+        k2.kid.as_str()
+    );
+    assert_eq!(
+        text(&m.decrypt_message(&e2e_msg("c", enc(&k1, "old"), 1))),
+        "old"
+    );
+}
+
+#[tokio::test]
+async fn own_key_without_prefix_gets_a_kid() {
+    let (m, _, _) = ready_manager().await;
+    let key = RoomKey::generate();
+    let mut r = room(None);
+    r.encrypted = Some(true);
+    // A legacy room: the room has a kid, the wrapped key has no prefix.
+    r.e2e_key_id = Some("legacy-kid".into());
+    m.update_room(&r).await;
+    m.update_subscription(&sub(
+        Some(key.wrap_for_with_kid(&my_public(), "").unwrap()),
+        None,
+    ))
+    .await;
+    assert_eq!(
+        m.encrypt_outgoing(RID, "x").unwrap().content["kid"],
+        "legacy-kid"
+    );
+}
+
+#[tokio::test]
+async fn failed_own_key_store_blocks_encryption_and_retries() {
+    let (m, api, _) = ready_manager().await;
+    api.st().fail_update_group_key = true;
+    api.st().without_key.insert(
+        RID.into(),
+        vec![UserPublicKeyEntry {
+            user_id: OTHER.into(),
+            public_key: keys().other_public,
+        }],
+    );
+    m.update_room(&room(None)).await;
+    assert!(matches!(m.room_state(RID), RoomE2eState::Error(_)));
+    assert!(!m.can_encrypt(RID));
+    assert!(m.encrypt_outgoing(RID, "x").is_err());
+    assert!(api.st().provided.is_empty());
+    let kid = api.st().room_key_ids[RID].clone();
+    // The echo of setRoomKeyID retries the store.
+    api.st().fail_update_group_key = false;
+    m.update_room(&room(Some(&kid))).await;
+    assert_eq!(m.room_state(RID), RoomE2eState::Ready);
+    assert_eq!(api.st().group_keys.len(), 1);
+    assert_eq!(api.st().provided.len(), 1);
+    assert_eq!(
+        m.encrypt_outgoing(RID, "x").unwrap().content["kid"],
+        kid.as_str()
+    );
+}
+
+#[tokio::test]
+async fn room_encryption_turned_off_stops_encrypting() {
+    let (m, _, _) = ready_manager().await;
+    let key = RoomKey::generate();
+    m.update_room(&room(Some(&key.kid))).await;
+    m.update_subscription(&sub(Some(key.wrap_for(&my_public()).unwrap()), None))
+        .await;
+    assert!(m.can_encrypt(RID));
+    let mut r = room(Some(&key.kid));
+    r.encrypted = Some(false);
+    m.update_room(&r).await;
+    assert_eq!(m.room_state(RID), RoomE2eState::Disabled);
+    assert!(!m.can_encrypt(RID));
+    assert!(matches!(
+        m.encrypt_outgoing(RID, "x"),
+        Err(E2eManagerError::RoomNotEncrypted)
+    ));
+    assert_eq!(
+        text(&m.decrypt_message(&e2e_msg("a", enc(&key, "h"), 1))),
+        "h"
+    );
+    m.update_room(&room(Some(&key.kid))).await;
+    assert!(m.can_encrypt(RID));
+}
+
+#[tokio::test]
+async fn logout_during_start_leaves_no_secrets() {
+    let api = MockApi::default();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    api.st().fetch_gate = Some(gate.clone());
+    let store = Arc::new(MemoryStore::new());
+    let m = manager(&api, &store);
+    let task = tokio::spawn({
+        let m = m.clone();
+        async move { m.start().await }
+    });
+    while m.account_state() != AccountE2eState::LoadingKeys {
+        tokio::task::yield_now().await;
+    }
+    m.logout().await;
+    gate.notify_one();
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(E2eManagerError::Cancelled)
+    ));
+    assert_eq!(m.account_state(), AccountE2eState::Disabled);
+    let server = ServerId("srv".into());
+    assert!(
+        store
+            .get(&private_key_secret(&server, ME))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get(&pending_passphrase_secret(&server, ME))
+            .unwrap()
+            .is_none()
+    );
+    assert!(api.st().uploaded.is_empty());
+}
+
+struct ReadOnlyStore(MemoryStore);
+
+impl SecretStore for ReadOnlyStore {
+    fn get(&self, key: &str) -> crate::secrets::Result<Option<String>> {
+        self.0.get(key)
+    }
+    fn set(&self, _key: &str, _value: &str) -> crate::secrets::Result<()> {
+        Err(SecretError::Timeout)
+    }
+    fn delete(&self, key: &str) -> crate::secrets::Result<()> {
+        self.0.delete(key)
+    }
+}
+
+#[tokio::test]
+async fn secret_store_failures_do_not_block_unlock() {
+    let k = keys();
+    let api = MockApi::default();
+    api.st().my_keys = MyKeys {
+        public_key: Some(k.my_public.clone()),
+        private_key: Some(k.my_envelope.clone()),
+    };
+    let store: Arc<dyn SecretStore> = Arc::new(ReadOnlyStore(MemoryStore::new()));
+    let m = E2eManager::new(
+        api.clone(),
+        store,
+        &ServerId("srv".into()),
+        ME,
+        enabled(),
+        config(),
+    );
+    m.start().await.unwrap();
+    m.submit_password(&k.my_passphrase).await.unwrap();
+    assert_eq!(m.account_state(), AccountE2eState::Ready);
+
+    // First-time creation with a broken store still uploads and keeps the
+    // passphrase in memory.
+    let api = MockApi::default();
+    let store: Arc<dyn SecretStore> = Arc::new(ReadOnlyStore(MemoryStore::new()));
+    let m = E2eManager::new(
+        api.clone(),
+        store,
+        &ServerId("srv".into()),
+        ME,
+        enabled(),
+        config(),
+    );
+    m.start().await.unwrap();
+    assert_eq!(m.account_state(), AccountE2eState::SavePassword);
+    assert!(m.pending_passphrase().is_some());
+}
+
+#[tokio::test]
+async fn disabled_start_with_cached_key_is_read_only() {
+    let k = keys();
+    let api = MockApi::default();
+    api.st().my_keys = MyKeys {
+        public_key: Some(k.my_public.clone()),
+        private_key: Some(k.my_envelope.clone()),
+    };
+    let store = Arc::new(MemoryStore::new());
+    store
+        .set(
+            &private_key_secret(&ServerId("srv".into()), ME),
+            &k.my_private,
+        )
+        .unwrap();
+    let m = E2eManager::new(
+        api.clone(),
+        store,
+        &ServerId("srv".into()),
+        ME,
+        E2eSettings::default(),
+        config(),
+    );
+    m.start().await.unwrap();
+    assert_eq!(m.account_state(), AccountE2eState::DisabledReadOnly);
+    let key = RoomKey::generate();
+    m.update_room(&room(Some(&key.kid))).await;
+    m.update_subscription(&sub(Some(key.wrap_for(&my_public()).unwrap()), None))
+        .await;
+    assert_eq!(
+        text(&m.decrypt_message(&e2e_msg("a", enc(&key, "ro"), 1))),
+        "ro"
+    );
+    assert!(!m.can_encrypt(RID));
+    // No key creation and no suggestion handling while read-only.
+    m.update_room(&Room {
+        id: "r2".into(),
+        ..room(None)
+    })
+    .await;
+    m.update_subscription(&sub(None, Some(key.wrap_for(&my_public()).unwrap())))
+        .await;
+    assert!(!api.called("set_room_key_id"));
+    assert!(!api.called("accept") && !api.called("reject"));
+}
+
+#[tokio::test]
+async fn v1_ciphertext_in_msg_is_not_a_plaintext_edit() {
+    let (m, _, _) = ready_manager().await;
+    let key = RoomKey::generate();
+    m.update_room(&room(Some(&key.kid))).await;
+    m.update_subscription(&sub(Some(key.wrap_for(&my_public()).unwrap()), None))
+        .await;
+    let content = json!({"algorithm": "rc.v1.aes-sha2", "ciphertext": "AAAAAAAAAAAA"});
+    let mut msg = e2e_msg("v1", content, 1);
+    msg.msg = "AAAAAAAAAAAA".into();
+    let r = m.decrypt_message(&msg);
+    if let DecryptResult::Decrypted(d) = r {
+        assert!(!d.plaintext_edit);
+    }
+    // The real v1 fixture (same ciphertext in msg and content).
+    let mut v1 = e2e_msg("v1b", enc(&key, "v"), 2);
+    v1.msg = v1.content.as_ref().unwrap()["ciphertext"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let DecryptResult::Decrypted(d) = m.decrypt_message(&v1) else {
+        panic!()
+    };
+    assert!(!d.plaintext_edit);
+}
+
+async fn upload_room() -> (E2eManager<MockApi>, PreparedUpload, UploadedFile, Vec<u8>) {
+    let (m, _, _) = ready_manager().await;
+    let key = RoomKey::generate();
+    m.update_room(&room(Some(&key.kid))).await;
+    m.update_subscription(&sub(Some(key.wrap_for(&my_public()).unwrap()), None))
+        .await;
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    let up = m
+        .prepare_upload_async(
+            RID,
+            "big.bin".into(),
+            "application/octet-stream".into(),
+            data.clone(),
+        )
+        .await
+        .unwrap();
+    let uploaded = UploadedFile {
+        id: "f1".into(),
+        url: "/file-upload/f1/big.bin".into(),
+    };
+    (m, up, uploaded, data)
+}
+
+#[tokio::test]
+async fn removed_files_replace_decrypted_attachments() {
+    let (m, up, uploaded, _) = upload_room().await;
+    let content = m
+        .upload_message_content(RID, &up, &uploaded, "cap", None)
+        .unwrap();
+    let mut msg = e2e_msg("rf", content, 1);
+    msg.attachments = Some(vec![MessageAttachment {
+        kind: Some("removed-file".into()),
+        file_id: Some("f1".into()),
+        text: Some("_File removed_".into()),
+        ..Default::default()
+    }]);
+    let DecryptResult::Decrypted(d) = m.decrypt_message(&msg) else {
+        panic!()
+    };
+    let att = &d.message.attachments.as_ref().unwrap()[0];
+    assert_eq!(att.kind.as_deref(), Some("removed-file"));
+    assert!(att.title_link.is_none() && att.encryption.is_none());
+    assert!(d.message.files.as_ref().unwrap().is_empty());
+    assert!(d.message.file.is_none());
+    assert_eq!(d.message.text(), "cap");
+    // A placeholder without fileId removes every file attachment.
+    let mut msg2 = msg.clone();
+    msg2.id = "rf2".into();
+    msg2.attachments.as_mut().unwrap()[0].file_id = None;
+    let DecryptResult::Decrypted(d) = m.decrypt_message(&msg2) else {
+        panic!()
+    };
+    assert_eq!(
+        d.message.attachments.as_ref().unwrap()[0].kind.as_deref(),
+        Some("removed-file")
+    );
+}
+
+#[tokio::test]
+async fn editing_an_upload_keeps_the_file_key() {
+    let (m, up, uploaded, data) = upload_room().await;
+    let content = m
+        .upload_message_content(RID, &up, &uploaded, "cap", None)
+        .unwrap();
+    let DecryptResult::Decrypted(orig) = m.decrypt_message(&e2e_msg("u", content, 1)) else {
+        panic!()
+    };
+    let edit = m
+        .encrypt_edit(RID, "new caption", Some(&orig.message))
+        .unwrap();
+    let DecryptResult::Decrypted(d) = m.decrypt_message(&e2e_msg("u", edit.content, 2)) else {
+        panic!()
+    };
+    assert_eq!(d.message.text(), "new caption");
+    assert_eq!(d.message.file.as_ref().unwrap().id, "f1");
+    let att = d.message.attachments.as_ref().unwrap()[0].clone();
+    assert_eq!(
+        decrypt_download_async(att, up.encrypted.to_vec())
+            .await
+            .unwrap(),
+        data
+    );
+}
+
+#[tokio::test]
+async fn key_requests_skip_rooms_without_key_and_are_debounced() {
+    let (m, api, _) = ready_manager().await;
+    let ev = |rid: &str| SessionEvent::Unknown {
+        collection: "stream-notify-room".into(),
+        event_name: format!("{rid}/e2e.keyRequest"),
+        args: json!(["kid"]),
+    };
+    let key = RoomKey::generate();
+    m.update_room(&room(Some(&key.kid))).await;
+    assert!(m.handle_event(&ev(RID)).await);
+    assert_eq!(api.st().waiting_calls, 0, "no key: no REST call");
+    m.update_subscription(&sub(Some(key.wrap_for(&my_public()).unwrap()), None))
+        .await;
+    assert!(m.handle_event(&ev(RID)).await);
+    assert!(m.handle_event(&ev(RID)).await);
+    assert_eq!(api.st().waiting_calls, 1);
 }
