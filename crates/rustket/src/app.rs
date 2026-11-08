@@ -702,6 +702,8 @@ impl App {
                 .server(&sid)
                 .and_then(|e| e.last_room.as_deref());
             tasks.push(crate::cache::after_update(s, &self.offline, last_room));
+            s.sidebar
+                .track_active(&s.workspace, s.active_room.as_deref(), &self.config.ui);
             s.sidebar.refresh(
                 &s.workspace,
                 &self.config.ui,

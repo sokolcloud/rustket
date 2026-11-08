@@ -87,6 +87,8 @@ pub struct Sidebar {
     /// Last reported scroll position of the list: (offset, viewport height,
     /// content height).
     viewport: Option<(f32, f32, f32)>,
+    /// The open room, kept in the Unread section after it was read.
+    kept_unread: Option<String>,
 }
 
 /// Height of a section header slot (the header is centred in it; its own
@@ -234,6 +236,28 @@ impl Sidebar {
         }
     }
 
+    /// A room opened from the Unread section stays there until another room
+    /// is opened, so reading it does not move its row away. Call before
+    /// [`Self::refresh`].
+    pub fn track_active(&mut self, ws: &Workspace, active: Option<&str>, prefs: &UiPrefs) {
+        let Some(rid) = active.filter(|_| prefs.unread_on_top) else {
+            self.kept_unread = None;
+            return;
+        };
+        if self.kept_unread.as_deref() == Some(rid) {
+            return;
+        }
+        // The sections are from before the room was opened (and maybe already
+        // marked read).
+        let listed = self
+            .sections
+            .iter()
+            .filter(|s| s.kind == SectionKind::Unread)
+            .any(|s| s.items.iter().any(|i| i.rid == rid));
+        let unread = listed || ws.room(rid).is_some_and(room_list::room_is_unread);
+        self.kept_unread = unread.then(|| rid.to_owned());
+    }
+
     /// Recomputes the sections when the workspace or the filter changed and asks
     /// the image service for the avatars of all rows.
     pub fn refresh(
@@ -246,7 +270,8 @@ impl Sidebar {
         prefetch: usize,
     ) {
         use rustket_core::Dirty;
-        let opts = RoomListOptions::from_prefs(prefs, ws);
+        let mut opts = RoomListOptions::from_prefs(prefs, ws);
+        opts.kept_unread.clone_from(&self.kept_unread);
         let presence = ws.revision(Dirty::PRESENCE);
         let key = SectionsKey {
             filter: self.filter.clone(),
@@ -956,6 +981,44 @@ mod tests {
             fx.sidebar.filter.clear();
             fx.diff(&mut tree);
             assert_eq!(fx.sidebar.room_count(), ROOMS + 1);
+        }
+
+        /// A room opened from the Unread section stays there once read, until
+        /// another room is opened; opening a read room does not pull it in.
+        #[test]
+        fn the_open_room_stays_unread_until_another_is_opened() {
+            fn unread(fx: &Fx) -> Vec<String> {
+                fx.sidebar
+                    .sections
+                    .iter()
+                    .filter(|s| s.kind == SectionKind::Unread)
+                    .flat_map(|s| s.items.iter().map(|i| i.rid.clone()))
+                    .collect()
+            }
+            fn open(fx: &mut Fx, rid: Option<&str>) {
+                fx.sidebar.track_active(&fx.ws, rid, &fx.prefs);
+                fx.refresh();
+            }
+            let mut fx = Fx::with_rooms(3);
+            fx.prefs.unread_on_top = true;
+            let mut s = sub("r0001", "r0001", RoomType::Channel);
+            s.unread = 2;
+            fx.ws.apply_subscription(Change::Updated, s.clone());
+            fx.refresh();
+            assert_eq!(unread(&fx), ["r0001"]);
+
+            // Marked read in the same update that opened it.
+            s.unread = 0;
+            fx.ws.apply_subscription(Change::Updated, s);
+            open(&mut fx, Some("r0001"));
+            assert_eq!(unread(&fx), ["r0001"]);
+            open(&mut fx, Some("r0001"));
+            assert_eq!(unread(&fx), ["r0001"]);
+
+            open(&mut fx, Some("r0000"));
+            assert!(unread(&fx).is_empty());
+            open(&mut fx, None);
+            assert!(unread(&fx).is_empty());
         }
 
         /// Review: image results (failures, other servers) and typing in

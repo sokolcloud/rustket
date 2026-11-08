@@ -18,6 +18,9 @@ pub struct RoomListOptions {
     /// otherwise everything not in Unread/Favorites is one "Conversations" section.
     pub group_by_type: bool,
     pub unread_on_top: bool,
+    /// With `unread_on_top`: a room that stays in the Unread section after it
+    /// was read (the open room, until another one is opened).
+    pub kept_unread: Option<String>,
     pub show_favorites: bool,
     /// Resolved: local override, else `UI_Use_Real_Name`.
     pub use_real_names: bool,
@@ -29,6 +32,7 @@ impl RoomListOptions {
             sort: prefs.sidebar_sort,
             group_by_type: prefs.group_by_type,
             unread_on_top: prefs.unread_on_top,
+            kept_unread: None,
             show_favorites: true,
             use_real_names: ws.use_real_names(prefs.use_real_names),
         }
@@ -41,6 +45,7 @@ impl Default for RoomListOptions {
             sort: SidebarSort::Activity,
             group_by_type: true,
             unread_on_top: false,
+            kept_unread: None,
             show_favorites: true,
             use_real_names: false,
         }
@@ -461,7 +466,9 @@ fn matches_filter(ws: &Workspace, e: &RoomEntry, item: &RoomListItem, q: &str) -
 }
 
 fn section_for(e: &RoomEntry, item: &RoomListItem, opts: &RoomListOptions) -> SectionKind {
-    if opts.unread_on_top && is_unread(e) {
+    if opts.unread_on_top
+        && (is_unread(e) || opts.kept_unread.as_deref() == Some(item.rid.as_str()))
+    {
         return SectionKind::Unread;
     }
     if opts.show_favorites && item.favorite {
@@ -977,6 +984,20 @@ mod tests {
             "",
         );
         assert_eq!(kinds(&secs), [SectionKind::Channels]);
+    }
+
+    #[test]
+    fn a_kept_room_stays_in_the_unread_section_once_read() {
+        let read = sub("k", "kept", RoomType::Channel);
+        let ws = ws_with(vec![(read, None)]);
+        let mut opts = RoomListOptions {
+            unread_on_top: true,
+            kept_unread: Some("k".into()),
+            ..Default::default()
+        };
+        assert_eq!(kinds(&compute(&ws, &opts, "")), [SectionKind::Unread]);
+        opts.unread_on_top = false;
+        assert_eq!(kinds(&compute(&ws, &opts, "")), [SectionKind::Channels]);
     }
 
     #[test]
