@@ -312,6 +312,12 @@ pub fn message_body<'a>(msg: &'a Message, ctx: &ViewCtx<'a>) -> Element<'a, Rend
 pub enum RenderMsg { OpenUrl(String), OpenRoom(String), OpenUser(String), ToggleSpoiler(String, usize), Copy(String) }
 ```
 
+Bodies are mouse-selectable: `message_body_with` wraps the body in a
+`rustket_ui::widget::selectable::scope` and paragraph-level text is
+`selectable::rich` (a drop-in for `rich_text`; use it instead of `rich_text`/`text`
+for body text so it joins the message's selection). Do not nest scopes. With a
+selection, right-click opens the scope's Copy menu instead of the message menu.
+
 Callers map `RenderMsg` into their own `Message` and turn it into effects
 (`OpenUrl`, `OpenRoom`, `OpenPanel(UserInfo(..))`, …). New variants may be
 added by the timeline agent; callers should keep a catch-all arm.

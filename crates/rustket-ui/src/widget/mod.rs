@@ -18,6 +18,7 @@ mod misc;
 mod overlay;
 mod popover;
 mod presence;
+pub mod selectable;
 mod sidebar;
 mod spinner;
 mod split;

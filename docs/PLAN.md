@@ -227,8 +227,11 @@ accessibility, performance (lazy timeline, image cache limits), packaging
 
 ## Known limitations / decisions
 
-- iced 0.14 `text`/`rich_text` is not mouse-selectable; until the custom selectable
-  widget lands (phase 13) copying works via message actions.
+- iced 0.14 `text`/`rich_text` is not mouse-selectable: message bodies use
+  `rustket_ui::widget::selectable` (drag, Shift+click, double/triple click, Ctrl+A,
+  Ctrl+C, right-click Copy). A selection spans the blocks of one message (each
+  message body is its own scope); selecting across messages, auto-scrolling while
+  dragging and selecting custom-emoji images are not supported.
 - Voice messages need audio capture without ALSA headers: planned through
   `pw-record`/`parecord` subprocesses (phase 8+), playback via external player.
 - Spell checking is out of scope for now.

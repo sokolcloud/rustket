@@ -1,5 +1,8 @@
 //! `md` AST (`@rocket.chat/message-parser`) → iced widgets. Paragraph-level
-//! content becomes `rich_text` spans; blocks become containers.
+//! content becomes spans of selectable text blocks
+//! (`rustket_ui::widget::selectable::rich`, a drop-in for `rich_text`); blocks
+//! become containers. The message body around them is a selection scope
+//! (`super::message_body_with`).
 
 use std::cell::Cell;
 
@@ -8,7 +11,7 @@ use iced::font::{Style as FontStyle, Weight};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::text::{Span, Wrapping};
 use iced::widget::{
-    Column, Row, button, column, container, image, rich_text, row, scrollable, space, span, text,
+    Column, Row, button, column, container, image, row, scrollable, space, span, text,
 };
 use iced::{Alignment, Color, Element, Font, Length, Padding, border};
 use rocketchat::RcDate;
@@ -24,6 +27,7 @@ use rustket_ui::theme::{
     DEFAULT_FONT, FONT_SEMIBOLD, MONOSPACE_FONT, RADIUS_SM, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY,
     TEXT_CAPTION, TEXT_EMOJI_LARGE, TEXT_HEADLINE, TEXT_SMALL, TEXT_SUBTITLE, TEXT_TITLE,
 };
+use rustket_ui::widget::selectable::rich;
 use rustket_ui::widget::{TooltipPosition, divider, tooltip};
 use serde_json::Value;
 
@@ -129,7 +133,7 @@ pub(super) fn blocks_for(root: &[Block], cx: &Cx<'_, '_>) -> El {
 /// One paragraph of inline nodes at `size`, as wide as its text (UIKit
 /// context items, which share a row).
 pub(super) fn inline_paragraph(value: &[Inline], cx: &Cx<'_, '_>, size: f32) -> El {
-    rich_text(inline_spans(value, cx))
+    rich(inline_spans(value, cx))
         .on_link_click(|m: RenderMsg| m)
         .size(size)
         .into()
@@ -495,10 +499,20 @@ fn block(b: &Block, cx: &Cx<'_, '_>, depth: usize) -> El {
 
 /// A paragraph of spans that wraps to the available width.
 fn paragraph(spans: Vec<Sp>, size: f32) -> El {
-    rich_text(spans)
+    rich(spans)
         .on_link_click(|m: RenderMsg| m)
         .size(size)
         .width(Length::Fill)
+        .into()
+}
+
+/// Unstyled selectable text (code and formula blocks): one line per source
+/// line, scrolled horizontally instead of wrapped.
+fn code_text(code: String) -> El {
+    rich::<RenderMsg, RenderMsg>(vec![span(code)])
+        .font(MONOSPACE_FONT)
+        .size(TEXT_SMALL)
+        .wrapping(Wrapping::None)
         .into()
 }
 
@@ -836,6 +850,8 @@ pub fn emoji_element<M: 'static>(piece: EmojiPiece, size: f32) -> Element<'stati
 
 fn big_emoji(list: &[Inline], cx: &Cx<'_, '_>) -> El {
     let mut r: Row<'static, RenderMsg> = row![].spacing(SPACE_1).align_y(Alignment::Center);
+    // Copied on one line: only the first block starts a new line.
+    let mut joiner = "\n";
     for i in list {
         match i {
             Inline::Emoji(e) => {
@@ -845,16 +861,28 @@ fn big_emoji(list: &[Inline], cx: &Cx<'_, '_>) -> El {
                     (_, _, Some(v)) => emoji_piece(&v.value, cx.rc),
                     _ => continue,
                 };
-                r = r.push(emoji_element(piece, TEXT_EMOJI_LARGE));
+                r = r.push(match piece {
+                    // Selectable like the rest of the body, on one line.
+                    EmojiPiece::Unicode(u) => {
+                        rich::<RenderMsg, RenderMsg>(vec![span(u).font(EMOJI_FONT)])
+                            .size(TEXT_EMOJI_LARGE)
+                            .line_height(iced::widget::text::LineHeight::Relative(1.2))
+                            .wrapping(Wrapping::None)
+                            .joiner(std::mem::take(&mut joiner))
+                            .into()
+                    }
+                    piece => emoji_element(piece, TEXT_EMOJI_LARGE),
+                });
             }
             Inline::PlainText { value } if value.trim().is_empty() => {}
             other => {
                 let mut spans = Vec::new();
                 push_inline(&mut spans, other, &Fmt::default(), cx);
                 r = r.push(
-                    rich_text(spans)
+                    rich(spans)
                         .on_link_click(|m: RenderMsg| m)
-                        .size(TEXT_EMOJI_LARGE),
+                        .size(TEXT_EMOJI_LARGE)
+                        .joiner(std::mem::take(&mut joiner)),
                 );
             }
         }
@@ -894,20 +922,12 @@ fn code_block(language: Option<&str>, lines: &[CodeLine]) -> El {
         ),
     ]
     .align_y(Alignment::Center);
-    let body = scrollable(
-        container(
-            text(code)
-                .font(MONOSPACE_FONT)
-                .size(TEXT_SMALL)
-                .wrapping(Wrapping::None),
-        )
-        .padding(Padding::ZERO.bottom(SPACE_2)),
-    )
-    .direction(Direction::Horizontal(
-        Scrollbar::new().width(4).scroller_width(4),
-    ))
-    .style(style::scrollable)
-    .width(Length::Fill);
+    let body = scrollable(container(code_text(code)).padding(Padding::ZERO.bottom(SPACE_2)))
+        .direction(Direction::Horizontal(
+            Scrollbar::new().width(4).scroller_width(4),
+        ))
+        .style(style::scrollable)
+        .width(Length::Fill);
     container(column![header, body].spacing(SPACE_1))
         .padding([SPACE_2, SPACE_3])
         .width(Length::Fill)
@@ -917,16 +937,11 @@ fn code_block(language: Option<&str>, lines: &[CodeLine]) -> El {
 
 fn katex_block(value: &str) -> El {
     container(
-        scrollable(
-            text(value.to_owned())
-                .font(MONOSPACE_FONT)
-                .size(TEXT_SMALL)
-                .wrapping(Wrapping::None),
-        )
-        .direction(Direction::Horizontal(
-            Scrollbar::new().width(4).scroller_width(4),
-        ))
-        .width(Length::Fill),
+        scrollable(code_text(value.to_owned()))
+            .direction(Direction::Horizontal(
+                Scrollbar::new().width(4).scroller_width(4),
+            ))
+            .width(Length::Fill),
     )
     .padding([SPACE_2, SPACE_3])
     .width(Length::Fill)
@@ -978,11 +993,16 @@ fn list(items: &[ListItem], cx: &Cx<'_, '_>, ordered: bool) -> El {
 }
 
 fn list_row(marker: String, spans: Vec<Sp>) -> El {
+    let item = rich(spans)
+        .on_link_click(|m: RenderMsg| m)
+        .size(TEXT_BODY)
+        .width(Length::Fill)
+        .copy_prefix(format!("{marker} "));
     row![
         container(text(marker).size(TEXT_BODY))
             .width(24)
             .align_x(Alignment::End),
-        paragraph(spans, TEXT_BODY)
+        item
     ]
     .spacing(SPACE_2)
     .into()
@@ -993,7 +1013,7 @@ fn table<'t>(
     rows: impl Iterator<Item = &'t [TableCell]>,
     cx: &Cx<'_, '_>,
 ) -> El {
-    let cell = |c: &TableCell, head: bool| -> El {
+    let cell = |(i, c): (usize, &TableCell), head: bool| -> El {
         let fmt = Fmt {
             bold: head,
             ..Fmt::default()
@@ -1008,11 +1028,12 @@ fn table<'t>(
             _ => Alignment::Start,
         };
         container(
-            rich_text(spans)
+            rich(spans)
                 .on_link_click(|m: RenderMsg| m)
                 .size(TEXT_SMALL)
                 .align_x(align)
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .joiner(if i == 0 { "\n" } else { "\t" }),
         )
         .padding([SPACE_1, SPACE_2])
         .width(Length::FillPortion(1))
@@ -1021,17 +1042,20 @@ fn table<'t>(
     let mut col = column![].spacing(0);
     if !header.is_empty() {
         col = col.push(
-            container(Row::with_children(header.iter().map(|c| cell(c, true)))).style(
-                |theme: &iced::Theme| container::Style {
-                    background: Some(rustket_ui::tokens(theme).surface_sunken.into()),
-                    ..container::Style::default()
-                },
-            ),
+            container(Row::with_children(
+                header.iter().enumerate().map(|c| cell(c, true)),
+            ))
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(rustket_ui::tokens(theme).surface_sunken.into()),
+                ..container::Style::default()
+            }),
         );
     }
     for r in rows {
         col = col.push(divider());
-        col = col.push(Row::with_children(r.iter().map(|c| cell(c, false))));
+        col = col.push(Row::with_children(
+            r.iter().enumerate().map(|c| cell(c, false)),
+        ));
     }
     container(col)
         .width(Length::Fill)
@@ -1495,6 +1519,126 @@ mod tests {
         );
         drop(ui);
         let _ = renderer.screenshot(iced::Size::new(1, 1), 1.0, iced::Color::WHITE);
+    }
+
+    /// What "select all, copy" gives for `el` (a message body with its scope).
+    fn copied(el: Element<'_, RenderMsg>) -> String {
+        use iced_runtime::user_interface::{Cache, UserInterface};
+        use rustket_ui::widget::selectable::{Copied, SelectAll};
+        let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(14.0),
+        ));
+        let mut ui = UserInterface::build(
+            el,
+            iced::Size::new(600.0, 4000.0),
+            Cache::default(),
+            &mut renderer,
+        );
+        ui.operate(&renderer, &mut SelectAll);
+        let mut c = Copied::default();
+        ui.operate(&renderer, &mut c);
+        assert_eq!(c.texts.len(), 1, "one scope per body");
+        c.texts.remove(0)
+    }
+
+    fn body(md: serde_json::Value, fx: &Fx) -> String {
+        rust_i18n::set_locale("en");
+        let msg = Message {
+            id: "m1".into(),
+            md: Some(root(md)),
+            ..Message::default()
+        };
+        copied(crate::room::render::message_body_with(&msg, &fx.rc()))
+    }
+
+    /// Copied text of every `md` node: markdown rendered to plain text, emoji
+    /// as unicode, mentions as `@name`, links as their label (like a browser
+    /// selection in the web client), list markers kept, table cells tabbed.
+    #[test]
+    fn copy_text_of_every_node() {
+        let fx = Fx::new();
+        let inline = body(
+            serde_json::json!([{"type": "PARAGRAPH", "value": [
+                plain("a "),
+                {"type": "BOLD", "value": [plain("b"), {"type": "ITALIC", "value": [plain("bi")]}]},
+                plain(" "),
+                {"type": "STRIKE", "value": [plain("s")]},
+                plain(" "),
+                {"type": "INLINE_CODE", "value": plain("x()")},
+                plain(" "),
+                {"type": "LINK", "value": {"src": plain("https://rust-lang.org"), "label": [plain("Rust")]}},
+                plain(" "),
+                {"type": "LINK", "value": {"src": plain("https://example.org/x"), "label": []}},
+                plain(" "),
+                {"type": "MENTION_USER", "value": plain("bob")},
+                plain(" "),
+                {"type": "MENTION_CHANNEL", "value": plain("general")},
+                plain(" "),
+                {"type": "EMOJI", "value": plain("smile"), "shortCode": "smile"},
+                {"type": "EMOJI", "value": null, "unicode": "🎉"},
+                plain(" "),
+                {"type": "SPOILER", "value": [plain("secret")]},
+                plain(" "),
+                {"type": "INLINE_KATEX", "value": "x^2"},
+                plain(" "),
+                {"type": "COLOR", "value": {"r": 255, "g": 0, "b": 0, "a": 255}},
+                plain(" "),
+                {"type": "IMAGE", "value": {"src": plain("https://i.example/p.png"), "label": plain("pic")}},
+                plain(" "),
+                {"type": "MYSTERY", "value": [plain("unknown")]},
+            ]}]),
+            &fx,
+        );
+        assert_eq!(
+            inline,
+            "a bbi s x() Rust https://example.org/x @bob #general 😄🎉 secret x^2 ■ #ff0000 🖼 pic unknown"
+        );
+        let blocks = body(
+            serde_json::json!([
+                {"type": "HEADING", "level": 1, "value": [plain("Title")]},
+                {"type": "PARAGRAPH", "value": [plain("para")]},
+                {"type": "CODE", "language": "rust", "value": [
+                    {"type": "CODE_LINE", "value": plain("fn main() {")},
+                    {"type": "CODE_LINE", "value": plain("}")}
+                ]},
+                {"type": "QUOTE", "value": [{"type": "PARAGRAPH", "value": [plain("quoted")]}]},
+                {"type": "UNORDERED_LIST", "value": [{"type": "LIST_ITEM", "value": [plain("u1")]}, {"type": "LIST_ITEM", "value": [plain("u2")]}]},
+                {"type": "ORDERED_LIST", "value": [{"type": "LIST_ITEM", "number": 3, "value": [plain("o3")]}]},
+                {"type": "TASKS", "value": [{"type": "TASK", "status": true, "value": [plain("done")]}]},
+                // Hidden behind its button: not copied.
+                {"type": "SPOILER_BLOCK", "value": [{"type": "PARAGRAPH", "value": [plain("hidden")]}]},
+                {"type": "LINE_BREAK", "value": null},
+                {"type": "HORIZONTAL_RULE"},
+                {"type": "KATEX", "value": "e^{i\\pi}"},
+                {"type": "TABLE", "value": {"header": [
+                        {"type": "TABLE_CELL", "value": [plain("H1")]},
+                        {"type": "TABLE_CELL", "value": [plain("H2")]}],
+                    "rows": [{"type": "TABLE_ROW", "value": [
+                        {"type": "TABLE_CELL", "value": [plain("c1")]},
+                        {"type": "TABLE_CELL", "value": [plain("c2")]}]}]}},
+                {"type": "BIG_EMOJI", "value": [
+                    {"type": "EMOJI", "value": null, "unicode": "🎉"},
+                    {"type": "EMOJI", "value": null, "unicode": "👍"}]},
+                {"type": "HOLOGRAM", "value": [plain("fallback")]},
+            ]),
+            &fx,
+        );
+        assert_eq!(
+            blocks,
+            "Title\npara\nfn main() {\n}\nquoted\n• u1\n• u2\n3. o3\ndone\ne^{i\\pi}\nH1\tH2\nc1\tc2\n🎉👍\nfallback"
+        );
+        // Messages without `md` and attachment text are selectable too.
+        let msg: Message = serde_json::from_value(serde_json::json!({
+            "_id": "m2", "rid": "r", "msg": "plain www.example.org\nnext line", "u": {"_id": "u"},
+            "attachments": [{"text": "*bold* and `code`", "title": "T"}]
+        }))
+        .unwrap();
+        let rc = fx.rc();
+        assert_eq!(
+            copied(crate::room::render::message_body_with(&msg, &rc)),
+            "plain www.example.org\nnext line\nbold and code"
+        );
     }
 
     #[test]

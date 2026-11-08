@@ -496,11 +496,28 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, iced::Renderer> for Context
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        if matches!(
+        let right_press = matches!(
             event,
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
-        ) && let Some(at) = cursor.position_over(layout.bounds())
-        {
+        );
+        if right_press {
+            // The underlay sees the right press first: a selection scope in
+            // it opens its own Copy menu and captures the press.
+            self.underlay.as_widget_mut().update(
+                &mut tree.children[0],
+                event,
+                layout,
+                cursor,
+                renderer,
+                clipboard,
+                shell,
+                viewport,
+            );
+            if shell.is_event_captured() {
+                return;
+            }
+        }
+        if right_press && let Some(at) = cursor.position_over(layout.bounds()) {
             let state = tree.state.downcast_mut::<ContextState>();
             state.open = true;
             state.at = at;
@@ -509,6 +526,9 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, iced::Renderer> for Context
             self.panel = None;
             shell.capture_event();
             shell.request_redraw();
+            return;
+        }
+        if right_press {
             return;
         }
         self.underlay.as_widget_mut().update(

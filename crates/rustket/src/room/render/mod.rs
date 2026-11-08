@@ -266,7 +266,10 @@ pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, 
     if let Some(n) = crate::e2e::view::plaintext_note(msg) {
         col = col.push(n);
     }
-    col.into()
+    // One text selection over the whole body (text, attachments, blocks).
+    rustket_ui::widget::selectable::scope(col)
+        .copy_label(rust_i18n::t!("room_render.copy"))
+        .into()
 }
 
 /// The `video_conf` block of a `videoconf` message (`crate::videoconf`).
@@ -396,3 +399,6 @@ pub fn message_key(msg: &Message) -> u64 {
     msg.replies.hash(&mut h);
     h.finish()
 }
+
+#[cfg(test)]
+mod selection_tests;
