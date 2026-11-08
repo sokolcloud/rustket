@@ -129,6 +129,7 @@ impl ServerState {
     /// [`Self::close_rooms`] first to stop the typing indicators.
     pub fn reset(&mut self) {
         self.generation += 1;
+        crate::room::upload::cancel_server(self.id.as_str());
         self.credentials = None;
         let _ = self.close_rooms();
         self.session = None;

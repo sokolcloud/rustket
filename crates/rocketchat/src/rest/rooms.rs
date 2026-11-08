@@ -90,11 +90,19 @@ impl RestClient {
 
     /// Mark a room (and its threads) as read.
     pub async fn subscriptions_read(&self, rid: &str) -> Result<()> {
-        self.post_ok(
-            "subscriptions.read",
-            &json!({ "rid": rid, "readThreads": true }),
-        )
-        .await
+        self.subscriptions_read_with(rid, true).await
+    }
+
+    /// Mark a room as read; `read_threads` also clears its unread threads
+    /// (`tunread`). The web client sends it only for the explicit "Mark as
+    /// read" actions, not for the automatic read mark of an open room.
+    pub async fn subscriptions_read_with(&self, rid: &str, read_threads: bool) -> Result<()> {
+        let body = if read_threads {
+            json!({ "rid": rid, "readThreads": true })
+        } else {
+            json!({ "rid": rid })
+        };
+        self.post_ok("subscriptions.read", &body).await
     }
 
     /// Mark as unread starting from `first_unread_message_id`, or the whole room.

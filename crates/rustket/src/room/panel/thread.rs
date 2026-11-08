@@ -77,6 +77,8 @@ pub struct Thread {
     reading: bool,
     /// Unread replies arrived while `chat.readThread` was in flight.
     read_again: bool,
+    /// The room is on screen: only then does the thread mark itself read.
+    visible: bool,
     /// Reply to scroll to and highlight once loaded (notification, search
     /// result); taken when the reveal is scheduled.
     focus: Option<String>,
@@ -131,6 +133,7 @@ impl Thread {
             follow_busy: false,
             reading: false,
             read_again: false,
+            visible: false,
             focus: None,
             selected: None,
             stamp: 0,
@@ -163,6 +166,31 @@ impl Thread {
     /// Highlights reply `mid` once it is loaded.
     pub fn set_focus(&mut self, mid: Option<String>) {
         self.focus = mid;
+    }
+
+    /// Whether the room (and so this thread) is on screen.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    /// Shows reply `mid` of this (loaded) thread: scrolls to it now, or
+    /// loads older pages until it is there.
+    pub fn focus_reply(&mut self, mid: &str, ctx: &mut UpdateCtx<'_>) -> Task<Msg> {
+        self.focus = Some(mid.to_owned());
+        let reveal = self.reveal_focus(ctx);
+        Task::batch([reveal, self.seek_focus(ctx)])
+    }
+
+    /// Files dropped onto the window while this thread is shown.
+    pub fn files_dropped(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        ctx: &mut UpdateCtx<'_>,
+    ) -> Action<Msg> {
+        Self::with_composer(
+            self.composer
+                .update(composer::Message::FilesDropped(paths), ctx),
+        )
     }
 
     /// Opens the thread timeline, restores the draft, loads the parent (if
@@ -253,10 +281,10 @@ impl Thread {
             .is_some_and(|l| l.contains(&self.tmid))
     }
 
-    /// `chat.readThread` when the thread has unread replies and the view is
-    /// at the bottom (the caller knows the window is focused).
+    /// `chat.readThread` when the thread has unread replies, is on screen
+    /// and the view is at the bottom.
     pub fn mark_read(&mut self, ctx: &UpdateCtx<'_>) -> Task<Msg> {
-        if !self.follow.at_bottom || !self.thread_unread(ctx.workspace, ctx.rid) {
+        if !self.visible || !self.follow.at_bottom || !self.thread_unread(ctx.workspace, ctx.rid) {
             return Task::none();
         }
         if self.reading {
@@ -397,6 +425,7 @@ impl Thread {
                 // reset: (re)load the newest replies.
                 tasks.push(self.ensure_loaded(ctx));
                 tasks.push(self.reveal_focus(ctx));
+                tasks.push(self.seek_focus(ctx));
                 Action::task(Task::batch(tasks))
             }
             Msg::Retry => {
@@ -526,6 +555,27 @@ impl Thread {
         }
         self.follow.follow_bottom();
         Task::batch([self.load_page(ctx), self.snap_to_bottom()])
+    }
+
+    /// The reply to reveal is not loaded yet: requests the next older page,
+    /// or forgets it when the whole thread is loaded (a reply that is not
+    /// there must not jump the view later).
+    fn seek_focus(&mut self, ctx: &mut UpdateCtx<'_>) -> Task<Msg> {
+        if self.focus.is_none() {
+            return Task::none();
+        }
+        let Some(p) = ctx.workspace.thread(&self.tmid).map(|t| &t.pagination) else {
+            return Task::none();
+        };
+        if !p.loaded || p.loading_before {
+            return Task::none();
+        }
+        if p.has_more_before && p.error.is_none() {
+            self.load_page(ctx)
+        } else {
+            self.focus = None;
+            Task::none()
+        }
     }
 
     /// Scrolls to the focused reply once it is loaded and highlights it for

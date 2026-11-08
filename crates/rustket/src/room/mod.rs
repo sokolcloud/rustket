@@ -137,6 +137,31 @@ fn newest_from_others(ws: &Workspace, rid: &str) -> Option<i64> {
         .map(|d| d.timestamp_millis())
 }
 
+/// Whether a read mark (without threads) clears anything: the room is
+/// unread, or only the alert is set without unread threads (the web's
+/// `attemptMarkAsRead` sends nothing otherwise).
+pub(crate) fn mark_clears(sub: &rocketchat::models::Subscription) -> bool {
+    sub.unread > 0 || (sub.alert && !sub.has_unread_threads())
+}
+
+/// Results for a room view that is gone (room switched or closed): uploads
+/// and replies of its composers still settle (see
+/// [`composer::orphan_result`]); anything else is dropped.
+pub fn orphan_result(m: Message, ws: &mut Workspace) -> Vec<Effect> {
+    match m {
+        // The room composer settles its text sends from the outbox when the
+        // room opens again; uploads report here.
+        Message::Composer(composer::Message::Upload(u)) => {
+            upload::orphan_result(u, ws).into_iter().collect()
+        }
+        Message::Panel(panel::Message::Body(
+            _,
+            panel::BodyMsg::Thread(panel::thread::Msg::Composer(composer::Message::Upload(u))),
+        )) => upload::orphan_result(u, ws).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn no_session() -> rocketchat::Error {
     rocketchat::Error::Unauthorized {
         message: Some("not connected".into()),
@@ -153,8 +178,11 @@ pub enum Effect {
     OpenRoom(String),
     /// Load the next older history page of this room.
     LoadOlder,
-    /// Mark this room as read now.
+    /// Mark this room as read (automatic: only while it is readable, see
+    /// [`RoomView::readable`]; unread threads stay).
     MarkRead,
+    /// The explicit "Mark as read" action: the room and its unread threads.
+    MarkAllRead,
     OpenPanel(panel::Kind),
     ClosePanel,
     /// Open a URL in the external browser (absolute http, https or mailto only;
@@ -247,6 +275,13 @@ impl<M> Action<M> {
         }
     }
 
+    pub fn effects(effects: Vec<Effect>) -> Self {
+        Self {
+            task: Task::none(),
+            effects,
+        }
+    }
+
     pub fn with(mut self, effect: Effect) -> Self {
         self.effects.push(effect);
         self
@@ -281,6 +316,9 @@ pub enum Message {
         Result<Vec<rocketchat::models::Message>, String>,
     ),
     MarkedRead(Res<()>),
+    /// Files dropped onto the window while this room is shown: to the open
+    /// thread's composer, else the room composer.
+    FilesDropped(Vec<std::path::PathBuf>),
     /// The message of a permalink was fetched.
     Focused(Res<Box<rocketchat::models::Message>>),
     /// Omnichannel callouts and dialogs (`crate::omnichannel::room`).
@@ -298,11 +336,30 @@ pub struct RoomView {
     /// Omnichannel callouts, quick actions and dialogs (inert for other rooms).
     pub omni: crate::omnichannel::room::OmniRoom,
     marking_read: bool,
+    /// A read mark was asked for while one was in flight: checked again
+    /// when it ends.
+    read_again: bool,
+    /// The explicit "Mark as read" waits for the request in flight.
+    read_all_again: bool,
+    /// The room was opened and not marked read yet (it was not readable):
+    /// marked once it is.
+    read_on_show: bool,
+    /// Shown on screen (focused window, its server active, the server view
+    /// without a page or dialog over it); set by the app.
+    visible: bool,
+    /// [`Self::readable`] at the last [`Self::set_visible`].
+    was_readable: bool,
     /// Newest message from others (`ts` ms) the user has seen as read (last
     /// read mark, or history loaded after the read mark of `open`): the
     /// automatic read mark only runs for messages newer than that, so an
     /// unread mark made elsewhere is not undone.
     marked_upto: Option<i64>,
+    /// `marked_upto` and `read_on_show` before the read mark in flight:
+    /// restored when it fails, so the mark is tried again.
+    mark_undo: Option<(Option<i64>, bool)>,
+    /// Timeline epoch at `open`: history loaded under it counts as seen by
+    /// the open's read mark, a reload after a timeline reset does not.
+    open_epoch: Option<(u64, u64)>,
     /// A `watch_room` call is in flight.
     watching: bool,
     /// Set after the first history page arrived.
@@ -323,7 +380,14 @@ impl RoomView {
             panel: panel::Panel::new(&rid),
             omni: crate::omnichannel::room::OmniRoom::new(&rid),
             marking_read: false,
+            read_again: false,
+            read_all_again: false,
+            read_on_show: false,
+            visible: false,
+            was_readable: false,
             marked_upto: None,
+            mark_undo: None,
+            open_epoch: ctx.workspace.timeline(&rid).map(|t| t.epoch()),
             watching: false,
             loaded: false,
         };
@@ -342,11 +406,9 @@ impl RoomView {
         let composer = view.composer.on_open(ctx).map(Message::Composer);
         action.task = Task::batch([action.task, composer.task]);
         action.effects.extend(composer.effects);
-        // A preview has no subscription to mark.
-        if !view.is_preview(ctx.workspace) {
-            let read = view.mark_read(ctx);
-            action.task = Task::batch([action.task, read]);
-        }
+        // Marked read once it is shown (`set_visible`) when there is
+        // anything to clear; a preview has no subscription to mark.
+        view.read_on_show = ctx.workspace.subscription(&rid).is_some_and(mark_clears);
         (view, action)
     }
 
@@ -378,19 +440,56 @@ impl RoomView {
         ws.subscription(&self.rid).is_none()
     }
 
-    /// Whether the automatic read mark (focused room) should run: the room
-    /// is unread and a message from someone else newer than the last read
-    /// mark arrived, or only the alert is set (replies in a followed thread,
-    /// which are not in the room timeline). An unread mark made elsewhere
-    /// (unread > 0, no newer message) is kept.
+    /// Whether the automatic read mark should run: the room is unread and a
+    /// message from someone else newer than the last read mark arrived, or
+    /// only the alert is set without unread threads. An unread mark made
+    /// elsewhere (unread > 0, no newer message) is kept, and so are unread
+    /// threads: the automatic mark leaves them (and with them the alert).
     pub fn wants_auto_read(&self, ws: &Workspace) -> bool {
         let Some(sub) = ws.subscription(&self.rid) else {
             return false;
         };
         if sub.unread == 0 {
-            return sub.alert;
+            return sub.alert && !sub.has_unread_threads();
         }
         newest_from_others(ws, &self.rid) > self.marked_upto
+    }
+
+    /// Whether the user can see the newest messages: the room is shown,
+    /// its timeline is at the bottom (not the frozen view while scrolled
+    /// up), not under the E2E cover and not covered by an expanded thread.
+    /// The automatic read mark only runs then (like the web's
+    /// `attemptMarkAsRead`).
+    pub fn readable(&self, ws: &Workspace) -> bool {
+        self.visible
+            && !self.is_preview(ws)
+            && self.timeline.at_bottom()
+            && !self.panel.expanded()
+            && crate::e2e::room::body_state(ws, &self.rid).is_none()
+    }
+
+    /// Shown on screen (see [`Self::set_visible`]).
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// The app tells the room whether it is on screen (after every update).
+    /// Becoming readable catches up on the read mark of the room (opened
+    /// while hidden, or messages arrived meanwhile); becoming visible on
+    /// the one of the open thread.
+    pub fn set_visible(&mut self, visible: bool, ctx: &mut UpdateCtx<'_>) -> Task<Message> {
+        let was_visible = std::mem::replace(&mut self.visible, visible);
+        self.panel.set_visible(visible);
+        let readable = self.readable(ctx.workspace);
+        let was_readable = std::mem::replace(&mut self.was_readable, readable);
+        let mut tasks = Vec::new();
+        if visible && !was_visible {
+            tasks.push(self.mark_thread_read(ctx));
+        }
+        if readable && !was_readable && (self.read_on_show || self.wants_auto_read(ctx.workspace)) {
+            tasks.push(self.mark_read(ctx));
+        }
+        Task::batch(tasks)
     }
 
     /// Opens panel `kind` and releases the body it replaces (a thread keeps
@@ -437,8 +536,12 @@ impl RoomView {
                 } else {
                     Task::none()
                 };
-                self.panel.focus_thread_reply(&m.id);
-                Action::task(task)
+                // The open thread scrolls to it now, a new one once loaded.
+                let reveal = self
+                    .panel
+                    .focus_thread_reply(&m.id, ctx)
+                    .map(Message::Panel);
+                Action::task(Task::batch([task, reveal]))
             }
             None => self
                 .timeline
@@ -519,18 +622,43 @@ impl RoomView {
         ))
     }
 
-    /// `subscriptions.read` (one request at a time).
+    /// The automatic `subscriptions.read` (unread threads stay): only while
+    /// the room is [`readable`](Self::readable), one request at a time; one
+    /// asked for while a request is in flight is checked again when it ends.
     pub fn mark_read(&mut self, ctx: &UpdateCtx<'_>) -> Task<Message> {
-        if self.marking_read {
+        if !self.readable(ctx.workspace) {
             return Task::none();
         }
+        if self.marking_read {
+            self.read_again = true;
+            return Task::none();
+        }
+        self.send_read(ctx, false)
+    }
+
+    /// The explicit "Mark as read": the room and its unread threads, also
+    /// while the room is not readable.
+    pub fn mark_all_read(&mut self, ctx: &UpdateCtx<'_>) -> Task<Message> {
+        if self.is_preview(ctx.workspace) {
+            return Task::none();
+        }
+        if self.marking_read {
+            self.read_all_again = true;
+            return Task::none();
+        }
+        self.send_read(ctx, true)
+    }
+
+    fn send_read(&mut self, ctx: &UpdateCtx<'_>, read_threads: bool) -> Task<Message> {
         self.marking_read = true;
+        self.mark_undo = Some((self.marked_upto, self.read_on_show));
+        self.read_on_show = false;
         self.marked_upto = self
             .marked_upto
             .max(newest_from_others(ctx.workspace, &self.rid));
         let rid = self.rid.clone();
         ctx.rest_task(
-            move |rest| async move { rest.subscriptions_read(&rid).await },
+            move |rest| async move { rest.subscriptions_read_with(&rid, read_threads).await },
             Message::MarkedRead,
         )
     }
@@ -565,8 +693,16 @@ impl RoomView {
                 // A page for an earlier timeline (reset, reopened) is dropped.
                 ctx.workspace
                     .finish_load_older_ticket(&self.rid, ticket, cursor, result);
-                // `open` marked the room read: the loaded history counts as seen.
-                if !self.is_preview(ctx.workspace) {
+                // The history of `open` counts as seen once the open's read
+                // mark was sent (or nothing was unread). A reload after a
+                // timeline reset may bring messages nobody has read yet: the
+                // automatic mark checks them (`App` on the timeline change,
+                // `set_visible` once shown).
+                if !self.read_on_show
+                    && self.open_epoch.is_some()
+                    && ctx.workspace.timeline(&self.rid).map(|t| t.epoch()) == self.open_epoch
+                    && !self.is_preview(ctx.workspace)
+                {
                     self.marked_upto = self
                         .marked_upto
                         .max(newest_from_others(ctx.workspace, &self.rid));
@@ -583,11 +719,39 @@ impl RoomView {
             }
             Message::MarkedRead(r) => {
                 self.marking_read = false;
+                let undo = self.mark_undo.take();
                 if let Err(e) = r {
                     tracing::debug!(rid = %self.rid, error = %e, "subscriptions.read failed");
+                    // Not marked: the next readable transition or subscription
+                    // change tries again (not right away, the network may be
+                    // down).
+                    if let Some((upto, on_show)) = undo {
+                        self.marked_upto = upto;
+                        self.read_on_show |= on_show;
+                    }
+                    if !self.read_all_again {
+                        self.read_again = false;
+                        return Action::none();
+                    }
+                }
+                if std::mem::take(&mut self.read_all_again) {
+                    self.read_again = false;
+                    return Action::task(self.send_read(ctx, true));
+                }
+                // A message that arrived meanwhile may have been counted after
+                // the read mark (gated like any automatic mark).
+                if std::mem::take(&mut self.read_again) && self.wants_auto_read(ctx.workspace) {
+                    return Action::task(self.mark_read(ctx));
                 }
                 Action::none()
             }
+            Message::FilesDropped(paths) => match self.panel.thread_files_dropped(&paths, ctx) {
+                Some(a) => a.map(Message::Panel),
+                None => self
+                    .composer
+                    .update(composer::Message::FilesDropped(paths), ctx)
+                    .map(Message::Composer),
+            },
             Message::Focused(r) => match r {
                 Ok(m) => self.show_message(*m, ctx),
                 Err(e) => Action::effect(Effect::Toast(
@@ -612,6 +776,7 @@ impl RoomView {
             match e {
                 Effect::LoadOlder => tasks.push(self.load_older(ctx).task),
                 Effect::MarkRead => tasks.push(self.mark_read(ctx)),
+                Effect::MarkAllRead => tasks.push(self.mark_all_read(ctx)),
                 // The open thread stays open (its summary was clicked again);
                 // only header buttons toggle panels.
                 Effect::OpenPanel(panel::Kind::Thread(t))
@@ -679,6 +844,18 @@ impl RoomView {
             && let Some(ls) = &sub.ls
         {
             self.marked_upto = self.marked_upto.max(Some(ls.timestamp_millis()));
+        }
+        // While nobody looks at the room, the unread divider follows the
+        // server's `ls` (like the web's `updateSubscription`): back in the
+        // room it sits above what arrived meanwhile.
+        if changes.rooms.contains(&self.rid)
+            && !self.visible
+            && ctx
+                .workspace
+                .subscription(&self.rid)
+                .is_some_and(|s| s.unread > 0 || s.alert)
+        {
+            ctx.workspace.refresh_unread_since(&self.rid);
         }
         // Joined after a preview the server refused to show: load the history.
         let history = if changes.rooms.contains(&self.rid)
@@ -933,6 +1110,189 @@ mod tests {
         );
     }
 
+    fn unread_sub(ws: &mut Workspace, unread: u64, tunread: Option<Vec<String>>) {
+        let mut sub = ws.subscription("R1").unwrap().clone();
+        sub.unread = unread;
+        sub.alert = unread > 0 || tunread.is_some();
+        sub.tunread = tunread;
+        ws.apply_subscription(rustket_core::Change::Updated, sub);
+    }
+
+    fn from_bob(id: &str, ms: i64) -> RcMessage {
+        let mut m = message(id, ms);
+        m.u = UserRef {
+            id: "bob".into(),
+            username: Some("bob".into()),
+            name: None,
+        };
+        m
+    }
+
+    /// Review: the room was marked read while it could not be seen (other
+    /// page, background server, scrolled up in the frozen view); the read
+    /// mark now waits until the room is readable, and one asked for while a
+    /// request is in flight is not dropped.
+    #[tokio::test]
+    async fn read_mark_waits_until_the_room_is_readable() {
+        let mut ws = workspace();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        unread_sub(ctx.workspace, 1, None);
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        ctx.workspace.apply_message(from_bob("a", 1_000_000));
+        assert!(!rv.marking_read, "opened hidden: not read");
+        let _ = rv.set_visible(false, &mut ctx);
+        assert!(!rv.marking_read);
+        // Shown while held at a jumped-to message: not yet.
+        let _ = rv
+            .timeline
+            .jump_to("a", RcDate::from_millis(1_000_000), &mut ctx);
+        assert!(!rv.timeline.at_bottom());
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read, "scrolled up");
+        // Back at the bottom: the open's read mark runs.
+        let a = rv
+            .timeline
+            .update(timeline::Message::JumpToLatest, &mut ctx);
+        let _ = rv.handle_effects(a.map(Message::Timeline), &mut ctx);
+        assert!(rv.marking_read && !rv.read_on_show);
+        // A new message while the request is in flight: read again after it.
+        ctx.workspace.apply_message(from_bob("b", 2_000_000));
+        unread_sub(ctx.workspace, 2, None);
+        assert!(rv.wants_auto_read(ctx.workspace));
+        let _ = rv.mark_read(&ctx);
+        assert!(rv.read_again);
+        let _ = rv.update(Message::MarkedRead(Ok(())), &mut ctx);
+        assert!(rv.marking_read, "the dropped mark was sent");
+        assert!(!rv.wants_auto_read(ctx.workspace));
+        let _ = rv.update(Message::MarkedRead(Ok(())), &mut ctx);
+        assert!(!rv.marking_read);
+        // Hidden again: new messages wait, and are read once it is shown.
+        let _ = rv.set_visible(false, &mut ctx);
+        ctx.workspace.apply_message(from_bob("c", 3_000_000));
+        unread_sub(ctx.workspace, 1, None);
+        let _ = rv.mark_read(&ctx);
+        assert!(!rv.marking_read);
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.marking_read, "read when shown again");
+    }
+
+    /// Review: the automatic read mark cleared unread threads
+    /// (`readThreads: true`) and, with `{rid}` only, an alert kept by unread
+    /// threads would be marked again and again.
+    #[test]
+    fn unread_threads_do_not_trigger_the_automatic_read() {
+        let mut ws = workspace();
+        unread_sub(&mut ws, 0, Some(vec!["P".into()]));
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (rv, _) = RoomView::open(&mut ctx);
+        assert!(!rv.wants_auto_read(ctx.workspace));
+        // An alert without unread threads is still read.
+        unread_sub(ctx.workspace, 0, None);
+        let mut sub = ctx.workspace.subscription("R1").unwrap().clone();
+        sub.alert = true;
+        ctx.workspace
+            .apply_subscription(rustket_core::Change::Updated, sub);
+        assert!(rv.wants_auto_read(ctx.workspace));
+    }
+
+    /// Review: the explicit "Mark as read" waits for an automatic mark in
+    /// flight instead of being dropped.
+    #[test]
+    fn explicit_mark_read_is_not_dropped() {
+        let mut ws = workspace();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        let _ = rv.mark_all_read(&ctx);
+        assert!(rv.marking_read, "explicit: also while hidden");
+        let _ = rv.handle_effects(Action::effect(Effect::MarkAllRead), &mut ctx);
+        assert!(rv.read_all_again);
+        let _ = rv.update(Message::MarkedRead(Ok(())), &mut ctx);
+        assert!(rv.marking_read && !rv.read_all_again);
+    }
+
+    /// Review: the unread divider stayed where it was when the room opened;
+    /// while the room is not looked at it follows the server's `ls`.
+    #[test]
+    fn unread_divider_follows_ls_while_hidden() {
+        let mut ws = workspace();
+        let mut sub = ws.subscription("R1").unwrap().clone();
+        sub.ls = RcDate::from_millis(1_000_000);
+        ws.apply_subscription(rustket_core::Change::Updated, sub);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        let since = |ws: &Workspace| ws.timeline("R1").unwrap().unread_since();
+        let read_at = |ws: &mut Workspace, ms: i64, unread: u64| {
+            let mut sub = ws.subscription("R1").unwrap().clone();
+            sub.ls = RcDate::from_millis(ms);
+            sub.unread = unread;
+            sub.alert = unread > 0;
+            ws.apply_subscription(rustket_core::Change::Updated, sub);
+            ws.take_changes()
+        };
+        let _ = rv.set_visible(true, &mut ctx);
+        // Looked at: the divider stays.
+        let ch = read_at(ctx.workspace, 2_000_000, 1);
+        let _ = rv.on_changes(&ch, &mut ctx);
+        assert_eq!(since(ctx.workspace), RcDate::from_millis(1_000_000));
+        // In the background it follows the last read mark.
+        let _ = rv.set_visible(false, &mut ctx);
+        let ch = read_at(ctx.workspace, 3_000_000, 2);
+        let _ = rv.on_changes(&ch, &mut ctx);
+        assert_eq!(since(ctx.workspace), RcDate::from_millis(3_000_000));
+        // A read room (unread 0) keeps the mark of what arrived meanwhile.
+        let ch = read_at(ctx.workspace, 4_000_000, 0);
+        let _ = rv.on_changes(&ch, &mut ctx);
+        assert_eq!(since(ctx.workspace), RcDate::from_millis(3_000_000));
+    }
+
     /// Review: clicking the summary of the open thread closed it.
     #[test]
     fn opening_the_open_thread_keeps_it() {
@@ -1116,5 +1476,138 @@ mod tests {
         let before = crate::tree_probe::states(&tree, ed);
         tree.diff(view.as_widget());
         assert_eq!(crate::tree_probe::states(&tree, ed), before[..1]);
+    }
+
+    /// Review: a history reload that arrived while the room was hidden
+    /// counted the messages that came in meanwhile as seen, so the room was
+    /// not marked read when shown again.
+    #[test]
+    fn reload_while_hidden_is_marked_when_shown() {
+        let mut ws = workspace();
+        // Unread when opened: the open marks it once shown.
+        unread_sub(&mut ws, 1, None);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.marking_read);
+        let _ = rv.update(Message::MarkedRead(Ok(())), &mut ctx);
+        // Hidden (Settings page, other server, unfocused window).
+        let _ = rv.set_visible(false, &mut ctx);
+        ctx.workspace.apply_message(from_bob("b", 2_000_000));
+        unread_sub(ctx.workspace, 1, None);
+        // The room timeline is reset and reloaded (RoomReset / resync) while hidden.
+        ctx.workspace.reset_room_timelines("R1");
+        let (c, t) = ctx.workspace.begin_load_older_ticket("R1").unwrap();
+        let _ = rv.update(
+            Message::HistoryPage(c, t, Ok(vec![from_bob("b", 2_000_000)])),
+            &mut ctx,
+        );
+        let _ = rv.set_visible(true, &mut ctx);
+        assert_eq!(ctx.workspace.subscription("R1").unwrap().unread, 1);
+        assert!(
+            rv.marking_read,
+            "shown again with unread=1 but not marked read"
+        );
+    }
+
+    /// Review: a failed automatic mark was never retried: the room stayed
+    /// unread on the server while it was read on screen.
+    #[test]
+    fn failed_mark_is_retried() {
+        let mut ws = workspace();
+        // Unread when opened: the open marks it once shown.
+        unread_sub(&mut ws, 1, None);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        let _ = rv.set_visible(true, &mut ctx);
+        let _ = rv.update(Message::MarkedRead(Ok(())), &mut ctx);
+        ctx.workspace.apply_message(from_bob("b", 2_000_000));
+        unread_sub(ctx.workspace, 1, None);
+        assert!(rv.wants_auto_read(ctx.workspace));
+        let _ = rv.mark_read(&ctx);
+        assert!(rv.marking_read);
+        let _ = rv.update(
+            Message::MarkedRead(Err(Failure::from(no_session()))),
+            &mut ctx,
+        );
+        // Server still says unread=1; the next check does not mark again.
+        let _ = rv.set_visible(false, &mut ctx);
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.marking_read, "failed mark not retried (unread stays 1)");
+    }
+
+    /// Review: same while the room is shown and readable: a reset + reload
+    /// swallowed the read mark of the messages it brought.
+    #[test]
+    fn reload_while_readable_is_marked() {
+        let mut ws = workspace();
+        // Unread when opened: the open marks it once shown.
+        unread_sub(&mut ws, 1, None);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        let _ = rv.set_visible(true, &mut ctx);
+        let _ = rv.update(Message::MarkedRead(Ok(())), &mut ctx);
+        // Resync: the timeline is reset, the subscription says unread=1.
+        ctx.workspace.reset_room_timelines("R1");
+        unread_sub(ctx.workspace, 1, None);
+        let ch = ctx.workspace.take_changes();
+        let _ = rv.on_changes(&ch, &mut ctx);
+        if rv.wants_auto_read(ctx.workspace) {
+            let _ = rv.mark_read(&ctx);
+        }
+        assert!(!rv.marking_read, "nothing loaded yet");
+        let (c, t) = ctx.workspace.begin_load_older_ticket("R1").unwrap();
+        let _ = rv.update(
+            Message::HistoryPage(c, t, Ok(vec![from_bob("b", 2_000_000)])),
+            &mut ctx,
+        );
+        let ch = ctx.workspace.take_changes();
+        let _ = rv.on_changes(&ch, &mut ctx);
+        // What App::after_update does next:
+        if rv.wants_auto_read(ctx.workspace) {
+            let _ = rv.mark_read(&ctx);
+        }
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.readable(ctx.workspace));
+        assert!(
+            rv.marking_read,
+            "readable room with unread=1 after reload is never marked"
+        );
     }
 }

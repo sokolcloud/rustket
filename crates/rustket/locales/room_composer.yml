@@ -224,6 +224,9 @@ room_composer.not_delivered:
 room_composer.commands_unavailable:
   en: "The list of slash commands could not be loaded. Try again in a moment."
   ru: "Не удалось загрузить список команд. Повторите попытку чуть позже."
+room_composer.no_such_command:
+  en: "No such command: /%{command}"
+  ru: "Нет такой команды: /%{command}"
 room_composer.delete_failed:
   en: "Could not delete the message"
   ru: "Не удалось удалить сообщение"

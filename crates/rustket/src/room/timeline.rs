@@ -97,14 +97,21 @@ impl Timeline {
         }
     }
 
+    /// Whether a read mark would clear anything (unread threads stay).
     fn unread(ctx: &UpdateCtx<'_>) -> bool {
         ctx.workspace
             .subscription(ctx.rid)
-            .is_some_and(|s| s.unread > 0 || s.alert)
+            .is_some_and(super::mark_clears)
     }
 
     fn snap_to_bottom(&self) -> Task<Message> {
         iced::widget::operation::snap_to(self.scroll_id.clone(), RelativeOffset::START)
+    }
+
+    /// The view follows the newest messages (not scrolled up, frozen or
+    /// held at a jumped-to message).
+    pub fn at_bottom(&self) -> bool {
+        self.follow.at_bottom
     }
 
     /// The jumped-to message, if one is highlighted.
@@ -290,7 +297,7 @@ impl Timeline {
         Action::none()
     }
 
-    /// Window focus is handled by the app (`mark_active_room_read`), which
+    /// Window focus is handled by the app (`RoomView::set_visible`), which
     /// knows which server and room are visible.
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::none()

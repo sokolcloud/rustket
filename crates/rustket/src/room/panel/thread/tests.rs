@@ -417,17 +417,22 @@ fn closing_the_panel_releases_the_thread() {
 }
 
 #[test]
-fn mark_read_needs_unread_and_bottom() {
+fn mark_read_needs_unread_visible_and_bottom() {
     let mut env = Env::new(None);
     env.ws.apply_message(parent(1));
     let mut t = Thread::new("R1", "P");
     let _ = t.activate(&mut env.ctx());
+    t.set_visible(true);
     let _ = t.mark_read(&env.ctx());
     assert!(!t.reading, "nothing unread");
     let mut sub = env.ws.subscription("R1").unwrap().clone();
     sub.tunread = Some(vec!["P".into()]);
     env.ws
         .apply_subscription(rustket_core::workspace::Change::Updated, sub);
+    t.set_visible(false);
+    let _ = t.mark_read(&env.ctx());
+    assert!(!t.reading, "not on screen");
+    t.set_visible(true);
     t.follow.at_bottom = false;
     let _ = t.mark_read(&env.ctx());
     assert!(!t.reading, "scrolled up");
@@ -444,6 +449,7 @@ fn reply_arriving_during_read_is_read_again() {
     env.ws.apply_message(parent(1));
     let mut t = Thread::new("R1", "P");
     let _ = t.activate(&mut env.ctx());
+    t.set_visible(true);
     let mut sub = env.ws.subscription("R1").unwrap().clone();
     sub.tunread = Some(vec!["P".into()]);
     env.ws
@@ -826,4 +832,59 @@ fn jump_button_keeps_the_thread_scrollable_and_editor() {
         assert_kept(&mut tree, &view, s, step);
         assert_eq!(crate::tree_probe::states(&tree, ed), before, "{step}");
     }
+}
+
+/// Review: showing a reply of the thread that is already open did not
+/// scroll to it, and the leftover focus jumped the view later.
+#[tokio::test]
+async fn reply_of_the_open_thread_is_revealed_right_away() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(4));
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let first = t.ticket.unwrap();
+    let replies = vec![
+        message("r3", "bob", T0 + 4, Some("P")),
+        message("r2", "bob", T0 + 3, Some("P")),
+    ];
+    let _ = t.update(Msg::Page(first, Ok(page(replies, 0, 4))), &mut env.ctx());
+    assert!(t.follow.at_bottom && t.selected.is_none());
+    let _ = t.focus_reply("r2", &mut env.ctx());
+    assert_eq!(t.selected.as_ref().map(|(m, _)| m.as_str()), Some("r2"));
+    assert!(t.focus.is_none() && !t.follow.at_bottom);
+    // Not loaded yet: older pages are requested until it is there.
+    let _ = t.focus_reply("r0", &mut env.ctx());
+    let second = t.ticket.unwrap();
+    assert_ne!(first, second, "an older page is requested");
+    let older = vec![message("r1", "bob", T0 + 2, Some("P"))];
+    let _ = t.update(Msg::Page(second, Ok(page(older, 2, 4))), &mut env.ctx());
+    let third = t.ticket.unwrap();
+    assert_ne!(second, third, "still not there: the next page");
+    let older = vec![message("r0", "bob", T0 + 1, Some("P"))];
+    let _ = t.update(Msg::Page(third, Ok(page(older, 3, 4))), &mut env.ctx());
+    assert_eq!(t.selected.as_ref().map(|(m, _)| m.as_str()), Some("r0"));
+    // A reply that is not in the (fully loaded) thread is forgotten.
+    let _ = t.focus_reply("gone", &mut env.ctx());
+    assert!(t.focus.is_none());
+}
+
+/// Review: the first page (also reloaded after a reset) marked the thread
+/// read while the room was not on screen.
+#[test]
+fn hidden_thread_is_not_read_by_its_first_page() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    let mut sub = env.ws.subscription("R1").unwrap().clone();
+    sub.tunread = Some(vec!["P".into()]);
+    env.ws
+        .apply_subscription(rustket_core::workspace::Change::Updated, sub);
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let first = t.ticket.unwrap();
+    let replies = vec![message("r1", "bob", T0 + 1, Some("P"))];
+    let _ = t.update(Msg::Page(first, Ok(page(replies, 0, 1))), &mut env.ctx());
+    assert!(!t.reading, "hidden: not read");
+    t.set_visible(true);
+    let _ = t.mark_read(&env.ctx());
+    assert!(t.reading, "read once shown");
 }

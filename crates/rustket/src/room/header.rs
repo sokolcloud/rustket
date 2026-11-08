@@ -382,7 +382,7 @@ impl Header {
             }
             Message::Room(RoomAction::MarkRead) => {
                 self.menu_open = false;
-                Action::effect(Effect::MarkRead)
+                Action::effect(Effect::MarkAllRead)
             }
             Message::Room(a) => {
                 self.menu_open = false;

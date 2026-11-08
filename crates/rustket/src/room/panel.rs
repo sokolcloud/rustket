@@ -27,6 +27,7 @@ use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_4, TEXT_SUBTITLE};
 use rustket_ui::widget::{divider, ellipsis, icon_button};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{Action, Effect, UpdateCtx, ViewCtx};
 use crate::session::SessionHandle;
@@ -210,8 +211,6 @@ pub struct Panel {
     back: Option<Kind>,
     body: Option<Body>,
     generation: u64,
-    /// Last generation handed out (generations are never reused).
-    counter: u64,
     /// Generation waiting for its activation.
     pending: Option<u64>,
     stash: Option<Stash>,
@@ -220,7 +219,14 @@ pub struct Panel {
     retired: Vec<Body>,
     /// The thread view was expanded last (new threads open the same way).
     thread_expanded: bool,
+    /// The room is on screen (a thread reads itself only then).
+    visible: bool,
 }
+
+/// Panel generations are unique across all panels of the process, so a
+/// result of a panel that is gone (room view closed and reopened) never
+/// matches a body opened later.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn wrap<M: Send + 'static>(generation: u64, a: Action<M>, f: fn(M) -> BodyMsg) -> Action<Message> {
     a.map(move |m| Message::Body(generation, f(m)))
@@ -234,11 +240,20 @@ impl Panel {
             back: None,
             body: None,
             generation: 0,
-            counter: 0,
             pending: None,
             stash: None,
             retired: Vec::new(),
             thread_expanded: false,
+            visible: false,
+        }
+    }
+
+    /// Whether the room is on screen; the open thread marks itself read
+    /// only then.
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+        if let Some(Body::Thread(t)) = &mut self.body {
+            t.set_visible(visible);
         }
     }
 
@@ -295,10 +310,41 @@ impl Panel {
         }
     }
 
-    /// Highlights reply `mid` in the open thread once it is loaded.
-    pub fn focus_thread_reply(&mut self, mid: &str) {
-        if let Some(Body::Thread(t)) = &mut self.body {
-            t.set_focus(Some(mid.to_owned()));
+    /// Scrolls to and highlights reply `mid` in the open thread: right away
+    /// when the thread is loaded, else once its pages arrive.
+    pub fn focus_thread_reply(&mut self, mid: &str, ctx: &mut UpdateCtx<'_>) -> Task<Message> {
+        let g = self.generation;
+        match &mut self.body {
+            // Opened just now: its first page reveals the reply.
+            Some(Body::Thread(t)) if self.pending.is_some() => {
+                t.set_focus(Some(mid.to_owned()));
+                Task::none()
+            }
+            Some(Body::Thread(t)) => t
+                .focus_reply(mid, ctx)
+                .map(move |m| Message::Body(g, BodyMsg::Thread(m))),
+            _ => Task::none(),
+        }
+    }
+
+    /// Hands dropped files to the open thread's composer; `None` when no
+    /// thread is shown.
+    pub fn thread_files_dropped(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        ctx: &mut UpdateCtx<'_>,
+    ) -> Option<Action<Message>> {
+        if self.pending.is_some() {
+            return None;
+        }
+        let g = self.generation;
+        match &mut self.body {
+            Some(Body::Thread(t)) => Some(wrap(
+                g,
+                t.files_dropped(paths.to_vec(), ctx),
+                BodyMsg::Thread,
+            )),
+            _ => None,
         }
     }
 
@@ -396,11 +442,11 @@ impl Panel {
         let mut body = Body::new(&kind, &self.rid);
         if let Body::Thread(t) = &mut body {
             t.set_expanded(self.thread_expanded);
+            t.set_visible(self.visible);
         }
         self.body = Some(body);
         self.open = Some(kind);
-        self.counter += 1;
-        self.generation = self.counter;
+        self.generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
         self.pending = Some(self.generation);
     }
 
@@ -497,7 +543,7 @@ impl Panel {
             }
             Message::Body(g, m) => {
                 if g == self.generation {
-                    let a = Self::update_body(self.body.as_mut(), g, m, ctx);
+                    let a = Self::update_body(self.body.as_mut(), g, m, &self.rid, ctx);
                     if let Some(Body::Thread(t)) = &self.body {
                         self.thread_expanded = t.expanded();
                     }
@@ -506,9 +552,9 @@ impl Panel {
                 // Results for the stashed panel keep it up to date.
                 match self.stash.as_mut() {
                     Some(st) if st.generation == g => {
-                        Self::update_body(Some(&mut st.body), g, m, ctx)
+                        Self::update_body(Some(&mut st.body), g, m, &self.rid, ctx)
                     }
-                    _ => Action::none(),
+                    _ => Self::update_body(None, g, m, &self.rid, ctx),
                 }
             }
         }
@@ -537,6 +583,7 @@ impl Panel {
         body: Option<&mut Body>,
         g: u64,
         m: BodyMsg,
+        rid: &str,
         ctx: &mut UpdateCtx<'_>,
     ) -> Action<Message> {
         match (body, m) {
@@ -564,6 +611,11 @@ impl Panel {
             }
             (Some(Body::Team(b)), BodyMsg::Team(m)) => wrap(g, b.update(m, ctx), BodyMsg::Team),
             (Some(Body::Omni(b)), BodyMsg::Omni(m)) => wrap(g, b.update(m, ctx), BodyMsg::Omni),
+            // Sends and uploads of a thread view that is gone (closed panel,
+            // closed room view) still settle: failed reply, upload result.
+            (_, BodyMsg::Thread(thread::Msg::Composer(c))) => Action::effects(
+                crate::room::composer::orphan_result(c, ctx.server_id, rid, ctx.workspace),
+            ),
             _ => Action::none(),
         }
     }

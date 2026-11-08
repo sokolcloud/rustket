@@ -4,10 +4,10 @@
 //! transfers with progress and cancel (`rooms.media` + `rooms.mediaConfirm`).
 //! Strings: `locales/room_composer.yml` (`room_composer.upload.*`).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -90,30 +90,122 @@ impl Dialog {
     }
 }
 
-/// A running upload.
+/// A running upload (a snapshot of the registry entry).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transfer {
     pub id: u64,
     pub name: String,
     pub sent: u64,
     pub total: u64,
+}
+
+struct Running {
+    server: String,
+    rid: String,
+    tmid: Option<String>,
+    transfer: Transfer,
     handle: iced::task::Handle,
 }
 
-impl std::fmt::Debug for Transfer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Transfer")
-            .field("id", &self.id)
-            .field("name", &self.name)
-            .field("sent", &self.sent)
-            .field("total", &self.total)
-            .finish()
+/// Running uploads of every composer by transfer id. Like the text outbox
+/// they outlive the room and thread views: switching rooms does not cancel
+/// an upload, a reopened composer shows its progress again, and a result
+/// that arrives while the view is gone is reported by
+/// [`orphan_result`]. Entries are removed by the upload task itself.
+static RUNNING: LazyLock<Mutex<BTreeMap<u64, Running>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+fn running() -> std::sync::MutexGuard<'static, BTreeMap<u64, Running>> {
+    RUNNING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The running uploads of a composer (server, room, thread).
+pub fn transfers(server: &str, rid: &str, tmid: Option<&str>) -> Vec<Transfer> {
+    running()
+        .values()
+        .filter(|r| r.server == server && r.rid == rid && r.tmid.as_deref() == tmid)
+        .map(|r| r.transfer.clone())
+        .collect()
+}
+
+/// Adds a running upload. Its handle is not aborted when the composer goes
+/// away: only Cancel and [`cancel_server`] stop an upload.
+fn register(
+    server: &str,
+    rid: &str,
+    tmid: Option<&str>,
+    transfer: Transfer,
+    handle: iced::task::Handle,
+) {
+    running().insert(
+        transfer.id,
+        Running {
+            server: server.to_owned(),
+            rid: rid.to_owned(),
+            tmid: tmid.map(str::to_owned),
+            transfer,
+            handle,
+        },
+    );
+}
+
+fn set_progress(id: u64, sent: u64, total: u64) {
+    if let Some(r) = running().get_mut(&id) {
+        r.transfer.sent = sent;
+        r.transfer.total = total;
+    }
+}
+
+/// Aborts every running upload of `server` (sign-out, server removed): an
+/// upload must not keep posting with the credentials of a session that is
+/// gone, and its result would be discarded anyway.
+pub fn cancel_server(server: &str) {
+    running().retain(|_, r| {
+        if r.server == server {
+            r.handle.abort();
+        }
+        r.server != server
+    });
+}
+
+/// Removes a finished or cancelled upload; its file name.
+fn finish(id: u64) -> Option<String> {
+    running().remove(&id).map(|r| r.transfer.name)
+}
+
+/// The outcome of an upload whose composer is gone (room switched, thread
+/// closed): the message is applied, a failure becomes a toast instead of
+/// getting lost.
+pub fn orphan_result(msg: Message, ws: &mut rustket_core::Workspace) -> Option<Effect> {
+    match msg {
+        Message::Done(_, name, r) => done_effect(name, r, ws),
+        _ => None,
+    }
+}
+
+fn done_effect(
+    name: String,
+    r: Res<Box<rocketchat::models::Message>>,
+    ws: &mut rustket_core::Workspace,
+) -> Option<Effect> {
+    match r {
+        Ok(m) => {
+            ws.apply_message(*m);
+            None
+        }
+        Err(e) => Some(Effect::Toast(
+            BannerKind::Error,
+            t!("room_composer.upload.failed", name = name).into_owned(),
+            e.user_text(),
+        )),
     }
 }
 
 #[derive(Debug, Default)]
 pub struct Uploads {
     pub dialog: Option<Dialog>,
-    pub transfers: Vec<Transfer>,
 }
 
 /// Transfer ids are unique per process: a transfer of a closed (and reopened)
@@ -139,8 +231,10 @@ pub enum Message {
     Skip,
     /// Close the dialog, dropping every queued file.
     Close,
+    /// Progress of a transfer (the registry is updated by the upload).
     Progress(u64, u64, u64),
-    Done(u64, Res<Box<rocketchat::models::Message>>),
+    /// A transfer finished (id, file name, result).
+    Done(u64, String, Res<Box<rocketchat::models::Message>>),
     Cancel(u64),
 }
 
@@ -284,59 +378,49 @@ impl Uploads {
                     e2e,
                 )
                 .abortable();
-                // Closing the room drops the composer and with it the upload.
-                self.transfers.push(Transfer {
-                    id,
-                    name,
-                    sent: 0,
-                    total: file.size,
-                    handle: handle.abort_on_drop(),
-                });
+                // The task runs only once this update returns: registered
+                // before it can finish (it removes itself).
+                register(
+                    ctx.server_id.as_str(),
+                    ctx.rid,
+                    tmid,
+                    Transfer {
+                        id,
+                        name,
+                        sent: 0,
+                        total: file.size,
+                    },
+                    handle,
+                );
                 Action::task(task)
             }
-            Message::Progress(id, sent, total) => {
-                if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
-                    t.sent = sent;
-                    t.total = total;
-                }
-                Action::none()
-            }
-            Message::Done(id, result) => {
-                let name = self
-                    .transfers
-                    .iter()
-                    .find(|t| t.id == id)
-                    .map(|t| t.name.clone())
-                    .unwrap_or_default();
-                self.transfers.retain(|t| t.id != id);
-                match result {
-                    Ok(m) => {
-                        ctx.workspace.apply_message(*m);
-                        Action::none()
-                    }
-                    Err(e) => Action::effect(Effect::Toast(
-                        BannerKind::Error,
-                        t!("room_composer.upload.failed", name = name).into_owned(),
-                        e.user_text(),
-                    )),
-                }
-            }
+            // Only redraws: the upload keeps the registry up to date.
+            Message::Progress(..) => Action::none(),
+            Message::Done(_, name, result) => match done_effect(name, result, ctx.workspace) {
+                Some(e) => Action::effect(e),
+                None => Action::none(),
+            },
             Message::Cancel(id) => {
-                if let Some(t) = self.transfers.iter().find(|t| t.id == id) {
-                    t.handle.abort();
+                if let Some(r) = running().remove(&id) {
+                    r.handle.abort();
                 }
-                self.transfers.retain(|t| t.id != id);
                 Action::none()
             }
         }
     }
 
-    /// Progress rows of the running uploads.
-    pub fn transfers_view<'a>(&'a self) -> Option<Element<'a, Message>> {
-        if self.transfers.is_empty() {
+    /// Progress rows of the running uploads of this composer.
+    pub fn transfers_view<'a>(
+        &self,
+        server: &str,
+        rid: &str,
+        tmid: Option<&str>,
+    ) -> Option<Element<'a, Message>> {
+        let transfers = transfers(server, rid, tmid);
+        if transfers.is_empty() {
             return None;
         }
-        let rows = self.transfers.iter().map(|t| {
+        let rows = transfers.into_iter().map(|t| {
             let pct = if t.total == 0 {
                 0.0
             } else {
@@ -344,7 +428,7 @@ impl Uploads {
             };
             row![
                 icon(Icon::Upload).size(14.0).style(style::text_secondary),
-                text(t.name.as_str())
+                text(t.name)
                     .size(TEXT_CAPTION)
                     .width(Length::FillPortion(2))
                     .wrapping(text::Wrapping::None),
@@ -614,6 +698,7 @@ fn start(
     let progress: ProgressFn = Arc::new(move |sent, total| {
         let pct = (sent * 100).checked_div(total).unwrap_or(100);
         if last.swap(pct, Ordering::Relaxed) != pct {
+            set_progress(id, sent, total);
             let _ = tx.unbounded_send((sent, total));
         }
     });
@@ -660,8 +745,11 @@ fn start(
     };
     let progress_stream = rx.map(move |(s, t)| Message::Progress(id, s, t));
     let done = futures::stream::once(async move {
-        Message::Done(id, upload.await.map(Box::new).map_err(Failure::from))
+        let r = upload.await.map(Box::new).map_err(Failure::from);
+        let name = finish(id).unwrap_or_default();
+        Message::Done(id, name, r)
     });
+
     Task::stream(futures::stream::select(progress_stream, done))
 }
 
@@ -769,6 +857,132 @@ mod tests {
             s.set_value(*k, v.clone());
         }
         s
+    }
+
+    /// Review: switching rooms dropped the composer and aborted its running
+    /// uploads without a word. Uploads now live in the registry: they keep
+    /// running, a new composer of the room shows them, and the outcome of
+    /// one whose composer is gone is reported.
+    #[test]
+    fn uploads_outlive_the_composer() {
+        rust_i18n::set_locale("en");
+        let (_task, handle) =
+            Task::<Message>::future(futures::future::pending::<Message>()).abortable();
+        let watch = handle.clone();
+        let id = NEXT_TRANSFER.fetch_add(1, Ordering::Relaxed);
+        let composer = Uploads::default();
+        register(
+            "srv-outlive",
+            "R1",
+            None,
+            Transfer {
+                id,
+                name: "video.mp4".into(),
+                sent: 0,
+                total: 300,
+            },
+            handle,
+        );
+        drop(composer);
+        assert!(!watch.is_aborted(), "the room switch does not cancel it");
+        // Another server's sign-out leaves it alone.
+        cancel_server("srv-outlive-other");
+        assert!(!watch.is_aborted());
+        set_progress(id, 150, 300);
+        let shown = transfers("srv-outlive", "R1", None);
+        assert_eq!(shown.len(), 1);
+        assert_eq!((shown[0].sent, shown[0].total), (150, 300));
+        assert!(transfers("srv-outlive", "R1", Some("T1")).is_empty());
+        assert!(transfers("srv-outlive", "R2", None).is_empty());
+        assert!(
+            Uploads::default()
+                .transfers_view("srv-outlive", "R1", None)
+                .is_some()
+        );
+        // The task removes its entry; the result reaches the app without
+        // a composer and a failure becomes a toast.
+        assert_eq!(finish(id).as_deref(), Some("video.mp4"));
+        assert!(transfers("srv-outlive", "R1", None).is_empty());
+        let mut ws = rustket_core::Workspace::new();
+        let failed = Message::Done(
+            id,
+            "video.mp4".into(),
+            Err(Failure::from(rocketchat::Error::Unauthorized {
+                message: None,
+                code: None,
+            })),
+        );
+        match orphan_result(failed, &mut ws) {
+            Some(Effect::Toast(BannerKind::Error, title, _)) => {
+                assert!(title.contains("video.mp4"));
+            }
+            other => panic!("expected a toast, got {other:?}"),
+        }
+        // Cancel aborts.
+        let (_task, handle) =
+            Task::<Message>::future(futures::future::pending::<Message>()).abortable();
+        let watch = handle.clone();
+        let id = NEXT_TRANSFER.fetch_add(1, Ordering::Relaxed);
+        register(
+            "srv-outlive",
+            "R1",
+            None,
+            Transfer {
+                id,
+                name: "b".into(),
+                sent: 0,
+                total: 1,
+            },
+            handle,
+        );
+        let mut env_ws = rustket_core::Workspace::new();
+        let sid = rustket_core::ServerId("srv-outlive".into());
+        let url = rocketchat::ServerUrl::parse("http://chat.test").unwrap();
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut env_ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let _ = Uploads::default().update(Message::Cancel(id), &mut ctx, None);
+        assert!(watch.is_aborted());
+        assert!(transfers("srv-outlive", "R1", None).is_empty());
+    }
+
+    /// Review: running uploads kept streaming (and posting) after sign-out
+    /// or server removal; the session reset now aborts them.
+    #[test]
+    fn sign_out_aborts_the_servers_uploads() {
+        let mut watches = Vec::new();
+        for (server, rid) in [
+            ("srv-signout", "R1"),
+            ("srv-signout", "R2"),
+            ("srv-keep", "R1"),
+        ] {
+            let (_task, handle) =
+                Task::<Message>::future(futures::future::pending::<Message>()).abortable();
+            watches.push(handle.clone());
+            let id = NEXT_TRANSFER.fetch_add(1, Ordering::Relaxed);
+            let transfer = Transfer {
+                id,
+                name: "f".into(),
+                sent: 0,
+                total: 1,
+            };
+            register(server, rid, None, transfer, handle);
+        }
+        cancel_server("srv-signout");
+        assert!(watches[0].is_aborted() && watches[1].is_aborted());
+        assert!(!watches[2].is_aborted());
+        assert!(transfers("srv-signout", "R1", None).is_empty());
+        assert_eq!(transfers("srv-keep", "R1", None).len(), 1);
+        cancel_server("srv-keep");
+        assert!(watches[2].is_aborted());
     }
 
     #[test]
