@@ -994,3 +994,98 @@ fn bidi_ellipsis_is_cheap_and_correct() {
     let limit = if cfg!(debug_assertions) { 4000 } else { 250 };
     assert!(worst < Duration::from_millis(limit), "{worst:?}");
 }
+
+fn right_press() -> Event {
+    Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
+}
+
+/// A context-menu item chosen from the keyboard closes the menu: later
+/// Enters (e.g. sending from the composer) must not fire it again.
+#[test]
+fn context_menu_keyboard_selection_closes_it() {
+    use keyboard::key::Named;
+    let entries = vec![
+        w::MenuItem::new("One", M::Close(1)).into(),
+        w::MenuItem::new("Two", M::Close(2)).into(),
+    ];
+    let mut r = renderer();
+    let view = |entries: &[w::MenuEntry<M>]| -> Element<'static, M> {
+        column![w::context_menu(
+            container(text("row")).width(Length::Fill).height(100),
+            entries.to_vec(),
+        )]
+        .into()
+    };
+    let mut ui = UserInterface::build(view(&entries), SIZE, Cache::default(), &mut r);
+    let at = Point::new(100.0, 50.0);
+    step(&mut ui, &mut r, &[moved(at), right_press()], at);
+    let away = Point::new(700.0, 500.0);
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[key(Named::ArrowDown, false), key(Named::Enter, false)],
+        at,
+    );
+    assert_eq!(msgs, vec![M::Close(1)]);
+    for i in 0..3 {
+        let cache = ui.into_cache();
+        ui = UserInterface::build(view(&entries), SIZE, cache, &mut r);
+        let (msgs, _) = step(&mut ui, &mut r, &[key(Named::Enter, false)], away);
+        assert!(msgs.is_empty(), "enter #{i} after selection: {msgs:?}");
+    }
+    // Reopening starts without a stale highlight.
+    step(&mut ui, &mut r, &[moved(at), right_press()], at);
+    let (msgs, _) = step(&mut ui, &mut r, &[key(Named::Enter, false)], at);
+    assert!(msgs.is_empty(), "{msgs:?}");
+    // Escape and clicks outside close it too.
+    step(&mut ui, &mut r, &[escape()], at);
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[key(Named::ArrowDown, false), key(Named::Enter, false)],
+        at,
+    );
+    assert!(msgs.is_empty(), "closed by Escape: {msgs:?}");
+    // Mouse selection still works.
+    step(&mut ui, &mut r, &[moved(at), right_press()], at);
+    let item = Point::new(at.x + 40.0, at.y + 18.0);
+    let (msgs, _) = step(&mut ui, &mut r, &[moved(item), press(), release()], item);
+    assert_eq!(msgs, vec![M::Close(1)]);
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[key(Named::ArrowDown, false), key(Named::Enter, false)],
+        at,
+    );
+    assert!(msgs.is_empty(), "closed by a click: {msgs:?}");
+}
+
+/// Up/Down reach the suggestion list only while its own field has focus.
+#[test]
+fn arrow_keys_only_act_for_the_focused_field() {
+    use keyboard::key::Named;
+    let mut r = renderer();
+    let view = || -> Element<'static, M> {
+        column![
+            text_input("name", "").id("name").on_input(M::Input),
+            w::arrow_keys(
+                text_input("members", "").id("members").on_input(M::Input),
+                |d| M::Close(if d < 0 { 0 } else { 1 }),
+            ),
+        ]
+        .into()
+    };
+    let mut ui = UserInterface::build(view(), SIZE, Cache::default(), &mut r);
+    let at = Point::new(700.0, 500.0);
+    focus(&mut ui, &r, Id::new("name"));
+    let (msgs, _) = step(&mut ui, &mut r, &[key(Named::ArrowDown, false)], at);
+    assert!(msgs.is_empty(), "{msgs:?}");
+    focus(&mut ui, &r, Id::new("members"));
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[key(Named::ArrowDown, false), key(Named::ArrowUp, false)],
+        at,
+    );
+    assert_eq!(msgs, vec![M::Close(1), M::Close(0)]);
+}

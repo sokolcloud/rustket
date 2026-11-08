@@ -7,9 +7,9 @@ use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell};
 use iced::widget::{button, column, container, row, space, text};
 use iced::{
-    Alignment, Element, Event, Length, Rectangle, Size, Theme, Vector, border, keyboard, mouse,
+    Alignment, Element, Event, Length, Point, Rectangle, Size, Theme, Vector, border, keyboard,
+    mouse,
 };
-use iced_aw::ContextMenu;
 
 use super::popover::{Placement, popover};
 
@@ -376,14 +376,354 @@ impl<'a, Message: Clone + 'a> From<MenuNav<'a, Message>> for Element<'a, Message
 }
 
 /// Opens `entries` at the cursor when `underlay` is right-clicked. Selecting an
-/// item, clicking elsewhere or pressing Escape closes it (state lives in the widget).
+/// item (mouse or keyboard), clicking elsewhere, Escape or a window resize closes
+/// it (state lives in the widget).
 pub fn context_menu<'a, Message: Clone + 'a>(
     underlay: impl Into<Element<'a, Message>>,
     entries: Vec<MenuEntry<Message>>,
 ) -> Element<'a, Message> {
-    ContextMenu::new(underlay, move || menu_panel(&entries))
-        .style(style::context_menu_backdrop)
-        .into()
+    Element::new(ContextMenu {
+        underlay: underlay.into(),
+        entries,
+        panel: None,
+    })
+}
+
+struct ContextMenu<'a, Message> {
+    underlay: Element<'a, Message>,
+    entries: Vec<MenuEntry<Message>>,
+    /// Built only while the menu is open.
+    panel: Option<Element<'a, Message>>,
+}
+
+#[derive(Default)]
+struct ContextState {
+    open: bool,
+    at: Point,
+}
+
+impl<'a, Message: Clone + 'a> ContextMenu<'a, Message> {
+    /// Builds the panel and syncs its tree (children[1]) when the menu is open.
+    fn sync_panel(&mut self, tree: &mut Tree) -> bool {
+        if !tree.state.downcast_ref::<ContextState>().open {
+            self.panel = None;
+            return false;
+        }
+        let entries = &self.entries;
+        let panel = self.panel.get_or_insert_with(|| menu_panel(entries));
+        tree.children[1].diff(&*panel);
+        true
+    }
+}
+
+impl<'a, Message: Clone + 'a> Widget<Message, Theme, iced::Renderer> for ContextMenu<'a, Message> {
+    fn size(&self) -> Size<Length> {
+        self.underlay.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.underlay.as_widget().size_hint()
+    }
+
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<ContextState>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(ContextState::default())
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.underlay), Tree::empty()]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.children[0].diff(&self.underlay);
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.underlay
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.underlay.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.underlay
+            .as_widget_mut()
+            .operate(&mut tree.children[0], layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
+        ) && let Some(at) = cursor.position_over(layout.bounds())
+        {
+            let state = tree.state.downcast_mut::<ContextState>();
+            state.open = true;
+            state.at = at;
+            // A fresh menu: no highlight left from the last time.
+            tree.children[1] = Tree::empty();
+            self.panel = None;
+            shell.capture_event();
+            shell.request_redraw();
+            return;
+        }
+        self.underlay.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.underlay.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        if !self.sync_panel(tree) {
+            return self.underlay.as_widget_mut().overlay(
+                &mut tree.children[0],
+                layout,
+                renderer,
+                viewport,
+                translation,
+            );
+        }
+        let (state, children) = (&mut tree.state, &mut tree.children);
+        let state = state.downcast_mut::<ContextState>();
+        let at = state.at + translation;
+        let panel = self.panel.as_mut()?;
+        Some(overlay::Element::new(Box::new(ContextOverlay {
+            tree: &mut children[1],
+            panel,
+            state,
+            at,
+        })))
+    }
+}
+
+struct ContextOverlay<'a, 'b, Message> {
+    tree: &'b mut Tree,
+    panel: &'b mut Element<'a, Message>,
+    state: &'b mut ContextState,
+    at: Point,
+}
+
+impl<Message: Clone> overlay::Overlay<Message, Theme, iced::Renderer>
+    for ContextOverlay<'_, '_, Message>
+{
+    fn layout(&mut self, renderer: &iced::Renderer, bounds: Size) -> layout::Node {
+        let limits = layout::Limits::new(Size::ZERO, bounds);
+        let node = self
+            .panel
+            .as_widget_mut()
+            .layout(self.tree, renderer, &limits);
+        let size = node.size();
+        // Open towards the free side, like native menus.
+        let mut at = self.at;
+        if at.x + size.width > bounds.width {
+            at.x = (at.x - size.width).max(0.0);
+        }
+        if at.y + size.height > bounds.height {
+            at.y = (at.y - size.height).max(0.0);
+        }
+        layout::Node::with_children(bounds, vec![node.move_to(at)])
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) {
+        let Some(panel) = layout.children().next() else {
+            return;
+        };
+        let bounds = panel.bounds();
+        self.panel
+            .as_widget()
+            .draw(self.tree, renderer, theme, style, panel, cursor, &bounds);
+    }
+
+    fn operate(
+        &mut self,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        if let Some(panel) = layout.children().next() {
+            self.panel
+                .as_widget_mut()
+                .operate(self.tree, panel, renderer, operation);
+        }
+    }
+
+    fn update(
+        &mut self,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let Some(panel) = layout.children().next() else {
+            return;
+        };
+        let bounds = panel.bounds();
+        let close = |state: &mut ContextState, shell: &mut Shell<'_, Message>| {
+            state.open = false;
+            shell.request_redraw();
+        };
+        match event {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            }) => {
+                close(self.state, shell);
+                shell.capture_event();
+                return;
+            }
+            Event::Window(iced::window::Event::Resized { .. }) => {
+                close(self.state, shell);
+                return;
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(_))
+            | Event::Touch(iced::touch::Event::FingerPressed { .. })
+                if !cursor.is_over(bounds) =>
+            {
+                close(self.state, shell);
+                shell.capture_event();
+                return;
+            }
+            _ => {}
+        }
+        let captured = shell.is_event_captured();
+        self.panel.as_widget_mut().update(
+            self.tree, event, panel, cursor, renderer, clipboard, shell, &bounds,
+        );
+        match event {
+            // Item buttons publish on release; presses outside closed it already.
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Touch(iced::touch::Event::FingerLifted { .. }) => {
+                close(self.state, shell);
+            }
+            // Enter/Space on a highlighted item: MenuNav published and captured.
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Enter | keyboard::key::Named::Space),
+                ..
+            }) if !captured && shell.is_event_captured() => {
+                close(self.state, shell);
+            }
+            _ => {}
+        }
+        // The menu is modal: nothing underneath reacts to presses or the wheel.
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. })
+                | Event::Touch(iced::touch::Event::FingerPressed { .. })
+        ) {
+            shell.capture_event();
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        let Some(panel) = layout.children().next() else {
+            return mouse::Interaction::None;
+        };
+        let bounds = panel.bounds();
+        self.panel
+            .as_widget()
+            .mouse_interaction(self.tree, panel, cursor, &bounds, renderer)
+            .max(mouse::Interaction::Idle)
+    }
+
+    fn overlay<'c>(
+        &'c mut self,
+        layout: Layout<'c>,
+        renderer: &iced::Renderer,
+    ) -> Option<overlay::Element<'c, Message, Theme, iced::Renderer>> {
+        let panel = layout.children().next()?;
+        let bounds = panel.bounds();
+        self.panel
+            .as_widget_mut()
+            .overlay(self.tree, panel, renderer, &bounds, Vector::ZERO)
+    }
 }
 
 /// Shows `entries` anchored to `trigger` while `open` is true; clicking outside or

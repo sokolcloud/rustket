@@ -231,7 +231,6 @@ pub fn menu_entries(
     v
 }
 
-/// Narrow headers drop the call button: "Video call" moves to the menu top.
 /// How many of `total` omnichannel actions stay inline in a header `width`
 /// px wide next to `room_slots` room buttons (incl. the menu trigger), so
 /// the room name keeps [`MIN_TITLE_WIDTH`].
@@ -267,6 +266,7 @@ fn omni_entries(
     v
 }
 
+/// Narrow headers drop the call button: "Video call" moves to the menu top.
 fn with_call_entry(
     mut entries: Vec<MenuEntry<Message>>,
     ws: &Workspace,
@@ -556,7 +556,7 @@ impl Header {
             .room(&self.rid)
             .and_then(|e| e.room.as_ref())
             .and_then(|r| r.announcement.as_deref())
-            .map(crate::format::md_one_line)
+            .map(|t| crate::format::md_one_line(t, ctx.prefs.clock_24h))
             .filter(|a| !a.is_empty())?;
         let content = row![
             icon::sized(Icon::Megaphone, 14.0),
@@ -660,7 +660,7 @@ impl Header {
                 .and_then(|e| e.room.as_ref())
                 // The announcement has its own bar under the header.
                 .and_then(|r| r.topic.as_deref())
-                .map(crate::format::md_one_line)
+                .map(|t| crate::format::md_one_line(t, ctx.prefs.clock_24h))
                 .filter(|t| !t.is_empty())
                 .map(|one_line| -> Element<'a, Message> {
                     mouse_area(

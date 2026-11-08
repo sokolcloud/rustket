@@ -441,50 +441,24 @@ mod tests {
     const TEXT: f32 = 4.5;
     const GRAPHIC: f32 = 3.0;
 
-    /// `usWeightClass` from the OS/2 table and whether the `name` table carries the
-    /// "Noto Sans" family (UTF-16BE).
-    fn face_info(bytes: &[u8]) -> (u16, bool) {
-        let be16 = |o: usize| u16::from_be_bytes([bytes[o], bytes[o + 1]]);
-        let be32 =
-            |o: usize| u32::from_be_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
-        let needle: Vec<u8> = "Noto Sans"
-            .encode_utf16()
-            .flat_map(u16::to_be_bytes)
-            .collect();
-        let mut weight = 0;
-        let mut family = false;
-        for i in 0..be16(4) as usize {
-            let rec = 12 + i * 16;
-            let (off, len) = (be32(rec + 8) as usize, be32(rec + 12) as usize);
-            match &bytes[rec..rec + 4] {
-                b"OS/2" => weight = be16(off + 4),
-                b"name" => {
-                    family = bytes[off..off + len]
-                        .windows(needle.len())
-                        .any(|w| w == needle)
-                }
-                _ => {}
-            }
-        }
-        (weight, family)
-    }
-
+    /// fontdb (what cosmic-text matches with) finds a bundled face of exactly
+    /// each UI weight under the family "Noto Sans".
     #[test]
     fn every_ui_weight_is_bundled() {
-        let faces = [
+        use iced::advanced::graphics::text::cosmic_text::fontdb;
+        let mut db = fontdb::Database::new();
+        for face in [
             NOTO_SANS_REGULAR,
             NOTO_SANS_MEDIUM,
             NOTO_SANS_SEMIBOLD,
             NOTO_SANS_BOLD,
-        ];
-        let weights: Vec<u16> = faces
-            .iter()
-            .map(|f| {
-                let (w, family) = face_info(f);
-                assert!(family, "bundled face is not Noto Sans");
-                w
-            })
-            .collect();
+        ] {
+            db.load_font_data(face.to_vec());
+        }
+        assert_eq!(db.len(), 4);
+        let iced::font::Family::Name(family) = DEFAULT_FONT.family else {
+            panic!("the UI font is not a named family");
+        };
         for font in [DEFAULT_FONT, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD] {
             let want = match font.weight {
                 Weight::Normal => 400,
@@ -493,8 +467,24 @@ mod tests {
                 Weight::Bold => 700,
                 other => panic!("unexpected weight {other:?}"),
             };
-            assert!(weights.contains(&want), "weight {want} is not bundled");
             assert_eq!(font.family, DEFAULT_FONT.family);
+            let id = db
+                .query(&fontdb::Query {
+                    families: &[fontdb::Family::Name(family)],
+                    weight: fontdb::Weight(want),
+                    ..fontdb::Query::default()
+                })
+                .unwrap_or_else(|| panic!("no {family} face for weight {want}"));
+            let face = db.face(id).expect("queried face exists");
+            assert_eq!(
+                face.weight.0, want,
+                "weight {want} falls back to another face"
+            );
+            assert!(
+                face.families.iter().any(|(name, _)| name == family),
+                "{:?}",
+                face.families
+            );
         }
         assert_eq!(fonts().len(), 5);
     }

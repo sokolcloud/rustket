@@ -331,8 +331,19 @@ pub fn search_field<'a, M: Clone + 'a>(
     placeholder: String,
     on_input: impl Fn(String) -> M + 'a,
 ) -> Element<'a, M> {
+    search_field_submit(value, placeholder, on_input, None)
+}
+
+/// [`search_field`] publishing `on_submit` on Enter.
+pub fn search_field_submit<'a, M: Clone + 'a>(
+    value: &str,
+    placeholder: String,
+    on_input: impl Fn(String) -> M + 'a,
+    on_submit: Option<M>,
+) -> Element<'a, M> {
     text_input(&placeholder, value)
         .on_input(on_input)
+        .on_submit_maybe(on_submit)
         .size(TEXT_BODY)
         .padding([7, 10])
         .icon(text_input::Icon {

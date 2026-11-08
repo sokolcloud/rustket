@@ -93,7 +93,7 @@ pub fn parse(text: &str) -> Root {
         flush_quote(&mut out, &mut quote);
         if line.trim().is_empty() {
             out.push(Block::LineBreak);
-        } else if line.trim() == "---" {
+        } else if line.trim().len() >= 3 && line.trim().bytes().all(|b| b == b'-') {
             out.push(Block::HorizontalRule { fallback: None });
         } else {
             out.push(Block::Paragraph {
@@ -595,6 +595,11 @@ mod tests {
         assert!(matches!(&root[0], Block::Heading { level: 1, .. }));
         assert!(matches!(&root[1], Block::Heading { level: 2, .. }));
         assert!(matches!(&parse("a\n---")[1], Block::HorizontalRule { .. }));
+        assert!(matches!(
+            &parse("a\n-----")[1],
+            Block::HorizontalRule { .. }
+        ));
+        assert!(matches!(&parse("a\n--")[1], Block::Paragraph { .. }));
         assert!(
             matches!(&root[2], Block::Paragraph { .. }),
             "a channel, not a heading"

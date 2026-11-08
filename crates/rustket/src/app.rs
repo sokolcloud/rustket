@@ -811,8 +811,7 @@ impl App {
             Message::Desktop(m) => self.on_desktop(m),
             Message::Calls(m) => self.on_calls(m),
             Message::OpenQuickSwitcher => self.navigate(component::Nav::QuickSwitcher),
-            Message::FocusNext(true) => iced::widget::operation::focus_next(),
-            Message::FocusNext(false) => iced::widget::operation::focus_previous(),
+            Message::FocusNext(forward) => rustket_ui::widget::focus_cycle(forward),
             Message::SidebarResized(w) => {
                 self.ui_state.sidebar_width = w;
                 self.save_stamp += 1;

@@ -12,7 +12,7 @@ room_render.spoiler:
   en: "Spoiler — click to reveal"
   ru: "Спойлер — нажмите, чтобы показать"
 room_render.long_date:
-  en: "%{day} %{month} %{year}"
+  en: "%{month} %{day}, %{year}"
   ru: "%{day} %{month} %{year}"
 room_render.rel_now:
   en: "just now"

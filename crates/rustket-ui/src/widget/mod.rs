@@ -1,6 +1,7 @@
 //! Reusable widgets. Every function returns an `Element` (or a builder convertible
 //! into one) and takes plain data plus messages.
 
+mod arrow_keys;
 mod avatar;
 mod badge;
 mod button;
@@ -22,6 +23,7 @@ mod spinner;
 mod split;
 mod timeline;
 
+pub use arrow_keys::arrow_keys;
 pub use avatar::{
     AVATAR_COLORS, Avatar, AvatarShape, AvatarSource, avatar, avatar_color, initials,
 };
@@ -36,6 +38,7 @@ pub use header::{header_bar, header_gap};
 pub use hover_box::{HoverBox, hover_box};
 pub use input::{TextField, text_field};
 pub use keyed_list::{KeyedColumn, keyed_list, keyed_list_keys};
+pub use layer::focus_cycle;
 pub use menu::{
     MENU_MAX_WIDTH, MENU_WIDTH, MenuEntry, MenuItem, context_menu, menu_panel, menu_width,
     popover_menu,

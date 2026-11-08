@@ -56,18 +56,23 @@ fn localized_in(local: &DateTime<Local>, key: &str, locale: &str) -> String {
 }
 
 /// One line of plain text from a markdown text (room topic or
-/// announcement): markup removed, spoilers masked, line breaks collapsed.
-pub fn md_one_line(text: &str) -> String {
+/// announcement): markup removed, spoilers masked, `<t:…>` timestamps in
+/// local time, line breaks collapsed.
+pub fn md_one_line(text: &str, clock_24h: bool) -> String {
     use rocketchat::models::md::{Block, Inline};
-    fn inline(i: &Inline, out: &mut String) {
+    fn walk(i: &Inline, out: &mut String, clock_24h: bool) {
         match i {
             Inline::Spoiler { .. } => out.push_str("•••"),
             Inline::Bold { value } | Inline::Italic { value } | Inline::Strike { value } => {
-                value.iter().for_each(|i| inline(i, out));
+                value.iter().for_each(|i| walk(i, out, clock_24h));
+            }
+            Inline::Timestamp { value, .. } => {
+                out.push_str(&crate::room::render::format_timestamp(value, clock_24h));
             }
             other => other.plain_text(out),
         }
     }
+    let inline = |i: &Inline, out: &mut String| walk(i, out, clock_24h);
     let mut out = String::new();
     for b in crate::e2e::markdown::parse(text) {
         let start = out.len();
@@ -129,10 +134,18 @@ mod tests {
     #[test]
     fn markdown_one_liners() {
         assert_eq!(
-            md_one_line("Release **0.2** is _frozen_\n\nsee ||secret|| [notes](https://x.org)"),
+            md_one_line(
+                "Release **0.2** is _frozen_\n\nsee ||secret|| [notes](https://x.org)",
+                true
+            ),
             "Release 0.2 is frozen see ••• notes"
         );
-        assert_eq!(md_one_line("# Title\n> quoted"), "Title quoted");
-        assert_eq!(md_one_line("  "), "");
+        assert_eq!(md_one_line("# Title\n> quoted", true), "Title quoted");
+        assert_eq!(md_one_line("  ", true), "");
+        let line = md_one_line("Freeze at <t:1767225600:f>", true);
+        assert!(
+            !line.contains("1767225600") && line.contains(" 202"),
+            "{line}"
+        );
     }
 }

@@ -118,17 +118,9 @@ pub struct HeaderAction {
     pub active: bool,
 }
 
-/// The header's omnichannel buttons: quick actions (§7.2), then the contact
-/// and canned-responses panels. Empty for other rooms.
-pub fn header_buttons<'a>(ctx: &ViewCtx<'a>) -> Vec<Element<'a, Request>> {
-    header_actions(ctx)
-        .into_iter()
-        .map(|a| icon_button_with(a.icon, a.request, a.label, a.active, 32.0))
-        .collect()
-}
-
-/// [`header_buttons`] as data, so the header can move the ones that do not
-/// fit into its menu.
+/// The header's omnichannel actions: quick actions (§7.2), then the contact
+/// and canned-responses panels (empty for other rooms). The header moves the
+/// ones that do not fit into its menu.
 pub fn header_actions(ctx: &ViewCtx<'_>) -> Vec<HeaderAction> {
     let ws = ctx.workspace;
     let Some((room, sub)) = live(ws, ctx.rid) else {

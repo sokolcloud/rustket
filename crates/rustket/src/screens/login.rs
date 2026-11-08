@@ -1248,18 +1248,25 @@ mod tests {
         assert!(l.busy, "Enter with a password signs in");
     }
 
-    /// The app answers an unhandled Tab with `focus_next`: user -> password.
+    /// The app answers an unhandled Tab with `focus_cycle`: user -> password,
+    /// and Tab from the last field wraps instead of dropping focus.
     #[test]
     fn tab_moves_from_user_to_password() {
         use crate::tree_probe::focus_after;
+        use iced::advanced::widget::Id;
+        use rustket_ui::widget::focus_cycle;
         let l = login_with(vec![]);
         assert_eq!(
-            focus_after(
-                l.view(),
-                Some(USER_ID),
-                iced::widget::operation::focus_next()
-            ),
-            [Some(iced::advanced::widget::Id::new(PASSWORD_ID))]
+            focus_after(l.view(), Some(USER_ID), focus_cycle(true)),
+            [Some(Id::new(PASSWORD_ID))]
+        );
+        let after_password = focus_after(l.view(), Some(PASSWORD_ID), focus_cycle(true));
+        assert_eq!(after_password.len(), 1, "focus kept: {after_password:?}");
+        assert_ne!(after_password, [Some(Id::new(PASSWORD_ID))]);
+        assert_eq!(
+            focus_after(l.view(), Some(USER_ID), focus_cycle(false)).len(),
+            1,
+            "Shift+Tab from the first field wraps"
         );
     }
 
