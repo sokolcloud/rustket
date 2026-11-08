@@ -1,0 +1,43 @@
+{
+ "instances": [
+  {
+   "address": "192.168.1.102",
+   "currentStatus": {
+    "connected": true,
+    "lastHeartbeatTime": 9,
+    "local": true
+   },
+   "instanceRecord": {
+    "_id": "ebfe62d3-c483-4f2a-8128-4d49418b2a88",
+    "_createdAt": "2026-11-07T16:08:52.672Z",
+    "_updatedAt": "2026-11-07T23:34:42.516Z",
+    "extraInformation": {
+     "host": "localhost",
+     "port": "3000",
+     "tcpPort": 33235,
+     "os": {
+      "type": "Linux",
+      "platform": "linux",
+      "arch": "x64",
+      "release": "7.0.0-42-generic",
+      "uptime": 46838.59,
+      "loadavg": [
+       2.9,
+       3.58,
+       3.6
+      ],
+      "totalmem": 64064245760,
+      "freemem": 19009806336,
+      "cpus": 16
+     },
+     "nodeVersion": "v24.22.1",
+     "conns": 0
+    },
+    "name": "rocket.chat",
+    "pid": 1
+   },
+   "broadcastAuth": true
+  }
+ ],
+ "success": true
+}

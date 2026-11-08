@@ -1,0 +1,93 @@
+{
+ "rooms": [
+  {
+   "_id": "6aef51a5ff2338a3f2a2bebf",
+   "t": "d",
+   "usernames": [
+    "alice",
+    "bob"
+   ],
+   "usersCount": 2,
+   "msgs": 0,
+   "ts": "2026-11-07T16:28:21.978Z",
+   "uids": [
+    "Er3h8XYKahaopbSA7",
+    "SLiu9igvh94B9T9Xu"
+   ],
+   "default": false,
+   "ro": false
+  },
+  {
+   "_id": "6aef4af4f7fd708252117519",
+   "t": "d",
+   "usernames": [
+    "admin",
+    "alice"
+   ],
+   "usersCount": 2,
+   "msgs": 0,
+   "ts": "2026-11-07T15:59:48.929Z",
+   "uids": [
+    "6aef49d4f7fd7082521174fb",
+    "Er3h8XYKahaopbSA7"
+   ],
+   "default": false,
+   "ro": false
+  },
+  {
+   "_id": "6aef4adcf7fd70825211750c",
+   "fname": "dev-private",
+   "name": "dev-private",
+   "t": "p",
+   "msgs": 2,
+   "usersCount": 3,
+   "u": {
+    "_id": "6aef49d4f7fd7082521174fb",
+    "username": "admin",
+    "name": "Admin"
+   },
+   "ts": "2026-11-07T15:59:24.666Z",
+   "ro": false,
+   "default": false
+  },
+  {
+   "_id": "6aef4adcf7fd708252117507",
+   "fname": "dev-public",
+   "name": "dev-public",
+   "t": "c",
+   "msgs": 18,
+   "usersCount": 4,
+   "u": {
+    "_id": "6aef49d4f7fd7082521174fb",
+    "username": "admin",
+    "name": "Admin"
+   },
+   "ts": "2026-11-07T15:59:24.623Z",
+   "ro": false,
+   "default": false
+  },
+  {
+   "_id": "6aef4cdcf7fd708252117574",
+   "fname": "fixture-1794067676",
+   "name": "fixture-1794067676",
+   "t": "c",
+   "msgs": 41,
+   "usersCount": 4,
+   "u": {
+    "_id": "Er3h8XYKahaopbSA7",
+    "username": "alice",
+    "name": "Alice"
+   },
+   "ts": "2026-11-07T16:07:56.104Z",
+   "ro": false,
+   "default": false,
+   "topic": "fixture topic",
+   "announcement": "fixture announcement",
+   "description": "fixture description"
+  }
+ ],
+ "count": 5,
+ "offset": 0,
+ "total": 8,
+ "success": true
+}

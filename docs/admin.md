@@ -1120,13 +1120,16 @@ value moved underneath ("changed on the server") so the user decides.
    - All type, permission and validation checks run for every item before the first write
      (`saveSettingsBulk`: `Promise.all` of checks, then `validateSettingRules`, then the updates),
      so a rejected save changes nothing; the writes themselves are not atomic. An unknown `_id`
-     with a string value passes the checks and "succeeds" without writing anything (source).
+     with a string value passes the checks and "succeeds" without writing anything (verified by
+     the admin library's live test: `{}` with the password code, `GET settings/:_id` still
+     fails afterwards; a wrong password hash answered `totp-invalid`).
    - Route-level: `POST settings` has no permission gate of its own (any logged-in user reaches
      the 2FA prompt first; the per-setting check above follows — third check: `alice` got
      `totp-required` for a bulk save). Body schema errors come before 2FA (2.1).
 6. Side effect: saving `Organization_Name` also sets `Site_Name` when it still had its default or
    equalled the old organization name.
-7. UNVERIFIED: no successful bulk save was made (would change global settings); only the 2FA-every-time behaviour was
+7. UNVERIFIED: no successful bulk save of an existing setting was made (would change global
+   settings); only the 2FA-every-time behaviour, `totp-invalid` and the unknown-id no-op were
    probed (2.3).
 
 Single-setting endpoints (not used by the web editor): `GET /api/v1/settings/:_id` →
@@ -1506,6 +1509,34 @@ All 2FA-capable calls take `two_factor: Option<&TwoFactorCode>`; add `RestClient
 `delete_with`, `upload_form` (multipart with extra text fields, reusing the upload watchdog); for
 `/api/apps/…` reuse the existing `ServerUrl::api_root("apps/…")` with `RestClient::request` +
 `send` (2.1) instead of a new URL helper. `reset_totp`/`reset_e2e_key` take a mandatory `&UserId` (4.4).
+
+As implemented (admin library round): the REST functions live in
+`crates/rocketchat/src/rest/admin/*.rs` and are prefixed where a generic name could collide
+with other areas — `admin_server_info`, `admin_users_list(&UsersFilter, &Page)`,
+`admin_user_info`, `admin_user_create`, `admin_user_update(id, &UserUpdate, confirm_relinquish,
+tf)`, `admin_set_active_status`, `admin_user_delete`, `admin_reset_totp(id, tf)`,
+`admin_reset_e2e_key(id, tf)` (empty id rejected client-side), `admin_send_welcome_email`,
+`admin_set_user_avatar`, `admin_rooms(filter, &[AdminRoomType], &Page)`, `admin_room`,
+`admin_rooms_autocomplete`, `admin_save_room_settings`, `admin_change_archivation_state`,
+`admin_delete_team`, `admin_banners_list`; unprefixed: `statistics`, `statistics_list`,
+`instances_get`, `licenses_info`, `licenses_max_active_users`, `cloud_registration_status`,
+`smtp_check`, invites (`list_invites`, `remove_invite`, `find_or_create_invite`,
+`validate_invite_token`), `emoji_custom_{all,create,update,delete}`,
+`custom_sound{s_list,_get,_create,_update,_delete}`, `custom_user_status_{page,create,update,delete}`,
+`integration{s_list,_get,_create,_update,_remove,_history,_clear_history,_replay}`,
+`oauth_app{s_list,_get,_create,_update,_delete}`, `mailer_send`,
+`permissions_list_all_full` (with setting-permission fields), `permissions_{add,remove}_role`,
+`permissions_update`, `roles_sync`, `role_{create,update,delete}`, `roles_get_users_in_role`,
+`roles_{add,remove}_user`, `private_settings`, `private_settings_since`, `save_settings`,
+`setting_value`, `setting_execute`, `setting_action_{method,endpoint}`, `settings_lookup`,
+`assets_{set,unset}`, `settings_{add,remove}_custom_oauth`, `settings_refresh_oauth_services`,
+`saml_parse_metadata`, `server_translations`, `email_inbox_{list,get,save,delete,search,send_test}`,
+`ldap_{test_connection,test_search,sync_now}`, `moderation_*`, `engagement_dashboard`,
+`sessions_{list_all,info_admin,logout}`, `audit_settings`. Models are in
+`rocketchat::models::admin`. Apps (`/api/apps/*`) are left to the UiKit/apps layer. New
+`RestClient` helpers: `get_with`, `put_with`, `delete_with` and the crate-private multipart
+`upload_form` (shares the upload watchdog with `upload_media`). Settings search in
+`GroupIndex::search` is a case-insensitive substring match, not a regex (no regex dependency).
 
 ### 22.2 `crates/rustket-core` (state)
 

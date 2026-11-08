@@ -1,5 +1,6 @@
 //! Tolerant serde models of Rocket.Chat payloads.
 
+pub mod admin;
 pub mod lenient;
 pub mod md;
 mod message;

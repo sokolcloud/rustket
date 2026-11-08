@@ -1,0 +1,16 @@
+{
+ "_id": "GENERAL",
+ "default": true,
+ "msgs": 772,
+ "name": "general",
+ "t": "c",
+ "ts": "2026-11-07T15:55:00.498Z",
+ "u": {
+  "_id": "rocket.cat",
+  "username": "rocket.cat",
+  "name": "Rocket.Cat"
+ },
+ "usernames": [],
+ "usersCount": 5,
+ "success": true
+}

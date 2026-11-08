@@ -57,27 +57,9 @@ pub mod ids {
     pub const VIEW_BROADCAST_MEMBER_LIST: &str = "view-broadcast-member-list";
 }
 
-/// Admin-area permissions; any of them shows the administration entry.
-pub const ADMIN_PERMISSIONS: &[&str] = &[
-    ids::VIEW_STATISTICS,
-    ids::VIEW_ROOM_ADMINISTRATION,
-    ids::VIEW_USER_ADMINISTRATION,
-    ids::VIEW_PRIVILEGED_SETTING,
-    "view-logs",
-    "manage-emoji",
-    "manage-sounds",
-    "manage-integrations",
-    "manage-oauth-apps",
-    "manage-own-integrations",
-    "manage-outgoing-integrations",
-    "manage-incoming-integrations",
-    "manage-user-status",
-    "access-permissions",
-    "access-setting-permissions",
-    "manage-email-inbox",
-    "manage-moderation",
-    "view-engagement-dashboard",
-];
+/// Admin-area permissions; any of them shows the administration entry. Built from
+/// the section table in [`crate::admin`] (docs/admin.md §1).
+pub const ADMIN_PERMISSIONS: &[&str] = crate::admin::ADMIN_PERMISSIONS;
 
 /// Whether the current user has `perm`, globally or (with `rid`) through their
 /// room roles.

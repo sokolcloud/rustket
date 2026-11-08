@@ -3,6 +3,7 @@
 //! Endpoint groups live in submodules as `impl RestClient` blocks; add new endpoints
 //! next to related ones using [`RestClient::get`], [`RestClient::post`] and friends.
 
+pub mod admin;
 mod auth;
 mod files;
 mod messages;
@@ -10,6 +11,7 @@ mod misc;
 mod rooms;
 mod users;
 
+pub use admin::{AdminUpload, Page, Sort};
 pub use auth::LoginRequest;
 pub use auth::{LdapLogin, LoginResult};
 /// Byte buffer type of `UploadSource` (re-exported so callers need no `bytes` dependency).
@@ -374,8 +376,42 @@ impl RestClient {
 
     /// `DELETE /api/v1/{path}{query}`.
     pub async fn delete<T: DeserializeOwned>(&self, path: &str, query: &Query) -> Result<T> {
+        self.delete_with(path, query, None).await
+    }
+
+    /// `GET` with optional 2FA headers.
+    pub async fn get_with<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &Query,
+        two_factor: Option<&TwoFactorCode>,
+    ) -> Result<T> {
         let url = self.inner.server.api(&query.apply(path));
-        self.send(self.request(Method::DELETE, &url, None)).await
+        self.send(self.request(Method::GET, &url, two_factor)).await
+    }
+
+    /// `PUT /api/v1/{path}` with a JSON body and optional 2FA headers.
+    pub async fn put_with<T: DeserializeOwned, B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &B,
+        two_factor: Option<&TwoFactorCode>,
+    ) -> Result<T> {
+        let url = self.inner.server.api(path);
+        self.send(self.request(Method::PUT, &url, two_factor).json(body))
+            .await
+    }
+
+    /// `DELETE` with optional 2FA headers.
+    pub async fn delete_with<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &Query,
+        two_factor: Option<&TwoFactorCode>,
+    ) -> Result<T> {
+        let url = self.inner.server.api(&query.apply(path));
+        self.send(self.request(Method::DELETE, &url, two_factor))
+            .await
     }
 
     /// `POST` whose response is only `{success: true}`.

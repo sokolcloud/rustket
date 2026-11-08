@@ -1,0 +1,19 @@
+{
+ "users": [
+  {
+   "_id": "6aef49d4f7fd7082521174fb",
+   "createdAt": "2026-11-07T15:55:00.643Z",
+   "name": "Admin",
+   "username": "admin",
+   "emails": [
+    {
+     "address": "admin@example.invalid",
+     "verified": false
+    }
+   ],
+   "_updatedAt": "2026-11-07T23:34:19.537Z"
+  }
+ ],
+ "total": 1,
+ "success": true
+}

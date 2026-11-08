@@ -7,6 +7,7 @@
 //! state. Realtime events are applied through fine-grained `Workspace::apply_*`
 //! methods that take `rocketchat` model types.
 
+pub mod admin;
 pub mod config;
 pub mod emoji;
 pub mod notify;
