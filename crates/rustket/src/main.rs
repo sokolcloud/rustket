@@ -4,10 +4,15 @@ use rustket::single_instance::{self, Instance, ListenerSlot};
 /// The log filter: the user's `RUST_LOG` (or the recommended default), always
 /// followed by `rocketchat::LOG_FILTER_PINS` so transport crates that log
 /// credentials at TRACE (tungstenite logs the resume token) stay at `info`.
+/// Toolkit crates that are noisy at `info`: `iced_winit` dumps the window
+/// attributes including every byte of the icon, `winit` warns about XSETTINGS
+/// on every start under KDE.
+const QUIET_DEPS: &str = "wgpu=warn,naga=warn,iced_winit=warn,winit=error";
+
 fn log_filter(user: Option<&str>) -> String {
     match user.map(str::trim).filter(|f| !f.is_empty()) {
         Some(f) => format!("{f},{}", rocketchat::LOG_FILTER_PINS),
-        None => format!("{},wgpu=warn,naga=warn", rocketchat::RECOMMENDED_LOG_FILTER),
+        None => format!("{},{QUIET_DEPS}", rocketchat::RECOMMENDED_LOG_FILTER),
     }
 }
 
@@ -99,5 +104,6 @@ mod tests {
         assert!(f.contains("tungstenite=info"));
         assert!(log_filter(None).starts_with(rocketchat::RECOMMENDED_LOG_FILTER));
         assert!(log_filter(Some("  ")).starts_with(rocketchat::RECOMMENDED_LOG_FILTER));
+        assert!(log_filter(None).contains("iced_winit=warn"));
     }
 }
