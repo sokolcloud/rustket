@@ -59,6 +59,7 @@ pub enum Message {
     Settings(crate::screens::settings::Message),
     Account(ServerId, crate::screens::account::Message),
     Directory(ServerId, crate::screens::directory::Message),
+    Admin(ServerId, crate::screens::admin::Message),
     CreateRoom(ServerId, crate::dialogs::create_room::Message),
     QuickSwitcher(ServerId, crate::dialogs::quick_switcher::Message),
     StatusMenu(ServerId, crate::workspace::status_menu::Message),

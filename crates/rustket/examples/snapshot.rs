@@ -490,6 +490,9 @@ fn confirm_modals(app: &App) -> usize {
 }
 
 async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
+    if admin_shots::admin_shots(&server, &out).await {
+        return;
+    }
     let user = fixture.user;
     let cache = tempfile::tempdir().expect("cache dir");
     let mut d = Driver::new(Flags {
@@ -874,6 +877,9 @@ fn image_bytes(w: u32, h: u32) -> Vec<u8> {
 }
 #[path = "snapshot/glue.rs"]
 mod glue;
+
+#[path = "snapshot/admin.rs"]
+mod admin_shots;
 #[path = "snapshot/timeline_fixture.rs"]
 mod timeline_fixture;
 /// Quick switcher, directory, create dialogs and account tabs (light + dark).

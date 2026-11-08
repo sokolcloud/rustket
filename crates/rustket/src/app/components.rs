@@ -101,6 +101,7 @@ impl App {
                 self.screen = Screen::Directory(sid, Box::new(directory::Directory::new()));
                 Task::none()
             }
+            (Nav::Admin, Some(sid)) => self.open_admin(sid),
             (Nav::CreateRoom(kind), Some(sid)) => {
                 self.modals.push(Modal::CreateRoom(
                     sid,
@@ -275,6 +276,51 @@ impl App {
             task,
             self.component_effects(Some(&sid), Source::Screen, a.effects),
         ])
+    }
+
+    pub(super) fn open_admin(&mut self, sid: ServerId) -> Task<Message> {
+        let mut admin = Box::new(crate::screens::admin::Admin::new());
+        let task = match Self::server_ctx(&mut self.servers, &self.images, &self.config, &sid) {
+            Some((mut ctx, _)) => admin.open(&mut ctx),
+            None => Task::none(),
+        };
+        self.screen = Screen::Admin(sid.clone(), admin);
+        task.map(move |m| Message::Admin(sid.clone(), m))
+    }
+
+    pub(super) fn on_admin(
+        &mut self,
+        sid: ServerId,
+        m: crate::screens::admin::Message,
+    ) -> Task<Message> {
+        let Screen::Admin(id, c) = &mut self.screen else {
+            return Task::none();
+        };
+        if *id != sid {
+            return Task::none();
+        }
+        let Some((mut ctx, _)) =
+            Self::server_ctx(&mut self.servers, &self.images, &self.config, &sid)
+        else {
+            return Task::none();
+        };
+        let a = c.update(m, &mut ctx);
+        let s2 = sid.clone();
+        let task = a.task.map(move |m| Message::Admin(s2.clone(), m));
+        Task::batch([
+            task,
+            self.component_effects(Some(&sid), Source::Screen, a.effects),
+        ])
+    }
+
+    /// Realtime events for an open admin screen of `sid`.
+    pub(super) fn admin_event(&mut self, sid: &ServerId, ev: &crate::session::ServerEvent) {
+        if let (Screen::Admin(id, c), crate::session::ServerEvent::Event(e)) =
+            (&mut self.screen, ev)
+            && id == sid
+        {
+            c.on_event(e);
+        }
     }
 
     pub(super) fn on_create_room(

@@ -116,6 +116,8 @@ pub enum Nav {
     QuickSwitcher,
     /// Back to the workspace of the active server.
     Workspace,
+    /// Administration of the active server (`screens/admin/`).
+    Admin,
 }
 
 /// Requests an app-level component makes to the app.
