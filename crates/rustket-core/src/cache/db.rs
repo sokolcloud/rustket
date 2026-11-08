@@ -69,6 +69,8 @@ const KIND_STATUS: &str = "status";
 const META_USER: &str = "user_id";
 const META_SAVED_AT: &str = "saved_at";
 const META_UPLOADS: &str = "interrupted_uploads";
+/// `outbox.queued`: 0 failed, 1 queued, 2 queued and possibly delivered.
+const QUEUED_MAYBE_SENT: i64 = 2;
 
 /// What happened while opening.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -174,7 +176,7 @@ fn move_aside(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// Whether `e` means the file is not a usable database.
-fn is_corruption(e: &CacheError) -> bool {
+pub(super) fn is_corruption(e: &CacheError) -> bool {
     match e {
         CacheError::Sqlite(rusqlite::Error::SqliteFailure(f, _)) => matches!(
             f.code,
@@ -228,7 +230,11 @@ impl CacheDb {
             });
         }
         let _: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
-        conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = OFF;")?;
+        // Deleted rows (an outbox entry of a room that turned out encrypted,
+        // evicted messages) are overwritten, not left in free pages.
+        conn.execute_batch(
+            "PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = OFF; PRAGMA secure_delete = ON;",
+        )?;
         let mut db = Self {
             conn,
             dir: dir.to_owned(),
@@ -334,6 +340,12 @@ impl CacheDb {
         self.wipe(false)?;
         self.conn
             .execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
+        // An unusable database moved aside earlier holds older cached data.
+        let broken = sidecar(&self.path, ".broken");
+        match std::fs::remove_file(&broken) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
         Ok(())
     }
 
@@ -516,7 +528,7 @@ impl CacheDb {
         let rows = st.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                r.get::<_, bool>(1)?,
+                r.get::<_, i64>(1)?,
                 r.get::<_, Option<String>>(2)?,
             ))
         })?;
@@ -526,7 +538,8 @@ impl CacheDb {
             if let Some(message) = from_json::<Message>("outbox", &json) {
                 out.push(OutboxEntry {
                     message,
-                    queued,
+                    queued: queued != 0,
+                    maybe_sent: queued == QUEUED_MAYBE_SENT,
                     error,
                 });
             }
@@ -691,26 +704,32 @@ fn write_timeline(tx: &Transaction<'_>, t: &CachedTimeline, stamp: i64) -> Resul
 
 /// Encrypted messages are never persisted in the outbox (see
 /// `docs/e2e.md`, "Offline cache"); the caller filters them, this is the
-/// last check.
+/// last check: encrypted shapes, and messages of a room stored as
+/// encrypted, are skipped.
 fn write_outbox(tx: &Transaction<'_>, outbox: &[OutboxEntry]) -> Result<()> {
     tx.execute("DELETE FROM outbox", [])?;
     let mut st = tx.prepare_cached(
         "INSERT OR REPLACE INTO outbox (id, rid, created, json, queued, error)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
+    let mut encrypted_room = tx.prepare_cached(
+        "SELECT 1 FROM docs WHERE kind = ?1 AND id = ?2
+             AND json_extract(json, '$.encrypted') = 1",
+    )?;
     for e in outbox {
         let m = &e.message;
         if m.is_encrypted() || m.e2e.is_some() || m.id.is_empty() {
             continue;
         }
-        st.execute(params![
-            m.id,
-            m.rid,
-            ts_ms(m),
-            to_json(m)?,
-            e.queued,
-            e.error
-        ])?;
+        if encrypted_room.exists(params![KIND_ROOM, m.rid])? {
+            continue;
+        }
+        let queued: i64 = match (e.queued, e.maybe_sent) {
+            (false, _) => 0,
+            (true, false) => 1,
+            (true, true) => QUEUED_MAYBE_SENT,
+        };
+        st.execute(params![m.id, m.rid, ts_ms(m), to_json(m)?, queued, e.error])?;
     }
     Ok(())
 }

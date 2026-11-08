@@ -17,10 +17,15 @@
 //!   cached messages (`Workspace::seed_cached_messages`); the first page from
 //!   the server replaces them.
 //! - Outbox: pending text messages are persisted with their client ids
-//!   (not those of encrypted rooms, see `docs/e2e.md`). Messages written
-//!   offline, and those still sending when the app quit, are sent once the
-//!   server is back (the server rejects a second message with the same id;
-//!   a failed resend checks whether the message exists). Failed ones stay
+//!   (only those of rooms known to be unencrypted, see `docs/e2e.md`).
+//!   Messages written offline, and those still sending when the app quit,
+//!   are sent once the server is back: one at a time, oldest first, a room
+//!   stops at its first failure (the server stamps `ts` on arrival). The
+//!   server rejects a second message with the same id; a failed resend
+//!   checks whether the message exists, and a message that may have been
+//!   delivered before quitting is first looked up, and dropped when it was
+//!   deleted meanwhile. Messages of encrypted rooms wait until the E2E
+//!   manager can encrypt them (never sent as plaintext). Failed ones stay
 //!   for retry or discard. Uploads are not persisted: one interrupted by
 //!   quitting is reported on the next start.
 //! - Cleanup: logout, a rejected token and server removal delete the
@@ -34,27 +39,36 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use iced::Task;
+use iced::futures::{SinkExt, Stream};
 use rocketchat::models::{Message as RcMessage, OutgoingMessage, Permission, Setting};
+use rocketchat::{RcDate, RestClient};
 use rust_i18n::t;
 use rustket_core::cache::{
     Batch, CacheHandle, CachedState, CachedTimeline, MESSAGES_PER_TIMELINE, Opened, OutboxEntry,
     TimelineKey, server_dir,
 };
+use rustket_core::e2e::OutgoingEncrypted;
 use rustket_core::timeline::{DeliveryState, Timeline};
 use rustket_core::workspace::{Changes, ConnectionState};
 use rustket_core::{Dirty, ServerId, Workspace};
 use rustket_ui::widget::BannerKind;
 
 use crate::app::App;
-use crate::error::{Failure, Res};
+use crate::e2e::outgoing::Mode;
+use crate::error::Failure;
 use crate::message::Message;
 use crate::workspace::ServerState;
 
 /// Longest wait for queued writes when the app quits.
 const QUIT_FLUSH: Duration = Duration::from_secs(2);
+/// How far before a message's local time deletions are looked up (clock
+/// differences between the client and the server).
+const DELETED_LOOKBACK_MS: i64 = 15 * 60 * 1000;
 
 /// A timeline instance (see `Timeline::epoch`).
 type Epoch = (u64, u64);
+/// An outbox entry as last written: id, queued, maybe sent, error.
+type OutboxSig = (String, bool, bool, Option<String>);
 
 /// App-wide cache state.
 #[derive(Debug, Default)]
@@ -64,6 +78,9 @@ pub struct Caches {
     /// Bytes on disk of every server's cache (Settings → Storage).
     pub size: Option<u64>,
     pub clearing: bool,
+    /// Directories purged while their cache was still opening: deleted
+    /// again when the late open arrives.
+    purged: HashSet<PathBuf>,
 }
 
 impl Caches {
@@ -72,6 +89,7 @@ impl Caches {
             base,
             size: None,
             clearing: false,
+            purged: HashSet::new(),
         }
     }
 
@@ -107,7 +125,13 @@ pub struct ServerCache {
     /// The persisted outbox was put back into the workspace.
     outbox_restored: bool,
     /// What the outbox looked like when last written.
-    outbox_sig: Option<Vec<(String, bool, Option<String>)>>,
+    outbox_sig: Option<Vec<OutboxSig>>,
+    /// Outbox ids read from disk (kept on disk while their room is not
+    /// known yet).
+    restored: HashSet<String>,
+    /// Restored ids that were sending when the app quit (possibly
+    /// delivered, possibly deleted since).
+    unconfirmed: HashSet<String>,
     /// Outbox ids seen so far.
     known: HashSet<String>,
     /// Outbox ids to send once the server is reachable.
@@ -131,18 +155,40 @@ impl ServerCache {
 pub enum Msg {
     Opened(ServerId, String, Box<Result<Opened, String>>),
     Timeline(ServerId, TimelineKey, Epoch, Option<Box<CachedTimeline>>),
-    /// A queued message was sent: server, session generation, id, room,
-    /// thread, result.
-    Sent(
-        ServerId,
-        u64,
-        String,
-        String,
-        Option<String>,
-        Res<Box<RcMessage>>,
-    ),
+    /// A queued message was handled: server, session generation, result.
+    Sent(ServerId, u64, Box<Sent>),
     Size(u64),
-    Cleared,
+    /// "Clear" finished (the first error, if any).
+    Cleared(Result<(), String>),
+}
+
+/// A queued message to send.
+#[derive(Debug)]
+pub struct QueuedSend {
+    pub message: RcMessage,
+    /// The encrypted form (encrypted rooms).
+    pub enc: Option<Result<OutgoingEncrypted, rocketchat::Error>>,
+    /// It may have been delivered (and deleted) before the app quit.
+    pub check_deleted: bool,
+}
+
+/// What became of a queued message.
+#[derive(Debug, Clone)]
+pub struct Sent {
+    pub id: String,
+    pub rid: String,
+    pub tmid: Option<String>,
+    pub outcome: Outcome,
+}
+
+#[derive(Debug, Clone)]
+pub enum Outcome {
+    Sent(Box<RcMessage>),
+    /// It was delivered before and deleted since: dropped.
+    Deleted,
+    Failed(Failure),
+    /// Not tried: an earlier message of its room failed.
+    Skipped(Failure),
 }
 
 fn wrap(m: Msg) -> Message {
@@ -162,14 +208,20 @@ fn live(ws: &Workspace) -> bool {
     ws.last_sync().is_some() && !ws.from_cache()
 }
 
-/// Pending messages of encrypted rooms (or of rooms not known) are never
-/// persisted: they hold the plaintext until they are encrypted at send time.
-fn persistable(ws: &Workspace, m: &RcMessage) -> bool {
-    !m.is_encrypted()
-        && m.e2e.is_none()
-        && ws
-            .room(&m.rid)
-            .is_some_and(|e| e.sub.is_some() && !e.is_encrypted())
+/// Pending messages hold the plaintext until they are encrypted at send
+/// time, so only those of rooms known to be unencrypted are persisted. One
+/// read from disk stays while its room is not known yet (the cached rooms
+/// were cleared, the initial load is not in); a room holding a room key
+/// counts as encrypted.
+fn persistable(ws: &Workspace, m: &RcMessage, from_disk: bool) -> bool {
+    if m.is_encrypted() || m.e2e.is_some() {
+        return false;
+    }
+    match ws.room(&m.rid) {
+        Some(e) if e.sub.as_ref().is_some_and(|s| s.e2e_key.is_some()) => false,
+        Some(e) if e.room.is_some() => e.sub.is_some() && !e.is_encrypted(),
+        _ => from_disk && !live(ws),
+    }
 }
 
 /// After every update (before the changes are taken): opens the cache,
@@ -210,6 +262,12 @@ pub fn after_update(
     let Some(handle) = s.cache.handle.clone() else {
         return Task::none();
     };
+    if handle.take_write_failed() {
+        // A dropped batch: everything is written again.
+        s.cache.needs_full = true;
+        s.cache.captured.clear();
+        s.cache.outbox_sig = None;
+    }
     let mut batch = Batch::default();
     if live(&s.workspace) {
         let full = std::mem::take(&mut s.cache.needs_full);
@@ -385,21 +443,34 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
             c.queued.insert(i.message.id.clone());
         }
     }
+    c.restored.retain(|id| ids.contains(id.as_str()));
+    c.unconfirmed.retain(|id| ids.contains(id.as_str()));
     let entries: Vec<OutboxEntry> = items
         .iter()
-        .filter(|i| persistable(ws, &i.message))
-        .map(|i| OutboxEntry {
-            message: i.message.clone(),
-            queued: c.queued.contains(&i.message.id) || i.state == DeliveryState::Sending,
-            error: match &i.state {
-                DeliveryState::Failed { error } => Some(error.clone()),
-                _ => None,
-            },
+        .filter(|i| persistable(ws, &i.message, c.restored.contains(&i.message.id)))
+        .map(|i| {
+            let sending = i.state == DeliveryState::Sending;
+            OutboxEntry {
+                message: i.message.clone(),
+                queued: c.queued.contains(&i.message.id) || sending,
+                maybe_sent: sending || c.unconfirmed.contains(&i.message.id),
+                error: match &i.state {
+                    DeliveryState::Failed { error } => Some(error.clone()),
+                    _ => None,
+                },
+            }
         })
         .collect();
-    let sig: Vec<(String, bool, Option<String>)> = entries
+    let sig: Vec<OutboxSig> = entries
         .iter()
-        .map(|e| (e.message.id.clone(), e.queued, e.error.clone()))
+        .map(|e| {
+            (
+                e.message.id.clone(),
+                e.queued,
+                e.maybe_sent,
+                e.error.clone(),
+            )
+        })
         .collect();
     if c.outbox_sig.as_ref() != Some(&sig) {
         c.outbox_sig = Some(sig);
@@ -449,66 +520,149 @@ fn ask_seeds(s: &mut ServerState, handle: &CacheHandle) -> Task<Message> {
     Task::batch(tasks)
 }
 
-/// Sends queued messages that are waiting (failed) once the server answers.
+/// Sends queued messages that are waiting (failed) once the server answers:
+/// one sequence at a time, oldest first. Messages of rooms that need
+/// encryption wait until the E2E manager can encrypt for them.
 fn send_queued(s: &mut ServerState) -> Task<Message> {
-    if s.cache.queued.is_empty() || !online(s) {
+    if s.cache.queued.is_empty() || !s.cache.sending.is_empty() || !online(s) {
         return Task::none();
     }
     let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
         return Task::none();
     };
-    let ready: Vec<RcMessage> = s
+    let mut waiting: Vec<(RcMessage, Option<String>)> = s
         .workspace
         .outbox_items()
-        .filter(|i| matches!(i.state, DeliveryState::Failed { .. }))
         .filter(|i| s.cache.queued.contains(&i.message.id))
-        .filter(|i| !s.cache.sending.contains(&i.message.id))
-        .map(|i| i.message.clone())
+        .filter_map(|i| match &i.state {
+            DeliveryState::Failed { error } => Some((i.message.clone(), Some(error.clone()))),
+            _ => None,
+        })
         .collect();
-    let mut tasks = Vec::new();
-    for m in ready {
-        let (id, rid, tmid) = (m.id.clone(), m.rid.clone(), m.tmid.clone());
-        s.cache.sending.insert(id.clone());
-        s.workspace.mark_pending_sending(&rid, tmid.as_deref(), &id);
-        // Encrypted rooms: encrypted now with the current room key (or
-        // refused, never sent as plaintext).
-        let enc = crate::e2e::outgoing::prepare_send(&s.workspace, &m);
-        let out = OutgoingMessage {
-            id: Some(m.id),
-            rid: m.rid,
-            msg: m.msg,
-            tmid: m.tmid,
-            tshow: m.tshow,
-            ..Default::default()
-        };
-        let rest = rest.clone();
-        let (sid, generation) = (s.id.clone(), s.generation);
-        let (id2, rid2) = (id.clone(), rid.clone());
-        tasks.push(Task::perform(
-            async move {
-                match crate::e2e::outgoing::send_outgoing(rest.clone(), out, enc).await {
-                    Ok(m) => Ok(Box::new(m)),
-                    // Sent before (e.g. the app quit before it heard back):
-                    // the server keeps the first message with this id.
-                    Err(e) => match rest.get_message(&id2).await {
-                        Ok(found) if found.rid == rid2 => Ok(Box::new(found)),
-                        _ => Err(Failure::from(e)),
-                    },
+    waiting.sort_by(|(a, _), (b, _)| (a.ts, &a.id).cmp(&(b.ts, &b.id)));
+    let mut held: HashSet<String> = HashSet::new();
+    let mut ready = Vec::new();
+    for (m, error) in waiting {
+        if held.contains(&m.rid) {
+            continue;
+        }
+        match crate::e2e::outgoing::mode(&s.workspace, &m.rid) {
+            Mode::Plain | Mode::Encrypt(_) => {}
+            // Not ready to encrypt (keys loading, room key missing, room
+            // state unknown): the room's messages wait, never downgraded.
+            Mode::Blocked | Mode::Unencrypted => {
+                held.insert(m.rid.clone());
+                let why = crate::e2e::outgoing::blocked_text(&s.workspace, &m.rid);
+                if error.as_deref() != Some(why.as_str()) {
+                    s.workspace
+                        .mark_pending_failed(&m.rid, m.tmid.as_deref(), &m.id, &why);
                 }
-            },
-            move |r| {
-                wrap(Msg::Sent(
-                    sid.clone(),
-                    generation,
-                    id.clone(),
-                    rid.clone(),
-                    tmid.clone(),
-                    r,
-                ))
-            },
-        ));
+                continue;
+            }
+        }
+        let enc = crate::e2e::outgoing::prepare_send(&s.workspace, &m);
+        ready.push(QueuedSend {
+            check_deleted: s.cache.unconfirmed.contains(&m.id),
+            message: m,
+            enc,
+        });
     }
-    Task::batch(tasks)
+    if ready.is_empty() {
+        return Task::none();
+    }
+    for q in &ready {
+        let m = &q.message;
+        s.cache.sending.insert(m.id.clone());
+        s.workspace
+            .mark_pending_sending(&m.rid, m.tmid.as_deref(), &m.id);
+        // The composer must not take it for a lost send.
+        crate::room::composer::outbox_start(&s.id, &m.rid, &m.id);
+    }
+    let (sid, generation) = (s.id.clone(), s.generation);
+    Task::run(send_in_order(rest, ready), move |r| {
+        wrap(Msg::Sent(sid.clone(), generation, Box::new(r)))
+    })
+}
+
+/// Sends `items` one after the other (each waits for the previous answer,
+/// so the server keeps their order); after a failure the rest of that
+/// room is skipped. Yields one result per item.
+pub fn send_in_order(rest: RestClient, items: Vec<QueuedSend>) -> impl Stream<Item = Sent> {
+    iced::stream::channel(8, async move |mut out| {
+        let mut failed: HashMap<String, Failure> = HashMap::new();
+        for q in items {
+            let (id, rid, tmid) = (
+                q.message.id.clone(),
+                q.message.rid.clone(),
+                q.message.tmid.clone(),
+            );
+            let outcome = match failed.get(&rid) {
+                Some(e) => Outcome::Skipped(e.clone()),
+                None => send_one(&rest, q).await,
+            };
+            if let Outcome::Failed(e) = &outcome {
+                failed.insert(rid.clone(), e.clone());
+            }
+            let _ = out
+                .send(Sent {
+                    id,
+                    rid,
+                    tmid,
+                    outcome,
+                })
+                .await;
+        }
+    })
+}
+
+async fn send_one(rest: &RestClient, q: QueuedSend) -> Outcome {
+    let QueuedSend {
+        message: m,
+        enc,
+        check_deleted,
+    } = q;
+    let enc = match enc {
+        Some(Err(e)) => return Outcome::Failed(e.into()),
+        other => other,
+    };
+    if check_deleted {
+        // Possibly delivered before the app quit: sending the id again
+        // after a deletion would bring the message back.
+        if let Ok(found) = rest.get_message(&m.id).await
+            && found.rid == m.rid
+        {
+            return Outcome::Sent(Box::new(found));
+        }
+        let since =
+            m.ts.map(|t| t.timestamp_millis() - DELETED_LOOKBACK_MS)
+                .and_then(RcDate::from_millis)
+                .or_else(|| RcDate::from_millis(0));
+        if let Some(since) = since {
+            match rest.chat_sync_messages(&m.rid, since).await {
+                Ok(sync) if sync.deleted.iter().any(|d| d.id == m.id) => return Outcome::Deleted,
+                Ok(_) => {}
+                Err(e) => return Outcome::Failed(e.into()),
+            }
+        }
+    }
+    let (id, rid) = (m.id.clone(), m.rid.clone());
+    let out = OutgoingMessage {
+        id: Some(m.id),
+        rid: m.rid,
+        msg: m.msg,
+        tmid: m.tmid,
+        tshow: m.tshow,
+        ..Default::default()
+    };
+    match crate::e2e::outgoing::send_outgoing(rest.clone(), out, enc).await {
+        Ok(m) => Outcome::Sent(Box::new(m)),
+        // Sent before (the app quit before it heard back): the server
+        // keeps the first message with this id.
+        Err(e) => match rest.get_message(&id).await {
+            Ok(found) if found.rid == rid => Outcome::Sent(Box::new(found)),
+            _ => Outcome::Failed(e.into()),
+        },
+    }
 }
 
 pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
@@ -534,21 +688,43 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             }
             Task::none()
         }
-        Msg::Sent(sid, generation, id, rid, tmid, r) => {
+        Msg::Sent(sid, generation, r) => {
+            crate::room::composer::outbox_forget(&sid, &r.id);
             let Some(s) = app.servers.get_mut(&sid) else {
                 return Task::none();
             };
-            s.cache.sending.remove(&id);
+            s.cache.sending.remove(&r.id);
             if s.generation != generation {
                 return Task::none();
             }
-            s.cache.queued.remove(&id);
-            match r {
-                Ok(m) => s.workspace.apply_message(*m),
-                Err(e) => {
+            let Sent {
+                id,
+                rid,
+                tmid,
+                outcome,
+            } = *r;
+            let tmid = tmid.as_deref();
+            match outcome {
+                Outcome::Sent(m) => {
+                    s.cache.queued.remove(&id);
+                    s.cache.unconfirmed.remove(&id);
+                    s.workspace.apply_message(*m);
+                }
+                Outcome::Deleted => {
+                    s.cache.queued.remove(&id);
+                    s.workspace.discard_pending(&rid, tmid, &id);
+                }
+                Outcome::Failed(e) | Outcome::Skipped(e) => {
                     tracing::warn!(error = %e, "queued message not sent");
-                    s.workspace
-                        .mark_pending_failed(&rid, tmid.as_deref(), &id, &e.user_text());
+                    if *s.workspace.connection() == ConnectionState::Connected {
+                        s.cache.queued.remove(&id);
+                        s.workspace
+                            .mark_pending_failed(&rid, tmid, &id, &e.user_text());
+                    } else {
+                        // The connection went away meanwhile: it waits.
+                        s.workspace
+                            .mark_pending_failed(&rid, tmid, &id, &t!("cache.waiting"));
+                    }
                 }
             }
             Task::none()
@@ -557,9 +733,13 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             app.offline.size = Some(n);
             Task::none()
         }
-        Msg::Cleared => {
+        Msg::Cleared(r) => {
             app.offline.clearing = false;
-            size_task(app)
+            let toast = match r {
+                Ok(()) => app.toast(BannerKind::Success, t!("cache.cleared"), String::new()),
+                Err(e) => app.toast(BannerKind::Error, t!("cache.clear_failed"), e),
+            };
+            Task::batch([toast, size_task(app)])
         }
     }
 }
@@ -572,14 +752,30 @@ fn on_opened(
 ) -> Task<Message> {
     let last_room = app.config.server(&sid).and_then(|e| e.last_room.clone());
     let active = app.active.as_ref() == Some(&sid);
+    let current = app.servers.get(&sid).is_some_and(|s| {
+        s.cache.opening.as_deref() == Some(user.as_str())
+            && s.credentials.as_ref().map(|c| c.user_id.as_str()) == Some(user.as_str())
+    });
+    if !current {
+        // Signed out, removed or another account meanwhile: the handle is
+        // dropped; a cache purged while it was opening is deleted again
+        // (the open may have recreated it).
+        let dir = app.offline.base.as_ref().map(|b| server_dir(b, &sid));
+        if let (Some(dir), Ok(o)) = (dir, r)
+            && app.offline.purged.remove(&dir)
+        {
+            return Task::perform(o.handle.destroy(), |r| {
+                if let Err(e) = r {
+                    tracing::warn!(error = %e, "cannot delete the offline cache");
+                }
+                Message::Noop
+            });
+        }
+        return Task::none();
+    }
     let Some(s) = app.servers.get_mut(&sid) else {
         return Task::none();
     };
-    let current_user = s.credentials.as_ref().map(|c| c.user_id.as_str());
-    if s.cache.opening.as_deref() != Some(user.as_str()) || current_user != Some(user.as_str()) {
-        // Signed out or another account meanwhile: the handle is dropped.
-        return Task::none();
-    }
     s.cache.opening = None;
     let o = match r {
         Ok(o) => o,
@@ -659,6 +855,10 @@ fn restore_outbox(s: &mut ServerState, outbox: Vec<OutboxEntry>) {
         s.workspace
             .mark_pending_failed(&rid, tmid.as_deref(), &id, &error);
         s.cache.known.insert(id.clone());
+        s.cache.restored.insert(id.clone());
+        if e.queued && e.maybe_sent {
+            s.cache.unconfirmed.insert(id.clone());
+        }
         if e.queued {
             s.cache.queued.insert(id);
         }
@@ -671,11 +871,16 @@ pub fn purge(app: &mut App, sid: &ServerId) -> Task<Message> {
     let Some(base) = app.offline.base.clone() else {
         return Task::none();
     };
-    let handle = app
+    let dir = server_dir(&base, sid);
+    let cache = app
         .servers
         .get_mut(sid)
-        .and_then(|s| std::mem::take(&mut s.cache).handle);
-    let dir = server_dir(&base, sid);
+        .map(|s| std::mem::take(&mut s.cache))
+        .unwrap_or_default();
+    if cache.handle.is_none() && cache.opening.is_some() {
+        app.offline.purged.insert(dir.clone());
+    }
+    let handle = cache.handle;
     Task::perform(
         async move {
             match handle {
@@ -707,7 +912,10 @@ pub fn clear_all(app: &mut App) -> Task<Message> {
     for s in app.servers.values_mut() {
         match s.cache.handle.clone() {
             Some(h) => {
+                // What is shown is written again in full (the outbox too).
                 s.cache.captured.clear();
+                s.cache.needs_full = true;
+                s.cache.outbox_sig = None;
                 handles.push(h);
             }
             None if s.cache.opening.is_none() => closed.push(server_dir(&base, &s.id)),
@@ -716,19 +924,27 @@ pub fn clear_all(app: &mut App) -> Task<Message> {
     }
     Task::perform(
         async move {
+            let mut first: Result<(), String> = Ok(());
             for h in handles {
                 if let Err(e) = h.clear().await {
                     tracing::warn!(error = %e, "cannot clear the offline cache");
+                    first = first.and(Err(e.to_string()));
                 }
             }
-            let _ = tokio::task::spawn_blocking(move || {
-                for dir in closed {
-                    let _ = rustket_core::cache::destroy(&dir);
-                }
+            let closed = tokio::task::spawn_blocking(move || {
+                closed
+                    .iter()
+                    .map(|dir| rustket_core::cache::destroy(dir))
+                    .find_map(Result::err)
             })
             .await;
+            match closed {
+                Ok(Some(e)) => first.and(Err(e.to_string())),
+                Err(e) => first.and(Err(e.to_string())),
+                Ok(None) => first,
+            }
         },
-        |()| wrap(Msg::Cleared),
+        |r| wrap(Msg::Cleared(r)),
     )
 }
 
@@ -769,5 +985,180 @@ pub fn on_quit(app: &App) {
         if !h.flush_blocking(QUIT_FLUSH) {
             tracing::warn!(server = %s.id, "offline cache not flushed before quitting");
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use iced::futures::StreamExt;
+    use rocketchat::ServerUrl;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    type Log = Arc<Mutex<Vec<(String, String)>>>;
+
+    /// A local HTTP server answering with `answer(path, body)` (status,
+    /// JSON) and logging every request in order.
+    async fn stub(answer: fn(&str, &str) -> (u16, String)) -> (ServerUrl, Log) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let log: Log = Arc::default();
+        let log2 = log.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let log = log2.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let head_end = loop {
+                        if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break p + 4;
+                        }
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                    let len = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse::<usize>().ok())?
+                        })
+                        .unwrap_or(0);
+                    while buf.len() < head_end + len {
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let path = head
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let body = String::from_utf8_lossy(&buf[head_end..head_end + len]).to_string();
+                    let (status, json) = answer(&path, &body);
+                    log.lock().unwrap().push((path, body));
+                    let resp = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+                        json.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (
+            ServerUrl::parse(&format!("http://127.0.0.1:{port}")).unwrap(),
+            log,
+        )
+    }
+
+    fn answer(path: &str, body: &str) -> (u16, String) {
+        let fail = (400, r#"{"success":false,"error":"boom"}"#.to_owned());
+        if path.contains("chat.sendMessage") {
+            let v: serde_json::Value = serde_json::from_str(body).unwrap();
+            let m = &v["message"];
+            if m["_id"] == "bad" {
+                return fail;
+            }
+            let msg = serde_json::json!({"_id": m["_id"], "rid": m["rid"], "msg": m["msg"]});
+            return (
+                200,
+                serde_json::json!({"success": true, "message": msg}).to_string(),
+            );
+        }
+        if path.contains("chat.syncMessages") {
+            return (
+                200,
+                r#"{"success":true,"result":{"updated":[],"deleted":[{"_id":"gone"}]}}"#.to_owned(),
+            );
+        }
+        fail
+    }
+
+    fn queued(id: &str, rid: &str, ms: i64, check_deleted: bool) -> QueuedSend {
+        QueuedSend {
+            message: RcMessage {
+                id: id.into(),
+                rid: rid.into(),
+                msg: format!("text {id}"),
+                ts: RcDate::from_millis(ms),
+                ..Default::default()
+            },
+            enc: None,
+            check_deleted,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_messages_go_out_in_order_one_at_a_time() {
+        let (server, log) = stub(answer).await;
+        let tls = crate::session::tls_for(&[]).unwrap();
+        let rest = RestClient::new(server, &tls).unwrap();
+        let items = vec![
+            queued("a", "R1", 1_000, false),
+            queued("bad", "R1", 2_000, false),
+            queued("c", "R1", 3_000, false),
+            queued("d", "R2", 4_000, false),
+            queued("gone", "R3", 5_000_000, true),
+        ];
+        let results: Vec<Sent> = send_in_order(rest, items).collect().await;
+        let got: Vec<(&str, &str)> = results
+            .iter()
+            .map(|r| {
+                let o = match &r.outcome {
+                    Outcome::Sent(_) => "sent",
+                    Outcome::Deleted => "deleted",
+                    Outcome::Failed(_) => "failed",
+                    Outcome::Skipped(_) => "skipped",
+                };
+                (r.id.as_str(), o)
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("a", "sent"),
+                ("bad", "failed"),
+                ("c", "skipped"),
+                ("d", "sent"),
+                ("gone", "deleted"),
+            ]
+        );
+        let calls: Vec<String> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(path, body)| {
+                let endpoint = path.split('?').next().unwrap_or_default().to_owned();
+                match serde_json::from_str::<serde_json::Value>(body) {
+                    Ok(v) if v["message"]["_id"].is_string() => {
+                        format!("{endpoint} {}", v["message"]["_id"].as_str().unwrap())
+                    }
+                    _ => endpoint,
+                }
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                "/api/v1/chat.sendMessage a",
+                "/api/v1/chat.sendMessage bad",
+                // A failed send checks whether the message exists.
+                "/api/v1/chat.getMessage",
+                "/api/v1/chat.sendMessage d",
+                // Possibly delivered before quitting: looked up, then the
+                // deletions; never sent again.
+                "/api/v1/chat.getMessage",
+                "/api/v1/chat.syncMessages",
+            ]
+        );
     }
 }

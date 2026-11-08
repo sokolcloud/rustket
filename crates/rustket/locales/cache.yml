@@ -4,13 +4,13 @@ cache.updating:
   ru: "Показаны сохранённые данные, идёт подключение…"
 cache.updating_from:
   en: "Showing data saved at %{time} while connecting…"
-  ru: "Показаны данные, сохранённые в %{time}, идёт подключение…"
+  ru: "Показаны данные от %{time}, идёт подключение…"
 cache.offline:
-  en: "Offline: showing saved messages. Messages you write are sent when the connection is back."
-  ru: "Нет связи: показаны сохранённые сообщения. Новые сообщения отправятся, когда связь восстановится."
+  en: "Offline, reconnecting. Showing saved messages; new messages are sent once connected."
+  ru: "Нет связи, переподключение. Показаны сохранённые сообщения; новые отправятся после подключения."
 cache.offline_from:
-  en: "Offline: showing data saved at %{time}. Messages you write are sent when the connection is back."
-  ru: "Нет связи: показаны данные, сохранённые в %{time}. Новые сообщения отправятся, когда связь восстановится."
+  en: "Offline, reconnecting. Showing data saved at %{time}; new messages are sent once connected."
+  ru: "Нет связи, переподключение. Показаны данные от %{time}; новые сообщения отправятся после подключения."
 cache.waiting:
   en: "Waiting for the connection; sent automatically"
   ru: "Ожидает подключения, отправится автоматически"
@@ -32,6 +32,9 @@ cache.settings_help_size:
 cache.settings_clear:
   en: "Clear"
   ru: "Очистить"
+cache.clear_failed:
+  en: "Couldn't clear the offline cache"
+  ru: "Не удалось очистить офлайн-кэш"
 cache.cleared:
   en: "Offline cache cleared"
   ru: "Офлайн-кэш очищен"

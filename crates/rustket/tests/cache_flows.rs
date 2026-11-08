@@ -134,7 +134,17 @@ async fn restart_shows_the_cache_until_the_initial_load() {
                 username: Some("alice".into()),
                 ..Default::default()
             },
-            subscriptions: vec![sub("R1", 0), sub("R2", 2), sub("ENC", 0)],
+            // NEWENC: its room object has not arrived, its subscription
+            // holds a room key.
+            subscriptions: vec![
+                sub("R1", 0),
+                sub("R2", 2),
+                sub("ENC", 0),
+                Subscription {
+                    e2e_key: Some("ROOMKEY".into()),
+                    ..sub("NEWENC", 0)
+                },
+            ],
             rooms: vec![
                 room("R1"),
                 room("R2"),
@@ -162,9 +172,25 @@ async fn restart_shows_the_cache_until_the_initial_load() {
         ws.add_pending(pending);
         let secret = ws.new_local_message("ENC", "encrypted room draft", None, false);
         ws.add_pending(secret);
+        let secret = ws.new_local_message("NEWENC", "NEWENCPLAINTEXT", None, false);
+        ws.add_pending(secret);
     }
     let _ = app.update(Message::Noop);
+    // Settings → Storage → Clear: what is shown is written again in full,
+    // unsent messages stay.
+    run(rustket::cache::clear_all(&mut app)).await;
+    let _ = app.update(Message::Noop);
     rustket::cache::on_quit(&app);
+    let offline_dir = server_dir(&dir.join("offline"), &sid);
+    for entry in std::fs::read_dir(&offline_dir).unwrap() {
+        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+        for needle in ["NEWENCPLAINTEXT", "encrypted room draft"] {
+            assert!(
+                !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+                "{needle} on disk"
+            );
+        }
+    }
     app.flush_config();
     drop(app);
 

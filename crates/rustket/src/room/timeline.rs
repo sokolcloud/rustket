@@ -360,7 +360,11 @@ impl Timeline {
         let top: Element<'a, Message> = if plan.more_above {
             space().height(1).into()
         } else {
-            top_indicator(tl)
+            // Cached messages shown while the server is unreachable: the
+            // offline strip explains the failed first page.
+            let offline = tl.has_seeded()
+                && *ws.connection() != rustket_core::workspace::ConnectionState::Connected;
+            top_indicator(tl, offline)
         };
         col = col.push(
             list::TOP_KEY,
@@ -426,7 +430,7 @@ fn first_page_failed<'a>() -> Element<'a, Message> {
     .into()
 }
 
-fn top_indicator<'a>(tl: &rustket_core::timeline::Timeline) -> Element<'a, Message> {
+fn top_indicator<'a>(tl: &rustket_core::timeline::Timeline, offline: bool) -> Element<'a, Message> {
     let p = &tl.pagination;
     let content: Element<'a, Message> = if p.loading_before {
         hrow![
@@ -438,7 +442,7 @@ fn top_indicator<'a>(tl: &rustket_core::timeline::Timeline) -> Element<'a, Messa
         .spacing(SPACE_2)
         .align_y(Alignment::Center)
         .into()
-    } else if p.error.is_some() {
+    } else if p.error.is_some() && !offline {
         hrow![
             text(t!("room_timeline.history_failed").into_owned())
                 .size(TEXT_CAPTION)

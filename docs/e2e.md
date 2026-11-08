@@ -1528,14 +1528,22 @@ layer, so no caller can bypass it):
 Cached messages are seeded into timelines and decrypted on display as usual (`e2e::shown`); while
 the manager is not running (offline start) they show the locked placeholder.
 
-**Outbox decision:** pending messages of encrypted rooms are **not persisted** (nor any pending
-message that is encrypted, carries an `e2e` value, or belongs to a room the workspace does not
-know). A pending E2E message holds the plaintext until `outgoing::prepare_send` encrypts it at
-send time, and encrypting it at write time would bind it to a room key that may be rotated
-before it is sent. Within the running process such a message is still queued while offline and
-sent (encrypted with the current key, or refused) once the server is back; quitting drops it.
-`tests: rustket-core cache::tests::e2e_plaintext_never_reaches_the_file` scans the database and
-WAL files for the plaintext, the room key and the private key.
+**Outbox decision:** pending messages of encrypted rooms are **not persisted**. Only a pending
+message of a room whose room object is known and unencrypted, and whose subscription holds no
+room key, is written (`cache::persistable`); one already on disk stays while its room is not
+known yet (cleared cache, initial load not in) and is dropped once the room turns out encrypted.
+The storage layer also skips encrypted shapes and messages of a room stored as encrypted, and
+runs with `secure_delete` so removed rows do not linger in free pages. A pending E2E message holds
+the plaintext until `outgoing::prepare_send` encrypts it at send time, and encrypting it at write
+time would bind it to a room key that may be rotated before it is sent. Within the running
+process such a message is still queued while offline; once the server is back it waits until
+`outgoing::mode` is `Encrypt` (manager ready, room key present) and is never sent as plaintext
+automatically, even where unencrypted messages are allowed (the user can retry by hand).
+Quitting drops it.
+Tests: `rustket-core cache::tests::e2e_plaintext_never_reaches_the_file` scans the database and
+WAL files (before and after a checkpoint) for the plaintext, the room key and the private key;
+`rustket tests/cache_flows.rs` checks that a realistic pending message (plaintext, no `t`) of a
+room known only by a subscription with a room key never reaches the files.
 
 ---
 

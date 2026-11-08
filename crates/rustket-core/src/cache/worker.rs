@@ -3,12 +3,14 @@
 //! reads through oneshot channels.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
 
-use super::db::destroy;
+use super::db::{destroy, is_corruption};
 use super::{
     Batch, CacheDb, CacheError, CachedState, CachedTimeline, OpenReport, OutboxEntry, Result,
     TimelineKey,
@@ -30,6 +32,9 @@ enum Cmd {
 pub struct CacheHandle {
     tx: mpsc::Sender<Cmd>,
     dir: PathBuf,
+    /// A write failed (its batch was dropped) since the last
+    /// [`Self::take_write_failed`].
+    write_failed: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for CacheHandle {
@@ -70,6 +75,12 @@ impl CacheHandle {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Whether a write failed since the last call: what it held has to be
+    /// written again.
+    pub fn take_write_failed(&self) -> bool {
+        self.write_failed.swap(false, Ordering::AcqRel)
     }
 
     /// Queues a batch (empty batches are dropped).
@@ -156,7 +167,7 @@ fn run(
     preload: Option<TimelineKey>,
     reply: oneshot::Sender<Result<Opened>>,
 ) {
-    let (mut db, (state, outbox, interrupted_uploads, preloaded, report)) =
+    let (db, (state, outbox, interrupted_uploads, preloaded, report)) =
         match open_db(&dir, &user_id, preload) {
             Ok(v) => v,
             Err(e) => {
@@ -165,10 +176,12 @@ fn run(
             }
         };
     let (tx, rx) = mpsc::channel();
+    let write_failed = Arc::new(AtomicBool::new(false));
     let opened = Opened {
         handle: CacheHandle {
             tx,
             dir: dir.clone(),
+            write_failed: write_failed.clone(),
         },
         state,
         outbox,
@@ -179,6 +192,9 @@ fn run(
     if reply.send(Ok(opened)).is_err() {
         return;
     }
+    // `None`: the database broke and could not be opened again; writes are
+    // dropped, reads find nothing.
+    let mut db = Some(db);
     let mut next: Option<Cmd> = None;
     loop {
         let cmd = match next.take() {
@@ -202,29 +218,41 @@ fn run(
                         }
                     }
                 }
-                if let Err(e) = db.write(batch) {
+                let Some(d) = db.as_mut() else {
+                    write_failed.store(true, Ordering::Release);
+                    continue;
+                };
+                if let Err(e) = d.write(batch) {
                     tracing::warn!(error = %e, "offline cache write failed");
-                    // A database that broke while running starts over.
-                    if let Ok((fresh, report)) = CacheDb::open(&dir, &user_id)
-                        && report.moved_aside.is_some()
-                    {
-                        db = fresh;
+                    write_failed.store(true, Ordering::Release);
+                    if is_corruption(&e) {
+                        // A database that broke while running starts over;
+                        // the old connection is closed first.
+                        drop(db.take());
+                        db = CacheDb::open(&dir, &user_id)
+                            .inspect_err(|e| tracing::warn!(error = %e, "offline cache lost"))
+                            .ok()
+                            .map(|(fresh, _)| fresh);
                     }
                 }
             }
             Cmd::Timeline(key, reply) => {
-                let t = db
-                    .load_timeline(&key)
-                    .inspect_err(|e| tracing::warn!(error = %e, "offline cache read failed"))
-                    .ok()
-                    .flatten();
+                let t = db.as_mut().and_then(|d| {
+                    d.load_timeline(&key)
+                        .inspect_err(|e| tracing::warn!(error = %e, "offline cache read failed"))
+                        .ok()
+                        .flatten()
+                });
                 let _ = reply.send(t);
             }
             Cmd::Clear(reply) => {
-                let _ = reply.send(db.clear());
+                let _ = reply.send(match db.as_mut() {
+                    Some(d) => d.clear(),
+                    None => Err(CacheError::Closed),
+                });
             }
             Cmd::Size(reply) => {
-                let _ = reply.send(db.disk_size());
+                let _ = reply.send(db.as_ref().map_or(0, CacheDb::disk_size));
             }
             Cmd::Flush(reply) => {
                 let _ = reply.send(());

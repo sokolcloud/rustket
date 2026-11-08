@@ -459,6 +459,7 @@ impl App {
             }
             Go::Quit => {
                 self.flush_config();
+                crate::cache::on_quit(self);
                 iced::exit()
             }
         }

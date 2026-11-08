@@ -416,12 +416,22 @@ while the server is unreachable, seeds opened timelines without a first page
   the last room opens with its cached messages. `RoomView::readable` and the
   thread read mark are false while `from_cache()`: cached state never marks
   anything read; it never notifies (notifications only come from the stream).
-- Outbox: pending text messages (not of encrypted rooms) are persisted with
-  their client ids; those written offline or still sending at quit are sent
-  once online (`cache::Msg::Sent`), a failed resend checks `chat.getMessage`
-  (the server keeps the first message with an id). Restored ones show as
-  failed ("waiting for the connection") and stay retryable.
-- `cache::purge(app, sid)` on logout / rejected token / removal,
-  `cache::clear_all` (Settings → Storage, `Effect::ClearOfflineCache`; unsent
-  messages stay), `cache::on_quit` (flush, interrupted uploads reported on the
-  next start), `cache::view::strip` above the room.
+- Outbox: pending text messages (only of rooms known to be unencrypted) are
+  persisted with their client ids; those written offline or still sending at
+  quit are sent once online, one at a time and oldest first (a room stops at
+  its first failure; `cache::send_in_order`, results as `cache::Msg::Sent`).
+  Encrypted rooms wait until the E2E manager can encrypt (never downgraded).
+  A failed resend checks `chat.getMessage` (the server keeps the first message
+  with an id); one that may have been delivered before quitting is looked up
+  first and dropped when `chat.syncMessages` lists it as deleted. Queue sends
+  are registered in the composer's in-flight registry
+  (`composer::outbox_start` / `outbox_forget`). Restored ones show as failed
+  ("waiting for the connection") and stay retryable.
+- `cache::purge(app, sid)` on logout / rejected token / removal (a cache
+  still opening is deleted when its open arrives), `cache::clear_all`
+  (Settings → Storage, `Effect::ClearOfflineCache`, toast on completion;
+  unsent messages stay, the shown state is written again in full),
+  `cache::on_quit` from both exit paths (window close and tray Quit: flush,
+  interrupted uploads reported on the next start), `cache::view::strip`
+  replaces the connection strip while cached data is shown (one strip with
+  Retry).

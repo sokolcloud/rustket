@@ -113,9 +113,12 @@ fn newer_schema_is_moved_aside() {
     conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
         .unwrap();
     drop(conn);
-    let (db, report) = CacheDb::open(&dir, "u1").unwrap();
+    let (mut db, report) = CacheDb::open(&dir, "u1").unwrap();
     assert_eq!(report.moved_aside, Some(dir.join("cache.sqlite.broken")));
     assert!(db.load_state().unwrap().is_empty());
+    // "Clear" also deletes the database moved aside.
+    db.clear().unwrap();
+    assert!(!dir.join("cache.sqlite.broken").exists());
 }
 
 #[test]
@@ -309,6 +312,7 @@ fn another_account_starts_empty() {
         outbox: Some(vec![OutboxEntry {
             message: msg("o1", "R1", 5, "u1"),
             queued: true,
+            maybe_sent: false,
             error: None,
         }]),
         ..Default::default()
@@ -332,12 +336,20 @@ fn outbox_survives_a_restart() {
         OutboxEntry {
             message: msg("o1", "R1", 5, "u1"),
             queued: true,
+            maybe_sent: false,
             error: None,
         },
         OutboxEntry {
             message: reply,
             queued: false,
+            maybe_sent: false,
             error: Some("boom".into()),
+        },
+        OutboxEntry {
+            message: msg("o3", "R1", 9, "u1"),
+            queued: true,
+            maybe_sent: true,
+            error: None,
         },
     ];
     db.write(Batch {
@@ -359,7 +371,7 @@ fn outbox_survives_a_restart() {
     .unwrap();
     db.clear().unwrap();
     assert!(db.load_state().unwrap().is_empty());
-    assert_eq!(db.load_outbox().unwrap().len(), 2);
+    assert_eq!(db.load_outbox().unwrap().len(), 3);
 }
 
 #[test]
@@ -384,9 +396,13 @@ fn e2e_plaintext_never_reaches_the_file() {
     s.e2e_key = Some("ENCRYPTEDROOMKEY".into());
     let mut user = me("u1", "alice");
     user.e2e = Some(json!({"private_key": "PRIVATEKEYMATERIAL"}));
+    // A real pending message: plaintext, no `t`, no `content` (it is
+    // encrypted at send time).
     let mut plain_pending = msg("o1", "R1", 5, "u1");
     plain_pending.msg = secret.into();
-    plain_pending.t = Some("e2e".into());
+    let mut shaped_pending = msg("o2", "R2", 6, "u1");
+    shaped_pending.msg = secret.into();
+    shaped_pending.t = Some("e2e".into());
     db.write(Batch {
         full: Some(Box::new(CachedState {
             me: Some(user),
@@ -399,14 +415,40 @@ fn e2e_plaintext_never_reaches_the_file() {
             parent: None,
             messages: vec![kept, no_envelope, pinned],
         }],
-        outbox: Some(vec![OutboxEntry {
-            message: plain_pending,
-            queued: true,
-            error: None,
-        }]),
+        outbox: Some(vec![
+            OutboxEntry {
+                message: plain_pending,
+                queued: true,
+                maybe_sent: false,
+                error: None,
+            },
+            OutboxEntry {
+                message: shaped_pending,
+                queued: true,
+                maybe_sent: false,
+                error: None,
+            },
+        ]),
         ..Default::default()
     })
     .unwrap();
+    // Nothing of it in any file, the WAL included, before a checkpoint
+    // folds it into the database.
+    let scan = |stage: &str| {
+        for entry in std::fs::read_dir(tmp.path()).unwrap() {
+            let path = entry.unwrap().path();
+            let bytes = std::fs::read(&path).unwrap();
+            for needle in [secret, "ENCRYPTEDROOMKEY", "PRIVATEKEYMATERIAL"] {
+                assert!(
+                    !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+                    "{needle} found in {} ({stage})",
+                    path.display()
+                );
+            }
+        }
+    };
+    assert!(tmp.path().join("cache.sqlite-wal").exists());
+    scan("before checkpoint");
     let t = db.load_timeline(&TimelineKey::room("R1")).unwrap().unwrap();
     assert_eq!(
         t.messages.len(),
@@ -423,17 +465,44 @@ fn e2e_plaintext_never_reaches_the_file() {
     assert_eq!(state.subscriptions[0].e2e_key, None);
     assert_eq!(state.me.unwrap().e2e, None);
     assert!(db.load_outbox().unwrap().is_empty());
-    // Nothing of it in any file (database and WAL).
     db.conn_checkpoint();
-    for entry in std::fs::read_dir(tmp.path()).unwrap() {
-        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
-        for needle in [secret, "ENCRYPTEDROOMKEY", "PRIVATEKEYMATERIAL"] {
-            assert!(
-                !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
-                "{needle} found on disk"
-            );
-        }
-    }
+    scan("after checkpoint");
+}
+
+#[test]
+fn coalesced_batches_do_not_bring_back_a_removed_room() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    db.write(Batch {
+        full: Some(Box::new(fixture_state())),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut a = Batch {
+        timelines: vec![timeline("R1", messages("R1", 3))],
+        ..Default::default()
+    };
+    a.merge(Batch {
+        rooms: vec![("R1".into(), None, None)],
+        ..Default::default()
+    });
+    assert!(a.timelines.is_empty());
+    db.write(a).unwrap();
+    assert!(
+        db.load_timeline(&TimelineKey::room("R1"))
+            .unwrap()
+            .is_none()
+    );
+    // A later snapshot that no longer lists a room drops its timeline too.
+    let mut b = Batch {
+        timelines: vec![timeline("R9", messages("R9", 2))],
+        ..Default::default()
+    };
+    b.merge(Batch {
+        full: Some(Box::new(fixture_state())),
+        ..Default::default()
+    });
+    assert!(b.timelines.is_empty());
 }
 
 #[test]

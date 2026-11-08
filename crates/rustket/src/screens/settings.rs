@@ -198,13 +198,8 @@ impl Settings {
                     String::new(),
                 ))
             }
-            Message::ClearOfflineCache => {
-                Action::effect(Effect::ClearOfflineCache).with(Effect::Toast(
-                    BannerKind::Success,
-                    t!("cache.cleared").into_owned(),
-                    String::new(),
-                ))
-            }
+            // The result is toasted by `crate::cache` once it is done.
+            Message::ClearOfflineCache => Action::effect(Effect::ClearOfflineCache),
             Message::OpenUrl(url) => Action::effect(Effect::OpenUrl(url)),
             Message::Close => Action::effect(Effect::Close),
         }
@@ -471,19 +466,13 @@ impl Settings {
             ],
         ));
 
-        let mut storage: Vec<Element<'a, Message>> = Vec::new();
-        if let Some((size, clearing)) = v.offline_cache {
-            storage.push(crate::cache::view::storage_row(
-                size,
-                clearing,
-                Message::ClearOfflineCache,
-            ));
-        }
+        let with_cache_row = |rows| {
+            crate::cache::view::with_storage_row(v.offline_cache, Message::ClearOfflineCache, rows)
+        };
         body = body.push(section(
             t!("settings.storage").into_owned(),
-            storage
-                .into_iter()
-                .chain([row![
+            with_cache_row(vec![
+                row![
                     column![
                         text(t!("settings.image_cache")).size(TEXT_BODY),
                         text(t!("settings.image_cache_help"))
@@ -496,8 +485,8 @@ impl Settings {
                 ]
                 .spacing(SPACE_3)
                 .align_y(Alignment::Center)
-                .into()])
-                .collect(),
+                .into(),
+            ]),
         ));
 
         body = body.push(section(

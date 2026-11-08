@@ -156,6 +156,7 @@ async fn offline_edits_deletions_and_outbox_reconcile() {
                 outbox: Some(vec![OutboxEntry {
                     message: pending.clone(),
                     queued: true,
+                    maybe_sent: true,
                     error: None,
                 }]),
                 ..Default::default()

@@ -161,6 +161,9 @@ pub struct OutboxEntry {
     /// offline, or still sending when the app quit). Otherwise it failed
     /// and waits for the user's retry or discard.
     pub queued: bool,
+    /// Queued while a send was in flight (the app quit before the answer):
+    /// the server may have it, and it may have been deleted since.
+    pub maybe_sent: bool,
     /// The last error of a failed send.
     pub error: Option<String>,
 }
@@ -218,6 +221,17 @@ impl Batch {
             self.custom_emoji = None;
             self.custom_statuses = None;
             self.rooms.clear();
+            // Timelines of rooms the snapshot no longer lists are dropped.
+            if let Some(full) = &later.full {
+                let listed: std::collections::HashSet<&str> = full
+                    .subscriptions
+                    .iter()
+                    .map(|s| s.rid.as_str())
+                    .chain(full.rooms.iter().map(|r| r.id.as_str()))
+                    .collect();
+                self.timelines
+                    .retain(|t| listed.contains(t.key.rid.as_str()));
+            }
             self.full = later.full;
         }
         macro_rules! take {
@@ -235,6 +249,11 @@ impl Batch {
             interrupted_uploads
         );
         for r in later.rooms {
+            if r.1.is_none() && r.2.is_none() {
+                // The room is gone: an earlier timeline must not bring its
+                // messages back.
+                self.timelines.retain(|t| t.key.rid != r.0);
+            }
             self.rooms.retain(|(rid, _, _)| *rid != r.0);
             self.rooms.push(r);
         }
