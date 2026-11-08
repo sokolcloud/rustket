@@ -21,7 +21,7 @@ use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL};
 use rustket_ui::widget::{
-    AvatarShape, avatar, dialog, primary_button, secondary_button, text_field,
+    AvatarShape, arrow_keys, avatar, dialog, primary_button, secondary_button, text_field,
 };
 use serde_json::{Value, json};
 
@@ -126,6 +126,12 @@ pub enum Message {
     Members(u64, Res<Vec<UserSummary>>),
     AddMember(String),
     RemoveMember(String),
+    /// Up/Down in a picker field (`true`: parent room).
+    MoveIn(bool, i32),
+    /// Enter in the member field: add the highlighted suggestion.
+    PickMember,
+    /// Enter in the parent field: take the highlighted room.
+    PickParent,
     ParentQuery(String),
     SearchParents(u64),
     Parents(u64, Res<Vec<RoomSummary>>),
@@ -152,11 +158,17 @@ pub struct CreateRoom {
     pub member_query: String,
     pub member_seq: u64,
     pub suggestions: Vec<UserSummary>,
+    /// `member_seq` the suggestions were fetched for (older: outdated).
+    pub suggestions_seq: u64,
+    /// Highlighted entry of `suggestions` / `parent_suggestions`.
+    pub member_sel: usize,
+    pub parent_sel: usize,
     /// Parent room of a discussion: (rid, name).
     pub parent: Option<(String, String)>,
     pub parent_query: String,
     pub parent_seq: u64,
     pub parent_suggestions: Vec<RoomSummary>,
+    pub parent_suggestions_seq: u64,
     /// Opened from a room (header, panel, message action): a discussion
     /// only, no kind tabs.
     pub from_room: bool,
@@ -391,8 +403,59 @@ impl CreateRoom {
                         })
                         .take(MAX_SUGGESTIONS)
                         .collect();
+                    self.suggestions_seq = seq;
+                    self.member_sel = 0;
                 }
                 Action::none()
+            }
+            Message::MoveIn(parent, d) => {
+                let (sel, n) = if parent {
+                    (&mut self.parent_sel, self.parent_suggestions.len())
+                } else {
+                    (&mut self.member_sel, self.suggestions.len())
+                };
+                if n > 0 {
+                    *sel = (*sel as i64 + i64::from(d)).clamp(0, n as i64 - 1) as usize;
+                }
+                Action::none()
+            }
+            // Enter before the list caught up with the typed text: wait.
+            Message::PickMember
+                if !self.suggestions.is_empty() && self.suggestions_seq != self.member_seq =>
+            {
+                Action::none()
+            }
+            Message::PickParent
+                if !self.parent_suggestions.is_empty()
+                    && self.parent_suggestions_seq != self.parent_seq =>
+            {
+                Action::none()
+            }
+            Message::PickMember => {
+                let picked = self
+                    .suggestions
+                    .get(self.member_sel)
+                    .or(self.suggestions.first())
+                    .and_then(|u| u.username.clone());
+                match picked {
+                    Some(u) => self.update(Message::AddMember(u), ctx),
+                    // Nothing to add: Enter submits the form.
+                    None if self.member_query.trim().is_empty() => {
+                        self.update(Message::Submit, ctx)
+                    }
+                    None => Action::none(),
+                }
+            }
+            Message::PickParent => {
+                let picked = self
+                    .parent_suggestions
+                    .get(self.parent_sel)
+                    .or(self.parent_suggestions.first())
+                    .map(|r| (r.id.clone(), room_label(r)));
+                match picked {
+                    Some((rid, name)) => self.update(Message::Parent(rid, name), ctx),
+                    None => Action::none(),
+                }
             }
             Message::AddMember(u) => {
                 if !self.members.contains(&u) {
@@ -442,6 +505,8 @@ impl CreateRoom {
                         .filter(|room| room.prid.is_none() && can_discuss_in(ws, &room.id))
                         .take(MAX_SUGGESTIONS)
                         .collect();
+                    self.parent_suggestions_seq = seq;
+                    self.parent_sel = 0;
                 }
                 Action::none()
             }
@@ -582,7 +647,10 @@ impl CreateRoom {
                 .on_press(Message::Kind(k))
                 .into()
             }))
-        .spacing(SPACE_1);
+        .spacing(SPACE_1)
+        // Long (Russian) tab names wrap instead of running past the dialog.
+        .wrap()
+        .vertical_spacing(SPACE_1);
         let mut body = column![].spacing(SPACE_3);
         if !self.from_room {
             body = body.push(tabs);
@@ -705,13 +773,15 @@ impl CreateRoom {
         } else {
             t!("create_room.members")
         };
-        let mut col = column![
+        let mut col = column![arrow_keys(
             text_field(label, &self.member_query, Message::MemberQuery)
                 .placeholder(t!("create_room.members_placeholder"))
-        ]
+                .on_submit(Message::PickMember),
+            |d| Message::MoveIn(false, d),
+        )]
         .spacing(SPACE_1);
         if !self.suggestions.is_empty() {
-            let list = column(self.suggestions.iter().filter_map(|u| {
+            let list = column(self.suggestions.iter().enumerate().filter_map(|(i, u)| {
                 let username = u.username.clone()?;
                 let name = u.name.clone().unwrap_or_else(|| username.clone());
                 let src = ctx.images.avatar(
@@ -736,7 +806,7 @@ impl CreateRoom {
                     )
                     .width(Length::Fill)
                     .padding([4, 8])
-                    .style(style::button_list_item(false))
+                    .style(style::button_list_item(i == self.member_sel))
                     .on_press(Message::AddMember(username))
                     .into(),
                 )
@@ -798,22 +868,20 @@ impl CreateRoom {
             }
             return col.into();
         }
-        let mut col = column![
+        let mut col = column![arrow_keys(
             text_field(
                 t!("create_room.parent"),
                 &self.parent_query,
                 Message::ParentQuery
             )
             .placeholder(t!("create_room.parent_placeholder"))
-        ]
+            .on_submit(Message::PickParent),
+            |d| Message::MoveIn(true, d),
+        )]
         .spacing(SPACE_1);
         if !self.parent_suggestions.is_empty() {
-            let list = column(self.parent_suggestions.iter().map(|r| {
-                let name = r
-                    .fname
-                    .clone()
-                    .or_else(|| r.name.clone())
-                    .unwrap_or_else(|| r.id.clone());
+            let list = column(self.parent_suggestions.iter().enumerate().map(|(i, r)| {
+                let name = room_label(r);
                 button(
                     row![
                         icon::sized(
@@ -831,7 +899,7 @@ impl CreateRoom {
                 )
                 .width(Length::Fill)
                 .padding([4, 8])
-                .style(style::button_list_item(false))
+                .style(style::button_list_item(i == self.parent_sel))
                 .on_press(Message::Parent(r.id.clone(), name))
                 .into()
             }));
@@ -844,6 +912,14 @@ impl CreateRoom {
         }
         col.into()
     }
+}
+
+/// Display name of a parent room suggestion.
+fn room_label(r: &RoomSummary) -> String {
+    r.fname
+        .clone()
+        .or_else(|| r.name.clone())
+        .unwrap_or_else(|| r.id.clone())
 }
 
 /// Icon of a known parent room (`#` when unknown).
@@ -1067,6 +1143,56 @@ mod tests {
             config: &config,
         };
         f(&mut ctx)
+    }
+
+    /// Members can be picked from the keyboard: arrows move the highlight,
+    /// Enter adds it; Enter with nothing typed submits.
+    #[tokio::test]
+    async fn member_picker_works_from_the_keyboard() {
+        let mut w = ws(&["create-d"]);
+        let mut c = CreateRoom::new(Kind::DirectMessage);
+        let users = |names: &[&str]| -> Res<Vec<UserSummary>> {
+            Ok(names
+                .iter()
+                .map(|n| UserSummary {
+                    id: format!("id-{n}"),
+                    username: Some((*n).into()),
+                    ..Default::default()
+                })
+                .collect())
+        };
+        with_ctx(&mut w, |ctx| {
+            let _ = c.update(Message::MemberQuery("b".into()), ctx);
+            let seq = c.member_seq;
+            let _ = c.update(Message::Members(seq, users(&["bob", "bea", "bill"])), ctx);
+            let _ = c.update(Message::MoveIn(false, 1), ctx);
+            let _ = c.update(Message::MoveIn(false, 5), ctx);
+            let _ = c.update(Message::MoveIn(false, -1), ctx);
+            assert_eq!(c.member_sel, 1);
+            let _ = c.update(Message::PickMember, ctx);
+            assert_eq!(c.members, ["bea"]);
+            assert!(c.suggestions.is_empty() && c.member_query.is_empty());
+            assert!(!c.busy);
+            let _ = c.update(Message::PickMember, ctx);
+            assert!(c.busy, "Enter in the empty field creates the DM");
+        });
+        // Suggestions for "al" are outdated once "alan" is typed: Enter
+        // must not add the highlighted "alice".
+        let mut c = CreateRoom::new(Kind::DirectMessage);
+        with_ctx(&mut w, |ctx| {
+            let _ = c.update(Message::MemberQuery("al".into()), ctx);
+            let seq = c.member_seq;
+            let _ = c.update(Message::Members(seq, users(&["alice", "alan"])), ctx);
+            let _ = c.update(Message::MemberQuery("alan".into()), ctx);
+            let _ = c.update(Message::PickMember, ctx);
+            assert!(c.members.is_empty(), "{:?}", c.members);
+            let _ = c.update(Message::PickMember, ctx);
+            assert!(!c.busy && c.members.is_empty());
+            let seq = c.member_seq;
+            let _ = c.update(Message::Members(seq, users(&["alan"])), ctx);
+            let _ = c.update(Message::PickMember, ctx);
+            assert_eq!(c.members, ["alan"]);
+        });
     }
 
     #[test]

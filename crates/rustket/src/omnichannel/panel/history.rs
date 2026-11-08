@@ -187,9 +187,12 @@ impl HistoryPanel {
                 .size(TEXT_CAPTION)
                 .style(style::text_secondary),
             text(agent).size(TEXT_CAPTION).style(style::text_secondary),
-            text(t!("omnichannel.messages_count", count = r.msgs.unwrap_or(0)).into_owned())
-                .size(TEXT_CAPTION)
-                .style(style::text_secondary),
+            text(crate::teams::count_text(
+                "omnichannel.messages_count",
+                r.msgs.unwrap_or(0),
+            ))
+            .size(TEXT_CAPTION)
+            .style(style::text_secondary),
         ]
         .spacing(SPACE_2);
         for tag in r.tags.iter().flatten().take(3) {

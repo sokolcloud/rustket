@@ -224,17 +224,19 @@ pub fn time_label(ts: Option<RcDate>, ctx: &ViewCtx<'_>) -> String {
         .unwrap_or_default()
 }
 
-/// Full local date and time (`dd.mm.yyyy 14:05`), e.g. for future dates.
+/// Full local date and time (`Nov 8, 2026 14:05` / `08.11.2026 14:05`),
+/// e.g. for future dates.
 pub fn date_time_label(ts: RcDate, ctx: &ViewCtx<'_>) -> String {
     use chrono::TimeZone;
     let Some(local) = Local.timestamp_millis_opt(ts.timestamp_millis()).single() else {
         return String::new();
     };
-    if ctx.prefs.clock_24h {
-        local.format("%d.%m.%Y %H:%M").to_string()
+    let time = if ctx.prefs.clock_24h {
+        local.format("%H:%M")
     } else {
-        local.format("%d.%m.%Y %-I:%M %p").to_string()
-    }
+        local.format("%-I:%M %p")
+    };
+    format!("{} {time}", crate::format::full_date(&local))
 }
 
 /// The display name of a user for lists (real name when the server or the
@@ -329,8 +331,19 @@ pub fn search_field<'a, M: Clone + 'a>(
     placeholder: String,
     on_input: impl Fn(String) -> M + 'a,
 ) -> Element<'a, M> {
+    search_field_submit(value, placeholder, on_input, None)
+}
+
+/// [`search_field`] publishing `on_submit` on Enter.
+pub fn search_field_submit<'a, M: Clone + 'a>(
+    value: &str,
+    placeholder: String,
+    on_input: impl Fn(String) -> M + 'a,
+    on_submit: Option<M>,
+) -> Element<'a, M> {
     text_input(&placeholder, value)
         .on_input(on_input)
+        .on_submit_maybe(on_submit)
         .size(TEXT_BODY)
         .padding([7, 10])
         .icon(text_input::Icon {

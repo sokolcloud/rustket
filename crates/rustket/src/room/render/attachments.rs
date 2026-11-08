@@ -476,6 +476,26 @@ fn small_avatar(url: Option<&str>, name: &str, cx: &Cx<'_, '_>) -> El {
     .into()
 }
 
+/// The attachment's `text`: its `md` tree; without one, quoted and pinned
+/// messages (whose `md` the server does not build) are parsed like the web
+/// does, so spoilers stay hidden; other attachments (integrations) keep the
+/// mrkdwn subset with `<url|label>` links.
+fn text_body(a: &MessageAttachment, msg: &Message, cx: &Cx<'_, '_>) -> Option<El> {
+    if let Some(md) = a.md.as_ref().filter(|md| !md.is_empty()) {
+        return Some(blocks_for(md, cx));
+    }
+    let t = a.text.as_deref().filter(|t| !t.trim().is_empty())?;
+    let pinned = matches!(
+        msg.t.as_deref(),
+        Some("message_pinned" | "message_pinned_e2e")
+    );
+    Some(if a.is_quote() || pinned {
+        blocks_for(&crate::e2e::markdown::parse(t), cx)
+    } else {
+        mrkdwn_paragraph(t, cx, TEXT_BODY, false)
+    })
+}
+
 /// A quoted message (`message_link`), possibly with nested quotes.
 fn quote_card(
     a: &MessageAttachment,
@@ -502,12 +522,8 @@ fn quote_card(
         );
     }
     let mut col = column![header].spacing(SPACE_1);
-    match (&a.md, &a.text) {
-        (Some(md), _) if !md.is_empty() => col = col.push(blocks_for(md, cx)),
-        (_, Some(t)) if !t.trim().is_empty() => {
-            col = col.push(mrkdwn_paragraph(t, cx, TEXT_BODY, false));
-        }
-        _ => {}
+    if let Some(body) = text_body(a, msg, cx) {
+        col = col.push(body);
     }
     if let Some(nested) = &a.attachments {
         for n in nested {
@@ -625,12 +641,8 @@ fn generic_card(
         );
     }
     if !(collapsed && has_title) {
-        match (&a.md, &a.text) {
-            (Some(md), _) if !md.is_empty() => col = col.push(blocks_for(md, cx)),
-            (_, Some(t)) if !t.trim().is_empty() => {
-                col = col.push(mrkdwn_paragraph(t, cx, TEXT_BODY, false));
-            }
-            _ => {}
+        if let Some(body) = text_body(a, msg, cx) {
+            col = col.push(body);
         }
         if let Some(fields) = &a.fields {
             col = col.push(fields_grid(fields, cx));

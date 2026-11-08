@@ -628,14 +628,63 @@ impl Operation for FocusCount {
     }
 }
 
-/// Focuses the focusable at `target` and unfocuses the others.
-struct FocusAt {
+fn count_focus<Message>(
+    content: &mut Element<'_, Message>,
+    tree: &mut Tree,
+    layout: Layout<'_>,
+    renderer: &iced::Renderer,
+) -> FocusCount {
+    let mut count = FocusCount::default();
+    content
+        .as_widget_mut()
+        .operate(tree, layout, renderer, &mut count);
+    count
+}
+
+pub(crate) fn has_focus<Message>(
+    content: &mut Element<'_, Message>,
+    tree: &mut Tree,
+    layout: Layout<'_>,
+    renderer: &iced::Renderer,
+) -> bool {
+    count_focus(content, tree, layout, renderer)
+        .focused
+        .is_some()
+}
+
+/// Moves focus to the next (`forward`) or previous focusable of the whole
+/// window, wrapping around (iced's `focus_next` unfocuses after the last one).
+pub fn focus_cycle<T: Send + 'static>(forward: bool) -> iced::Task<T> {
+    use iced::advanced::widget::operation::{focusable, then};
+    fn index(count: focusable::Count, forward: bool) -> usize {
+        match (count.focused, forward) {
+            (None, true) => 0,
+            (None, false) => count.total.saturating_sub(1),
+            (Some(i), true) => (i + 1) % count.total,
+            (Some(i), false) => (i + count.total - 1) % count.total,
+        }
+    }
+    if forward {
+        iced::advanced::widget::operate(then(focusable::count(), |count| FocusIndex {
+            target: index(count, true),
+            current: 0,
+        }))
+    } else {
+        iced::advanced::widget::operate(then(focusable::count(), |count| FocusIndex {
+            target: index(count, false),
+            current: 0,
+        }))
+    }
+}
+
+/// Focuses the `target`-th focusable and unfocuses the others.
+struct FocusIndex {
     target: usize,
     current: usize,
 }
 
-impl Operation for FocusAt {
-    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+impl<T> Operation<T> for FocusIndex {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>)) {
         operate(self);
     }
 
@@ -652,30 +701,6 @@ impl Operation for FocusAt {
         }
         self.current += 1;
     }
-}
-
-fn count_focus<Message>(
-    content: &mut Element<'_, Message>,
-    tree: &mut Tree,
-    layout: Layout<'_>,
-    renderer: &iced::Renderer,
-) -> FocusCount {
-    let mut count = FocusCount::default();
-    content
-        .as_widget_mut()
-        .operate(tree, layout, renderer, &mut count);
-    count
-}
-
-fn has_focus<Message>(
-    content: &mut Element<'_, Message>,
-    tree: &mut Tree,
-    layout: Layout<'_>,
-    renderer: &iced::Renderer,
-) -> bool {
-    count_focus(content, tree, layout, renderer)
-        .focused
-        .is_some()
 }
 
 /// Moves focus to the next/previous focusable of `content`, wrapping around.
@@ -696,7 +721,10 @@ fn cycle_focus<Message>(
         (Some(i), true) => (i + 1) % count.total,
         (Some(i), false) => (i + count.total - 1) % count.total,
     };
-    content
-        .as_widget_mut()
-        .operate(tree, layout, renderer, &mut FocusAt { target, current: 0 });
+    content.as_widget_mut().operate(
+        tree,
+        layout,
+        renderer,
+        &mut FocusIndex { target, current: 0 },
+    );
 }

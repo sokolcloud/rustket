@@ -69,7 +69,10 @@ pub const SIDEBAR_MAX_WIDTH: f32 = 480.0;
 pub const HEADER_HEIGHT: f32 = 56.0;
 
 /// Default UI font. Noto Sans covers Latin, Cyrillic and Greek; other scripts and
-/// colour emoji (Noto Color Emoji) are picked up through font fallback.
+/// colour emoji (Noto Color Emoji) are picked up through font fallback. Regular,
+/// Medium, SemiBold and Bold are bundled ([`fonts`]): many distributions ship only
+/// Regular/Bold, and cosmic-text takes a face of the default family only on an
+/// exact weight match, so a missing weight would fall back to another family.
 pub const DEFAULT_FONT: Font = Font::with_name("Noto Sans");
 pub const FONT_MEDIUM: Font = Font {
     weight: Weight::Medium,
@@ -88,8 +91,20 @@ pub const MONOSPACE_FONT: Font = Font::MONOSPACE;
 
 /// Fonts that must be loaded at startup: pass each to `iced::application(..).font(..)`.
 pub fn fonts() -> Vec<Cow<'static, [u8]>> {
-    vec![Cow::Borrowed(lucide_icons::LUCIDE_FONT_BYTES)]
+    vec![
+        Cow::Borrowed(lucide_icons::LUCIDE_FONT_BYTES),
+        Cow::Borrowed(NOTO_SANS_REGULAR),
+        Cow::Borrowed(NOTO_SANS_MEDIUM),
+        Cow::Borrowed(NOTO_SANS_SEMIBOLD),
+        Cow::Borrowed(NOTO_SANS_BOLD),
+    ]
 }
+
+// Noto Sans (SIL Open Font License 1.1, see assets/fonts/OFL.txt).
+const NOTO_SANS_REGULAR: &[u8] = include_bytes!("../assets/fonts/NotoSans-Regular.ttf");
+const NOTO_SANS_MEDIUM: &[u8] = include_bytes!("../assets/fonts/NotoSans-Medium.ttf");
+const NOTO_SANS_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/NotoSans-SemiBold.ttf");
+const NOTO_SANS_BOLD: &[u8] = include_bytes!("../assets/fonts/NotoSans-Bold.ttf");
 
 /// Application settings with the Rustket default font, 14px body text and the
 /// bundled fonts: `iced::application(..).settings(rustket_ui::theme::settings())`.
@@ -425,6 +440,54 @@ mod tests {
 
     const TEXT: f32 = 4.5;
     const GRAPHIC: f32 = 3.0;
+
+    /// fontdb (what cosmic-text matches with) finds a bundled face of exactly
+    /// each UI weight under the family "Noto Sans".
+    #[test]
+    fn every_ui_weight_is_bundled() {
+        use iced::advanced::graphics::text::cosmic_text::fontdb;
+        let mut db = fontdb::Database::new();
+        for face in [
+            NOTO_SANS_REGULAR,
+            NOTO_SANS_MEDIUM,
+            NOTO_SANS_SEMIBOLD,
+            NOTO_SANS_BOLD,
+        ] {
+            db.load_font_data(face.to_vec());
+        }
+        assert_eq!(db.len(), 4);
+        let iced::font::Family::Name(family) = DEFAULT_FONT.family else {
+            panic!("the UI font is not a named family");
+        };
+        for font in [DEFAULT_FONT, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD] {
+            let want = match font.weight {
+                Weight::Normal => 400,
+                Weight::Medium => 500,
+                Weight::Semibold => 600,
+                Weight::Bold => 700,
+                other => panic!("unexpected weight {other:?}"),
+            };
+            assert_eq!(font.family, DEFAULT_FONT.family);
+            let id = db
+                .query(&fontdb::Query {
+                    families: &[fontdb::Family::Name(family)],
+                    weight: fontdb::Weight(want),
+                    ..fontdb::Query::default()
+                })
+                .unwrap_or_else(|| panic!("no {family} face for weight {want}"));
+            let face = db.face(id).expect("queried face exists");
+            assert_eq!(
+                face.weight.0, want,
+                "weight {want} falls back to another face"
+            );
+            assert!(
+                face.families.iter().any(|(name, _)| name == family),
+                "{:?}",
+                face.families
+            );
+        }
+        assert_eq!(fonts().len(), 5);
+    }
 
     fn both() -> [&'static Tokens; 2] {
         [&LIGHT, &DARK]

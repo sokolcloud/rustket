@@ -1,13 +1,19 @@
-//! A small subset of `@rocket.chat/message-parser` for decrypted messages.
+//! A small subset of `@rocket.chat/message-parser` for decrypted messages
+//! and other texts the server sends without an `md` tree (pinned-message
+//! attachments, room topic/announcement/description).
 //!
 //! The server never builds an `md` tree for `t: 'e2e'` messages (and one sent
 //! by a client must not be trusted, §4), so the decrypted `msg` is parsed here
 //! into the same AST the renderer already draws: one paragraph per line, code
-//! fences, `>` quotes, empty lines as line breaks; inline `*bold*`,
-//! `_italic_`, `~strike~`, `` `code` ``, `[label](url)`, bare `http(s)` links,
-//! `@user`, `#channel` and `:emoji:`.
+//! fences, `>` quotes, `#`..`####` headings, `\[..\]` math lines, empty
+//! lines as line breaks; inline `*bold*`/`**bold**`, `_italic_`/`__italic__`,
+//! `~strike~`/`~~strike~~`, `||spoiler||`, `` `code` ``, `\(math\)`,
+//! `<t:unix:f>` timestamps, `[label](url)`, bare `http(s)` links, `@user`,
+//! `#channel` and `:emoji:`.
 
-use rocketchat::models::md::{Block, CodeLine, Emoji, Inline, LinkValue, OneOrMany, Plain, Root};
+use rocketchat::models::md::{
+    Block, CodeLine, Emoji, Inline, LinkValue, OneOrMany, Plain, Root, TimestampValue,
+};
 
 /// Bytes of inline formatting parsed per message; the lines after that are
 /// plain text.
@@ -54,6 +60,28 @@ pub fn parse(text: &str) -> Root {
                 continue;
             }
         }
+        if let Some((level, rest)) = heading(line) {
+            flush_quote(&mut out, &mut quote);
+            out.push(Block::Heading {
+                level,
+                value: inlines(rest, &mut budget),
+            });
+            i += 1;
+            continue;
+        }
+        if let Some(math) = line
+            .trim()
+            .strip_prefix("\\[")
+            .and_then(|l| l.strip_suffix("\\]"))
+            .filter(|m| !m.trim().is_empty())
+        {
+            flush_quote(&mut out, &mut quote);
+            out.push(Block::Katex {
+                value: math.trim().to_owned(),
+            });
+            i += 1;
+            continue;
+        }
         if let Some(rest) = line.strip_prefix('>') {
             let rest = rest.strip_prefix(' ').unwrap_or(rest);
             quote.push(Block::Paragraph {
@@ -65,6 +93,8 @@ pub fn parse(text: &str) -> Root {
         flush_quote(&mut out, &mut quote);
         if line.trim().is_empty() {
             out.push(Block::LineBreak);
+        } else if line.trim().len() >= 3 && line.trim().bytes().all(|b| b == b'-') {
+            out.push(Block::HorizontalRule { fallback: None });
         } else {
             out.push(Block::Paragraph {
                 value: inlines(line, &mut budget),
@@ -78,6 +108,44 @@ pub fn parse(text: &str) -> Root {
         out.pop();
     }
     out
+}
+
+/// `# text` .. `#### text`: the level and the text.
+fn heading(line: &str) -> Option<(u8, &str)> {
+    let hashes = line.bytes().take_while(|b| *b == b'#').count();
+    if !(1..=4).contains(&hashes) {
+        return None;
+    }
+    let rest = &line[hashes..];
+    let text = rest.trim_start_matches([' ', '\t']);
+    (text.len() < rest.len() && !text.trim().is_empty()).then_some((hashes as u8, text))
+}
+
+/// `<t:1767225600>` / `<t:1767225600:f>` at the start of `s`: the node and
+/// its length.
+fn timestamp(s: &str) -> Option<(Inline, usize)> {
+    let close = s.as_bytes().iter().take(24).position(|b| *b == b'>')?;
+    let inner = s.get(3..close)?;
+    let (secs, format) = match inner.split_once(':') {
+        Some((secs, f)) => (secs, Some(f)),
+        None => (inner, None),
+    };
+    let valid = !secs.is_empty()
+        && secs.len() <= 10
+        && secs.bytes().all(|b| b.is_ascii_digit())
+        && format.is_none_or(|f| f.len() == 1 && "tTdDfFR".contains(f));
+    valid.then(|| {
+        (
+            Inline::Timestamp {
+                value: TimestampValue {
+                    timestamp: secs.to_owned(),
+                    format: format.map(str::to_owned),
+                },
+                fallback: None,
+            },
+            close + 1,
+        )
+    })
 }
 
 fn plain(s: &str) -> Plain {
@@ -222,6 +290,9 @@ fn parse_inline(s: &str, out: &mut Vec<Inline>, depth: usize) {
     } else {
         Default::default()
     };
+    let mut doubles = [Next::new("**"), Next::new("__"), Next::new("~~")];
+    let mut pipes = Next::new("||");
+    let mut math_end = Next::new("\\)");
     let mut link_sep = Next::new("](");
     let mut rbracket = Next::new("]");
     let mut rparen = Next::new(")");
@@ -248,6 +319,51 @@ fn parse_inline(s: &str, out: &mut Vec<Inline>, depth: usize) {
                             value: plain(&rest[1..1 + end]),
                         },
                         end + 2,
+                    ));
+                }
+            }
+            '*' | '_' | '~' if at_boundary && depth < MAX_DEPTH && rest[1..].starts_with(c) => {
+                let finder = match c {
+                    '*' => &mut doubles[0],
+                    '_' => &mut doubles[1],
+                    _ => &mut doubles[2],
+                };
+                if let Some(end) = finder.at_or_after(s, i + 2)
+                    && end > i + 2
+                    && !s[i + 2..].starts_with(char::is_whitespace)
+                    && !s[..end].ends_with(char::is_whitespace)
+                {
+                    let mut inner = Vec::new();
+                    parse_inline(&s[i + 2..end], &mut inner, depth + 1);
+                    let value = merge_text(inner);
+                    let n = match c {
+                        '*' => Inline::Bold { value },
+                        '_' => Inline::Italic { value },
+                        _ => Inline::Strike { value },
+                    };
+                    node = Some((n, end + 2 - i));
+                }
+            }
+            '|' if depth < MAX_DEPTH && rest.starts_with("||") => {
+                if let Some(end) = pipes.at_or_after(s, i + 2).filter(|e| *e > i + 2) {
+                    let mut inner = Vec::new();
+                    parse_inline(&s[i + 2..end], &mut inner, depth + 1);
+                    node = Some((
+                        Inline::Spoiler {
+                            value: merge_text(inner),
+                        },
+                        end + 2 - i,
+                    ));
+                }
+            }
+            '<' if rest.starts_with("<t:") => node = timestamp(rest),
+            '\\' if rest.starts_with("\\(") => {
+                if let Some(end) = math_end.at_or_after(s, i + 2).filter(|e| *e > i + 2) {
+                    node = Some((
+                        Inline::InlineKatex {
+                            value: s[i + 2..end].to_owned(),
+                        },
+                        end + 2 - i,
                     ));
                 }
             }
@@ -388,6 +504,10 @@ mod tests {
             "[".repeat(50_000) + "](http://a)",
             "[a](".repeat(15_000),
             ":a".repeat(30_000),
+            "||a ".repeat(20_000),
+            "**a ".repeat(20_000),
+            "\\(a ".repeat(20_000),
+            "<t:1 ".repeat(20_000),
         ];
         let start = std::time::Instant::now();
         for l in &lines {
@@ -465,6 +585,49 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(text_of(&v[1]), "bold");
+    }
+
+    /// Pinned-message texts carry no `md`: spoilers must stay hidden and
+    /// headings, timestamps and math must not show as raw syntax.
+    #[test]
+    fn spoilers_headings_timestamps_and_math() {
+        let root = parse("# Release 2.4\n## Highlights\n#general\n\\[e^{i\\pi}+1=0\\]");
+        assert!(matches!(&root[0], Block::Heading { level: 1, .. }));
+        assert!(matches!(&root[1], Block::Heading { level: 2, .. }));
+        assert!(matches!(&parse("a\n---")[1], Block::HorizontalRule { .. }));
+        assert!(matches!(
+            &parse("a\n-----")[1],
+            Block::HorizontalRule { .. }
+        ));
+        assert!(matches!(&parse("a\n--")[1], Block::Paragraph { .. }));
+        assert!(
+            matches!(&root[2], Block::Paragraph { .. }),
+            "a channel, not a heading"
+        );
+        assert!(matches!(&root[3], Block::Katex { value } if value == "e^{i\\pi}+1=0"));
+        let v = inlines_all("a ||the cake is a lie|| b");
+        match &v[1] {
+            Inline::Spoiler { value } => assert_eq!(text_of(&value[0]), "the cake is a lie"),
+            other => panic!("{other:?}"),
+        }
+        let v = inlines_all("at <t:1767225600:f> and <t:1767225600>");
+        assert!(matches!(&v[1], Inline::Timestamp { value, .. }
+            if value.timestamp == "1767225600" && value.format.as_deref() == Some("f")));
+        assert!(matches!(&v[3], Inline::Timestamp { value, .. } if value.format.is_none()));
+        let v = inlines_all("\\(e^{i\\pi}+1=0\\)");
+        assert!(matches!(&v[0], Inline::InlineKatex { value } if value == "e^{i\\pi}+1=0"));
+        let v = inlines_all("**bold** __it__ ~~gone~~");
+        assert!(matches!(&v[0], Inline::Bold { value } if text_of(&value[0]) == "bold"));
+        assert!(matches!(&v[2], Inline::Italic { .. }));
+        assert!(matches!(&v[4], Inline::Strike { .. }));
+        // Not markup.
+        for s in ["a || b", "<t:abc>", "<t:12a>", "||||", "\\()", "** x**"] {
+            let v = inlines_all(s);
+            assert!(
+                v.iter().all(|n| matches!(n, Inline::PlainText { .. })),
+                "{s}: {v:?}"
+            );
+        }
     }
 
     #[test]

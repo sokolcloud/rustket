@@ -571,7 +571,7 @@ impl Preferences {
 fn control_row<'a>(label: String, control: Element<'a, Message>) -> Element<'a, Message> {
     row![
         text(label).size(TEXT_BODY).width(Length::Fill),
-        iced::widget::container(control).width(240)
+        iced::widget::container(control).width(300)
     ]
     .spacing(SPACE_2)
     .align_y(Alignment::Center)

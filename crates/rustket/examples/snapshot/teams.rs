@@ -213,6 +213,23 @@ pub async fn teams_shots(
     // Team channels and members panels.
     open_panel(d, sid, &main, panel::Kind::TeamChannels).await;
     both(d, out, "teams-02-channels-panel");
+    // "Add existing" with a search: the row Enter toggles is highlighted.
+    for msg in [
+        tm::channels::Msg::ShowAdd,
+        tm::channels::Msg::AddQuery("rk-snap".into()),
+    ] {
+        let m = team_msg(d, sid, &main, tm::Msg::Channels(msg));
+        d.send(m);
+        d.settle(Duration::from_secs(2)).await;
+    }
+    both(d, out, "teams-02b-add-existing");
+    let m = team_msg(
+        d,
+        sid,
+        &main,
+        tm::Msg::Channels(tm::channels::Msg::CancelDialog),
+    );
+    d.send(m);
     open_panel(d, sid, &main, panel::Kind::TeamMembers).await;
     both(d, out, "teams-03-members-panel");
 

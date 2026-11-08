@@ -17,7 +17,7 @@ use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
 use rustket_ui::widget::{
-    ChipKind, MenuEntry, MenuItem, Placement, chip, danger_button, dialog, ellipsis,
+    ChipKind, MenuEntry, MenuItem, Placement, arrow_keys, chip, danger_button, dialog, ellipsis,
     icon_button_with, popover_menu, primary_button, secondary_button, text_field,
 };
 
@@ -65,6 +65,11 @@ pub enum Msg {
     AddSearch(u64),
     AddResults(u64, Res<Vec<Room>>),
     AddToggle(String),
+    /// Up/Down in the search field.
+    AddMove(i32),
+    /// Enter in the search field: toggle the highlighted room, or add the
+    /// chosen ones when nothing is typed.
+    AddSubmit,
     AddConfirm,
     Added(Res<Vec<Room>>),
     // Create new.
@@ -81,10 +86,56 @@ struct AddDialog {
     query: String,
     seq: u64,
     results: Option<Result<Vec<Room>, String>>,
+    /// `seq` the results belong to (older: outdated).
+    results_seq: u64,
+    /// Highlighted entry of [`AddDialog::shown`].
+    sel: usize,
     selected: BTreeSet<String>,
     names: Vec<(String, String)>,
     busy: bool,
     error: Option<String>,
+}
+
+impl AddDialog {
+    /// Listed rooms (rid, name, type): the chosen ones stay listed while the
+    /// search changes, then the results.
+    fn shown(&self) -> Vec<(String, String, RoomType)> {
+        let v: &[Room] = match &self.results {
+            Some(Ok(v)) => v,
+            _ => &[],
+        };
+        let mut shown: Vec<(String, String, RoomType)> = self
+            .names
+            .iter()
+            .filter(|(r, _)| self.selected.contains(r))
+            .map(|(r, n)| {
+                let t = v
+                    .iter()
+                    .find(|x| &x.id == r)
+                    .map_or(RoomType::Channel, |x| x.t);
+                (r.clone(), n.clone(), t)
+            })
+            .collect();
+        for r in v {
+            if !shown.iter().any(|(id, _, _)| id == &r.id) {
+                shown.push((r.id.clone(), r.display_name().to_owned(), r.t));
+            }
+        }
+        shown
+    }
+
+    /// What Enter does (nothing while the results are for an older query).
+    fn submit(&self) -> Option<Msg> {
+        if self.query.trim().is_empty() {
+            return (!self.selected.is_empty()).then_some(Msg::AddConfirm);
+        }
+        if self.results_seq != self.seq {
+            return None;
+        }
+        let shown = self.shown();
+        let (rid, _, _) = shown.get(self.sel).or(shown.first())?;
+        Some(Msg::AddToggle(rid.clone()))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -391,6 +442,8 @@ impl Channels {
                     && d.seq == seq
                 {
                     d.results = Some(r.map_err(|e| super::error_text(&e)));
+                    d.results_seq = seq;
+                    d.sel = 0;
                 }
                 Action::none()
             }
@@ -411,6 +464,22 @@ impl Channels {
                 }
                 Action::none()
             }
+            Msg::AddMove(by) => {
+                if let Some(Dialog::Add(d)) = &mut self.dialog {
+                    let n = d.shown().len();
+                    if n > 0 {
+                        d.sel = (d.sel as i64 + i64::from(by)).clamp(0, n as i64 - 1) as usize;
+                    }
+                }
+                Action::none()
+            }
+            Msg::AddSubmit => match &self.dialog {
+                Some(Dialog::Add(d)) => match d.submit() {
+                    Some(m) => self.update(m, ctx),
+                    None => Action::none(),
+                },
+                _ => Action::none(),
+            },
             Msg::AddConfirm => {
                 let Some(Dialog::Add(d)) = &mut self.dialog else {
                     return Action::none();
@@ -578,10 +647,14 @@ impl Channels {
                     text(t!("teams.add_existing_hint").into_owned())
                         .size(TEXT_CAPTION)
                         .style(style::text_secondary),
-                    common::search_field(
-                        &d.query,
-                        t!("teams.search_rooms").into_owned(),
-                        Msg::AddQuery
+                    arrow_keys(
+                        common::search_field_submit(
+                            &d.query,
+                            t!("teams.search_rooms").into_owned(),
+                            Msg::AddQuery,
+                            Some(Msg::AddSubmit),
+                        ),
+                        Msg::AddMove,
                     ),
                 ]
                 .spacing(SPACE_3);
@@ -597,43 +670,37 @@ impl Channels {
                                 .style(style::text_secondary),
                         );
                     }
-                    Some(Ok(v)) => {
+                    Some(Ok(_)) => {
                         let mut col = column![].spacing(SPACE_2);
-                        // Selected rooms stay listed while the search changes.
-                        let mut shown: Vec<(String, String, RoomType)> = d
-                            .names
-                            .iter()
-                            .filter(|(r, _)| d.selected.contains(r))
-                            .map(|(r, n)| {
-                                let t = v
-                                    .iter()
-                                    .find(|x| &x.id == r)
-                                    .map_or(RoomType::Channel, |x| x.t);
-                                (r.clone(), n.clone(), t)
-                            })
-                            .collect();
-                        for r in v {
-                            if !shown.iter().any(|(id, _, _)| id == &r.id) {
-                                shown.push((r.id.clone(), r.display_name().to_owned(), r.t));
-                            }
-                        }
-                        for (rid, name, t) in shown {
+                        for (i, (rid, name, t)) in d.shown().into_iter().enumerate() {
                             let glyph = if t == RoomType::Private {
                                 Icon::Lock
                             } else {
                                 Icon::Hash
                             };
                             let r2 = rid.clone();
+                            let line = row![
+                                checkbox(d.selected.contains(&rid))
+                                    .on_toggle(move |_| Msg::AddToggle(r2.clone()))
+                                    .style(style::checkbox),
+                                icon::sized(glyph, 13.0).style(style::text_secondary),
+                                ellipsis(name).size(TEXT_BODY),
+                            ]
+                            .spacing(SPACE_2)
+                            .align_y(Alignment::Center);
+                            // The row Enter toggles while searching.
+                            let highlighted = i == d.sel && !d.query.trim().is_empty();
                             col = col.push(
-                                row![
-                                    checkbox(d.selected.contains(&rid))
-                                        .on_toggle(move |_| Msg::AddToggle(r2.clone()))
-                                        .style(style::checkbox),
-                                    icon::sized(glyph, 13.0).style(style::text_secondary),
-                                    ellipsis(name).size(TEXT_BODY),
-                                ]
-                                .spacing(SPACE_2)
-                                .align_y(Alignment::Center),
+                                container(line)
+                                    .padding([2.0, SPACE_1])
+                                    .width(Length::Fill)
+                                    .style(move |t| {
+                                        if highlighted {
+                                            style::container_selected(t)
+                                        } else {
+                                            container::Style::default()
+                                        }
+                                    }),
                             );
                         }
                         body = body.push(col);
@@ -764,7 +831,8 @@ impl Channels {
             );
         }
         let top = column![
-            tools,
+            // Long (Russian) labels wrap onto a second line.
+            tools.wrap().vertical_spacing(SPACE_2),
             common::search_field(
                 &self.query,
                 t!("teams.search_rooms").into_owned(),
@@ -859,6 +927,33 @@ mod tests {
     use rocketchat::ServerUrl;
     use rustket_core::ServerId;
     use rustket_core::workspace::{Change, Workspace};
+
+    /// Up/Down highlight a room and Enter toggles it; results for an older
+    /// query are not toggled; Enter with nothing typed adds the chosen rooms.
+    #[test]
+    fn add_existing_from_the_keyboard() {
+        let room = |id: &str| Room {
+            id: id.into(),
+            t: RoomType::Channel,
+            name: Some(id.into()),
+            ..Default::default()
+        };
+        let mut d = AddDialog {
+            query: "g".into(),
+            seq: 1,
+            results: Some(Ok(vec![room("general"), room("games")])),
+            results_seq: 1,
+            sel: 1,
+            ..Default::default()
+        };
+        assert!(matches!(d.submit(), Some(Msg::AddToggle(r)) if r == "games"));
+        d.seq = 2;
+        assert!(d.submit().is_none(), "outdated results");
+        d.query.clear();
+        assert!(d.submit().is_none(), "nothing chosen");
+        d.selected.insert("games".into());
+        assert!(matches!(d.submit(), Some(Msg::AddConfirm)));
+    }
 
     #[test]
     fn only_team_changes_reload_the_list() {

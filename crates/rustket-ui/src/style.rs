@@ -741,13 +741,3 @@ pub fn scrollable(theme: &Theme, status: w_scrollable::Status) -> w_scrollable::
         },
     }
 }
-
-/// Context-menu backdrop for `iced_aw::ContextMenu` (fully transparent).
-pub fn context_menu_backdrop(
-    _theme: &Theme,
-    _status: iced_aw::style::Status,
-) -> iced_aw::style::context_menu::Style {
-    iced_aw::style::context_menu::Style {
-        background: Background::Color(Color::TRANSPARENT),
-    }
-}

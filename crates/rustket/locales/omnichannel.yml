@@ -407,7 +407,13 @@ omnichannel.no_history:
 omnichannel.no_messages:
   en: "No messages"
   ru: "Нет сообщений"
-omnichannel.messages_count:
+omnichannel.messages_count_one:
+  en: "%{count} message"
+  ru: "Сообщений: %{count}"
+omnichannel.messages_count_few:
+  en: "%{count} messages"
+  ru: "Сообщений: %{count}"
+omnichannel.messages_count_many:
   en: "%{count} messages"
   ru: "Сообщений: %{count}"
 omnichannel.search_messages:

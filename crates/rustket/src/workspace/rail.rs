@@ -91,7 +91,10 @@ pub fn view<'a>(entries: Vec<RailEntry>) -> Element<'a, Message> {
     let list = Column::with_children(items)
         .push(add_server_button(t!("rail.add_server"), Message::Add))
         .spacing(SPACE_3)
-        .align_x(Alignment::Start);
+        .align_x(Alignment::Start)
+        // Inside the scrollable so the badges drawn above the first item
+        // (offset -4 px) are not clipped by its viewport.
+        .padding(iced::Padding::ZERO.top(SPACE_2));
     container(
         column![
             scrollable(list)
@@ -106,7 +109,7 @@ pub fn view<'a>(entries: Vec<RailEntry>) -> Element<'a, Message> {
             space().height(SPACE_2),
         ]
         .spacing(SPACE_2)
-        .padding([SPACE_3, 0.0]),
+        .padding(iced::Padding::ZERO.top(SPACE_3 - SPACE_2).bottom(SPACE_3)),
     )
     .width(RAIL_WIDTH)
     .height(Length::Fill)

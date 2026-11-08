@@ -1093,7 +1093,7 @@ pub(super) fn format_date_with(
     match fmt {
         "t" => local.format(time).to_string(),
         "T" => local.format(time_long).to_string(),
-        "d" => local.format("%d.%m.%Y").to_string(),
+        "d" => crate::format::full_date(&local),
         "D" => long_date(&local),
         "F" => format!(
             "{}, {} {}",
@@ -1505,12 +1505,12 @@ mod tests {
         assert_eq!(format_date_with(d, "t", true, now), "14:05");
         assert_eq!(format_date_with(d, "t", false, now), "2:05 PM");
         assert_eq!(format_date_with(d, "T", true, now), "14:05:09");
-        assert_eq!(format_date_with(d, "d", true, now), "12.03.2026");
-        assert_eq!(format_date_with(d, "D", true, now), "12 March 2026");
-        assert_eq!(format_date_with(d, "f", true, now), "12 March 2026 14:05");
+        assert_eq!(format_date_with(d, "d", true, now), "Mar 12, 2026");
+        assert_eq!(format_date_with(d, "D", true, now), "March 12, 2026");
+        assert_eq!(format_date_with(d, "f", true, now), "March 12, 2026 14:05");
         assert_eq!(
             format_date_with(d, "F", true, now),
-            "Thursday, 12 March 2026 14:05"
+            "Thursday, March 12, 2026 14:05"
         );
         let later = RcDate::from_millis((now + Duration::hours(3)).timestamp_millis()).unwrap();
         assert_eq!(format_date_with(later, "R", true, now), "in 3 hours");

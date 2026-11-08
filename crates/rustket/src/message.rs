@@ -100,6 +100,9 @@ pub enum Message {
     Omni(ServerId, u64, crate::omnichannel::Message),
     /// Ctrl+K.
     OpenQuickSwitcher,
+    /// Tab / Shift+Tab that no widget handled (modal dialogs cycle their own
+    /// focus): move focus to the next (`true`) or previous input.
+    FocusNext(bool),
     SidebarResized(f32),
     /// Room component message: server, session epoch, room id.
     Room(ServerId, u64, String, room::Message),

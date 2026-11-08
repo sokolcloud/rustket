@@ -13,7 +13,8 @@ use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, HEADER_HEIGHT, SPACE_1, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SUBTITLE, tokens,
+    FONT_SEMIBOLD, HEADER_HEIGHT, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL,
+    TEXT_SUBTITLE, tokens,
 };
 use rustket_ui::widget::{
     ChipKind, MenuEntry, MenuItem, Placement, chip, divider, ellipsis, icon_button_with, popover,
@@ -227,6 +228,41 @@ pub fn menu_entries(
     v.extend(crate::uikit::buttons::room_entries(ws, rid, |m| {
         Message::UiKit(Box::new(m))
     }));
+    v
+}
+
+/// How many of `total` omnichannel actions stay inline in a header `width`
+/// px wide next to `room_slots` room buttons (incl. the menu trigger), so
+/// the room name keeps [`MIN_TITLE_WIDTH`].
+fn omni_inline(width: f32, room_slots: usize, total: usize) -> usize {
+    let budget = width - 2.0 * SPACE_4 - 32.0 - 2.0 * SPACE_3 - MIN_TITLE_WIDTH;
+    let free = budget - room_slots as f32 * BUTTON_SLOT;
+    ((free / BUTTON_SLOT).floor().max(0.0) as usize).min(total)
+}
+
+/// Omnichannel actions moved into the header menu, above its other entries.
+fn omni_entries(
+    actions: Vec<crate::omnichannel::room::HeaderAction>,
+    mut entries: Vec<MenuEntry<Message>>,
+) -> Vec<MenuEntry<Message>> {
+    if actions.is_empty() {
+        return entries;
+    }
+    let mut v: Vec<MenuEntry<Message>> = actions
+        .into_iter()
+        .map(|a| {
+            let disabled = a.request.is_none();
+            let msg = a.request.map_or(Message::CloseMenu, Message::Omni);
+            MenuItem::new(a.label, msg)
+                .icon(a.icon)
+                .disabled(disabled)
+                .into()
+        })
+        .collect();
+    if !entries.is_empty() {
+        v.push(MenuEntry::Separator);
+    }
+    v.append(&mut entries);
     v
 }
 
@@ -496,7 +532,7 @@ impl Header {
             };
             self.bar(&ctx, size.width)
         });
-        column![
+        let mut col = column![
             container(bar)
                 .height(HEADER_HEIGHT)
                 .width(Length::Fill)
@@ -505,8 +541,51 @@ impl Header {
                 .style(style::container_header),
             divider(),
         ]
-        .spacing(0)
-        .into()
+        .spacing(0);
+        if let Some(bar) = self.announcement_bar(ctx) {
+            col = col.push(bar);
+        }
+        col.into()
+    }
+
+    /// The room announcement under the header, as in the web client; a click
+    /// opens Room info with the whole text.
+    fn announcement_bar<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, Message>> {
+        let ws = ctx.workspace;
+        let line = ws
+            .room(&self.rid)
+            .and_then(|e| e.room.as_ref())
+            .and_then(|r| r.announcement.as_deref())
+            .map(|t| crate::format::md_one_line(t, ctx.prefs.clock_24h))
+            .filter(|a| !a.is_empty())?;
+        let content = row![
+            icon::sized(Icon::Megaphone, 14.0),
+            ellipsis(line)
+                .size(TEXT_SMALL)
+                .style(|t: &Theme| Some(tokens(t).info_fg)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+        let mut area = mouse_area(
+            container(content)
+                .width(Length::Fill)
+                .padding([SPACE_1 + 2.0, SPACE_4])
+                .style(|t: &Theme| {
+                    let tk = tokens(t);
+                    container::Style {
+                        text_color: Some(tk.info_fg),
+                        background: Some(tk.info_bg.into()),
+                        ..container::Style::default()
+                    }
+                }),
+        );
+        let info = buttons(ws, &self.rid).info;
+        if ctx.panel != Some(&info) {
+            area = area
+                .interaction(iced::mouse::Interaction::Pointer)
+                .on_press(Message::TogglePanel(info));
+        }
+        Some(area.into())
     }
 
     /// The header row for a header `width` px wide (incl. padding).
@@ -579,14 +658,11 @@ impl Header {
         let topic = || {
             entry
                 .and_then(|e| e.room.as_ref())
-                .and_then(|r| {
-                    r.topic
-                        .clone()
-                        .filter(|t| !t.trim().is_empty())
-                        .or_else(|| r.announcement.clone().filter(|a| !a.trim().is_empty()))
-                })
-                .map(|topic| -> Element<'a, Message> {
-                    let one_line = topic.lines().next().unwrap_or_default().to_owned();
+                // The announcement has its own bar under the header.
+                .and_then(|r| r.topic.as_deref())
+                .map(|t| crate::format::md_one_line(t, ctx.prefs.clock_24h))
+                .filter(|t| !t.is_empty())
+                .map(|one_line| -> Element<'a, Message> {
                     mouse_area(
                         ellipsis(one_line)
                             .size(TEXT_CAPTION)
@@ -657,10 +733,20 @@ impl Header {
         }
 
         // Buttons; the ones that do not fit go into the menu.
-        let (inline, overflow, call) = layout_buttons(&buttons(ws, &self.rid), width);
+        // Omnichannel actions come first: the room buttons get the rest, and
+        // the omnichannel actions that still do not fit go into the menu too.
+        let mut omni = crate::omnichannel::room::header_actions(ctx);
+        let (inline, overflow, call) = layout_buttons(
+            &buttons(ws, &self.rid),
+            width - omni.len() as f32 * BUTTON_SLOT,
+        );
+        let room_slots = inline.len() + 1 + usize::from(call);
+        let omni_menu = omni.split_off(omni_inline(width, room_slots, omni.len()));
         let mut actions = row![].spacing(SPACE_1).align_y(Alignment::Center);
-        for b in crate::omnichannel::room::header_buttons(ctx) {
-            actions = actions.push(b.map(Message::Omni));
+        for a in omni {
+            actions = actions.push(
+                icon_button_with(a.icon, a.request, a.label, a.active, 32.0).map(Message::Omni),
+            );
         }
         if call && let Some(b) = crate::videoconf::header_button(ws, &self.rid, Message::StartCall)
         {
@@ -701,7 +787,10 @@ impl Header {
             ),
             None => popover_menu(
                 trigger,
-                &with_call_entry(menu_entries(ws, &self.rid, &overflow), ws, &self.rid, call),
+                &omni_entries(
+                    omni_menu,
+                    with_call_entry(menu_entries(ws, &self.rid, &overflow), ws, &self.rid, call),
+                ),
                 self.menu_open,
                 Message::CloseMenu,
                 Placement::BelowEnd,
@@ -967,6 +1056,26 @@ mod tests {
         assert!(a.effects.iter().any(|e| matches!(e, Effect::CloseRoom)));
         let a: Action<Message> = RoomAction::Favorite(true).done_action();
         assert!(a.effects.is_empty());
+    }
+
+    /// Livechat actions count in the width budget: in a narrow header the
+    /// ones that do not fit go into the menu instead of squeezing the name.
+    #[test]
+    fn omnichannel_actions_keep_the_title_width() {
+        let base = 2.0 * SPACE_4 + 32.0 + 2.0 * SPACE_3 + MIN_TITLE_WIDTH;
+        // Info + menu trigger, room for two more slots.
+        assert_eq!(omni_inline(base + 4.0 * BUTTON_SLOT, 2, 4), 2);
+        assert_eq!(omni_inline(base + 10.0 * BUTTON_SLOT, 2, 4), 4);
+        assert_eq!(omni_inline(320.0, 2, 4), 0);
+        let actions = vec![crate::omnichannel::room::HeaderAction {
+            icon: Icon::CircleX,
+            label: "Close".into(),
+            request: None,
+            active: false,
+        }];
+        let entries = omni_entries(actions, vec![MenuEntry::Separator]);
+        assert!(matches!(&entries[0], MenuEntry::Item(i) if i.disabled));
+        assert_eq!(entries.len(), 3);
     }
 
     #[test]

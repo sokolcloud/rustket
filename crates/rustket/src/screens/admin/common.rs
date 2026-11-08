@@ -20,8 +20,8 @@ use rustket_ui::theme::{
     TEXT_SMALL, TEXT_SUBTITLE,
 };
 use rustket_ui::widget::{
-    BannerKind, above, banner, dialog, divider, ghost_button, icon_button, loading_placeholder,
-    primary_button, secondary_button,
+    BannerKind, above, banner, dialog, divider, ellipsis, ghost_button, icon_button,
+    loading_placeholder, primary_button, secondary_button,
 };
 
 use super::Message;
@@ -416,11 +416,13 @@ pub fn table<'a, M: Clone + 'a>(
     let mut header = row![].spacing(SPACE_3).padding([SPACE_2, SPACE_3]);
     let portions: Vec<u16> = cols.iter().map(|c| c.portion).collect();
     for c in cols {
+        // Headers end with "…" in narrow columns instead of overlapping.
         let mut label = row![
-            text(c.label)
+            ellipsis(c.label)
                 .size(TEXT_CAPTION)
                 .font(FONT_SEMIBOLD)
-                .style(style::text_secondary)
+                .width(Length::Shrink)
+                .style(|t: &iced::Theme| Some(rustket_ui::tokens(t).text_secondary))
         ]
         .spacing(SPACE_1)
         .align_y(Alignment::Center);
@@ -447,7 +449,11 @@ pub fn table<'a, M: Clone + 'a>(
                 .into(),
             None => label.into(),
         };
-        header = header.push(container(cell).width(Length::FillPortion(c.portion)));
+        header = header.push(
+            container(cell)
+                .width(Length::FillPortion(c.portion))
+                .clip(true),
+        );
     }
     let mut body = column![header, divider()];
     for (cells, on_press) in rows {

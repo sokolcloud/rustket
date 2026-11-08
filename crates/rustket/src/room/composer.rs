@@ -1629,17 +1629,20 @@ impl Composer {
                 .height(18)
                 .style(style::container_divider),
         );
-        for f in Format::ALL {
-            let (ic, tip) = format_icon(f);
-            bar = bar.push(icon_button_with(
-                ic,
-                Some(Message::Format(f)),
-                tip,
-                false,
-                28.0,
-            ));
-        }
-        bar = bar.push(space().width(Length::Fill));
+        // Format buttons take the room left of the apps/attach/send buttons;
+        // the ones that do not fit are hidden (narrow room column next to a
+        // panel), so send and attach always stay visible.
+        let formats = iced::widget::responsive(|size| {
+            let fit = ((size.width + SPACE_1) / (28.0 + SPACE_1)).floor().max(0.0) as usize;
+            row(Format::ALL.into_iter().take(fit).map(|f| {
+                let (ic, tip) = format_icon(f);
+                icon_button_with(ic, Some(Message::Format(f)), tip, false, 28.0)
+            }))
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center)
+            .into()
+        });
+        bar = bar.push(container(formats).width(Length::Fill).height(30));
         if let Some(apps) = self.apps_menu(ctx) {
             bar = bar.push(apps);
         }

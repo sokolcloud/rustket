@@ -11,7 +11,7 @@ use rustket_ui::style;
 use rustket_ui::theme::{
     FONT_MEDIUM, FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
 };
-use rustket_ui::widget::{ellipsis, icon_button, primary_button, secondary_button};
+use rustket_ui::widget::{arrow_keys, ellipsis, icon_button, primary_button, secondary_button};
 
 use super::api::{self, Invite as InviteLink};
 use super::common;
@@ -25,6 +25,11 @@ pub enum Msg {
     Search(u64),
     Results(u64, Res<Vec<UserSummary>>),
     Pick(UserSummary),
+    /// Up/Down in the search field.
+    Move(i32),
+    /// Enter: pick the highlighted result, or add the chosen users when
+    /// nothing is typed.
+    Submit,
     Unpick(String),
     Add,
     Added(Res<()>),
@@ -39,6 +44,10 @@ pub struct Invite {
     query: String,
     query_seq: u64,
     results: Vec<UserSummary>,
+    /// `query_seq` the results belong to (older: outdated).
+    results_seq: u64,
+    /// Highlighted entry of [`Invite::visible`].
+    sel: usize,
     searching: bool,
     selected: Vec<UserSummary>,
     adding: bool,
@@ -56,6 +65,8 @@ impl Default for Invite {
             query: String::new(),
             query_seq: 0,
             results: Vec::new(),
+            results_seq: 0,
+            sel: 0,
             searching: false,
             selected: Vec::new(),
             adding: false,
@@ -108,13 +119,22 @@ pub fn link_caption(l: &InviteLink, expires: impl Fn(rocketchat::RcDate) -> Stri
     match (l.expires, l.uses_left()) {
         (Some(e), Some(n)) => {
             t!(
-                "room_panel.link_expires_or_uses",
+                format!(
+                    "room_panel.link_expires_or_uses_{}",
+                    crate::room::render::plural(n)
+                ),
                 time = expires(e),
                 count = n
             )
         }
         (Some(e), None) => t!("room_panel.link_expires", time = expires(e)),
-        (None, Some(n)) => t!("room_panel.link_uses_left", count = n),
+        (None, Some(n)) => t!(
+            format!(
+                "room_panel.link_uses_left_{}",
+                crate::room::render::plural(n)
+            ),
+            count = n
+        ),
         (None, None) => t!("room_panel.link_never_expires"),
     }
     .into_owned()
@@ -130,6 +150,39 @@ impl Invite {
         if !self.selected.iter().any(|s| s.id == u.id) {
             self.selected.push(u);
         }
+    }
+
+    /// Results that can still be picked (not me, not already chosen).
+    fn visible<'s>(&'s self, me: &'s str) -> impl Iterator<Item = &'s UserSummary> + 's {
+        self.results
+            .iter()
+            .filter(move |u| u.id != me && !self.selected.iter().any(|s| s.id == u.id))
+    }
+
+    fn move_selection(&mut self, d: i32, me: &str) {
+        let n = self.visible(me).count();
+        if n > 0 {
+            self.sel = (self.sel as i64 + i64::from(d)).clamp(0, n as i64 - 1) as usize;
+        }
+    }
+
+    /// What Enter does: `Some(Pick)`, `Some(Add)` or nothing (e.g. results
+    /// still for an older query).
+    fn submit(&self, me: &str) -> Option<Msg> {
+        if self.query.trim().is_empty() {
+            return (!self.selected.is_empty()).then_some(Msg::Add);
+        }
+        if self.results_seq != self.query_seq {
+            return None;
+        }
+        let mut visible = self.visible(me);
+        let first = visible.next()?;
+        let picked = if self.sel == 0 {
+            first
+        } else {
+            visible.nth(self.sel - 1).unwrap_or(first)
+        };
+        Some(Msg::Pick(picked.clone()))
     }
 
     pub fn update(&mut self, msg: Msg, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
@@ -156,6 +209,8 @@ impl Invite {
             Msg::Results(seq, r) => {
                 if seq == self.query_seq {
                     self.searching = false;
+                    self.results_seq = seq;
+                    self.sel = 0;
                     match r {
                         Ok(list) => self.results = list,
                         Err(e) => {
@@ -169,8 +224,22 @@ impl Invite {
             Msg::Pick(u) => {
                 self.pick(u);
                 self.query.clear();
+                self.query_seq += 1;
                 self.results.clear();
+                self.sel = 0;
                 Action::none()
+            }
+            Msg::Move(d) => {
+                let me = ctx.workspace.user_id().unwrap_or_default().to_owned();
+                self.move_selection(d, &me);
+                Action::none()
+            }
+            Msg::Submit => {
+                let me = ctx.workspace.user_id().unwrap_or_default().to_owned();
+                match self.submit(&me) {
+                    Some(m) => self.update(m, ctx),
+                    None => Action::none(),
+                }
             }
             Msg::Unpick(id) => {
                 self.selected.retain(|u| u.id != id);
@@ -262,10 +331,14 @@ impl Invite {
                     .font(FONT_SEMIBOLD)
                     .style(style::text_hint),
             );
-            col = col.push(common::search_field(
-                &self.query,
-                t!("room_panel.search_users").into_owned(),
-                Msg::Query,
+            col = col.push(arrow_keys(
+                common::search_field_submit(
+                    &self.query,
+                    t!("room_panel.search_users").into_owned(),
+                    Msg::Query,
+                    Some(Msg::Submit),
+                ),
+                Msg::Move,
             ));
             if !self.selected.is_empty() {
                 let mut chips = row![].spacing(SPACE_1);
@@ -293,11 +366,7 @@ impl Invite {
             }
             let mut results = column![].spacing(0);
             let me = ws.user_id().unwrap_or_default();
-            for u in self
-                .results
-                .iter()
-                .filter(|u| u.id != me && !self.selected.iter().any(|s| s.id == u.id))
-            {
+            for (i, u) in self.visible(me).enumerate() {
                 let username = u.username.clone().unwrap_or_default();
                 let name = common::user_display(ws, use_real, &username, u.name.as_deref());
                 results = results.push(
@@ -317,7 +386,7 @@ impl Invite {
                     )
                     .width(Length::Fill)
                     .padding([SPACE_1, SPACE_2])
-                    .style(style::button_list_item(false))
+                    .style(style::button_list_item(i == self.sel))
                     .on_press(Msg::Pick(u.clone())),
                 );
             }
@@ -448,5 +517,36 @@ mod tests {
         i.pick(u.clone());
         i.pick(u);
         assert_eq!(i.selected.len(), 1);
+    }
+
+    /// Up/Down highlight a result, Enter picks it; outdated results (typed
+    /// on before they arrived) are not picked; Enter with nothing typed adds.
+    #[test]
+    fn keyboard_picking() {
+        let user = |id: &str| UserSummary {
+            id: id.into(),
+            username: Some(id.into()),
+            ..Default::default()
+        };
+        let mut i = Invite {
+            query: "b".into(),
+            query_seq: 1,
+            results: vec![user("me"), user("bob"), user("bea"), user("bill")],
+            results_seq: 1,
+            ..Default::default()
+        };
+        assert!(matches!(i.submit("me"), Some(Msg::Pick(u)) if u.id == "bob"));
+        i.move_selection(1, "me");
+        i.move_selection(5, "me");
+        assert_eq!(i.sel, 2);
+        i.move_selection(-1, "me");
+        assert!(matches!(i.submit("me"), Some(Msg::Pick(u)) if u.id == "bea"));
+        i.query = "bil".into();
+        i.query_seq = 2;
+        assert!(i.submit("me").is_none(), "results are for \"b\"");
+        i.query.clear();
+        assert!(i.submit("me").is_none(), "nobody chosen yet");
+        i.pick(user("bill"));
+        assert!(matches!(i.submit("me"), Some(Msg::Add)));
     }
 }

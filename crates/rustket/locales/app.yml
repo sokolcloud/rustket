@@ -26,6 +26,12 @@ app.weekday_5:
 app.weekday_6:
   en: "Sunday"
   ru: "Воскресенье"
+app.date_short_fmt:
+  en: "%b %-d"
+  ru: "%d.%m"
+app.date_full_fmt:
+  en: "%b %-d, %Y"
+  ru: "%d.%m.%Y"
 app.error:
   en: "Something went wrong"
   ru: "Что-то пошло не так"

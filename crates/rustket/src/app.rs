@@ -852,6 +852,7 @@ impl App {
             Message::Desktop(m) => self.on_desktop(m),
             Message::Calls(m) => self.on_calls(m),
             Message::OpenQuickSwitcher => self.navigate(component::Nav::QuickSwitcher),
+            Message::FocusNext(forward) => rustket_ui::widget::focus_cycle(forward),
             Message::SidebarResized(w) => {
                 self.ui_state.sidebar_width = w;
                 self.save_stamp += 1;
@@ -2576,7 +2577,7 @@ impl App {
                 _ => None,
             },
         ));
-        // Ctrl+K: quick switcher.
+        // Ctrl+K: quick switcher. Tab: focus traversal (modal dialogs keep Tab).
         subs.push(iced::keyboard::listen().filter_map(|ev| match ev {
             iced::keyboard::Event::KeyPressed {
                 key,
@@ -2585,6 +2586,13 @@ impl App {
                 ..
             } if modifiers.command() && key.to_latin(physical_key) == Some('k') => {
                 Some(Message::OpenQuickSwitcher)
+            }
+            iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+                modifiers,
+                ..
+            } if !modifiers.command() && !modifiers.alt() => {
+                Some(Message::FocusNext(!modifiers.shift()))
             }
             _ => None,
         }));

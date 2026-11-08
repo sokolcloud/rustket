@@ -20,6 +20,12 @@ typing.uploading_many:
 typing.and:
   en: "%{first} and %{last}"
   ru: "%{first} и %{last}"
-typing.and_others:
+typing.and_others_one:
+  en: "%{first} and %{count} other"
+  ru: "%{first} и ещё %{count}"
+typing.and_others_few:
+  en: "%{first} and %{count} others"
+  ru: "%{first} и ещё %{count}"
+typing.and_others_many:
   en: "%{first} and %{count} others"
   ru: "%{first} и ещё %{count}"
