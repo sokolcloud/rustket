@@ -253,6 +253,24 @@ async fn shots(
         d.app.servers[sid].credentials.is_some(),
         "cancel keeps the session"
     );
+    // Server removal: the same warning with its own wording.
+    d.send(Message::Modal(
+        rustket::message::ModalMessage::ConfirmRemove(sid.clone()),
+    ));
+    assert!(
+        matches!(
+            d.app.servers[sid].e2e.modal,
+            Some(Modal::SignOutWarning {
+                action: e2e::SignOut::RemoveServer,
+                ..
+            })
+        ),
+        "removal warning expected"
+    );
+    d.settle(Duration::from_millis(300)).await;
+    both(d, out, "e2c-remove-warning");
+    d.send(e2e_msg(d, sid, e2e::Message::CloseModal));
+    assert!(d.app.servers.contains_key(sid), "cancel keeps the server");
     d.send(e2e_msg(d, sid, e2e::Message::OpenModal));
     d.send(e2e_msg(d, sid, e2e::Message::ConfirmSaved));
     let s2 = sid.clone();

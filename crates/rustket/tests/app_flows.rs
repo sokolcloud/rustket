@@ -116,6 +116,31 @@ fn app_with(
     (app, sid, store)
 }
 
+/// A logout or server removal: the app first asks the secret store for an
+/// unsaved E2E passphrase; the answer is fed back. Returns the task of the
+/// actual sign-out.
+async fn sign_out(app: &mut App, m: Message) -> iced::Task<Message> {
+    use iced::futures::StreamExt;
+    let check = app.update(m);
+    let Some(stream) = iced_runtime::task::into_stream(check) else {
+        return iced::Task::none();
+    };
+    let outputs: Vec<Message> = stream
+        .filter_map(|a| async move {
+            match a {
+                iced_runtime::Action::Output(m @ Message::E2e(..)) => Some(m),
+                _ => None,
+            }
+        })
+        .collect()
+        .await;
+    let mut last = iced::Task::none();
+    for m in outputs {
+        last = app.update(m);
+    }
+    last
+}
+
 fn ev(app: &App, sid: &ServerId, e: SessionEvent) -> Message {
     Message::Server(
         sid.clone(),
@@ -465,10 +490,14 @@ async fn stale_results_of_an_old_session_are_dropped() {
     );
     let _ = app.update(m);
     let old_epoch = app.servers[&sid].generation;
-    let _ = app.update(Message::Sidebar(
-        sid.clone(),
-        sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
-    ));
+    let _ = sign_out(
+        &mut app,
+        Message::Sidebar(
+            sid.clone(),
+            sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
+        ),
+    )
+    .await;
     assert!(app.servers[&sid].login.is_some());
     // Late successful load while logged out: ignored.
     let _ = app.update(Message::InitialLoaded(
@@ -992,10 +1021,14 @@ async fn image_results_after_logout_are_dropped() {
     let (mut app, sid, _) = app_with(dir.path(), Some("A"), vec![]);
     let generation = app.images.generation(&sid);
     let url = format!("{SERVER}/avatar/bob?size=64");
-    let _ = app.update(Message::Sidebar(
-        sid.clone(),
-        sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
-    ));
+    let _ = sign_out(
+        &mut app,
+        Message::Sidebar(
+            sid.clone(),
+            sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
+        ),
+    )
+    .await;
     let mut late = fetched_png();
     let path = dir.path().join("cache/images/x/late.png");
     late.write = Some((path.clone(), vec![1, 2, 3]));
@@ -1019,16 +1052,24 @@ async fn unknown_token_kind_is_kept_local() {
     assert_eq!(app.config.server(&sid).and_then(|e| e.token_kind), None);
     // No session: a revoke would need a REST task; a local logout schedules
     // only the secret deletion and the login meta load.
-    let local = app.update(Message::Sidebar(
-        sid.clone(),
-        sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
-    ));
+    let local = sign_out(
+        &mut app,
+        Message::Sidebar(
+            sid.clone(),
+            sidebar::Message::Status(rustket::workspace::status_menu::Message::Logout),
+        ),
+    )
+    .await;
     let dir2 = tempfile::tempdir().unwrap();
     let (mut app2, sid2, _) = app_with(dir2.path(), Some("A"), vec![]);
-    let everywhere = app2.update(Message::Sidebar(
-        sid2.clone(),
-        sidebar::Message::Status(rustket::workspace::status_menu::Message::LogoutEverywhere),
-    ));
+    let everywhere = sign_out(
+        &mut app2,
+        Message::Sidebar(
+            sid2.clone(),
+            sidebar::Message::Status(rustket::workspace::status_menu::Message::LogoutEverywhere),
+        ),
+    )
+    .await;
     assert_eq!(
         everywhere.units(),
         local.units() + 1,

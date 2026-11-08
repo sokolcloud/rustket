@@ -983,9 +983,9 @@ impl<A: E2eApi> E2eManager<A> {
         }
     }
 
-    /// A logout the user did not choose (`force_logout`): stop and delete the
-    /// cached key, but keep a generated passphrase the user has not saved yet.
-    /// It is the only copy; the next start unlocks the key backup with it and
+    /// A logout the user did not choose (`force_logout`, a rejected token):
+    /// stop and delete the cached key, but keep a generated passphrase the
+    /// user has not saved yet. It is the only copy; the next start unlocks the key backup with it and
     /// asks the user to save it again (web: the stored `e2e.randomPassword`
     /// survives logout).
     pub async fn forced_logout(&self) {
@@ -1004,8 +1004,10 @@ impl<A: E2eApi> E2eManager<A> {
         *write(&self.inner.settings) = settings;
     }
 
-    /// Applies a realtime event (rooms, subscriptions, settings, `force_logout`,
-    /// room key requests). Returns `true` if it was relevant.
+    /// Applies a realtime event (rooms, subscriptions, settings, room key
+    /// requests). Returns `true` if it was relevant. `force_logout` is not
+    /// handled here: it may name another session, which only the caller can
+    /// tell; it calls [`Self::forced_logout`] when the session was logged out.
     pub async fn handle_event(&self, ev: &SessionEvent) -> bool {
         match ev {
             SessionEvent::RoomChanged { kind, room } => {
@@ -1026,10 +1028,6 @@ impl<A: E2eApi> E2eManager<A> {
             }
             SessionEvent::SettingChanged { setting, .. } => {
                 write(&self.inner.settings).apply(&setting.id, &setting.value)
-            }
-            SessionEvent::ForceLogout { .. } => {
-                self.forced_logout().await;
-                true
             }
             other => match RoomE2eKeyRequest::from_event(other) {
                 Some(req) => {

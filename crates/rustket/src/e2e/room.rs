@@ -398,6 +398,7 @@ pub fn composer_block<'a, M: 'a>(ws: &Workspace, rid: &str) -> Option<Element<'a
     }
     let key = match ws.e2e().map(|m| m.account_state()) {
         _ if !outgoing::settings_loaded(ws) => "e2e.composer_settings_unknown",
+        _ if !outgoing::room_known(ws, rid) => "e2e.composer_room_unknown",
         Some(AccountE2eState::EnterPassword { .. }) => "e2e.composer_locked",
         Some(s) if s.is_ready() => "e2e.composer_waiting",
         _ => "e2e.composer_unavailable",

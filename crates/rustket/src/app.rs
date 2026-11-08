@@ -1248,12 +1248,12 @@ impl App {
     fn logged_out(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
         let mut e2e = Task::none();
         if let Some(s) = self.servers.get_mut(sid) {
-            // `force_logout` (e.g. an E2E key reset) also drops the cached E2E
-            // key (an unsaved generated passphrase is kept).
-            if reason.as_deref() == Some("force_logout") {
-                let uid = self.config.server(sid).and_then(|e| e.user_id.clone());
-                e2e = crate::e2e::forget_keys(s, self.secrets.as_ref(), uid.as_deref());
-            }
+            // Any rejected token also drops the cached E2E key (an unsaved
+            // generated passphrase is kept), as the web does on every logout:
+            // an E2E key reset closes the connections before its
+            // `force_logout` goes out, so it shows up as a failed resume.
+            let uid = self.config.server(sid).and_then(|e| e.user_id.clone());
+            e2e = crate::e2e::forget_keys(s, self.secrets.as_ref(), uid.as_deref());
             // The token was rejected: nothing can be sent with it any more.
             s.reset();
         }

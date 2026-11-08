@@ -121,12 +121,14 @@ fn passphrase_box(passphrase: &str) -> Element<'_, Message> {
 
 /// Signing out would delete the generated passphrase the user never saved.
 fn sign_out_warning(passphrase: &str, action: super::SignOut) -> Element<'_, Message> {
-    let confirm = match action {
-        super::SignOut::Logout { .. } => t!("e2e.sign_out_anyway"),
-        super::SignOut::RemoveServer => t!("e2e.remove_anyway"),
+    let (confirm, body) = match action {
+        super::SignOut::Logout { .. } => {
+            (t!("e2e.sign_out_anyway"), t!("e2e.sign_out_warning_body"))
+        }
+        super::SignOut::RemoveServer => (t!("e2e.remove_anyway"), t!("e2e.remove_warning_body")),
     };
     let body = column![
-        text(t!("e2e.sign_out_warning_body")).size(TEXT_BODY),
+        text(body).size(TEXT_BODY),
         passphrase_box(passphrase),
         text(t!("e2e.sign_out_warning_hint"))
             .size(TEXT_CAPTION)

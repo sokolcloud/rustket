@@ -361,9 +361,9 @@ every component as `ctx.workspace.e2e()`; `ServerState::e2e`
 app before the workspace changes are taken: start once the initial load is
 in, feed changed rooms/subscriptions and settings, restart when `E2E_Enable`
 turns on; `e2e::forget_secrets` on logout / server removal, after
-`e2e::warn_before_sign_out` showed an unsaved generated passphrase;
-`e2e::forget_keys` on a `force_logout` aimed at this session, which keeps
-that passphrase).
+`e2e::check_sign_out` asked the secret store and showed an unsaved generated
+passphrase; `e2e::forget_keys` on every rejected token (failed resume,
+`force_logout` aimed at this session), which keeps that passphrase).
 - Encrypted messages are decrypted in place before anything is drawn
   (`e2e::shown`, `Workspace::rewrite_messages`): `msg`/`md`/attachments/files
   hold the plaintext, `content` keeps the envelope, `Message::e2e` a marker

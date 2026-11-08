@@ -235,6 +235,8 @@ impl App {
                     self.logout(&sid, everywhere)
                 }
                 e2e::Request::SignOut(e2e::SignOut::RemoveServer) => self.remove_server(&sid),
+                // The warning is a modal of the server screen.
+                e2e::Request::ShowModal => self.activate(sid.clone()),
             });
         }
         Task::batch(tasks)
@@ -243,11 +245,14 @@ impl App {
     /// Logout or server removal the user asked for: first warns (and shows
     /// it again) when it would delete an unsaved generated E2E passphrase.
     pub(super) fn sign_out(&mut self, sid: &ServerId, action: e2e::SignOut) -> Task<Message> {
-        if let Some(s) = self.servers.get_mut(sid)
-            && e2e::warn_before_sign_out(s, action)
-        {
-            // The warning is a modal of the server screen.
-            return self.activate(sid.clone());
+        let uid = self.config.server(sid).and_then(|e| e.user_id.clone());
+        if let Some(s) = self.servers.get_mut(sid) {
+            match e2e::check_sign_out(s, self.secrets.as_ref(), uid.as_deref(), action) {
+                e2e::SignOutCheck::Now => {}
+                // The warning is a modal of the server screen.
+                e2e::SignOutCheck::Warned => return self.activate(sid.clone()),
+                e2e::SignOutCheck::Pending(task) => return task,
+            }
         }
         match action {
             e2e::SignOut::Logout { everywhere } => self.logout(sid, everywhere),

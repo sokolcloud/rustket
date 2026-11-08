@@ -1028,10 +1028,15 @@ async fn events_update_settings_and_force_logout() {
     };
     assert!(m.handle_event(&ev).await);
     assert_eq!(m.room_state(RID), RoomE2eState::WaitingKeys);
+    // `force_logout` may be meant for another session: ignored here.
     assert!(
-        m.handle_event(&SessionEvent::ForceLogout { session_id: None })
-            .await
+        !m.handle_event(&SessionEvent::ForceLogout {
+            session_id: Some("other".into())
+        })
+        .await
     );
+    assert_eq!(m.room_state(RID), RoomE2eState::WaitingKeys);
+    m.forced_logout().await;
     assert_eq!(m.account_state(), AccountE2eState::Disabled);
     assert!(
         store
@@ -1548,10 +1553,7 @@ async fn forced_logout_keeps_an_unsaved_passphrase_that_unlocks_again() {
     };
     // `force_logout` (no chance to warn): the cached key goes, the
     // passphrase stays.
-    assert!(
-        m.handle_event(&SessionEvent::ForceLogout { session_id: None })
-            .await
-    );
+    m.forced_logout().await;
     let server = ServerId("srv".into());
     assert!(
         store

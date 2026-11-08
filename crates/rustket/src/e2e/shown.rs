@@ -40,13 +40,25 @@ struct Seen {
     epoch: u64,
     /// Decrypted with all its quotes resolved: never processed again.
     done: bool,
+    /// [`USES`] at the last lookup or write (the least recently used version
+    /// is forgotten first).
+    used: u64,
 }
 
 /// Processed versions of one message (newest last).
 type Versions = Vec<Seen>;
 
-/// Versions remembered per message.
-const MAX_VERSIONS: usize = 4;
+/// Versions remembered per message. Every copy that is shown is looked up
+/// on each pass, so copies in use are never the least recently used one
+/// unless more than this many versions are shown at once.
+const MAX_VERSIONS: usize = 16;
+
+/// Lookup counter for [`Seen::used`].
+static USES: AtomicU64 = AtomicU64::new(1);
+
+fn next_use() -> u64 {
+    USES.fetch_add(1, Ordering::Relaxed)
+}
 
 fn seen() -> &'static Mutex<HashMap<(String, String), Versions>> {
     static S: OnceLock<Mutex<HashMap<(String, String), Versions>>> = OnceLock::new();
@@ -93,20 +105,25 @@ fn updated_ms(m: &Message) -> Option<i64> {
 pub fn verified_marker(m: &Message) -> Option<&'static str> {
     let marker = mark::marker(m)?;
     let updated = updated_ms(m);
-    match seen_lock().get(&(m.rid.clone(), m.id.clone())) {
-        Some(v) if !v.iter().any(|s| s.updated == updated) => None,
-        _ => Some(marker),
-    }
+    let mut table = seen_lock();
+    let Some(versions) = table.get_mut(&(m.rid.clone(), m.id.clone())) else {
+        return Some(marker);
+    };
+    let s = versions.iter_mut().find(|s| s.updated == updated)?;
+    s.used = next_use();
+    Some(marker)
 }
 
 /// The record of this version of `m` whose marker `m` carries.
 fn prior_record(m: &Message, updated: Option<i64>) -> Option<Seen> {
     let marker = mark::marker(m)?;
-    seen_lock()
-        .get(&(m.rid.clone(), m.id.clone()))?
-        .iter()
-        .find(|s| s.updated == updated && s.marker == marker)
-        .copied()
+    let mut table = seen_lock();
+    let s = table
+        .get_mut(&(m.rid.clone(), m.id.clone()))?
+        .iter_mut()
+        .find(|s| s.updated == updated && s.marker == marker)?;
+    s.used = next_use();
+    Some(*s)
 }
 
 /// Whether `m` is shown decrypted (verified).
@@ -212,16 +229,28 @@ fn record(m: &Message, seen: Seen) {
         table.clear();
     }
     let versions = table.entry((m.rid.clone(), m.id.clone())).or_default();
+    let seen = Seen {
+        used: next_use(),
+        ..seen
+    };
     match versions.iter_mut().find(|s| s.updated == seen.updated) {
         // Another copy of this version (a panel list, the thread view) is
         // shown decrypted: keep that record, so its plaintext is never
         // mistaken for a server message. Copies that are not decrypted hold
         // no plaintext.
-        Some(old) if is_decrypted_marker(old.marker) && !is_decrypted_marker(seen.marker) => {}
+        Some(old) if is_decrypted_marker(old.marker) && !is_decrypted_marker(seen.marker) => {
+            old.used = seen.used;
+        }
         Some(old) => *old = seen,
         None => {
-            if versions.len() >= MAX_VERSIONS {
-                versions.remove(0);
+            if versions.len() >= MAX_VERSIONS
+                && let Some(lru) = versions
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, s)| s.used)
+                    .map(|(i, _)| i)
+            {
+                versions.remove(lru);
             }
             versions.push(seen);
         }
@@ -254,6 +283,7 @@ fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
             plain: marker == mark::DECRYPTED_PLAINTEXT,
             epoch: 0,
             done: false,
+            used: 0,
         })
     });
     // The attachments are still the server's (not yet replaced by a
@@ -365,6 +395,7 @@ fn process_e2e(m: &mut Message, env: &Env<'_>, with_quotes: bool) -> bool {
             plain,
             epoch,
             done,
+            used: 0,
         },
     );
     true
@@ -404,6 +435,7 @@ fn process_pinned(m: &mut Message, env: &Env<'_>) -> bool {
             plain: false,
             epoch,
             done,
+            used: 0,
         },
     );
     true
@@ -940,6 +972,40 @@ pub(crate) mod tests {
         let mut forged = timeline.clone();
         forged.updated_at = rocketchat::RcDate::from_millis(3_000);
         assert_eq!(state(&forged), Some(State::Raw));
+    }
+
+    #[tokio::test]
+    async fn many_concurrent_versions_stay_decrypted() {
+        let (mgr, key, server) = manager_with_key("r-many").await;
+        let mut ws = Workspace::new();
+        ws.set_e2e(Some(mgr));
+        let env = Env::new(&ws, &server, &NoQuotes);
+        let content = key
+            .encrypt_json(&serde_json::json!({"msg": "secret text"}))
+            .unwrap()
+            .to_json();
+        let raw = serde_json::json!({"t": "e2e", "content": content});
+        // Timeline, last message, thread view, pinned and starred panels,
+        // a fetched quote: six versions of one message shown at once.
+        let mut copies: Vec<Message> = (0..6)
+            .map(|i| {
+                let mut c = msg("many", raw.clone());
+                c.rid = "r-many".into();
+                c.updated_at = rocketchat::RcDate::from_millis(1_000 + i);
+                c
+            })
+            .collect();
+        for _ in 0..3 {
+            for c in &mut copies {
+                process(c, &env);
+            }
+            for c in &copies {
+                assert_eq!(c.msg, "secret text");
+                assert!(is_decrypted(c));
+                assert_eq!(state(c), Some(State::Decrypted { plaintext: false }));
+            }
+            keys_changed();
+        }
     }
 
     #[tokio::test]

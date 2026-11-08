@@ -1266,7 +1266,10 @@ impl Composer {
             crate::e2e::outgoing::mode(ctx.workspace, &self.rid),
             crate::e2e::outgoing::Mode::Blocked
         ) {
-            return Action::effect(error_toast(crate::e2e::outgoing::blocked_text()));
+            return Action::effect(error_toast(crate::e2e::outgoing::blocked_text(
+                ctx.workspace,
+                &self.rid,
+            )));
         }
         // Slash commands do not run in rooms that must stay encrypted (§2.1).
         let is_command = self.quotes.is_empty()

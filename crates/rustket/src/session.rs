@@ -22,7 +22,10 @@ use crate::error::Failure;
 /// Cheap, cloneable handle to a running session. The session closes when the
 /// app drops its last handle (logout, token change, server removal).
 #[derive(Clone)]
-pub struct SessionHandle(pub Arc<Session>);
+pub struct SessionHandle(pub Arc<Session>, LastDdpSession);
+
+/// The DDP session id of the last live connection.
+type LastDdpSession = Arc<std::sync::Mutex<Option<String>>>;
 
 impl SessionHandle {
     pub fn rest(&self) -> &RestClient {
@@ -33,10 +36,22 @@ impl SessionHandle {
         &self.0
     }
 
-    /// The DDP session id of the live connection (what `force_logout`
-    /// names when it targets one session).
+    pub fn new(session: Arc<Session>) -> Self {
+        Self(session, LastDdpSession::default())
+    }
+
+    /// The DDP session id of the live connection, or of the last one while
+    /// reconnecting (what `force_logout` names when it targets one session;
+    /// the server may close the connection right after sending it).
     pub fn ddp_session_id(&self) -> Option<String> {
-        self.0.ddp_session_id()
+        let mut last = self
+            .1
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(id) = self.0.ddp_session_id() {
+            *last = Some(id);
+        }
+        last.clone()
     }
 }
 
@@ -169,7 +184,7 @@ fn run(spec: &SessionSpec) -> impl Stream<Item = Tagged> + use<> {
                 }
             }
         };
-        let handle = SessionHandle(Arc::new(session));
+        let handle = SessionHandle::new(Arc::new(session));
         if out
             .send((id.clone(), ServerEvent::Ready(handle)))
             .await
