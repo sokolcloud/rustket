@@ -1099,6 +1099,12 @@ impl Composer {
                 let cmds = cached_commands(server).unwrap_or_default();
                 autocomplete::match_commands(ws, &self.rid, &cmds, &trigger.query)
             }
+            TriggerKind::Canned => {
+                crate::omnichannel::canned::suggestions(server, ws, &self.rid, &trigger.query)
+                    .into_iter()
+                    .map(|(shortcut, text)| Item::Canned { shortcut, text })
+                    .collect()
+            }
         }
     }
 

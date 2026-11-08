@@ -620,6 +620,162 @@ async fn removed_room_closes_its_view_and_can_be_reopened() {
     assert!(app.servers[&sid].rooms.contains_key("r1"));
 }
 
+/// A livechat chat `L1` served by `A`, open in the app; `prefs` are the
+/// user's preferences.
+fn livechat_app(dir: &std::path::Path, prefs: serde_json::Value) -> (App, ServerId, Sub) {
+    let (mut app, sid, _) = app_with(dir, Some("A"), vec![]);
+    let me: User = serde_json::from_value(serde_json::json!({
+        "_id": "A", "username": "alice", "settings": {"preferences": prefs}
+    }))
+    .unwrap();
+    let m = ev(
+        &app,
+        &sid,
+        SessionEvent::Ready {
+            me: Box::new(me.clone()),
+        },
+    );
+    let _ = app.update(m);
+    let mut data = initial(me, &[("r1", 0)]);
+    let mut s = sub("L1", "A", 1, T0);
+    s.t = RoomType::Livechat;
+    data.subscriptions.push(s.clone());
+    let mut r = room("L1", T0);
+    r.t = RoomType::Livechat;
+    r.name = None;
+    r.fname = Some("Visitor".into());
+    r.open = Some(true);
+    r.served_by = Some(serde_json::json!({"_id": "A", "username": "alice"}));
+    data.rooms.push(r);
+    let m = loaded(&app, &sid, data);
+    let _ = app.update(m);
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("L1".into()),
+    ));
+    assert!(app.servers[&sid].rooms.contains_key("L1"));
+    (app, sid, s)
+}
+
+fn remove_sub(app: &mut App, sid: &ServerId, s: &Sub) {
+    let m = ev(
+        app,
+        sid,
+        SessionEvent::SubscriptionChanged {
+            kind: ChangeKind::Removed,
+            sub: Box::new(s.clone()),
+        },
+    );
+    let _ = app.update(m);
+}
+
+/// Omnichannel: with "Hide conversation after closing" (default) a chat
+/// closed or forwarded elsewhere closes its view; results of an old session
+/// are dropped.
+#[tokio::test]
+async fn closed_livechat_chat_closes_its_view_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid, s) = livechat_app(dir.path(), serde_json::json!({}));
+    // A result of the previous session (generation bumped by a re-login).
+    let old = app.servers[&sid].generation;
+    app.servers.get_mut(&sid).unwrap().generation += 1;
+    let _ = app.update(Message::Omni(
+        sid.clone(),
+        old,
+        rustket::omnichannel::Message::Routing(Ok(Default::default())),
+    ));
+    assert!(
+        app.servers[&sid].omni.state.routing.is_none(),
+        "old session's result dropped"
+    );
+    remove_sub(&mut app, &sid, &s);
+    let st = &app.servers[&sid];
+    assert!(!st.rooms.contains_key("L1"));
+    assert_eq!(st.active_room, None);
+}
+
+/// Omnichannel: without "Hide conversation after closing" the closed chat
+/// stays open (a preview) with the "closed" callout instead of the composer.
+#[tokio::test]
+async fn closed_livechat_chat_stays_when_not_hidden() {
+    use rustket_core::omnichannel::room::ComposerState;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid, s) = livechat_app(
+        dir.path(),
+        serde_json::json!({"omnichannelHideConversationAfterClosing": false}),
+    );
+    remove_sub(&mut app, &sid, &s);
+    let st = &app.servers[&sid];
+    assert!(st.rooms.contains_key("L1"), "view kept");
+    assert_eq!(st.active_room.as_deref(), Some("L1"));
+    assert!(st.workspace.room("L1").is_some_and(|e| e.sub.is_none()));
+    assert!(st.workspace.timeline("L1").is_some(), "history reloaded");
+    // The server's copy (re-read, or streamed) says the chat is closed.
+    let mut r = room("L1", T0 + 5);
+    r.t = RoomType::Livechat;
+    r.fname = Some("Visitor".into());
+    let m = ev(
+        &app,
+        &sid,
+        SessionEvent::RoomChanged {
+            kind: ChangeKind::Updated,
+            room: Box::new(r),
+        },
+    );
+    let _ = app.update(m);
+    let st = &app.servers[&sid];
+    let omni = rustket_core::omnichannel::OmnichannelState::new();
+    assert_eq!(
+        rustket::omnichannel::room::state_of(&st.workspace, &omni, "L1"),
+        Some(ComposerState::Closed)
+    );
+    assert!(st.rooms.contains_key("L1"));
+}
+
+/// Omnichannel: the user's own "return to queue" removes the subscription
+/// before the HTTP result arrives; the view waits for it, so its success
+/// toast is shown, then closes.
+#[tokio::test]
+async fn own_return_to_queue_keeps_its_toast() {
+    use rustket::omnichannel::dialogs::{self, confirm};
+    use rustket::omnichannel::room::{Msg as OmniMsg, Request};
+    use rustket_core::omnichannel::room::QuickAction;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid, s) = livechat_app(dir.path(), serde_json::json!({}));
+    let room_msg = |app: &App, m: OmniMsg| {
+        Message::Room(
+            sid.clone(),
+            app.servers[&sid].generation,
+            "L1".into(),
+            rustket::room::Message::Omni(m),
+        )
+    };
+    let m = room_msg(
+        &app,
+        OmniMsg::Request(Request::Quick(QuickAction::MoveToQueue)),
+    );
+    let _ = app.update(m);
+    let m = room_msg(
+        &app,
+        OmniMsg::Dialog(dialogs::Msg::Confirm(confirm::Msg::Confirm)),
+    );
+    let _ = app.update(m);
+    assert!(app.servers[&sid].rooms["L1"].omni.request_in_flight());
+    remove_sub(&mut app, &sid, &s);
+    assert!(
+        app.servers[&sid].rooms.contains_key("L1"),
+        "waits for the result"
+    );
+    let toasts = app.toasts.len();
+    let m = room_msg(
+        &app,
+        OmniMsg::Dialog(dialogs::Msg::Confirm(confirm::Msg::Done(Ok(true)))),
+    );
+    let _ = app.update(m);
+    assert_eq!(app.toasts.len(), toasts + 1, "success toast");
+    assert!(!app.servers[&sid].rooms.contains_key("L1"), "then closed");
+}
+
 // --- config writes (review #17) ---------------------------------------------------------
 
 #[tokio::test]

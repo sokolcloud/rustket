@@ -66,6 +66,8 @@ pub enum Message {
     Desktop(crate::desktop::Message),
     /// Video conferences (`crate::videoconf`).
     Calls(crate::videoconf::Message),
+    /// Omnichannel controller message: server, session epoch, message.
+    Omni(ServerId, u64, crate::omnichannel::Message),
     /// Ctrl+K.
     OpenQuickSwitcher,
     SidebarResized(f32),

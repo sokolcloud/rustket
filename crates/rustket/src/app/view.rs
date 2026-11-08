@@ -174,6 +174,7 @@ impl App {
                 .height(Length::Fill)
                 .into(),
             };
+        let room_area = self.omni_screen(s).unwrap_or(room_area);
         let mut area = column![];
         if let Some(strip) = self.connection_strip(s) {
             area = area.push(strip);

@@ -44,6 +44,11 @@ pub enum Item {
         params: Option<String>,
         description: Option<String>,
     },
+    /// An omnichannel canned response (`!shortcut`); replaced by its text.
+    Canned {
+        shortcut: String,
+        text: String,
+    },
 }
 
 impl Item {
@@ -55,6 +60,7 @@ impl Item {
             Self::Room { name, .. } => format!("#{name}"),
             Self::Emoji { key, .. } => key.clone(),
             Self::Command { command, .. } => format!("/{command}"),
+            Self::Canned { text, .. } => text.clone(),
         }
     }
 
@@ -320,6 +326,7 @@ pub fn view<'a, M: Clone + 'a>(
         TriggerKind::Room => t!("room_composer.ac.rooms"),
         TriggerKind::Emoji => t!("room_composer.ac.emoji"),
         TriggerKind::Command => t!("room_composer.ac.commands"),
+        TriggerKind::Canned => t!("omnichannel.canned"),
     };
     let mut list = column![
         container(text(title).size(TEXT_CAPTION).style(style::text_secondary))
@@ -443,6 +450,7 @@ fn item_view<'a, M: 'a>(item: &'a Item, ctx: &ViewCtx<'a>) -> Element<'a, M> {
             }
             col.into()
         }
+        Item::Canned { shortcut, text } => crate::omnichannel::canned::item_view(shortcut, text),
     }
 }
 

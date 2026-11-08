@@ -201,6 +201,8 @@ pub enum TriggerKind {
     Room,
     Emoji,
     Command,
+    /// `!` canned responses (omnichannel rooms, `crate::omnichannel::canned`).
+    Canned,
 }
 
 /// The token being completed: `text[start..end]` is the whole token (with
@@ -243,6 +245,7 @@ pub fn trigger_at(text: &str, cursor: usize) -> Option<Trigger> {
             TriggerKind::Emoji
         }
         '/' if start == 0 && !query.contains('/') => TriggerKind::Command,
+        '!' => TriggerKind::Canned,
         _ => return None,
     };
     if kind == TriggerKind::User && query.contains('@') {

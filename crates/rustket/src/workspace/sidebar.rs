@@ -40,6 +40,8 @@ pub enum Message {
     Status(super::status_menu::Message),
     Directory,
     Create,
+    /// Omnichannel groups and buttons (`crate::omnichannel::sidebar`).
+    Omni(crate::omnichannel::sidebar::Msg),
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +53,7 @@ pub enum Out {
     Status(super::status_menu::Message),
     Directory,
     Create,
+    Omni(crate::omnichannel::sidebar::Msg),
 }
 
 pub struct SidebarCtx<'a> {
@@ -95,9 +98,14 @@ impl Sidebar {
             }
             Message::Toggle(kind) => Out::ToggleSection(kind.i18n_key().to_owned()),
             Message::Open(rid) => Out::OpenRoom(rid),
+            Message::Status(super::status_menu::Message::Omni(
+                crate::omnichannel::status::Msg::ContactCenter,
+            )) => Out::Omni(crate::omnichannel::sidebar::Msg::ContactCenter),
             Message::Status(m) => Out::Status(m),
             Message::Directory => Out::Directory,
             Message::Create => Out::Create,
+            Message::Omni(crate::omnichannel::sidebar::Msg::Toggle(key)) => Out::ToggleSection(key),
+            Message::Omni(m) => Out::Omni(m),
         }
     }
 
@@ -188,7 +196,8 @@ impl Sidebar {
             }
         })
         .padding([0.0, SPACE_1]);
-        let body: Element<'a, Message> = if self.sections.is_empty() {
+        let queue = crate::omnichannel::sidebar::queue_group(ctx, &self.filter);
+        let body: Element<'a, Message> = if self.sections.is_empty() && queue.is_none() {
             if self.filter.trim().is_empty() {
                 empty_state(Icon::Inbox, t!("sidebar.no_rooms"), String::new())
             } else {
@@ -196,7 +205,20 @@ impl Sidebar {
             }
         } else {
             let mut list = Column::new().spacing(0).padding([0.0, SPACE_2]);
+            // Omnichannel groups first (queue, in progress, on hold).
+            let row = |item: &'a RoomListItem| self.row(item, ctx);
+            list = crate::omnichannel::sidebar::push_groups(
+                list,
+                queue,
+                &self.sections,
+                ctx,
+                &self.filter,
+                &row,
+            );
             for section in &self.sections {
+                if section.kind == SectionKind::Omnichannel {
+                    continue;
+                }
                 let collapsed = self.filter.trim().is_empty()
                     && ctx.collapsed.contains(section.kind.i18n_key());
                 list = list.push(section_header(
@@ -291,6 +313,7 @@ impl Sidebar {
         p.is_selected = ctx.active_room == Some(item.rid.as_str());
         p.presence = item.dm_status.map(presence);
         p.icon = Some(room_icon(item.kind));
+        crate::omnichannel::sidebar::decorate(&mut p, item, ctx);
         if let Some(label) = ctx.workspace.typing_label(&item.rid, None, ctx.now) {
             p.typing = true;
             p.typing_label = typing_text(&label);

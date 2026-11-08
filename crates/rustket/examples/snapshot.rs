@@ -690,6 +690,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
         account_shots(&mut d, &out, &sid).await;
     }
     glue::glue_shots(&mut d, &server, &out, &sid, &rid, &fixture.ledger).await;
+    omni::omni_shots(&mut d, &server, &out, &sid, &user).await;
 
     // Log out through the app: the login token is revoked on the server.
     let creds: Credentials = d.app.servers[&sid].credentials.clone().expect("creds");
@@ -884,6 +885,8 @@ mod glue;
 mod admin_shots;
 #[path = "snapshot/teams.rs"]
 mod teams;
+#[path = "snapshot/omni.rs"]
+mod omni;
 #[path = "snapshot/timeline_fixture.rs"]
 mod timeline_fixture;
 /// Quick switcher, directory, create dialogs and account tabs (light + dark).

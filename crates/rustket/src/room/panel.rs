@@ -58,6 +58,8 @@ pub enum Kind {
     TeamMembers,
     /// Team info and team actions (`crate::teams::info`).
     TeamInfo,
+    /// Omnichannel panels (`crate::omnichannel::panel`).
+    Omnichannel(crate::omnichannel::panel::PanelKind),
 }
 
 impl Kind {
@@ -80,6 +82,7 @@ impl Kind {
             Kind::TeamChannels => "room_panel.team_channels",
             Kind::TeamMembers => "teams.panel_members",
             Kind::TeamInfo => "teams.panel_info",
+            Kind::Omnichannel(k) => k.i18n_key(),
         }
     }
 
@@ -96,7 +99,7 @@ impl Kind {
                     Kind::RoomSettings | Kind::TeamChannels | Kind::TeamMembers
                 )
                 | (Kind::TeamMembers, Kind::UserInfo(_))
-        )
+        ) || matches!((from, self), (Kind::Omnichannel(f), Kind::Omnichannel(k)) if k.back_target(f))
     }
 }
 
@@ -125,6 +128,7 @@ pub enum BodyMsg {
     Invite(invite::Msg),
     Thread(thread::Msg),
     Team(crate::teams::Msg),
+    Omni(crate::omnichannel::panel::Msg),
 }
 
 /// State of the open panel.
@@ -140,6 +144,7 @@ enum Body {
     Invite(invite::Invite),
     Thread(Box<thread::Thread>),
     Team(Box<crate::teams::TeamPanel>),
+    Omni(Box<crate::omnichannel::panel::OmniPanel>),
 }
 
 impl Body {
@@ -170,6 +175,9 @@ impl Body {
             Kind::Invite => Body::Invite(invite::Invite::default()),
             Kind::Thread(tmid) => Body::Thread(Box::new(thread::Thread::new(rid, tmid))),
             Kind::TeamMembers | Kind::TeamInfo => Body::Members(members::Members::default()),
+            Kind::Omnichannel(k) => {
+                Body::Omni(Box::new(crate::omnichannel::panel::OmniPanel::new(k)))
+            }
         }
     }
 }
@@ -486,6 +494,7 @@ impl Panel {
             Some(Body::Invite(b)) => wrap(g, b.activate(ctx), BodyMsg::Invite),
             Some(Body::Thread(b)) => wrap(g, b.activate(ctx), BodyMsg::Thread),
             Some(Body::Team(b)) => wrap(g, b.activate(ctx), BodyMsg::Team),
+            Some(Body::Omni(b)) => wrap(g, b.activate(ctx), BodyMsg::Omni),
             None => Action::none(),
         }
     }
@@ -520,6 +529,7 @@ impl Panel {
                 wrap(g, b.update(m, ctx), BodyMsg::Thread)
             }
             (Some(Body::Team(b)), BodyMsg::Team(m)) => wrap(g, b.update(m, ctx), BodyMsg::Team),
+            (Some(Body::Omni(b)), BodyMsg::Omni(m)) => wrap(g, b.update(m, ctx), BodyMsg::Omni),
             _ => Action::none(),
         }
     }
@@ -543,6 +553,7 @@ impl Panel {
             Some(Body::Settings(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Settings),
             Some(Body::Thread(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Thread),
             Some(Body::Team(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Team),
+            Some(Body::Omni(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Omni),
             _ => Action::none(),
         }
     }
@@ -598,6 +609,7 @@ impl Panel {
                 .view(ctx)
                 .map(move |m| Message::Body(g, BodyMsg::Thread(m))),
             Some(Body::Team(b)) => b.view(ctx).map(move |m| Message::Body(g, BodyMsg::Team(m))),
+            Some(Body::Omni(b)) => b.view(ctx).map(move |m| Message::Body(g, BodyMsg::Omni(m))),
             None => common::loading(),
         };
         let mut head = row![].spacing(SPACE_2).align_y(Alignment::Center);

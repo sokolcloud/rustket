@@ -981,6 +981,18 @@ pub struct TransferData {
     pub next_department: Option<DepartmentRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_department: Option<Value>,
+    /// The original department's name (`livechat_transfer_history_fallback`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub prev_department: Option<String>,
+    /// The fallback department (`livechat_transfer_history_fallback`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub department: Option<DepartmentRef>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         deserialize_with = "lenient::opt"
@@ -1368,6 +1380,14 @@ mod tests {
         let t: TransferData =
             serde_json::from_value(json!({"scope":"weird","comment":null})).unwrap();
         assert_eq!(t.scope, TransferScope::Unknown);
+        // The EE fallback forward (`Helper.ts`, `onTransferFailure.ts`).
+        let t: TransferData = serde_json::from_value(json!({
+            "scope": "department", "prevDepartment": "Sales",
+            "department": {"_id": "d2", "name": "Support"}, "usingFallbackDep": true
+        }))
+        .unwrap();
+        assert_eq!(t.prev_department.as_deref(), Some("Sales"));
+        assert_eq!(t.department.map(|d| d.name).as_deref(), Some("Support"));
         let i: Inquiry =
             serde_json::from_value(json!({"_id":"i","rid":"r","status":"pending","v":"bad"}))
                 .unwrap();

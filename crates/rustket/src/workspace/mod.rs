@@ -32,6 +32,8 @@ pub struct ServerState {
     pub login: Option<Login>,
     pub sidebar: sidebar::Sidebar,
     pub status_menu: status_menu::StatusMenu,
+    /// Omnichannel state and loads (`crate::omnichannel`).
+    pub omni: crate::omnichannel::Omni,
     /// Open room views (currently only the active one is kept open).
     pub rooms: HashMap<String, RoomView>,
     pub active_room: Option<String>,
@@ -81,6 +83,7 @@ impl ServerState {
             login: None,
             sidebar: sidebar::Sidebar::default(),
             status_menu: status_menu::StatusMenu::new(),
+            omni: crate::omnichannel::Omni::default(),
             rooms: HashMap::new(),
             active_room: None,
             syncing: false,
@@ -125,6 +128,7 @@ impl ServerState {
         self.session = None;
         self.workspace = Workspace::new();
         self.sidebar = sidebar::Sidebar::default();
+        self.omni.reset(&self.id);
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;

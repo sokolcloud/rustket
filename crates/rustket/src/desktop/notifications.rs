@@ -541,7 +541,9 @@ impl Notifications {
         env: &NotifyEnv<'_>,
     ) -> Task<super::Message> {
         // Not about a room: nothing to open (the web client skips these too).
-        if notification.payload.rid.is_empty() {
+        // Queued-inquiry notifications (manual routing) have no room: shown,
+        // clicking only brings the server up (`docs/omnichannel.md` §5.6).
+        if notification.payload.rid.is_empty() && !notification.payload.is_queued_inquiry() {
             return Task::none();
         }
         let n = incoming(notification);

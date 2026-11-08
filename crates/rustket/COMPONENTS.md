@@ -14,6 +14,7 @@ in parallel, so ownership matters.
 | desktop agent | `src/screens/settings.rs`, `src/desktop/` (notifications, tray, idle, sound, autostart), `src/workspace/status_menu.rs` | `settings.yml`, `desktop.yml`, `status_menu.yml` |
 | account agent | `src/screens/account.rs`, `src/screens/directory.rs`, `src/dialogs/create_room.rs`, `src/dialogs/quick_switcher.rs` | `account.yml`, `directory.yml`, `create_room.yml`, `quick_switcher.yml` |
 | teams agent | `src/teams/` (team info / channels / members / discussions panel bodies, leave / delete / convert / remove-member dialogs), `src/videoconf/` (call layer: header call button, `video_conf` blocks, popups, call dialogs, call notifications) | `teams.yml`, `videoconf.yml` |
+| omnichannel agent | `src/omnichannel/` (controller, sidebar groups, room callouts/quick actions/dialogs, panels, contact center; see `docs/omnichannel.md` §22.3a) | `omnichannel.yml` |
 | shell (shared) | `src/app.rs`, `src/app/*.rs`, `src/message.rs`, `src/room/mod.rs`, `src/component.rs`, `src/session.rs`, `src/workspace/{mod,sidebar,rail}.rs`, `src/screens/{login,add_server,page}.rs` | `app.yml`, `sidebar.yml`, … |
 
 Rules:
