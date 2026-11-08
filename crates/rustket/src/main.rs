@@ -60,6 +60,12 @@ fn software_reexec() -> Option<std::io::Error> {
 }
 
 fn main() -> iced::Result {
+    // `--help`/`--version` print and exit before any GUI or re-exec work.
+    rust_i18n::set_locale(rustket::i18n::from_env(|k| std::env::var(k).ok()));
+    if let rustket::cli::Action::Print(text) = rustket::cli::parse(std::env::args_os().skip(1)) {
+        print!("{text}");
+        return Ok(());
+    }
     // Before anything else: the restarted process redoes all of it.
     let reexec_error = software_reexec();
     let user_filter = std::env::var("RUST_LOG").ok();

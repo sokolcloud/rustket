@@ -4,17 +4,30 @@
 //! `xdg-mime default`. Every external command gets the caller's environment
 //! overrides, so tests can point `XDG_DATA_HOME`/`XDG_CONFIG_HOME` at temporary
 //! directories without touching the real desktop.
+//!
+//! Packaged installs (`.deb`, see `packaging/`) ship
+//! `/usr/share/applications/rustket.desktop` with the same `MimeType`. When
+//! the effective `rustket.desktop` (the first one in `$XDG_DATA_HOME`,
+//! `$XDG_DATA_DIRS`) starts the executable being registered, registration
+//! makes that file the default instead of writing a second entry, and removes
+//! a stale `rustket-url-handler.desktop` left from before the install.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const DESKTOP_FILE: &str = "rustket-url-handler.desktop";
+/// The desktop file installed by the packages (also the window's app id).
+pub const PACKAGED_DESKTOP_FILE: &str = "rustket.desktop";
 pub const MIME: &str = "x-scheme-handler/rocketchat";
 
-/// Environment of the registration: data dir plus variables for child processes.
+/// Environment of the registration: data dirs plus variables for child processes.
 #[derive(Debug, Clone)]
 pub struct XdgEnv {
     pub data_home: PathBuf,
+    /// `$XDG_DATA_DIRS`, searched for the packaged desktop file.
+    pub data_dirs: Vec<PathBuf>,
+    /// `$PATH`, to resolve a relative `Exec` of the packaged desktop file.
+    pub path: Vec<PathBuf>,
     /// Extra environment for `xdg-mime` / `update-desktop-database`.
     pub vars: Vec<(String, String)>,
 }
@@ -26,8 +39,17 @@ impl XdgEnv {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .or_else(|| directories::BaseDirs::new().map(|d| d.data_local_dir().to_owned()))?;
+        let data_dirs = std::env::var_os("XDG_DATA_DIRS")
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
         Some(Self {
             data_home,
+            data_dirs: std::env::split_paths(&data_dirs)
+                .filter(|p| p.is_absolute())
+                .collect(),
+            path: std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect())
+                .unwrap_or_default(),
             vars: Vec::new(),
         })
     }
@@ -234,27 +256,107 @@ pub fn current_handler(env: &XdgEnv) -> Option<String> {
     (out.status.success() && !s.is_empty()).then_some(s)
 }
 
-/// Whether Rustket is the registered handler.
-pub fn is_registered(env: &XdgEnv) -> bool {
-    current_handler(env).as_deref() == Some(DESKTOP_FILE)
+/// Whether a desktop file id (from [`current_handler`]) is one of Rustket's.
+pub fn is_ours(id: &str) -> bool {
+    id == DESKTOP_FILE || id == PACKAGED_DESKTOP_FILE
 }
 
-/// Writes the desktop file and makes it the default handler. Returns the path
-/// of the desktop file.
+/// Whether Rustket is the registered handler.
+pub fn is_registered(env: &XdgEnv) -> bool {
+    current_handler(env).as_deref().is_some_and(is_ours)
+}
+
+/// The first token of an `Exec` value, unquoted (Desktop Entry spec).
+fn exec_program(exec: &str) -> Option<String> {
+    let exec = exec.trim_start().replace("\\\\", "\\");
+    let Some(rest) = exec.strip_prefix('"') else {
+        return exec.split_whitespace().next().map(str::to_owned);
+    };
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+/// The packaged desktop file when it is the effective `rustket.desktop` (the
+/// first one in the data dirs), is not hidden, handles [`MIME`] and starts
+/// `exe` (compared after resolving symlinks; a relative `Exec` through `PATH`).
+pub fn packaged_entry(env: &XdgEnv, exe: &Path) -> Option<PathBuf> {
+    let file = std::iter::once(&env.data_home)
+        .chain(&env.data_dirs)
+        .map(|d| d.join("applications").join(PACKAGED_DESKTOP_FILE))
+        .find(|f| f.is_file())?;
+    let text = std::fs::read_to_string(&file).ok()?;
+    let (mut in_entry, mut exec, mut mime, mut hidden) = (false, None, false, false);
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=').filter(|_| in_entry) else {
+            continue;
+        };
+        match key.trim() {
+            "Exec" => exec = exec_program(value),
+            "MimeType" => mime = value.split(';').any(|m| m.trim() == MIME),
+            "Hidden" => hidden = value.trim() == "true",
+            _ => {}
+        }
+    }
+    if hidden || !mime {
+        return None;
+    }
+    let program = PathBuf::from(exec?);
+    let program = if program.is_absolute() {
+        program
+    } else if program.components().count() == 1 {
+        env.path
+            .iter()
+            .map(|d| d.join(&program))
+            .find(|p| p.is_file())?
+    } else {
+        return None;
+    };
+    let same = match (program.canonicalize(), exe.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    same.then_some(file)
+}
+
+/// Makes Rustket the default handler: the packaged desktop file when it starts
+/// `exe` ([`packaged_entry`]), otherwise a written `rustket-url-handler.desktop`.
+/// Returns the path of the desktop file.
 pub fn register(env: &XdgEnv, exe: &Path) -> Result<PathBuf, RegisterError> {
     let dir = env.applications_dir();
-    std::fs::create_dir_all(&dir).map_err(|source| RegisterError::Write {
-        path: dir.clone(),
-        source,
-    })?;
-    let path = dir.join(DESKTOP_FILE);
-    std::fs::write(&path, desktop_entry(exe)).map_err(|source| RegisterError::Write {
-        path: path.clone(),
-        source,
-    })?;
+    let (id, path) = match packaged_entry(env, exe) {
+        Some(packaged) => {
+            // Our own entry from before the package was installed.
+            let _ = std::fs::remove_file(dir.join(DESKTOP_FILE));
+            (PACKAGED_DESKTOP_FILE, packaged)
+        }
+        None => {
+            std::fs::create_dir_all(&dir).map_err(|source| RegisterError::Write {
+                path: dir.clone(),
+                source,
+            })?;
+            let path = dir.join(DESKTOP_FILE);
+            std::fs::write(&path, desktop_entry(exe)).map_err(|source| RegisterError::Write {
+                path: path.clone(),
+                source,
+            })?;
+            (DESKTOP_FILE, path)
+        }
+    };
     let out = env
         .command("xdg-mime")
-        .args(["default", DESKTOP_FILE, MIME])
+        .args(["default", id, MIME])
         .output()
         .map_err(|e| RegisterError::XdgMime(e.to_string()))?;
     if !out.status.success() {
@@ -300,20 +402,8 @@ mod tests {
         }
         let data = tempfile::tempdir().unwrap();
         let config = tempfile::tempdir().unwrap();
-        let env = XdgEnv {
-            data_home: data.path().to_owned(),
-            vars: vec![
-                ("XDG_DATA_HOME".into(), data.path().display().to_string()),
-                (
-                    "XDG_CONFIG_HOME".into(),
-                    config.path().display().to_string(),
-                ),
-                // Use the generic backend, never the desktop's own (kde/gnome) tools.
-                ("XDG_CURRENT_DESKTOP".into(), "X-Generic".into()),
-                ("DE".into(), "generic".into()),
-                ("KDE_SESSION_VERSION".into(), String::new()),
-            ],
-        };
+        let sys = tempfile::tempdir().unwrap();
+        let env = test_env(data.path(), config.path(), sys.path());
         let path = register(&env, Path::new("/usr/bin/rustket")).unwrap();
         assert!(path.starts_with(data.path()));
         let text = std::fs::read_to_string(&path).unwrap();
@@ -322,6 +412,96 @@ mod tests {
         assert!(mimeapps.contains("x-scheme-handler/rocketchat=rustket-url-handler.desktop"));
         assert_eq!(current_handler(&env).as_deref(), Some(DESKTOP_FILE));
         assert!(is_registered(&env));
+
+        // After installing the package, registering the packaged binary
+        // switches to the packaged desktop file and drops the old entry.
+        let exe = install_packaged(sys.path(), "Exec=rustket %u");
+        let path = register(&env, &exe).unwrap();
+        assert_eq!(
+            path,
+            sys.path().join("applications").join("rustket.desktop")
+        );
+        assert!(!data.path().join("applications").join(DESKTOP_FILE).exists());
+        let mimeapps = std::fs::read_to_string(config.path().join("mimeapps.list")).unwrap();
+        assert!(mimeapps.contains("x-scheme-handler/rocketchat=rustket.desktop"));
+        assert!(is_registered(&env));
+    }
+
+    fn test_env(data: &Path, config: &Path, sys: &Path) -> XdgEnv {
+        XdgEnv {
+            data_home: data.to_owned(),
+            data_dirs: vec![sys.to_owned()],
+            path: vec![sys.join("bin")],
+            vars: vec![
+                ("XDG_DATA_HOME".into(), data.display().to_string()),
+                ("XDG_DATA_DIRS".into(), sys.display().to_string()),
+                ("XDG_CONFIG_HOME".into(), config.display().to_string()),
+                // Use the generic backend, never the desktop's own (kde/gnome) tools.
+                ("XDG_CURRENT_DESKTOP".into(), "X-Generic".into()),
+                ("DE".into(), "generic".into()),
+                ("KDE_SESSION_VERSION".into(), String::new()),
+            ],
+        }
+    }
+
+    /// A fake package install under `share`: `bin/rustket` and
+    /// `applications/rustket.desktop` with the given `Exec` line.
+    fn install_packaged(share: &Path, exec: &str) -> PathBuf {
+        let bin = share.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("rustket");
+        std::fs::write(&exe, "").unwrap();
+        let apps = share.join("applications");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::write(
+            apps.join(PACKAGED_DESKTOP_FILE),
+            format!(
+                "[Desktop Entry]\nType=Application\nName=Rustket\n{exec}\nMimeType=x-scheme-handler/rocketchat;\n"
+            ),
+        )
+        .unwrap();
+        exe
+    }
+
+    #[test]
+    fn packaged_entry_rules() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let sys = tempfile::tempdir().unwrap();
+        let env = test_env(data.path(), config.path(), sys.path());
+        let other = sys.path().join("other");
+        std::fs::write(&other, "").unwrap();
+
+        assert_eq!(packaged_entry(&env, &other), None, "no package installed");
+        let exe = install_packaged(sys.path(), "Exec=rustket %u");
+        let file = sys.path().join("applications").join(PACKAGED_DESKTOP_FILE);
+        assert_eq!(packaged_entry(&env, &exe), Some(file.clone()));
+        assert_eq!(packaged_entry(&env, &other), None, "another executable");
+
+        // Absolute and quoted Exec values.
+        install_packaged(sys.path(), &format!("Exec=\"{}\" %u", exe.display()));
+        assert_eq!(packaged_entry(&env, &exe), Some(file.clone()));
+
+        // Without the MIME type, or hidden: not a handler.
+        std::fs::write(&file, "[Desktop Entry]\nExec=rustket %u\n").unwrap();
+        assert_eq!(packaged_entry(&env, &exe), None);
+        install_packaged(sys.path(), "Exec=rustket %u\nHidden=true");
+        assert_eq!(packaged_entry(&env, &exe), None);
+
+        // A user override in $XDG_DATA_HOME shadows the packaged file.
+        install_packaged(sys.path(), "Exec=rustket %u");
+        install_packaged(data.path(), &format!("Exec={} %u", other.display()));
+        assert_eq!(packaged_entry(&env, &exe), None);
+
+        assert!(is_ours(DESKTOP_FILE) && is_ours("rustket.desktop"));
+        assert!(!is_ours("rocketchat.desktop"));
+        assert_eq!(exec_program("  rustket %u").as_deref(), Some("rustket"));
+        assert_eq!(
+            exec_program("\"/opt/my apps/rustket\" %u").as_deref(),
+            Some("/opt/my apps/rustket")
+        );
+        assert_eq!(exec_program("\"/a\\\\\\\\b\" %u").as_deref(), Some("/a\\b"));
+        assert_eq!(exec_program("\"unterminated"), None);
     }
 
     /// Review #12/#13 and re-review #3: what may be registered.

@@ -12,7 +12,7 @@ use tiny_skia::{
     SpreadMode, Transform,
 };
 
-const SIZES: &[u32] = &[16, 22, 24, 32, 48, 64, 128, 256];
+const SIZES: &[u32] = &[16, 22, 24, 32, 48, 64, 128, 256, 512];
 
 fn paint(shader: Shader<'static>) -> Paint<'static> {
     Paint {

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The component id equals the desktop file id (rustket.desktop), which is
+     also the window's Wayland app_id / X11 WM_CLASS: shells match them. -->
+<component type="desktop-application">
+  <id>rustket</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Rustket</name>
+  <summary>Native Rocket.Chat desktop client</summary>
+  <summary xml:lang="ru">Нативный клиент Rocket.Chat для рабочего стола</summary>
+  <description>
+    <p>
+      Rustket is a lightweight Rocket.Chat client written in Rust. It does not
+      embed a web browser: rooms, threads, end-to-end encrypted chats, apps,
+      omnichannel and administration are rendered natively.
+    </p>
+    <p xml:lang="ru">
+      Rustket — лёгкий клиент Rocket.Chat на Rust. Он не встраивает браузер:
+      комнаты, обсуждения, сквозное шифрование, приложения, омниканальность и
+      администрирование отрисовываются нативно.
+    </p>
+    <p>
+      Browser sign-in (OAuth, OpenID, SAML, CAS) and video calls open in the
+      default browser and return through rocketchat:// links.
+    </p>
+    <p xml:lang="ru">
+      Вход через браузер (OAuth, OpenID, SAML, CAS) и видеозвонки открываются в
+      браузере по умолчанию и возвращаются через ссылки rocketchat://.
+    </p>
+  </description>
+  <launchable type="desktop-id">rustket.desktop</launchable>
+  <provides>
+    <binary>rustket</binary>
+    <mediatype>x-scheme-handler/rocketchat</mediatype>
+  </provides>
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+    <category>Chat</category>
+  </categories>
+  <keywords>
+    <keyword>Rocket.Chat</keyword>
+    <keyword>chat</keyword>
+    <keyword>messenger</keyword>
+  </keywords>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+    <content_attribute id="social-info">moderate</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="0.1.0" date="2026-11-08"/>
+  </releases>
+</component>

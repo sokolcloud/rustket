@@ -14,3 +14,14 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 dbg_macro = "warn"
+
+# Distribution builds (packaging/deb, packaging/appimage): slower to build than
+# `release`, which stays the fast daily profile. `strip = "debuginfo"` keeps the
+# symbol table and `panic = "unwind"` stays, so RUST_BACKTRACE=1 still names
+# functions in crash reports.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+panic = "unwind"

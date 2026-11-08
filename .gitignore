@@ -3,3 +3,6 @@
 *.swp
 .env
 /.claude/worktrees
+/packaging/out/
+*.deb
+*.AppImage

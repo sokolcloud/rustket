@@ -2662,7 +2662,7 @@ fn query_handler_task() -> Task<Message> {
                     return (None, false, check);
                 };
                 let current = url_handler::current_handler(&env);
-                let registered = current.as_deref() == Some(url_handler::DESKTOP_FILE);
+                let registered = current.as_deref().is_some_and(url_handler::is_ours);
                 (current, registered, check)
             })
             .await

@@ -1,0 +1,31 @@
+_version: 2
+cli.usage:
+  en: "Usage: %{bin} [OPTIONS] [LINK...]"
+  ru: "Использование: %{bin} [ПАРАМЕТРЫ] [ССЫЛКА...]"
+cli.about:
+  en: "Native Rocket.Chat desktop client."
+  ru: "Нативный клиент Rocket.Chat для рабочего стола."
+cli.links:
+  en: "rocketchat:// and https:// links are passed to the running instance (or open in a new one)."
+  ru: "Ссылки rocketchat:// и https:// передаются уже запущенному экземпляру (или открываются в новом)."
+cli.options:
+  en: "Options:"
+  ru: "Параметры:"
+cli.opt_help:
+  en: "Print this help and exit"
+  ru: "Показать эту справку и выйти"
+cli.opt_version:
+  en: "Print the version and exit"
+  ru: "Показать версию и выйти"
+cli.env:
+  en: "Environment:"
+  ru: "Переменные окружения:"
+cli.env_backend:
+  en: "force the CPU renderer"
+  ru: "включить программную отрисовку"
+cli.env_log:
+  en: "log filter (logs go to stderr)"
+  ru: "фильтр журнала (журнал пишется в stderr)"
+cli.env_backtrace:
+  en: "print a backtrace when the app crashes"
+  ru: "печатать трассировку стека при сбое"

@@ -4,6 +4,7 @@ edition.workspace = true
 version.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+description = "Native Rocket.Chat desktop client"
 
 [dependencies]
 arboard = "3.7.0"
@@ -43,3 +44,34 @@ iced_tiny_skia = "0.14"
 png = "0.18"
 tempfile = "3"
 tiny-skia = "0.11"
+
+# Optional path for cargo-deb users: `cargo deb -p rustket --profile dist`
+# (cargo-deb maps `target/release/` to the selected profile). The maintained
+# path is packaging/deb/build.sh, which needs only dpkg-deb; keep the two in sync.
+[package.metadata.deb]
+name = "rustket"
+maintainer = "Sergey Sokolov <sokol@xi-ix.org>"
+copyright = "2025-2026 Sergey Sokolov"
+license-file = ["../../packaging/deb/copyright", "0"]
+extended-description = """\
+Rustket is a lightweight Rocket.Chat client written in Rust that renders \
+rooms, threads, end-to-end encrypted chats, apps, omnichannel and \
+administration natively instead of embedding a web browser."""
+section = "net"
+priority = "optional"
+depends = "$auto, libxkbcommon0, libx11-6 | libwayland-client0"
+recommends = "libxkbcommon-x11-0, libx11-xcb1, libxcursor1, libxi6, libwayland-client0, libwayland-egl1, libegl1, libvulkan1, xdg-utils"
+assets = [
+    ["target/release/rustket", "usr/bin/", "755"],
+    ["../../packaging/linux/rustket.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/linux/rustket.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["assets/icons/rustket-16.png", "usr/share/icons/hicolor/16x16/apps/rustket.png", "644"],
+    ["assets/icons/rustket-22.png", "usr/share/icons/hicolor/22x22/apps/rustket.png", "644"],
+    ["assets/icons/rustket-24.png", "usr/share/icons/hicolor/24x24/apps/rustket.png", "644"],
+    ["assets/icons/rustket-32.png", "usr/share/icons/hicolor/32x32/apps/rustket.png", "644"],
+    ["assets/icons/rustket-48.png", "usr/share/icons/hicolor/48x48/apps/rustket.png", "644"],
+    ["assets/icons/rustket-64.png", "usr/share/icons/hicolor/64x64/apps/rustket.png", "644"],
+    ["assets/icons/rustket-128.png", "usr/share/icons/hicolor/128x128/apps/rustket.png", "644"],
+    ["assets/icons/rustket-256.png", "usr/share/icons/hicolor/256x256/apps/rustket.png", "644"],
+    ["assets/icons/rustket-512.png", "usr/share/icons/hicolor/512x512/apps/rustket.png", "644"],
+]

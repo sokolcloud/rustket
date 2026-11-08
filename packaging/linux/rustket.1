@@ -1,0 +1,44 @@
+.TH RUSTKET 1 "2026-11-08" "rustket @VERSION@" "User Commands"
+.SH NAME
+rustket \- native Rocket.Chat desktop client
+.SH SYNOPSIS
+.B rustket
+[\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fILINK\fR...]
+.SH DESCRIPTION
+.B rustket
+is a Rocket.Chat client that renders everything natively instead of embedding a
+web browser. Browser sign-in (OAuth, OpenID, SAML, CAS) and video calls use the
+default browser and return through \fBrocketchat://\fR links.
+.PP
+Only one instance runs per user: links given on the command line (for example
+\fBrocketchat://auth?...\fR or a server URL) are forwarded to the running
+instance, which opens them.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print a short help and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH ENVIRONMENT
+.TP
+.B ICED_BACKEND=tiny\-skia
+Use the CPU renderer instead of the GPU (the same as turning hardware
+acceleration off in the settings).
+.TP
+.B RUST_LOG
+Log filter, for example \fBRUST_LOG=debug\fR. Logs are written to standard error.
+.TP
+.B RUST_BACKTRACE=1
+Print a backtrace when the application crashes; include it in bug reports.
+.SH FILES
+.TP
+.I ~/.config/rustket/config.toml
+Servers and preferences.
+.TP
+.I ~/.cache/rustket/
+Image and message cache; safe to delete while the application is not running.
+.TP
+.I ~/.local/share/rustket/
+Fallback token store (\fBsecrets.json\fR, mode 0600), used only when no Secret
+Service keyring is available. Tokens are normally kept in the keyring.
