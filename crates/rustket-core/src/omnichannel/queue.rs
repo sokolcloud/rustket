@@ -59,12 +59,27 @@ pub enum QueueUpdate {
     Removed,
 }
 
+/// Returned by [`InquiryQueue::begin_snapshot`]; pass it to
+/// [`InquiryQueue::apply_snapshot`] with the REST result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub struct SnapshotToken(u64);
+
+/// Events applied while a snapshot request is in flight.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct PendingSnapshot {
+    generation: u64,
+    events: Vec<(InquiryEventKind, Inquiry)>,
+}
+
 /// Queued inquiries visible to the agent.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct InquiryQueue {
     ctx: QueueContext,
     by_id: HashMap<String, Inquiry>,
     revision: u64,
+    generation: u64,
+    pending: Option<PendingSnapshot>,
 }
 
 fn ms(d: Option<RcDate>) -> i64 {
@@ -96,7 +111,17 @@ impl InquiryQueue {
         self.by_id.is_empty()
     }
 
+    /// Number of inquiries [`Self::items`] returns (capped).
+    pub fn shown_len(&self) -> usize {
+        match self.ctx.cap {
+            0 => self.by_id.len(),
+            cap => self.by_id.len().min(cap),
+        }
+    }
+
+    /// Empties the queue and abandons an in-flight snapshot.
     pub fn clear(&mut self) {
+        self.pending = None;
         if !self.by_id.is_empty() {
             self.by_id.clear();
             self.revision += 1;
@@ -141,15 +166,46 @@ impl InquiryQueue {
         true
     }
 
-    /// Replaces the queue with a REST snapshot (after subscribing the streams).
-    pub fn replace(&mut self, snapshot: Vec<Inquiry>) {
+    /// Call right before requesting `queuedForUser` (after subscribing the
+    /// streams): stream events applied from now on are recorded and re-applied
+    /// on top of the snapshot, so an inquiry queued while the request is in
+    /// flight is not lost. A newer call supersedes older tokens.
+    pub fn begin_snapshot(&mut self) -> SnapshotToken {
+        self.generation += 1;
+        self.pending = Some(PendingSnapshot {
+            generation: self.generation,
+            events: Vec::new(),
+        });
+        SnapshotToken(self.generation)
+    }
+
+    /// Replaces the queue with the REST snapshot requested under `token`, then
+    /// re-applies the events recorded since. A superseded token, or one
+    /// abandoned by [`Self::clear`], is ignored. Returns whether the shown
+    /// (capped) queue grew (new-room sound).
+    pub fn apply_snapshot(&mut self, token: SnapshotToken, snapshot: Vec<Inquiry>) -> bool {
+        let Some(pending) = self.pending.take_if(|p| p.generation == token.0) else {
+            return false;
+        };
+        let before = self.shown_len();
         self.by_id.clear();
         for inq in snapshot {
             if self.is_visible(&inq) {
                 self.insert_dedup(inq);
             }
         }
+        for (kind, inq) in pending.events {
+            self.apply(kind, inq);
+        }
         self.revision += 1;
+        self.shown_len() > before
+    }
+
+    /// [`Self::begin_snapshot`] and [`Self::apply_snapshot`] in one step, for a
+    /// snapshot with no events in between (tests, fixtures).
+    pub fn replace(&mut self, snapshot: Vec<Inquiry>) -> bool {
+        let token = self.begin_snapshot();
+        self.apply_snapshot(token, snapshot)
     }
 
     fn insert_dedup(&mut self, inq: Inquiry) {
@@ -168,6 +224,9 @@ impl InquiryQueue {
 
     /// Applies one stream event. `added` is treated like `changed`.
     pub fn apply(&mut self, kind: InquiryEventKind, inq: Inquiry) -> QueueUpdate {
+        if let Some(p) = &mut self.pending {
+            p.events.push((kind, inq.clone()));
+        }
         if kind == InquiryEventKind::Removed || !self.is_visible(&inq) {
             return if self.by_id.remove(&inq.id).is_some() {
                 self.revision += 1;
@@ -243,6 +302,9 @@ impl InquiryQueue {
 /// Whether `ev` requires re-running the queue initialisation (departments,
 /// `queuedForUser`, stream set): reconnect/resync, department membership,
 /// availability, or a change of the routing method, pool size or sort setting.
+/// Role and permission changes are not listed: they only matter when they flip
+/// [`super::OmnichannelState::wants_queue`], which `recompute` reports
+/// ([`super::OmnichannelState::recompute_update`]).
 pub fn needs_reinit(ev: &SessionEvent) -> bool {
     match ev {
         SessionEvent::Resync { .. } => true,
@@ -251,7 +313,6 @@ pub fn needs_reinit(ev: &SessionEvent) -> bool {
             setting.id.as_str(),
             settings::ROUTING_METHOD | settings::POOL_MAX_DISPLAYED | settings::SORTING_MECHANISM
         ),
-        SessionEvent::RolesChanged(_) | SessionEvent::PermissionChanged { .. } => true,
         _ => matches!(
             ev.omnichannel(),
             Some(OmnichannelEvent::DepartmentAgentChanged(_))
@@ -450,6 +511,43 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_keeps_events_received_in_flight() {
+        let mut q = InquiryQueue::new(ctx(&[]));
+        let token = q.begin_snapshot();
+        // Queued after the server built the response, delivered before it.
+        assert_eq!(
+            q.apply(InquiryEventKind::Added, inq("i1", "r1", 10)),
+            QueueUpdate::Inserted
+        );
+        // Taken while in flight: the snapshot still lists it.
+        q.apply(InquiryEventKind::Added, inq("i2", "r2", 5));
+        let mut taken = inq("i2", "r2", 5);
+        taken.status = InquiryStatus::Taken;
+        taken.updated_at = ts(20);
+        q.apply(InquiryEventKind::Changed, taken);
+        assert!(q.apply_snapshot(token, vec![inq("i2", "r2", 5), inq("i0", "r0", 1)]));
+        assert_eq!(ids(&q), ["i0", "i1"]);
+        // Events after the snapshot are not recorded any more.
+        q.apply(InquiryEventKind::Added, inq("i3", "r3", 30));
+        assert_eq!(q.len(), 3);
+
+        // A superseded or abandoned token is ignored.
+        let old = q.begin_snapshot();
+        let new = q.begin_snapshot();
+        assert!(!q.apply_snapshot(old, vec![]));
+        assert_eq!(q.len(), 3);
+        q.clear();
+        assert!(!q.apply_snapshot(new, vec![inq("x", "rx", 1)]));
+        assert!(q.is_empty());
+        // Growth is measured on the capped list.
+        let mut q = InquiryQueue::new(QueueContext { cap: 1, ..ctx(&[]) });
+        assert!(q.replace(vec![inq("a", "ra", 1)]));
+        assert_eq!(q.shown_len(), 1);
+        q.apply(InquiryEventKind::Added, inq("b", "rb", 2));
+        assert_eq!(q.shown_len(), 1);
+    }
+
+    #[test]
     fn context_change_refilters() {
         let mut q = InquiryQueue::new(ctx(&["d1"]));
         let mut a = inq("a", "ra", 1);
@@ -486,6 +584,18 @@ mod tests {
         assert!(needs_reinit(&setting(settings::POOL_MAX_DISPLAYED)));
         assert!(needs_reinit(&setting(settings::ROUTING_METHOD)));
         assert!(!needs_reinit(&setting("Site_Name")));
+        assert!(!needs_reinit(&SessionEvent::RolesChanged(Box::new(
+            rocketchat::session::RoleAssignment {
+                kind: "added".into(),
+                role: "moderator".into(),
+                user: Some(rocketchat::models::UserRef {
+                    id: "someone-else".into(),
+                    username: None,
+                    name: None,
+                }),
+                scope: Some("GENERAL".into()),
+            }
+        ))));
         assert!(needs_reinit(&SessionEvent::Unknown {
             collection: "stream-notify-user".into(),
             event_name: "u/departmentAgentData".into(),

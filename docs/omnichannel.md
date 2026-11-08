@@ -1065,9 +1065,14 @@ Endpoints (`RC:apps/meteor/ee/server/api/v1/canned-responses.ts`,
 Stream `stream-canned-responses`, key `canned-responses` (read: setting on + perm
 `view-canned-responses`): args `[{type:"changed", ...response}]`, `[{type:"removed", _id}]`,
 optionally a second arg `{agentsId: [uid…]}` (department membership changes) — ignore the event
-when `agentsId` is present and does not contain me. The server broadcasts **every** saved
-response, including other users' `user` scope ones, so filter with the visibility rule above
-before inserting (the web client does not).
+when `agentsId` is present and does not contain me, and trust it when it does (it is sent
+before the client could know about the new membership). The server broadcasts **every** saved
+response, including other users' `user` scope ones, so filter broadcasts (no `agentsId`) with
+the visibility rule above before inserting (the web client does not). "Departments the user
+belongs to" on the server is `getDepartmentsWhichUserCanAccess(uid, includeDisabled=true)`:
+disabled departments and, for monitors, the departments of their units count; so do not
+re-filter the REST list, and for broadcasts use all agent departments (not only enabled ones)
+plus the departments seen in the REST list.
 
 Composer `!` popup (`views/room/providers/ComposerPopupProvider.tsx:364-392`,
 `views/room/composer/hooks/useComposerBoxPopup.ts:99`):
@@ -1342,9 +1347,12 @@ Deviations from §22.1/§22.2, forced by keeping `crates/rustket` source-compati
 - REST lives in `crates/rocketchat/src/rest/livechat.rs`, methods prefixed `livechat_` /
   `omnichannel_` / `canned_response(s)` (e.g. `livechat_agent_status`, `livechat_inquiries_queued`,
   `livechat_take_inquiry`, `livechat_close_chat`, `omnichannel_contact`), filters as
-  `rest::{Page, DepartmentQuery, AgentQuery, LivechatRoomsQuery, CannedResponseQuery}`.
-  There is no `Error::EnterpriseOnly` variant (the UI matches `Error`): use
-  `Error::is_enterprise_only()` and `Error::livechat_error_code()` (`errorType`, else the
+  `rest::{LivechatPage, DepartmentQuery, AgentQuery, LivechatRoomsQuery, CannedResponseQuery}`.
+  There is no `Error::EnterpriseOnly` variant (kept out to avoid touching every `Error`
+  producer; the UI only uses `matches!` and a wildcard arm, so adding one later is
+  non-breaking): use `Error::is_enterprise_only()` (requires `error-action-not-allowed` *and*
+  the "enterprise feature" text — the bare code is also a plain permission refusal, e.g.
+  `chat.update`, settings, `saveRoomSettings`) and `Error::livechat_error_code()` (`errorType`, else the
   trailing `[code]` of `error`, else `error` itself — several endpoints send only
   `{"error": "error-comment-is-required"}` or `"Agent not found"`).
 - `Room.v` / `served_by` / `source` stay `Option<Value>`; typed views are
@@ -1366,7 +1374,32 @@ Deviations from §22.1/§22.2, forced by keeping `crates/rustket` source-compati
   `OmnichannelSectionKind { Queued, Open, OnHold }`, `queue_section` and `split_section` (splits
   the existing `SectionKind::Omnichannel` section), plus row decorations.
 - `OmnichannelState` is standalone (not inside `Workspace`): the UI stores REST results in it
-  and calls `recompute(&Workspace)`; `apply_event(&SessionEvent)` returns what to refetch.
+  and calls `recompute_update(&Workspace)` (or `recompute`) after `apply_me` and after
+  settings/permissions/roles changes; both it and `apply_event(&SessionEvent)` return an
+  `OmnichannelUpdate` (`reinit_queue`, `refetch_routing` — also when omnichannel becomes
+  accessible or `Livechat_enabled` changes —, `refetch_license`, `refetch_canned` — department
+  membership or canned context changed —, `refetch_priorities`, `queue_grew` — the displayed,
+  capped queue got longer —, `reread_me`).
+- Agent availability: a `/me` applied after the last `userData` wins even when it equals the
+  previous `/me` (`Workspace::me_generation()` counts `apply_me` calls); `userData`
+  `statusLivechat` is recorded even while the user is not an agent yet. Role/permission
+  changes no longer re-initialise the queue by themselves; only a `wants_queue` transition does.
+- Queue snapshot: `InquiryQueue::begin_snapshot()` before requesting `queuedForUser`, then
+  `apply_snapshot(token, list)` re-applies the stream events received meanwhile (the web
+  client merges for the same reason); superseded tokens and tokens abandoned by `clear()`
+  are ignored. `replace(list)` = both at once.
+- Departments: `livechat/agents/{uid}/departments` is loaded *without*
+  `enabledDepartmentsOnly` whenever `wants_departments()` (queue or canned responses); the
+  queue filter uses the enabled ones, canned responses all of them.
+- Canned responses: the `canned-responses.get` list is trusted as is (the server's rule uses
+  disabled departments and monitor units the client does not know); targeted stream events
+  (`agentsId` present) are applied when they name the user; broadcasts are filtered with the
+  rule, counting departments seen in the last REST list as the user's.
+- `quick_actions(ws, omni, room, sub, month)` takes the room document, so closed rooms and
+  unsubscribed chats from `rooms.info` work; `take_block` blocks only on `offline`.
+- Pagination type is `rest::LivechatPage` (not `Page`, to avoid clashing with other areas).
+- `livechat_agent_status(Some(AgentStatus::Unknown))` fails with `Error::Protocol` instead
+  of sending `{}` (which toggles).
 
 ### 22.3 `crates/rustket` (UI)
 
@@ -1405,7 +1438,8 @@ Deviations from §22.1/§22.2, forced by keeping `crates/rustket` source-compati
   `livechat/room` declare a 5 req/60 s route limit (`visitor.ts`, `room.ts`); keep tests frugal.
 - Departments in tests: CE allows one department and `Omnichannel_enable_department_removal =
   false` makes them undeletable. The live test (`crates/rocketchat/tests/omnichannel_live.rs`)
-  creates one only when `isDepartmentCreationAvailable` is true and deletes it at the end,
+  creates one only when `isDepartmentCreationAvailable` is true (otherwise it prints a note and
+  returns without testing anything) and deletes it at the end,
   enabling department removal just for the delete (settings writes need `x-2fa-method:
   password` + the SHA-256 hex of the admin password) and turning it off again (see §24).
   `POST livechat/department` rejects `username` in `agents[]` entries (`must NOT have

@@ -15,12 +15,12 @@ use crate::server_url::encode_segment;
 
 /// `count` / `offset` of a paginated request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Page {
+pub struct LivechatPage {
     pub count: Option<u64>,
     pub offset: Option<u64>,
 }
 
-impl Page {
+impl LivechatPage {
     pub fn new(offset: u64, count: u64) -> Self {
         Self {
             count: Some(count),
@@ -43,7 +43,7 @@ pub struct DepartmentQuery {
     pub show_archived: bool,
     /// e.g. the room's current department when forwarding.
     pub exclude_department_id: Option<String>,
-    pub page: Page,
+    pub page: LivechatPage,
 }
 
 impl DepartmentQuery {
@@ -53,7 +53,7 @@ impl DepartmentQuery {
             text,
             enabled: true,
             exclude_department_id: current.map(str::to_owned),
-            page: Page::new(0, 50),
+            page: LivechatPage::new(0, 50),
             ..Default::default()
         }
     }
@@ -68,7 +68,7 @@ pub struct AgentQuery {
     pub exclude_id: Option<String>,
     /// `false` hides agents whose status is offline.
     pub show_idle_agents: bool,
-    pub page: Page,
+    pub page: LivechatPage,
 }
 
 impl AgentQuery {
@@ -79,7 +79,7 @@ impl AgentQuery {
             only_available: true,
             exclude_id: serving.map(str::to_owned),
             show_idle_agents: false,
-            page: Page::new(0, 25),
+            page: LivechatPage::new(0, 25),
         }
     }
 }
@@ -95,7 +95,7 @@ pub struct LivechatRoomsQuery {
     pub on_hold: Option<bool>,
     pub queued: Option<bool>,
     pub tags: Vec<String>,
-    pub page: Page,
+    pub page: LivechatPage,
 }
 
 /// Filter of [`RestClient::canned_responses`] (EE).
@@ -105,7 +105,7 @@ pub struct CannedResponseQuery {
     pub text: Option<String>,
     pub scope: Option<CannedScope>,
     pub department_id: Option<String>,
-    pub page: Page,
+    pub page: LivechatPage,
 }
 
 fn seg(s: &str) -> String {
@@ -113,10 +113,20 @@ fn seg(s: &str) -> String {
 }
 
 impl Error {
-    /// The server feature needs an Enterprise license (`error-action-not-allowed`,
-    /// "This is an enterprise feature"): hide it instead of showing an error.
+    /// The server feature needs an Enterprise license: `error-action-not-allowed`
+    /// together with the "enterprise feature" text of the EE license middleware.
+    /// (`error-action-not-allowed` alone is also used for plain permission
+    /// refusals, e.g. by `chat.update` or settings.) Hide the feature instead of
+    /// showing an error.
     pub fn is_enterprise_only(&self) -> bool {
-        self.livechat_error_code() == Some("error-action-not-allowed")
+        let Error::Api { error, message, .. } = self else {
+            return false;
+        };
+        let says_ee = [error, message]
+            .into_iter()
+            .flatten()
+            .any(|t| t.to_ascii_lowercase().contains("enterprise feature"));
+        says_ee && self.livechat_error_code() == Some("error-action-not-allowed")
     }
 
     /// The error code of an omnichannel endpoint: `errorType`, else a trailing
@@ -147,7 +157,8 @@ impl RestClient {
     // --- availability, routing, license ------------------------------------------
 
     /// `POST livechat/agent.status`: sets the current agent's availability, or
-    /// toggles it when `status` is `None`. Returns the resulting status (compare it
+    /// toggles it when `status` is `None` (`Some(AgentStatus::Unknown)` is
+    /// rejected with [`Error::Protocol`] instead of toggling). Returns the resulting status (compare it
     /// with the requested one: business hours may keep it unchanged).
     pub async fn livechat_agent_status(&self, status: Option<AgentStatus>) -> Result<AgentStatus> {
         self.livechat_agent_status_for(None, status).await
@@ -161,8 +172,14 @@ impl RestClient {
         status: Option<AgentStatus>,
     ) -> Result<AgentStatus> {
         let mut body = json!({});
-        if let Some(s) = status.filter(|s| *s != AgentStatus::Unknown) {
-            body["status"] = json!(s.as_str());
+        match status {
+            Some(AgentStatus::Unknown) => {
+                return Err(Error::Protocol(
+                    "livechat/agent.status: unknown target status".into(),
+                ));
+            }
+            Some(s) => body["status"] = json!(s.as_str()),
+            None => {}
         }
         if let Some(a) = agent_id {
             body["agentId"] = json!(a);
@@ -326,7 +343,7 @@ impl RestClient {
     pub async fn livechat_transfer_history(
         &self,
         rid: &str,
-        page: Page,
+        page: LivechatPage,
     ) -> Result<Paginated<TransferData>> {
         let v: Value = self
             .get(
@@ -439,7 +456,7 @@ impl RestClient {
         &self,
         text: Option<&str>,
         unknown: Option<bool>,
-        page: Page,
+        page: LivechatPage,
     ) -> Result<Paginated<Contact>> {
         let v: Value = self
             .get(
@@ -455,7 +472,7 @@ impl RestClient {
         &self,
         contact_id: &str,
         source: Option<&str>,
-        page: Page,
+        page: LivechatPage,
     ) -> Result<Paginated<Room>> {
         let v: Value = self
             .get(
@@ -475,7 +492,7 @@ impl RestClient {
         &self,
         rid: &str,
         visitor_id: &str,
-        page: Page,
+        page: LivechatPage,
     ) -> Result<Paginated<Room>> {
         let v: Value = self
             .get(
@@ -498,7 +515,7 @@ impl RestClient {
         search: Option<&str>,
         closed_only: bool,
         served_only: bool,
-        page: Page,
+        page: LivechatPage,
     ) -> Result<Paginated<Room>> {
         let v: Value = self
             .get(
@@ -524,7 +541,7 @@ impl RestClient {
         &self,
         rid: &str,
         search: Option<&str>,
-        page: Page,
+        page: LivechatPage,
         oldest_first: bool,
     ) -> Result<Paginated<Message>> {
         let v: Value = self
@@ -629,7 +646,10 @@ impl RestClient {
     }
 
     /// `GET livechat/custom-fields`.
-    pub async fn livechat_custom_fields(&self, page: Page) -> Result<Paginated<CustomFieldDef>> {
+    pub async fn livechat_custom_fields(
+        &self,
+        page: LivechatPage,
+    ) -> Result<Paginated<CustomFieldDef>> {
         let v: Value = self
             .get("livechat/custom-fields", &page.apply(Query::new()))
             .await?;
@@ -742,6 +762,11 @@ mod tests {
         let e = api(Some("error-comment-is-required"), None);
         assert_eq!(e.livechat_error_code(), Some("error-comment-is-required"));
         assert!(!e.is_enterprise_only());
+        let e = api(
+            Some("Message editing not allowed [error-action-not-allowed]"),
+            Some("error-action-not-allowed"),
+        );
+        assert!(!e.is_enterprise_only(), "plain permission refusal");
         let e = api(Some("Inquiry already taken [error-inquiry-taken]"), None);
         assert_eq!(e.livechat_error_code(), Some("error-inquiry-taken"));
         let e = api(Some("Agent not found"), None);

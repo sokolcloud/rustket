@@ -1,0 +1,12 @@
+{
+  "priorities": [
+    {"_id": "p1", "i18n": "Highest", "sortItem": 1, "dirty": false, "_updatedAt": "2026-11-01T10:00:00.000Z"},
+    {"_id": "p2", "name": "Urgent!", "i18n": "High", "sortItem": 2, "dirty": true, "_updatedAt": "2026-11-01T10:00:00.000Z"},
+    {"_id": "p3", "name": "stale custom name", "i18n": "Medium", "sortItem": 3, "dirty": false},
+    {"_id": "p4", "i18n": "Low", "sortItem": "4"}
+  ],
+  "count": 4,
+  "offset": 0,
+  "total": 4,
+  "success": true
+}

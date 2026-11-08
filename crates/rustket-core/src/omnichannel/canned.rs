@@ -9,11 +9,13 @@ use rocketchat::session::OmnichannelEvent;
 /// Maximum entries of the `!` popup.
 pub const SUGGEST_LIMIT: usize = 11;
 
-/// Whose responses are visible.
+/// Whose responses are visible (for broadcast stream events; the REST list is
+/// already filtered by the server).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CannedContext {
     pub me: String,
-    /// Departments the user belongs to.
+    /// Departments the user belongs to, enabled or not
+    /// (`livechat/agents/{uid}/departments` without `enabledDepartmentsOnly`).
     pub departments: HashSet<String>,
     /// `view-all-canned-responses`: every department's responses.
     pub view_all: bool,
@@ -24,6 +26,9 @@ pub struct CannedContext {
 pub struct CannedResponses {
     ctx: CannedContext,
     by_id: HashMap<String, CannedResponse>,
+    /// Departments of the department-scoped responses in the last REST list: the
+    /// server granted those (this also covers a monitor's unit departments).
+    snapshot_departments: HashSet<String>,
     revision: u64,
 }
 
@@ -33,6 +38,10 @@ impl CannedResponses {
             ctx,
             ..Default::default()
         }
+    }
+
+    pub fn context(&self) -> &CannedContext {
+        &self.ctx
     }
 
     pub fn revision(&self) -> u64 {
@@ -51,56 +60,85 @@ impl CannedResponses {
         self.by_id.get(id)
     }
 
+    /// Updates the context used for stream events. Stored responses are kept:
+    /// when departments or permissions change, re-fetch `canned-responses.get`
+    /// (`OmnichannelUpdate::refetch_canned`).
     pub fn set_context(&mut self, ctx: CannedContext) {
         if ctx != self.ctx {
             self.ctx = ctx;
-            let ctx = &self.ctx;
-            self.by_id.retain(|_, r| visible(ctx, r));
             self.revision += 1;
         }
     }
 
-    /// `canned-responses.get`'s rule: own `user` responses, `global` ones, and
-    /// `department` ones of the user's departments (all with `view_all`). The
-    /// stream broadcasts every saved response, so events are filtered with it.
+    /// `canned-responses.get`'s rule applied to a broadcast stream event: own
+    /// `user` responses, `global` ones, and `department` ones of the user's
+    /// departments (all with `view_all`). Departments seen in the last REST list
+    /// count as the user's.
     pub fn is_visible(&self, r: &CannedResponse) -> bool {
-        visible(&self.ctx, r)
+        match r.scope {
+            CannedScope::Global => true,
+            CannedScope::User => r.user_id.as_deref() == Some(self.ctx.me.as_str()),
+            CannedScope::Department => {
+                self.ctx.view_all
+                    || r.department_id.as_deref().is_some_and(|d| {
+                        self.ctx.departments.contains(d) || self.snapshot_departments.contains(d)
+                    })
+            }
+            CannedScope::Unknown => false,
+        }
     }
 
-    /// Replaces the store with `canned-responses.get`.
+    /// Replaces the store with `canned-responses.get`. The server already applied
+    /// the visibility rule (with information the client lacks, e.g. disabled
+    /// departments and monitor units), so the list is trusted as is.
     pub fn replace(&mut self, list: Vec<CannedResponse>) {
         self.by_id = list
             .into_iter()
-            .filter(|r| !r.id.is_empty() && visible(&self.ctx, r))
+            .filter(|r| !r.id.is_empty())
             .map(|r| (r.id.clone(), r))
+            .collect();
+        self.snapshot_departments = self
+            .by_id
+            .values()
+            .filter(|r| r.scope == CannedScope::Department)
+            .filter_map(|r| r.department_id.clone())
             .collect();
         self.revision += 1;
     }
 
-    fn concerns_me(&self, agents: Option<&Vec<String>>) -> bool {
-        agents.is_none_or(|a| a.contains(&self.ctx.me))
-    }
-
-    /// Applies a stream event; returns whether the store changed.
+    /// Applies a stream event; returns whether the store changed. Events with
+    /// `agentsId` are targeted (e.g. the user joined or left a department) and
+    /// trusted when they name the user; broadcasts (no `agentsId`) carry every
+    /// saved response and are filtered with [`Self::is_visible`].
     pub fn apply_event(&mut self, ev: &OmnichannelEvent) -> bool {
         match ev {
             OmnichannelEvent::CannedResponseChanged { response, agents } => {
-                if !self.concerns_me(agents.as_ref()) {
+                if response.id.is_empty() {
                     return false;
                 }
-                if !visible(&self.ctx, response) {
+                let visible = match agents {
+                    Some(a) if !a.contains(&self.ctx.me) => return false,
+                    Some(_) => true,
+                    None => self.is_visible(response),
+                };
+                if !visible {
                     // e.g. moved to another department or scope.
                     return self.remove(&response.id);
                 }
                 if self.by_id.get(&response.id) == Some(response) {
                     return false;
                 }
+                if response.scope == CannedScope::Department
+                    && let Some(d) = &response.department_id
+                {
+                    self.snapshot_departments.insert(d.clone());
+                }
                 self.by_id.insert(response.id.clone(), (**response).clone());
                 self.revision += 1;
                 true
             }
             OmnichannelEvent::CannedResponseRemoved { id, agents } => {
-                self.concerns_me(agents.as_ref()) && self.remove(id)
+                agents.as_ref().is_none_or(|a| a.contains(&self.ctx.me)) && self.remove(id)
             }
             _ => false,
         }
@@ -147,31 +185,21 @@ impl CannedResponses {
     }
 }
 
-fn visible(ctx: &CannedContext, r: &CannedResponse) -> bool {
-    match r.scope {
-        CannedScope::Global => true,
-        CannedScope::User => r.user_id.as_deref() == Some(ctx.me.as_str()),
-        CannedScope::Department => {
-            ctx.view_all
-                || r.department_id
-                    .as_deref()
-                    .is_some_and(|d| ctx.departments.contains(d))
-        }
-        CannedScope::Unknown => false,
-    }
-}
-
 /// The `!` trigger before the caret: `(?:^| |\n)(!)([^\s]*$)`. Returns the byte
-/// offset of the `!` and the filter text after it.
+/// offset of the `!` and the filter text after it (which may contain `!`).
 pub fn trigger(text_before_caret: &str) -> Option<(usize, &str)> {
-    let bang = text_before_caret.rfind('!')?;
-    let filter = &text_before_caret[bang + 1..];
-    if filter.chars().any(char::is_whitespace) {
+    let start = text_before_caret.rfind(char::is_whitespace).map_or(0, |i| {
+        i + text_before_caret[i..]
+            .chars()
+            .next()
+            .map_or(1, char::len_utf8)
+    });
+    if start > 0 && !matches!(text_before_caret[..start].chars().last(), Some(' ' | '\n')) {
+        // Preceded by other whitespace (e.g. a tab): no match, like the web regex.
         return None;
     }
-    let ok_before =
-        bang == 0 || matches!(text_before_caret[..bang].chars().last(), Some(' ' | '\n'));
-    ok_before.then_some((bang, filter))
+    let token = &text_before_caret[start..];
+    token.strip_prefix('!').map(|filter| (start, filter))
 }
 
 /// Replaces the `!filter` before the caret (at byte `caret`) with the response
@@ -268,6 +296,56 @@ mod tests {
     }
 
     #[test]
+    fn rest_list_is_trusted() {
+        // Auto routing: the agent's departments were never loaded.
+        let mut s = CannedResponses::new(CannedContext {
+            me: "me".into(),
+            ..Default::default()
+        });
+        let mut d = cr("d", "dept", CannedScope::Department);
+        d.department_id = Some("d1".into());
+        s.replace(vec![d.clone()]);
+        assert_eq!(s.len(), 1, "server-filtered list is kept");
+        s.set_context(ctx());
+        assert_eq!(s.len(), 1, "context changes do not drop REST entries");
+        // A broadcast for another response of a snapshot department is accepted.
+        let mut d2 = cr("d2", "dept2", CannedScope::Department);
+        d2.department_id = Some("d1".into());
+        s.set_context(CannedContext {
+            me: "me".into(),
+            ..Default::default()
+        });
+        assert!(s.apply_event(&OmnichannelEvent::CannedResponseChanged {
+            response: Box::new(d2),
+            agents: None,
+        }));
+    }
+
+    #[test]
+    fn targeted_events_follow_agents_id() {
+        let mut s = CannedResponses::new(ctx());
+        // Joined d2: the server pushes d2's responses with `agentsId: [me]`
+        // before the client knows about the membership.
+        let mut d = cr("c2", "joined", CannedScope::Department);
+        d.department_id = Some("d2".into());
+        assert!(s.apply_event(&OmnichannelEvent::CannedResponseChanged {
+            response: Box::new(d.clone()),
+            agents: Some(vec!["me".into()]),
+        }));
+        assert!(s.get("c2").is_some());
+        // Left d2: targeted removal.
+        assert!(!s.apply_event(&OmnichannelEvent::CannedResponseRemoved {
+            id: "c2".into(),
+            agents: Some(vec!["other".into()]),
+        }));
+        assert!(s.apply_event(&OmnichannelEvent::CannedResponseRemoved {
+            id: "c2".into(),
+            agents: Some(vec!["me".into()]),
+        }));
+        assert!(s.is_empty());
+    }
+
+    #[test]
     fn suggestions() {
         let mut s = CannedResponses::new(ctx());
         let mut list: Vec<CannedResponse> = (0..15)
@@ -303,6 +381,13 @@ mod tests {
         );
         assert_eq!(trigger("!x y"), None);
         assert_eq!(trigger("no bang"), None);
+        assert_eq!(
+            trigger("hi !a!b"),
+            Some((3, "a!b")),
+            "filter may contain '!'"
+        );
+        assert_eq!(trigger("hi\t!x"), None, "only space or newline before");
+        assert_eq!(trigger("é !ж"), Some((3, "ж")));
         let r = cr("a", "greet", CannedScope::Global);
         let (t, c) = apply_selection("hi !gr tail", 6, &r).unwrap();
         assert_eq!(t, "hi text of greet  tail");

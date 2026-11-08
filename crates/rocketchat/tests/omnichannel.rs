@@ -7,8 +7,8 @@
 use rocketchat::models::{
     AgentDepartment, AgentStatus, CannedScope, Contact, ContactChannel, CustomFieldDef, Department,
     DepartmentAgentAction, DepartmentRef, Inquiry, InquiryEventKind, InquiryStatus, LicenseInfo,
-    LivechatAgent, Message, Room, RoomType, RoutingConfig, SourceType, Subscription, TransferData,
-    TransferScope, User, UserStatus, Visitor, lenient,
+    LivechatAgent, Message, Priority, Room, RoomType, RoutingConfig, Sla, SourceType, Subscription,
+    Tag, TransferData, TransferScope, User, UserStatus, Visitor, lenient,
 };
 use rocketchat::session::{
     DataKind, DataMessage, OmnichannelEvent, SessionEvent, decode_event, decode_omnichannel,
@@ -270,6 +270,48 @@ fn errors_and_license() {
     .unwrap();
     assert!(!l.has_module(LicenseInfo::LIVECHAT_ENTERPRISE));
     assert!(!l.over_mac_limit());
+}
+
+#[test]
+fn ee_tags_priorities_sla() {
+    // Synthetic, from core-typings (the dev server is CE: these endpoints answer
+    // `error-action-not-allowed`).
+    let tags: Vec<Tag> = list("synthetic_ee_tags", "tags");
+    assert_eq!(tags.len(), 3);
+    assert_eq!(tags[0].departments, ["dep1"]);
+    assert_eq!(tags[0].num_departments, Some(1));
+    assert_eq!(tags[0].description.as_deref(), Some("Billing questions"));
+    assert!(tags[2].name.is_empty() && tags[2].departments.is_empty());
+
+    let prios: Vec<Priority> = list("synthetic_ee_priorities", "priorities");
+    assert_eq!(prios.len(), 4);
+    assert_eq!(prios[0].custom_name(), None);
+    assert_eq!(prios[0].i18n.as_deref(), Some("Highest"));
+    assert_eq!(
+        prios[1].custom_name(),
+        Some("Urgent!"),
+        "dirty: show the name"
+    );
+    assert_eq!(prios[2].custom_name(), None, "not dirty: translate i18n");
+    assert_eq!(prios[1].sort_item, 2);
+
+    let slas: Vec<Sla> = list("synthetic_ee_sla", "sla");
+    assert_eq!(slas[0].name, "Gold");
+    assert_eq!(slas[0].due_time_in_minutes, 15);
+    assert_eq!(slas[1].description, None);
+}
+
+#[tokio::test]
+async fn agent_status_unknown_is_rejected_locally() {
+    // Sending `{}` would toggle the availability; nothing must reach the network.
+    let tls = rocketchat::TlsConfig::new().build().unwrap();
+    let server = rocketchat::ServerUrl::parse("http://127.0.0.1:9").unwrap();
+    let rest = rocketchat::RestClient::new(server, &tls).unwrap();
+    let e = rest
+        .livechat_agent_status(Some(AgentStatus::Unknown))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::Protocol(_)), "{e:?}");
 }
 
 #[test]

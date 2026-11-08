@@ -4,12 +4,21 @@
 //! [`OmnichannelState::recompute`] derives the flags of §2 from the workspace
 //! (settings, permissions, `me`).
 //!
-//! Queue initialisation (§5.1), driven by the UI: when [`OmnichannelState::wants_queue`]
-//! is true, load `livechat/agents/{uid}/departments?enabledDepartmentsOnly=true`
-//! ([`OmnichannelState::set_departments`]), subscribe
-//! `rocketchat::session::inquiry_queue_subscriptions`, then load
-//! `livechat/inquiries.queuedForUser?count=<pool size>` ([`queue::InquiryQueue::replace`]).
-//! Repeat whenever [`queue::needs_reinit`] says so.
+//! Driven by the UI: call [`OmnichannelState::recompute_update`] after
+//! `apply_me` (before applying further events) and after settings, permissions
+//! or roles change, and act on the returned [`OmnichannelUpdate`] like on the
+//! one from [`OmnichannelState::apply_event`].
+//!
+//! Departments: when [`OmnichannelState::wants_departments`] is true, load
+//! `livechat/agents/{uid}/departments` *without* `enabledDepartmentsOnly`
+//! ([`OmnichannelState::set_departments`]); the queue uses the enabled ones,
+//! canned responses all of them (the server includes disabled departments there).
+//!
+//! Queue initialisation (§5.1): when [`OmnichannelState::wants_queue`] is true,
+//! load the departments, subscribe `rocketchat::session::inquiry_queue_subscriptions`,
+//! call [`queue::InquiryQueue::begin_snapshot`], load
+//! `livechat/inquiries.queuedForUser?count=<pool size>` and pass it to
+//! [`queue::InquiryQueue::apply_snapshot`]. Repeat on `reinit_queue`.
 
 pub mod canned;
 pub mod permissions;
@@ -46,6 +55,27 @@ pub struct OmnichannelUpdate {
     pub refetch_routing: bool,
     /// Re-fetch the priorities (EE).
     pub refetch_priorities: bool,
+    /// Re-fetch `licenses.info` (omnichannel became accessible).
+    pub refetch_license: bool,
+    /// Re-fetch `livechat/agents/{uid}/departments` and then
+    /// `canned-responses.get` (department membership or canned visibility changed).
+    pub refetch_canned: bool,
+}
+
+impl OmnichannelUpdate {
+    /// Combines two updates (any flag set in either).
+    pub fn merge(self, o: Self) -> Self {
+        Self {
+            changed: self.changed || o.changed,
+            queue_grew: self.queue_grew || o.queue_grew,
+            reinit_queue: self.reinit_queue || o.reinit_queue,
+            reread_me: self.reread_me || o.reread_me,
+            refetch_routing: self.refetch_routing || o.refetch_routing,
+            refetch_priorities: self.refetch_priorities || o.refetch_priorities,
+            refetch_license: self.refetch_license || o.refetch_license,
+            refetch_canned: self.refetch_canned || o.refetch_canned,
+        }
+    }
 }
 
 /// Omnichannel state of one server.
@@ -66,14 +96,17 @@ pub struct OmnichannelState {
     pub over_mac: bool,
     /// Manual-selection queue visible (§2 `manual_queue`).
     pub manual_queue: bool,
-    /// Enabled departments of the agent.
+    /// Departments of the agent (enabled and disabled; see `department_enabled`).
     pub departments: Vec<AgentDepartment>,
     pub queue: InquiryQueue,
     pub canned: CannedResponses,
     pub custom_fields: Vec<CustomFieldDef>,
     pub priorities: Vec<Priority>,
-    /// `statusLivechat` of the last `me` seen by `recompute`.
-    last_me_status: Option<AgentStatus>,
+    /// [`Workspace::me_generation`] seen by the last `recompute`.
+    last_me_generation: u64,
+    /// `statusLivechat` from `userData` since that `me` (recorded even while the
+    /// user is not an agent yet: the roles change may be applied later).
+    userdata_status: Option<AgentStatus>,
 }
 
 impl OmnichannelState {
@@ -83,25 +116,33 @@ impl OmnichannelState {
 
     /// Recomputes the §2 flags and the queue/canned contexts from the workspace.
     /// Call after `Dirty::ME | SETTINGS | PERMISSIONS | ROLES` changes and after
-    /// storing REST results. Returns whether anything changed.
+    /// storing REST results. Returns whether anything changed; see
+    /// [`Self::recompute_update`] for the follow-up requests.
     pub fn recompute(&mut self, ws: &Workspace) -> bool {
+        self.recompute_update(ws).changed
+    }
+
+    /// [`Self::recompute`], also reporting what to (re)load: the routing config
+    /// and license when omnichannel became accessible, the queue when it became
+    /// wanted, canned responses when their context changed.
+    pub fn recompute_update(&mut self, ws: &Workspace) -> OmnichannelUpdate {
         let before = self.clone();
         let me = ws.me();
         self.accessible = ws.settings().bool_or(settings::ENABLED, false)
             && has_permission(ws, perm::VIEW_L_ROOM, None);
         self.enabled = self.accessible && me.is_some() && self.routing.is_some();
         self.is_agent = me.is_some_and(|m| m.has_role(perm::ROLE_AGENT));
-        // A new `me` (fresh `/me` or login) wins; otherwise keep what `userData` set.
+        // A `/me` fetched after the last `userData` wins, even when it equals the
+        // previous `/me`; otherwise `userData` is newer.
+        if ws.me_generation() != self.last_me_generation {
+            self.last_me_generation = ws.me_generation();
+            self.userdata_status = None;
+        }
         let me_status = me.and_then(|m| m.status_livechat);
-        if me_status != self.last_me_status {
-            self.last_me_status = me_status;
-            if let Some(s) = me_status {
-                self.agent_status = s;
-            }
-        }
-        if !self.is_agent {
-            self.agent_status = AgentStatus::NotAvailable;
-        }
+        self.agent_status = match self.userdata_status.or(me_status) {
+            Some(s) if self.is_agent => s,
+            _ => AgentStatus::NotAvailable,
+        };
         self.over_mac = self
             .license
             .as_ref()
@@ -115,10 +156,9 @@ impl OmnichannelState {
 
         let me_id = ws.user_id().unwrap_or_default().to_owned();
         let departments: HashSet<String> = self
-            .departments
-            .iter()
-            .filter(|d| d.department_enabled)
-            .map(|d| d.department_id.clone())
+            .department_ids()
+            .into_iter()
+            .map(str::to_owned)
             .collect();
         let cap = ws.settings().i64_or(settings::POOL_MAX_DISPLAYED, 0).max(0);
         self.queue.set_context(QueueContext {
@@ -132,10 +172,29 @@ impl OmnichannelState {
         }
         self.canned.set_context(CannedContext {
             me: me_id,
-            departments,
+            departments: self
+                .departments
+                .iter()
+                .map(|d| d.department_id.clone())
+                .collect(),
             view_all: has_permission(ws, perm::VIEW_ALL_CANNED_RESPONSES, None),
         });
-        *self != before
+        let became_accessible = self.accessible && !before.accessible;
+        OmnichannelUpdate {
+            changed: *self != before,
+            reinit_queue: self.manual_queue && !before.manual_queue,
+            refetch_routing: became_accessible && self.routing.is_none(),
+            refetch_license: became_accessible && self.license.is_none(),
+            refetch_canned: self.canned.context() != before.canned.context()
+                && self.canned_enabled(ws),
+            ..Default::default()
+        }
+    }
+
+    /// Whether the UI should keep `livechat/agents/{uid}/departments` loaded
+    /// (the queue filter and canned-response stream events need it).
+    pub fn wants_departments(&self, ws: &Workspace) -> bool {
+        self.enabled && (self.wants_queue() || self.canned_enabled(ws))
     }
 
     /// Whether the UI should run the queue initialisation and keep the queue
@@ -180,8 +239,8 @@ impl OmnichannelState {
             && has_permission(ws, perm::VIEW_CANNED_RESPONSES, None)
     }
 
-    /// Applies a session event. Call [`Self::recompute`] afterwards when
-    /// `reinit_queue` is set and the workspace changed too.
+    /// Applies a session event. Call [`Self::recompute_update`] afterwards when
+    /// the workspace changed too.
     pub fn apply_event(&mut self, ev: &SessionEvent) -> OmnichannelUpdate {
         let mut u = OmnichannelUpdate {
             reinit_queue: self.manual_queue && queue::needs_reinit(ev),
@@ -190,32 +249,39 @@ impl OmnichannelState {
         if let Some(status) = ev.agent_status() {
             if status == AgentStatus::Unknown {
                 u.reread_me = true;
-            } else if self.is_agent && status != self.agent_status {
-                self.agent_status = status;
-                u.changed = true;
-                // Availability gates the manual queue.
-                u.reinit_queue = true;
+            } else {
+                self.userdata_status = Some(status);
+                if self.is_agent && status != self.agent_status {
+                    self.agent_status = status;
+                    u.changed = true;
+                    // Availability gates the manual queue.
+                    u.reinit_queue = true;
+                }
             }
         }
         if let SessionEvent::SettingChanged { setting, .. } = ev
-            && setting.id == settings::ROUTING_METHOD
+            && matches!(
+                setting.id.as_str(),
+                settings::ROUTING_METHOD | settings::ENABLED
+            )
         {
             u.refetch_routing = true;
         }
         match ev.omnichannel() {
             Some(ref oe @ OmnichannelEvent::InquiryQueue { .. }) => {
                 if self.manual_queue {
-                    match self.queue.apply_event(oe) {
-                        QueueUpdate::Unchanged => {}
-                        QueueUpdate::Inserted => {
-                            u.changed = true;
-                            u.queue_grew = true;
-                        }
-                        _ => u.changed = true,
+                    let shown = self.queue.shown_len();
+                    if self.queue.apply_event(oe) != QueueUpdate::Unchanged {
+                        u.changed = true;
+                        // Only growth of the displayed (capped) list sounds.
+                        u.queue_grew = self.queue.shown_len() > shown;
                     }
                 }
             }
-            Some(OmnichannelEvent::DepartmentAgentChanged(_)) => u.reinit_queue = true,
+            Some(OmnichannelEvent::DepartmentAgentChanged(_)) => {
+                u.reinit_queue = self.manual_queue;
+                u.refetch_canned = true;
+            }
             Some(
                 ref oe @ (OmnichannelEvent::CannedResponseChanged { .. }
                 | OmnichannelEvent::CannedResponseRemoved { .. }),
@@ -430,5 +496,161 @@ mod tests {
             o.queue.apply(InquiryEventKind::Changed, dept),
             QueueUpdate::Inserted
         );
+    }
+
+    fn status_event(s: &str) -> SessionEvent {
+        SessionEvent::UserData(json!({"type":"updated","diff":{"statusLivechat":s}}))
+    }
+
+    #[test]
+    fn fresh_me_wins_over_older_user_data() {
+        let mut ws = agent_ws(&["livechat-agent"]);
+        let mut o = OmnichannelState::new();
+        o.set_routing(Some(manual()));
+        o.recompute(&ws);
+        o.apply_event(&status_event("not-available"));
+        o.recompute(&ws);
+        assert_eq!(o.agent_status, AgentStatus::NotAvailable);
+        // Resync re-reads `/me` (same document as at login): it is newer.
+        let me = ws.me().cloned().unwrap();
+        ws.apply_me(me);
+        let u = o.recompute_update(&ws);
+        assert_eq!(o.agent_status, AgentStatus::Available);
+        assert!(o.manual_queue && u.reinit_queue, "queue became wanted");
+    }
+
+    #[test]
+    fn user_data_before_agent_role_is_kept() {
+        let mut ws = agent_ws(&["user"]);
+        let mut o = OmnichannelState::new();
+        o.set_routing(Some(manual()));
+        o.recompute(&ws);
+        assert!(!o.is_agent);
+        // Made an agent: roles-change, then userData; both applied before the
+        // next recompute.
+        ws.apply_user_role_change("me", "livechat-agent", true, None);
+        let u = o.apply_event(&status_event("not-available"));
+        assert!(!u.changed, "not an agent yet");
+        o.recompute(&ws);
+        assert!(o.is_agent);
+        assert_eq!(o.agent_status, AgentStatus::NotAvailable);
+        let u = o.apply_event(&status_event("available"));
+        assert!(u.changed);
+        let u = o.recompute_update(&ws);
+        assert_eq!(o.agent_status, AgentStatus::Available);
+        assert!(o.manual_queue && u.reinit_queue);
+    }
+
+    #[test]
+    fn becoming_accessible_requests_routing_and_license() {
+        let mut ws = agent_ws(&["livechat-agent"]);
+        ws.apply_setting(
+            Change::Updated,
+            Setting {
+                id: settings::ENABLED.into(),
+                value: json!(false),
+                ..Default::default()
+            },
+        );
+        let mut o = OmnichannelState::new();
+        let u = o.recompute_update(&ws);
+        assert!(!o.accessible && !u.refetch_routing);
+        let u = o.apply_event(&SessionEvent::SettingChanged {
+            kind: ChangeKind::Updated,
+            setting: Box::new(Setting {
+                id: settings::ENABLED.into(),
+                value: json!(true),
+                ..Default::default()
+            }),
+            public: true,
+        });
+        assert!(u.refetch_routing);
+        ws.apply_setting(
+            Change::Updated,
+            Setting {
+                id: settings::ENABLED.into(),
+                value: json!(true),
+                ..Default::default()
+            },
+        );
+        let u = o.recompute_update(&ws);
+        assert!(o.accessible && !o.enabled);
+        assert!(u.refetch_routing && u.refetch_license);
+        o.set_routing(Some(auto()));
+        let u = o.recompute_update(&ws);
+        assert!(o.enabled && !u.refetch_routing);
+    }
+
+    #[test]
+    fn foreign_role_change_does_not_reinit() {
+        let ws = agent_ws(&["livechat-agent"]);
+        let mut o = OmnichannelState::new();
+        o.set_routing(Some(manual()));
+        o.recompute(&ws);
+        let u = o.apply_event(&SessionEvent::RolesChanged(Box::new(
+            rocketchat::session::RoleAssignment {
+                kind: "added".into(),
+                role: "moderator".into(),
+                user: None,
+                scope: Some("GENERAL".into()),
+            },
+        )));
+        assert!(!u.reinit_queue);
+        assert!(!o.recompute_update(&ws).reinit_queue, "queue still wanted");
+    }
+
+    #[test]
+    fn canned_department_responses_under_auto_routing() {
+        let ws = agent_ws(&["livechat-agent"]);
+        let mut o = OmnichannelState::new();
+        o.set_routing(Some(auto()));
+        o.recompute(&ws);
+        let r: rocketchat::models::CannedResponse = serde_json::from_value(json!({
+            "_id":"c1","shortcut":"hi","text":"Hello","scope":"department","departmentId":"d1"
+        }))
+        .unwrap();
+        o.canned.replace(vec![r]);
+        o.recompute(&ws);
+        assert_eq!(o.canned.len(), 1);
+        let u = o.apply_event(&SessionEvent::Unknown {
+            collection: "stream-notify-user".into(),
+            event_name: "me/departmentAgentData".into(),
+            args: json!([{"action":"inserted","_id":"x","agentId":"me","departmentId":"d2"}]),
+        });
+        assert!(u.refetch_canned && !u.reinit_queue);
+        // Disabled departments still count for canned responses.
+        o.set_departments(vec![AgentDepartment {
+            department_id: "d3".into(),
+            department_enabled: false,
+            ..Default::default()
+        }]);
+        o.recompute(&ws);
+        assert!(o.canned.context().departments.contains("d3"));
+        assert!(o.department_ids().is_empty());
+    }
+
+    #[test]
+    fn queue_grew_follows_the_capped_list() {
+        let mut ws = agent_ws(&["livechat-agent"]);
+        ws.apply_setting(
+            Change::Inserted,
+            Setting {
+                id: settings::POOL_MAX_DISPLAYED.into(),
+                value: json!(1),
+                ..Default::default()
+            },
+        );
+        let mut o = OmnichannelState::new();
+        o.set_routing(Some(manual()));
+        o.recompute(&ws);
+        let added = |id: &str, ts: i64| SessionEvent::Unknown {
+            collection: rocketchat::session::streams::INQUIRY_QUEUE.into(),
+            event_name: "public".into(),
+            args: json!([{"type":"added","_id":id,"rid":format!("r{id}"),"status":"queued",
+                "ts":{"$date":ts}}]),
+        };
+        assert!(o.apply_event(&added("a", 1)).queue_grew);
+        let u = o.apply_event(&added("b", 2));
+        assert!(u.changed && !u.queue_grew, "beyond the cap");
     }
 }

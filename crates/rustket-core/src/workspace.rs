@@ -218,6 +218,8 @@ pub type DraftKey = (String, Option<String>);
 #[derive(Debug, Clone, Default)]
 pub struct Workspace {
     me: Option<User>,
+    /// Number of [`Self::apply_me`] calls (fresh `/me` documents).
+    me_generation: u64,
     server_info: Option<ServerInfo>,
     settings: Settings,
     permissions: HashMap<String, Vec<String>>,
@@ -368,6 +370,12 @@ impl Workspace {
 
     pub fn me(&self) -> Option<&User> {
         self.me.as_ref()
+    }
+
+    /// Bumped by every [`Self::apply_me`], even when `me` is unchanged: lets
+    /// derived state tell a fresh `/me` from a stale one.
+    pub fn me_generation(&self) -> u64 {
+        self.me_generation
     }
 
     pub fn user_id(&self) -> Option<&str> {
@@ -824,6 +832,7 @@ impl Workspace {
     /// The current user's document (realtime `userData`, or a fresh `/me`). Its
     /// status also updates the presence cache that [`Self::my_status`] reads.
     pub fn apply_me(&mut self, me: User) {
+        self.me_generation += 1;
         if me.status.is_some() {
             let m = self.realtime.next();
             self.realtime.presence.insert(me.id.clone(), m);

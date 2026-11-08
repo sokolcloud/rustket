@@ -16,7 +16,9 @@ pub use auth::{LdapLogin, LoginResult};
 /// Byte buffer type of `UploadSource` (re-exported so callers need no `bytes` dependency).
 pub use bytes::Bytes;
 pub use files::{Download, ProgressFn, UploadRequest, UploadSource};
-pub use livechat::{AgentQuery, CannedResponseQuery, DepartmentQuery, LivechatRoomsQuery, Page};
+pub use livechat::{
+    AgentQuery, CannedResponseQuery, DepartmentQuery, LivechatPage, LivechatRoomsQuery,
+};
 pub use messages::{HistoryCursor, HistoryOptions};
 pub use rooms::{CreateRoom, RoomMembersOptions};
 pub use users::UserLookup;

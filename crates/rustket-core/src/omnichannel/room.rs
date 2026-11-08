@@ -93,7 +93,8 @@ pub fn composer_state(
 
 /// Whether "Take it!" must be disabled, and why.
 pub fn take_block(my_status: UserStatus, agent_status: AgentStatus) -> Option<TakeBlock> {
-    if matches!(my_status, UserStatus::Offline | UserStatus::Unknown) {
+    // Unknown presence (not loaded yet) does not block, like the web client.
+    if my_status == UserStatus::Offline {
         Some(TakeBlock::Offline)
     } else if !agent_status.is_available() {
         Some(TakeBlock::Unavailable)
@@ -178,20 +179,20 @@ fn license_has(omni: &OmnichannelState, module: &str) -> bool {
     omni.license.as_ref().is_some_and(|l| l.has_module(module))
 }
 
-/// The quick actions of room `rid` for the current user.
+/// The quick actions of `room` for the current user. `room` may come from the
+/// workspace or from `rooms.info` (closed rooms and unsubscribed chats a
+/// manager opens are not in the workspace); `sub` is the user's subscription.
 pub fn quick_actions(
     ws: &Workspace,
     omni: &OmnichannelState,
-    rid: &str,
+    room: &Room,
+    sub: Option<&Subscription>,
     month: &str,
 ) -> Vec<QuickAction> {
-    let Some(entry) = ws.room(rid) else {
+    if room.t != RoomType::Livechat {
         return Vec::new();
-    };
-    let Some(room) = entry.room.as_ref().filter(|r| r.t == RoomType::Livechat) else {
-        return Vec::new();
-    };
-    let sub = entry.sub.as_ref();
+    }
+    let rid = room.id.as_str();
     let me = ws.me();
     let lm = room.last_message.as_deref();
     let has = |p: &str| has_permission(ws, p, Some(rid));
@@ -573,6 +574,10 @@ mod tests {
             Some(TakeBlock::Unavailable)
         );
         assert_eq!(take_block(UserStatus::Away, AgentStatus::Available), None);
+        assert_eq!(
+            take_block(UserStatus::Unknown, AgentStatus::Available),
+            None
+        );
         let d = chrono::TimeZone::with_ymd_and_hms(&Local, 2026, 3, 5, 12, 0, 0).unwrap();
         assert_eq!(month_key(d), "2026-03");
     }
@@ -664,6 +669,37 @@ mod tests {
             ..base()
         };
         assert!(quick_actions_for(&nobody).is_empty());
+    }
+
+    #[test]
+    fn quick_actions_without_workspace_entry() {
+        use crate::workspace::Change;
+        use rocketchat::models::Permission;
+        let mut ws = Workspace::new();
+        let mut me = crate::test_util::me("mgr", "mgr");
+        me.roles = Some(vec!["livechat-manager".into()]);
+        ws.apply_me(me);
+        for p in [
+            perm::SEND_OMNICHANNEL_CHAT_TRANSCRIPT,
+            perm::TRANSFER_LIVECHAT_GUEST,
+            perm::CLOSE_OTHERS_LIVECHAT_ROOM,
+        ] {
+            let p: Permission =
+                serde_json::from_value(json!({"_id": p, "roles": ["livechat-manager"]})).unwrap();
+            ws.apply_permission(Change::Inserted, p);
+        }
+        let omni = OmnichannelState::new();
+        // Closed room from `rooms.info`: never in the workspace.
+        let closed = closed_room();
+        assert!(ws.room(&closed.id).is_none());
+        let a = quick_actions(&ws, &omni, &closed, None, "2026-11");
+        assert!(a.contains(&QuickAction::TranscriptEmail), "{a:?}");
+        assert!(!a.contains(&QuickAction::Close));
+        // Open chat a manager views without a subscription.
+        let open = served_room();
+        let a = quick_actions(&ws, &omni, &open, None, "2026-11");
+        assert!(a.contains(&QuickAction::Forward), "{a:?}");
+        assert!(a.contains(&QuickAction::Close), "{a:?}");
     }
 
     #[test]

@@ -1,0 +1,11 @@
+{
+  "tags": [
+    {"_id": "tag1", "name": "billing", "description": "Billing questions", "numDepartments": 1, "departments": ["dep1"], "_updatedAt": "2026-11-01T10:00:00.000Z"},
+    {"_id": "tag2", "name": "vip", "numDepartments": 0, "departments": [], "_updatedAt": {"$date": 1762000000000}},
+    {"_id": "tag3", "name": null, "departments": null, "extra": true}
+  ],
+  "count": 3,
+  "offset": 0,
+  "total": 3,
+  "success": true
+}

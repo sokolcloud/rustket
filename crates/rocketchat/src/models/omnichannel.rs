@@ -888,6 +888,16 @@ pub struct Priority {
     pub dirty: bool,
 }
 
+impl Priority {
+    /// The admin-edited name to show verbatim (`dirty`); `None` means translate
+    /// [`Self::i18n`].
+    pub fn custom_name(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .filter(|n| self.dirty && !n.trim().is_empty())
+    }
+}
+
 /// `IOmnichannelServiceLevelAgreements` (EE).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
