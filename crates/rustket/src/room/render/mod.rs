@@ -59,6 +59,9 @@ pub enum RenderMsg {
     OpenFile(PathBuf),
     /// A `video_conf` block action (`crate::videoconf::block`).
     Call(crate::videoconf::CallAction),
+    /// An interaction with UIKit blocks (`crate::uikit`); the owner turns it
+    /// into `Effect::UiKit`.
+    UiKit(Box<crate::uikit::UiKitMsg>),
 }
 
 /// An image attachment to show full size.
@@ -236,11 +239,18 @@ pub fn message_body<'a>(msg: &'a Message, ctx: &ViewCtx<'a>) -> Element<'a, Rend
 /// attachments, downloads).
 pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, RenderMsg> {
     let mut col: Column<'static, RenderMsg> = column![].spacing(SPACE_1);
-    if let Some(text) = text_part(msg, rc) {
+    // UIKit blocks hide the markdown body (docs/uikit.md §3.1).
+    let blocks = crate::uikit::message_blocks(msg, rc);
+    if blocks.is_none()
+        && let Some(text) = text_part(msg, rc)
+    {
         col = col.push(text);
     }
     for a in attachments::attachments(msg, rc) {
         col = col.push(a);
+    }
+    if let Some(b) = blocks {
+        col = col.push(b);
     }
     for p in attachments::link_previews(msg, rc) {
         col = col.push(p);
@@ -259,6 +269,33 @@ pub fn text_part(msg: &Message, rc: &RenderCtx<'_>) -> Option<Element<'static, R
         Some(root) if !root.is_empty() => Some(md::blocks(root, &msg.id, msg, rc)),
         _ if !msg.msg.trim().is_empty() => Some(md::plain_paragraph(&msg.msg, &msg.id, rc)),
         _ => None,
+    }
+}
+
+/// An `md` tree that is not a message's own (UIKit `mrkdwn` text objects,
+/// parsed by `crate::uikit`); `mid` keys spoilers.
+pub fn md_tree(
+    root: &[rocketchat::models::md::Block],
+    mid: &str,
+    rc: &RenderCtx<'_>,
+) -> Element<'static, RenderMsg> {
+    md::blocks_for(root, &md::Cx::new(rc, mid, None))
+}
+
+/// An `md` tree at `size` (UIKit context items): a single paragraph keeps
+/// the size, anything else renders like [`md_tree`].
+pub fn md_tree_sized(
+    root: &[rocketchat::models::md::Block],
+    mid: &str,
+    rc: &RenderCtx<'_>,
+    size: f32,
+) -> Element<'static, RenderMsg> {
+    let cx = md::Cx::new(rc, mid, None);
+    match root {
+        [rocketchat::models::md::Block::Paragraph { value }] => {
+            md::inline_paragraph(value, &cx, size)
+        }
+        _ => md::blocks_for(root, &cx),
     }
 }
 

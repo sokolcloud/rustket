@@ -221,6 +221,8 @@ pub enum Followup {
     },
     /// Hand the notification to `desktop::Desktop::on_notification`.
     Notification(Box<rocketchat::session::DesktopNotification>),
+    /// A UIKit push, `stream-apps` event or banner change (`crate::uikit`).
+    UiKit(crate::uikit::SessionHook),
 }
 
 fn change(kind: ChangeKind) -> Change {
@@ -410,14 +412,18 @@ pub fn apply_event(ws: &mut Workspace, ev: &SessionEvent) -> Followup {
             Followup::None
         }
         E::UserNameChanged { .. } | E::UserDeleted { .. } | E::UserData(_) => Followup::None,
+        E::UiInteraction(si) => Followup::UiKit(crate::uikit::SessionHook::Interaction(si.clone())),
+        E::Banner(_) | E::BannerChanged { .. } => {
+            Followup::UiKit(crate::uikit::SessionHook::Banners)
+        }
+        E::Unknown { .. } if crate::uikit::apps_event(ev).is_some() => {
+            crate::uikit::apps_event(ev).map_or(Followup::None, Followup::UiKit)
+        }
         E::RoomVideoConference { .. }
         | E::CustomSoundUpdated(_)
         | E::CustomSoundDeleted(_)
-        | E::UiInteraction(_)
         | E::VideoConference(_)
         | E::E2EKeyRequest { .. }
-        | E::Banner(_)
-        | E::BannerChanged { .. }
         | E::Calendar(_)
         | E::Webdav(_)
         | E::Unknown { .. } => Followup::None,

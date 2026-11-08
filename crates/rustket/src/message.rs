@@ -63,6 +63,9 @@ pub enum Message {
     CreateRoom(ServerId, crate::dialogs::create_room::Message),
     QuickSwitcher(ServerId, crate::dialogs::quick_switcher::Message),
     StatusMenu(ServerId, crate::workspace::status_menu::Message),
+    /// UIKit controller (`crate::uikit`) of a server, in session epoch
+    /// `ServerState::generation`.
+    UiKit(ServerId, u64, crate::uikit::Msg),
     Desktop(crate::desktop::Message),
     /// Video conferences (`crate::videoconf`).
     Calls(crate::videoconf::Message),

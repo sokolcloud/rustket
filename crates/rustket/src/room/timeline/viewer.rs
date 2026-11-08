@@ -230,6 +230,7 @@ impl Viewer {
             }
             RenderMsg::ToggleSpoiler(..) | RenderMsg::ToggleCollapsed(..) => Action::none(),
             RenderMsg::Call(a) => Action::effect(Effect::Call(a)),
+            RenderMsg::UiKit(m) => Action::effect(Effect::UiKit(m)),
         }
     }
 

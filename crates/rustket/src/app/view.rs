@@ -15,8 +15,8 @@ use rustket_ui::theme::{
 };
 use rustket_ui::widget::{
     AvatarShape, AvatarSource, BannerKind, avatar, banner, dialog, empty_state,
-    loading_placeholder, modal, primary_button, secondary_button, spinner, split, status_strip,
-    toasts,
+    loading_placeholder, modal_keyed, primary_button, secondary_button, spinner, split,
+    status_strip, toasts,
 };
 
 use super::{App, Modal, Screen};
@@ -66,7 +66,8 @@ impl App {
             }),
         };
         let (overlay, dismiss) = self.overlay();
-        let content = modal(base, overlay, dismiss);
+        let key = self.overlay_key();
+        let content = modal_keyed(base, overlay.map(|o| (key, o)), dismiss);
         let content = crate::videoconf::view::layer(self, content);
         toasts(content, &self.toasts, Message::CloseToast)
     }
@@ -179,7 +180,10 @@ impl App {
         if let Some(strip) = self.connection_strip(s) {
             area = area.push(strip);
         }
-        area = area.push(room_area);
+        for strip in self.uikit_strips(s) {
+            area = area.push(strip);
+        }
+        area = area.push(self.uikit_busy_over(s, room_area));
         split(
             sidebar_view,
             area.width(Length::Fill).height(Length::Fill),
@@ -251,7 +255,7 @@ impl App {
                     return (None, None);
                 };
                 let Some(l) = &s.login else {
-                    return (None, None);
+                    return self.uikit_overlay(s);
                 };
                 let sid = s.id.clone();
                 match l.overlay() {

@@ -452,8 +452,8 @@ fn slash_commands_run_known_and_send_unknown() {
         "commands are not messages"
     );
     assert_eq!(c.text(), "");
-    // The task is the `commands.run` request (it fails here: no session).
-    assert!(names(&outputs(a.task)).contains(&"CommandRan".to_owned()));
+    // `commands.run` is handed to the UIKit controller (app level).
+    assert!(runs_command(&a.effects, "leave"));
     type_text(&mut c, &mut env, "/shrug me");
     let a = c.update(Message::Send, &mut env.ctx());
     assert_eq!(env.ws.pending_messages("R1")[0].message.msg, "/shrug me");
@@ -502,7 +502,14 @@ fn uncached_commands_keep_the_text_until_the_list_is_known() {
     );
     assert_eq!(c.text(), "");
     assert!(env.ws.pending_messages("R1").is_empty());
-    assert!(names(&outputs(a.task)).contains(&"CommandRan".to_owned()));
+    assert!(runs_command(&a.effects, "leave"));
+}
+
+fn runs_command(effects: &[Effect], name: &str) -> bool {
+    effects.iter().any(|e| {
+        matches!(e, Effect::UiKit(m)
+            if matches!(&**m, crate::uikit::UiKitMsg::Command { command, .. } if command == name))
+    })
 }
 
 #[test]

@@ -1,0 +1,79 @@
+_version: 2
+uikit.show_more:
+  en: "Show more..."
+  ru: "Показать ещё..."
+uikit.more:
+  en: "More"
+  ru: "Ещё"
+uikit.no_options:
+  en: "No options"
+  ru: "Нет вариантов"
+uikit.filter:
+  en: "Filter"
+  ru: "Фильтр"
+uikit.close:
+  en: "Close"
+  ru: "Закрыть"
+uikit.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+uikit.submit:
+  en: "Submit"
+  ru: "Отправить"
+uikit.confirm_title:
+  en: "Are you sure?"
+  ru: "Вы уверены?"
+uikit.confirm:
+  en: "Confirm"
+  ru: "Подтвердить"
+uikit.loading:
+  en: "Loading"
+  ru: "Загрузка"
+uikit.view_gone:
+  en: "This app panel is no longer available."
+  ru: "Эта панель приложения больше недоступна."
+uikit.dismiss:
+  en: "Dismiss"
+  ru: "Скрыть"
+uikit.apps:
+  en: "Apps"
+  ru: "Приложения"
+uikit.ai_actions:
+  en: "AI actions"
+  ru: "Действия ИИ"
+uikit.unavailable:
+  en: "Unavailable"
+  ru: "Недоступно"
+uikit.app_panel:
+  en: "App"
+  ru: "Приложение"
+uikit.command_failed:
+  en: "Something went wrong while executing command: `/%{command}`"
+  ru: "Что-то пошло не так при выполнении команды: `/%{command}`"
+uikit.bar_needs_room:
+  en: "Open a room to see the app panel"
+  ru: "Откройте комнату, чтобы увидеть панель приложения"
+uikit.timeout:
+  en: "App has failed to respond. Please try again or contact your admin"
+  ru: "Приложение не ответило. Попробуйте ещё раз или обратитесь к администратору"
+uikit.app_error:
+  en: "The app could not handle this action"
+  ru: "Приложение не смогло выполнить это действие"
+uikit.rate_limited:
+  en: "Too many app requests"
+  ru: "Слишком много запросов к приложениям"
+uikit.retry_in:
+  en: "Try again in %{seconds} s"
+  ru: "Повторите через %{seconds} с"
+uikit.unsupported:
+  en: "Unsupported app action"
+  ru: "Неподдерживаемое действие приложения"
+uikit.room_not_found:
+  en: "Room %{name} not found"
+  ru: "Комната %{name} не найдена"
+uikit.weekdays:
+  en: "Mo Tu We Th Fr Sa Su"
+  ru: "Пн Вт Ср Чт Пт Сб Вс"
+uikit.months:
+  en: "January February March April May June July August September October November December"
+  ru: "Январь Февраль Март Апрель Май Июнь Июль Август Сентябрь Октябрь Ноябрь Декабрь"

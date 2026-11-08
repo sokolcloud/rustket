@@ -184,6 +184,9 @@ pub enum Effect {
     /// A request to the omnichannel part of the room (quick actions, panels);
     /// routed to `OmniRoom::request`.
     Omni(crate::omnichannel::room::Request),
+    /// A UIKit interaction (blocks, app panel, app buttons); handled by the
+    /// app's UIKit controller (`crate::uikit`).
+    UiKit(Box<crate::uikit::UiKitMsg>),
 }
 
 /// Requests other room components make to the composer.

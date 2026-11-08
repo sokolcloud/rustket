@@ -53,6 +53,8 @@ pub enum Msg {
     ReportText(String),
     SubmitReport,
     Reported(String, Res<()>),
+    /// An app action button of the message menu (`crate::uikit::buttons`).
+    UiKit(Box<crate::uikit::UiKitMsg>),
 }
 
 impl Msg {
@@ -155,6 +157,10 @@ impl Interactions {
             Msg::Menu(m) => {
                 self.menu = m;
                 Action::none()
+            }
+            Msg::UiKit(m) => {
+                self.menu = None;
+                Action::effect(Effect::UiKit(m))
             }
             Msg::React(mid, emoji) => {
                 if !rustket_core::permissions::can_react(ctx.workspace, ctx.rid) {

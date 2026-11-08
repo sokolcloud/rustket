@@ -60,6 +60,8 @@ pub enum Kind {
     TeamInfo,
     /// Omnichannel panels (`crate::omnichannel::panel`).
     Omnichannel(crate::omnichannel::panel::PanelKind),
+    /// A UIKit contextual bar (view id), drawn by `crate::uikit::bar`.
+    App(String),
 }
 
 impl Kind {
@@ -83,6 +85,7 @@ impl Kind {
             Kind::TeamMembers => "teams.panel_members",
             Kind::TeamInfo => "teams.panel_info",
             Kind::Omnichannel(k) => k.i18n_key(),
+            Kind::App(_) => "uikit.app_panel",
         }
     }
 
@@ -112,6 +115,14 @@ pub enum Message {
     Body(u64, BodyMsg),
     /// "+" in the Discussions panel header.
     CreateDiscussion,
+    /// Show the UIKit contextual bar `view_id` (keeps it when shown).
+    ShowApp(String),
+    /// Close the panel if it shows bar `view_id`.
+    HideApp(String),
+    /// Open (or keep) a panel.
+    Open(Kind),
+    /// An interaction inside a contextual bar.
+    UiKit(Box<crate::uikit::UiKitMsg>),
 }
 
 /// Messages of the panel bodies.
@@ -145,6 +156,8 @@ enum Body {
     Thread(Box<thread::Thread>),
     Team(Box<crate::teams::TeamPanel>),
     Omni(Box<crate::omnichannel::panel::OmniPanel>),
+    /// A contextual bar: its state lives in the workspace's UIKit store.
+    App,
 }
 
 impl Body {
@@ -178,6 +191,7 @@ impl Body {
             Kind::Omnichannel(k) => {
                 Body::Omni(Box::new(crate::omnichannel::panel::OmniPanel::new(k)))
             }
+            Kind::App(_) => Body::App,
         }
     }
 }
@@ -449,6 +463,26 @@ impl Panel {
         match msg {
             Message::Close => Action::effect(Effect::ClosePanel),
             Message::CreateDiscussion => Action::effect(Effect::StartDiscussion { pmid: None }),
+            Message::ShowApp(id) => {
+                let kind = Kind::App(id);
+                if self.open.as_ref() == Some(&kind) {
+                    return Action::none();
+                }
+                Action::effect(Effect::OpenPanel(kind))
+            }
+            Message::HideApp(id) => {
+                if self.open.as_ref() == Some(&Kind::App(id)) {
+                    return Action::effect(Effect::ClosePanel);
+                }
+                Action::none()
+            }
+            Message::Open(kind) => {
+                if self.open.as_ref() == Some(&kind) {
+                    return Action::none();
+                }
+                Action::effect(Effect::OpenPanel(kind))
+            }
+            Message::UiKit(m) => Action::effect(Effect::UiKit(m)),
             Message::Back => match self.back.clone() {
                 Some(kind) if self.restore(&kind) => Action::none(),
                 Some(kind) => Action::effect(Effect::OpenPanel(kind)),
@@ -495,7 +529,7 @@ impl Panel {
             Some(Body::Thread(b)) => wrap(g, b.activate(ctx), BodyMsg::Thread),
             Some(Body::Team(b)) => wrap(g, b.activate(ctx), BodyMsg::Team),
             Some(Body::Omni(b)) => wrap(g, b.activate(ctx), BodyMsg::Omni),
-            None => Action::none(),
+            Some(Body::App) | None => Action::none(),
         }
     }
 
@@ -580,6 +614,11 @@ impl Panel {
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, Message>> {
         let _ = &self.rid;
         let kind = self.open.as_ref()?;
+        if let Kind::App(view_id) = kind {
+            return Some(
+                crate::uikit::bar::view(view_id, ctx).map(|m| Message::UiKit(Box::new(m))),
+            );
+        }
         let g = self.generation;
         let body: Element<'a, Message> = match self.body.as_ref() {
             Some(Body::Info(b)) => b.view(ctx).map(move |m| Message::Body(g, BodyMsg::Info(m))),
@@ -610,7 +649,7 @@ impl Panel {
                 .map(move |m| Message::Body(g, BodyMsg::Thread(m))),
             Some(Body::Team(b)) => b.view(ctx).map(move |m| Message::Body(g, BodyMsg::Team(m))),
             Some(Body::Omni(b)) => b.view(ctx).map(move |m| Message::Body(g, BodyMsg::Omni(m))),
-            None => common::loading(),
+            Some(Body::App) | None => common::loading(),
         };
         let mut head = row![].spacing(SPACE_2).align_y(Alignment::Center);
         if self.back.is_some() {

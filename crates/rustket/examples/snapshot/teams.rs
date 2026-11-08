@@ -23,11 +23,6 @@ use serde_json::{Value, json};
 
 use super::{Driver, Ledger, admin};
 
-/// `RUSTKET_SNAPSHOT_ONLY=teams`.
-pub fn only() -> bool {
-    std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() == Ok("teams")
-}
-
 fn both(d: &mut Driver, out: &Path, name: &str) {
     d.app.config.ui.theme = Theme::Light;
     d.shoot(out, &format!("{name}-light"));

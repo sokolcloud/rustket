@@ -15,6 +15,7 @@ in parallel, so ownership matters.
 | account agent | `src/screens/account.rs`, `src/screens/directory.rs`, `src/dialogs/create_room.rs`, `src/dialogs/quick_switcher.rs` | `account.yml`, `directory.yml`, `create_room.yml`, `quick_switcher.yml` |
 | teams agent | `src/teams/` (team info / channels / members / discussions panel bodies, leave / delete / convert / remove-member dialogs), `src/videoconf/` (call layer: header call button, `video_conf` blocks, popups, call dialogs, call notifications) | `teams.yml`, `videoconf.yml` |
 | omnichannel agent | `src/omnichannel/` (controller, sidebar groups, room callouts/quick actions/dialogs, panels, contact center; see `docs/omnichannel.md` §22.3a) | `omnichannel.yml` |
+| uikit agent | `src/uikit/` (block renderer, mrkdwn parser, modal, contextual bar, banners, app buttons, slash-command triggers), `src/app/uikit.rs` (glue) | `uikit.yml` |
 | shell (shared) | `src/app.rs`, `src/app/*.rs`, `src/message.rs`, `src/room/mod.rs`, `src/component.rs`, `src/session.rs`, `src/workspace/{mod,sidebar,rail}.rs`, `src/screens/{login,add_server,page}.rs` | `app.yml`, `sidebar.yml`, … |
 
 Rules:
@@ -330,3 +331,24 @@ reloads itself when its timeline is reset (resync, history import). Expanded,
 it is drawn over the room column (max 855 px, like the web) and later threads
 of the session open expanded too. `Effect::OpenPanel(Kind::Thread(t))` for
 the open thread keeps it open (only header buttons toggle panels).
+
+### UIKit (`src/uikit/`, owned by the uikit agent)
+
+Message blocks render through `render::message_body_with` (blocks hide the
+markdown body); their interactions come out as `RenderMsg::UiKit` and every
+owner forwards them as `Effect::UiKit` (also panel, header, message menu,
+composer app menu; the status menu uses `component::Effect::UiKit`). The app
+runs them through `uikit::controller` (`Message::UiKit(sid, epoch, ..)`;
+results of an earlier session are dropped). Slash commands from a composer are
+`UiKitMsg::Command` effects, so `commands.run` finishes even when the room
+view closed. Durable state lives in the workspace (`UiKitStore`, incl. the
+widget `Scratch`); modal text editors in `ServerState::uikit`. Contextual bars
+are `panel::Kind::App(view_id)` and close with their room view
+(`controller::room_closed`); modals (keyed by view id), the confirmation
+dialog, the floating busy pill and banners are drawn by the app
+(`uikit::overlay`, `App::uikit_busy_over`, `uikit::strips`). `stream-apps`
+events are consumed by the UIKit dispatcher arm; what other components need
+comes out as `controller::Effect::AppsChanged { commands, admin }` (the glue
+drops the composer's command cache; `admin` is a hook point for an apps admin
+list). `video_conf` blocks are left to the video-conference module
+(`uikit::render` skips them).

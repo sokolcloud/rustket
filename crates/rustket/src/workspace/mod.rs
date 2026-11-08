@@ -49,6 +49,8 @@ pub struct ServerState {
     pub start_error: Option<String>,
     /// `true` until the token was looked up at startup.
     pub restoring: bool,
+    /// UIKit widget state that holds iced types (modal editors).
+    pub uikit: crate::uikit::Local,
 }
 
 impl ServerState {
@@ -93,6 +95,7 @@ impl ServerState {
             pending_room: None,
             start_error: None,
             restoring: true,
+            uikit: crate::uikit::Local::default(),
         })
     }
 
@@ -127,6 +130,7 @@ impl ServerState {
         let _ = self.close_rooms();
         self.session = None;
         self.workspace = Workspace::new();
+        self.uikit = crate::uikit::Local::default();
         self.sidebar = sidebar::Sidebar::default();
         self.omni.reset(&self.id);
         self.syncing = false;

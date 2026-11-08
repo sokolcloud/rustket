@@ -681,8 +681,8 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "09-room-light");
     teams::teams_shots(&mut d, &server, &out, &sid, &user, &fixture.ledger).await;
     // `RUSTKET_SNAPSHOT_ONLY=glue`: only the integration shots.
-    let only_glue =
-        std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() == Ok("glue") || teams::only();
+    // Any `RUSTKET_SNAPSHOT_ONLY` value skips the shared component shots.
+    let only_glue = std::env::var("RUSTKET_SNAPSHOT_ONLY").is_ok();
     if !only_glue {
         composer_snapshots(&mut d, &out, &sid, &rid).await;
         timeline_fixture::shoot(&mut d, &out, &sid).await;
@@ -691,6 +691,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     }
     glue::glue_shots(&mut d, &server, &out, &sid, &rid, &fixture.ledger).await;
     omni::omni_shots(&mut d, &server, &out, &sid, &user).await;
+    uikit::shoot(&mut d, &out, &sid, &rid).await;
 
     // Log out through the app: the login token is revoked on the server.
     let creds: Credentials = d.app.servers[&sid].credentials.clone().expect("creds");
@@ -889,6 +890,8 @@ mod teams;
 mod omni;
 #[path = "snapshot/timeline_fixture.rs"]
 mod timeline_fixture;
+#[path = "snapshot/uikit.rs"]
+mod uikit;
 /// Quick switcher, directory, create dialogs and account tabs (light + dark).
 /// Nothing is created on the server except a personal access token and a
 /// pending TOTP secret of the throwaway user.

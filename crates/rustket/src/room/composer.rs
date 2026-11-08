@@ -139,6 +139,15 @@ fn commands_failed(server: &ServerId) {
     }
 }
 
+/// Drops the cached `commands.list` of `server` (apps added or removed
+/// commands, `crate::uikit`).
+pub fn forget_commands(server: &ServerId) {
+    if let Ok(mut c) = COMMANDS.lock() {
+        c.lists.remove(server.as_str());
+        c.failed.remove(server.as_str());
+    }
+}
+
 /// `commands.list` failed a moment ago: do not ask again yet.
 fn commands_recently_failed(server: &ServerId) -> bool {
     COMMANDS.lock().ok().is_some_and(|c| {
@@ -246,7 +255,8 @@ pub enum Message {
     Fetched(FetchFor, Res<Box<rocketchat::models::Message>>),
     Sent(String, Res<Box<rocketchat::models::Message>>),
     Updated(Res<Box<rocketchat::models::Message>>),
-    CommandRan(Res<serde_json::Value>),
+    /// The composer's app menu (`crate::uikit::buttons`).
+    UiKit(Box<crate::uikit::UiKitMsg>),
     Typed(Res<()>),
     TypingTick,
     DraftTick(u64),
@@ -710,14 +720,7 @@ impl Composer {
                     e.user_text(),
                 )),
             },
-            Message::CommandRan(r) => match r {
-                Ok(_) => Action::none(),
-                Err(e) => Action::effect(Effect::Toast(
-                    BannerKind::Error,
-                    t!("room_composer.command_failed").into_owned(),
-                    e.user_text(),
-                )),
-            },
+            Message::UiKit(m) => Action::effect(Effect::UiKit(m)),
             Message::Typed(r) => {
                 if let Err(e) = r {
                     tracing::debug!(error = %e, "user-activity failed");
@@ -1279,22 +1282,26 @@ impl Composer {
         if let Some((name, params)) = text::parse_slash(&text)
             && cached_commands(ctx.server_id).is_some_and(|c| c.iter().any(|c| c.command == name))
         {
-            return Action::task(self.run_command(name, params, ctx));
+            return Action::effect(self.run_command(name, params, ctx));
         }
         Action::task(self.send_text(text, ctx))
     }
 
-    fn run_command(&self, name: String, params: String, ctx: &UpdateCtx<'_>) -> Task<Message> {
-        let rid = self.rid.clone();
-        let tmid = self.tmid.clone();
-        ctx.rest_task(
-            move |rest| async move {
-                let trigger = rocketchat::ids::random_id();
-                rest.commands_run(&name, &params, &rid, tmid.as_deref(), Some(&trigger))
-                    .await
-            },
-            Message::CommandRan,
-        )
+    /// `commands.run`, run by the UIKit controller at app level (§7) so its
+    /// result does not depend on this view staying open.
+    fn run_command(&self, name: String, params: String, ctx: &UpdateCtx<'_>) -> Effect {
+        let app_id = cached_commands(ctx.server_id).and_then(|c| {
+            c.iter()
+                .find(|c| c.command == name)
+                .and_then(|c| c.app_id.clone())
+        });
+        Effect::UiKit(Box::new(crate::uikit::commands::request(
+            &self.rid,
+            self.tmid.as_deref(),
+            name,
+            params,
+            app_id,
+        )))
     }
 
     /// Adds a pending message to the outbox and sends it with `chat.sendMessage`.
@@ -1501,6 +1508,38 @@ impl Composer {
             .into()
     }
 
+    /// The app actions menu (`messageBoxAction` buttons), if there are any.
+    fn apps_menu<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, Message>> {
+        use crate::uikit::{UiKitMsg, buttons};
+        let ws = ctx.workspace;
+        if !buttons::composer_has_buttons(ws, &self.rid) {
+            return None;
+        }
+        let tmid = self.tmid.as_deref();
+        let open = buttons::composer_menu_open(ws, &self.rid, tmid);
+        let key = buttons::composer_menu_key(&self.rid, tmid);
+        let wrap = |m: UiKitMsg| Message::UiKit(Box::new(m));
+        let entries = if open {
+            buttons::composer_entries(ws, &self.rid, tmid, &self.content.text(), wrap)
+        } else {
+            Vec::new()
+        };
+        let trigger = icon_button_with(
+            buttons::COMPOSER_ICON,
+            Some(wrap(UiKitMsg::Popover((!open).then_some(key)))),
+            t!("uikit.apps"),
+            open,
+            30.0,
+        );
+        Some(rustket_ui::widget::popover_menu(
+            trigger,
+            &entries,
+            open,
+            wrap(UiKitMsg::Popover(None)),
+            Placement::AboveEnd,
+        ))
+    }
+
     fn toolbar_view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
         let emoji_btn = icon_button_with(
             Icon::Smile,
@@ -1527,6 +1566,9 @@ impl Composer {
             ));
         }
         bar = bar.push(space().width(Length::Fill));
+        if let Some(apps) = self.apps_menu(ctx) {
+            bar = bar.push(apps);
+        }
         if permissions::can_upload(ctx.workspace, &self.rid) {
             // Files cannot be added to an edited message.
             bar = bar.push(icon_button_with(

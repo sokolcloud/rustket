@@ -53,6 +53,8 @@ pub enum Message {
     RemoveServer,
     /// Omnichannel agent availability (`crate::omnichannel::status`).
     Omni(crate::omnichannel::status::Msg),
+    /// An app action button (`crate::uikit::buttons::user_menu`).
+    UiKit(Box<crate::uikit::UiKitMsg>),
 }
 
 #[derive(Debug, Default)]
@@ -281,6 +283,10 @@ impl StatusMenu {
                 Action::effect(Effect::RemoveServer)
             }
             Message::Omni(m) => crate::omnichannel::status::update(m, ctx).map(Message::Omni),
+            Message::UiKit(m) => {
+                self.open = false;
+                Action::effect(Effect::UiKit(m))
+            }
         }
     }
 
@@ -459,6 +465,19 @@ impl StatusMenu {
                     labelled(Icon::MessageCircle, r.clone()),
                     enabled.then(|| Message::UseRecent(r.clone())),
                     false,
+                ));
+            }
+        }
+        let apps = crate::uikit::buttons::user_menu(ws);
+        if !apps.is_empty() {
+            col = col
+                .push(divider())
+                .push(caption(t!("uikit.apps").into_owned()));
+            for (label, m, danger) in apps {
+                col = col.push(item(
+                    labelled(crate::uikit::buttons::COMPOSER_ICON, label),
+                    Some(Message::UiKit(Box::new(m))),
+                    danger,
                 ));
             }
         }

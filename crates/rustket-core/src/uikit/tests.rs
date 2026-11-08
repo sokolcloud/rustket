@@ -496,6 +496,35 @@ fn builtin_commands_do_not_count_as_busy() {
 }
 
 #[test]
+fn lost_requests_stop_counting_as_busy() {
+    let now = Instant::now();
+    let mut s = UiKitStore::new();
+    s.slash_command_trigger(Some("app1"), "r1", None, now);
+    s.prune(now + Duration::from_secs(1));
+    assert_eq!(s.busy(), 1);
+    // Never finished (its result was dropped): gone once the trigger expires.
+    s.prune(now + trigger::TRIGGER_TTL + trigger::REQUEST_TIMEOUT + Duration::from_secs(1));
+    assert_eq!(s.busy(), 0);
+}
+
+#[test]
+fn button_and_translation_changes_bump_the_revision() {
+    let mut s = UiKitStore::new();
+    let r0 = s.revision();
+    s.set_buttons(Vec::new());
+    let r1 = s.revision();
+    assert_ne!(r0, r1);
+    s.translations_mut();
+    assert_ne!(s.revision(), r1);
+    let r2 = s.revision();
+    s.apply_apps_event(&AppsStreamEvent::Removed("app1".into()));
+    assert_ne!(s.revision(), r2);
+    let r3 = s.revision();
+    s.scratch_mut().open = Some("x".into());
+    assert_eq!(s.revision(), r3);
+}
+
+#[test]
 fn views_without_app_ids_fall_back_to_the_trigger_app() {
     let now = Instant::now();
     let mut s = UiKitStore::new();

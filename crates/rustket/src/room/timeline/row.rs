@@ -16,7 +16,7 @@ use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, TEXT_CAPTION, TEXT_SMALL};
 use rustket_ui::widget::{
-    AvatarShape, AvatarSource, ChipKind, MESSAGE_AVATAR, MessageRowProps, Placement,
+    AvatarShape, AvatarSource, ChipKind, MESSAGE_AVATAR, MenuEntry, MessageRowProps, Placement,
     TooltipPosition, avatar, chip, context_menu, discussion_summary, icon_button_with, message_row,
     message_toolbar, popover_menu, reaction_pill, sanitize_bidi, system_message_row,
     thread_summary, tooltip,
@@ -391,7 +391,7 @@ fn discussion_part(env: &Env<'_>, m: &RcMessage) -> Option<El> {
     Some(discussion_summary(label, last, Message::OpenRoom(drid)))
 }
 
-fn toolbar(acts: &[Act], mid: &str, menu_open: bool) -> El {
+fn toolbar(acts: &[Act], mid: &str, menu_open: bool, apps: &[MenuEntry<Message>]) -> El {
     let mut buttons: Vec<El> = acts
         .iter()
         .filter(|a| a.in_toolbar())
@@ -406,8 +406,9 @@ fn toolbar(acts: &[Act], mid: &str, menu_open: bool) -> El {
         })
         .collect();
     let rest: Vec<Act> = acts.iter().copied().filter(|a| !a.in_toolbar()).collect();
-    if !rest.is_empty() {
-        let entries = actions::menu_entries(&rest, |a| Message::Act(mid.to_owned(), a));
+    if !rest.is_empty() || !apps.is_empty() {
+        let mut entries = actions::menu_entries(&rest, |a| Message::Act(mid.to_owned(), a));
+        crate::uikit::buttons::append(&mut entries, apps);
         buttons.push(popover_menu(
             icon_button_with(
                 Icon::Ellipsis,
@@ -515,6 +516,16 @@ pub(crate) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: Da
     match &item.state {
         DeliveryState::Sent => {
             let acts = interact::available(env.ws, env.source, m, now);
+            let apps = crate::uikit::buttons::message_entries(
+                env.ws,
+                m,
+                match env.source {
+                    Source::Room => "message",
+                    Source::Thread(_) => "threads",
+                },
+                |x| Message::UiKit(Box::new(x)),
+                Message::Menu(None),
+            );
             let can_react = acts.contains(&Act::React);
             p.reactions = reactions(env, m, can_react);
             // The thread view shows the replies below the parent instead.
@@ -524,14 +535,15 @@ pub(crate) fn build(env: &Env<'_>, item: &TimelineItem, flags: RowFlags, now: Da
             if let Some(d) = discussion_part(env, m) {
                 p.attachments.push(d);
             }
-            if !acts.is_empty() {
-                p.actions_toolbar = Some(toolbar(&acts, &m.id, flags.menu_open));
+            if !acts.is_empty() || !apps.is_empty() {
+                p.actions_toolbar = Some(toolbar(&acts, &m.id, flags.menu_open, &apps));
             }
             let row = message_row(p);
-            if acts.is_empty() {
+            if acts.is_empty() && apps.is_empty() {
                 return row;
             }
-            let entries = actions::menu_entries(&acts, |a| Message::Act(m.id.clone(), a));
+            let mut entries = actions::menu_entries(&acts, |a| Message::Act(m.id.clone(), a));
+            crate::uikit::buttons::append(&mut entries, &apps);
             context_menu(row, entries)
         }
         DeliveryState::Sending => {
