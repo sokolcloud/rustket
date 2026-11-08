@@ -38,6 +38,8 @@ pub enum Message {
     OpenRoom(String),
     /// Menu: create a discussion in this room.
     CreateDiscussion,
+    /// The "Video call" button (`crate::videoconf`).
+    StartCall,
 }
 
 pub struct Header {
@@ -57,6 +59,9 @@ pub struct Buttons {
     pub discussions: bool,
     pub members: bool,
     pub team_channels: bool,
+    /// Members are team members (a team main room the user is in; a
+    /// non-member previewing gets an empty `teams.members`).
+    pub team_members: bool,
     /// Info opens the user profile in 1:1 DMs.
     pub info: panel::Kind,
 }
@@ -88,6 +93,7 @@ pub fn buttons(ws: &Workspace, rid: &str) -> Buttons {
             && !entry.is_some_and(|e| e.is_discussion()),
         members: dm.is_none(),
         team_channels: entry.is_some_and(|e| e.is_team()),
+        team_members: entry.is_some_and(|e| e.is_team()) && ws.subscription(rid).is_some(),
         info: match dm {
             Some(u) => panel::Kind::UserInfo(u),
             None => panel::Kind::Info,
@@ -152,6 +158,9 @@ pub fn menu_entries(
             panel::Kind::RoomSettings,
         ));
     }
+    for (icon, key, kind) in crate::teams::header_menu(ws, rid) {
+        v.push(item(icon, key, kind));
+    }
     // Direct messages do not accept invites (`error-room-type-not-allowed`).
     let invitable = matches!(room_type, Some(RoomType::Channel | RoomType::Private));
     if invitable
@@ -196,6 +205,25 @@ pub fn menu_entries(
         );
     }
     v
+}
+
+/// Narrow headers drop the call button: "Video call" moves to the menu top.
+fn with_call_entry(
+    mut entries: Vec<MenuEntry<Message>>,
+    ws: &Workspace,
+    rid: &str,
+    call_inline: bool,
+) -> Vec<MenuEntry<Message>> {
+    use rustket_core::teams::{CallButton, video_call_button};
+    if call_inline || video_call_button(ws, rid) != CallButton::Enabled {
+        return entries;
+    }
+    let item = MenuItem::new(t!("videoconf.call").into_owned(), Message::StartCall)
+        .icon(Icon::Video)
+        .into();
+    entries.insert(0, MenuEntry::Separator);
+    entries.insert(0, item);
+    entries
 }
 
 /// A header button opening a panel.
@@ -251,7 +279,13 @@ pub fn layout_buttons(b: &Buttons, width: f32) -> (Vec<HeaderButton>, Vec<Header
         );
     }
     if b.members {
-        push(4, Icon::Users, "room_header.members", panel::Kind::Members);
+        // A team main room lists team members with team roles.
+        let kind = if b.team_members {
+            panel::Kind::TeamMembers
+        } else {
+            panel::Kind::Members
+        };
+        push(4, Icon::Users, "room_header.members", kind);
     }
     push(5, Icon::Search, "room_header.search", panel::Kind::Search);
 
@@ -350,6 +384,12 @@ impl Header {
                 }
             }
             Message::OpenRoom(rid) => Action::effect(Effect::OpenRoom(rid)),
+            Message::StartCall => {
+                self.menu_open = false;
+                Action::effect(Effect::Call(crate::videoconf::CallAction::Start(
+                    self.rid.clone(),
+                )))
+            }
         }
     }
 
@@ -479,6 +519,27 @@ impl Header {
             ));
         }
 
+        let topic = || {
+            entry
+                .and_then(|e| e.room.as_ref())
+                .and_then(|r| {
+                    r.topic
+                        .clone()
+                        .filter(|t| !t.trim().is_empty())
+                        .or_else(|| r.announcement.clone().filter(|a| !a.trim().is_empty()))
+                })
+                .map(|topic| -> Element<'a, Message> {
+                    let one_line = topic.lines().next().unwrap_or_default().to_owned();
+                    mouse_area(
+                        ellipsis(one_line)
+                            .size(TEXT_CAPTION)
+                            .style(|t: &Theme| Some(tokens(t).text_secondary)),
+                    )
+                    .interaction(iced::mouse::Interaction::Pointer)
+                    .on_press(Message::TogglePanel(panel::Kind::Info))
+                    .into()
+                })
+        };
         // Subtitle: presence (DM), parent room (discussion) or topic.
         let subtitle: Option<Element<'a, Message>> = if let Some(u) = &dm {
             let p = ws.presence().get_by_username(u);
@@ -498,6 +559,12 @@ impl Header {
                 .align_y(Alignment::Center)
                 .into(),
             )
+        } else if let Some((main, team)) = crate::teams::back_to_team(ws, &self.rid) {
+            // A child room keeps its topic next to the link.
+            Some(match topic() {
+                Some(t) => crate::teams::back_link_with(team, Message::OpenRoom(main), t),
+                None => crate::teams::back_link(team, Message::OpenRoom(main)),
+            })
         } else if let Some(prid) = entry.and_then(|e| {
             e.room
                 .as_ref()
@@ -525,25 +592,7 @@ impl Header {
                 .into(),
             )
         } else {
-            entry
-                .and_then(|e| e.room.as_ref())
-                .and_then(|r| {
-                    r.topic
-                        .clone()
-                        .filter(|t| !t.trim().is_empty())
-                        .or_else(|| r.announcement.clone().filter(|a| !a.trim().is_empty()))
-                })
-                .map(|topic| {
-                    let one_line = topic.lines().next().unwrap_or_default().to_owned();
-                    mouse_area(
-                        ellipsis(one_line)
-                            .size(TEXT_CAPTION)
-                            .style(|t: &Theme| Some(tokens(t).text_secondary)),
-                    )
-                    .interaction(iced::mouse::Interaction::Pointer)
-                    .on_press(Message::TogglePanel(panel::Kind::Info))
-                    .into()
-                })
+            topic()
         };
         let mut titles = column![title].spacing(0).width(Length::Fill);
         if let Some(s) = subtitle {
@@ -553,14 +602,9 @@ impl Header {
         // Buttons; the ones that do not fit go into the menu.
         let (inline, overflow, call) = layout_buttons(&buttons(ws, &self.rid), width);
         let mut actions = row![].spacing(SPACE_1).align_y(Alignment::Center);
-        if call {
-            actions = actions.push(icon_button_with(
-                Icon::Video,
-                None,
-                t!("room_header.call_soon").into_owned(),
-                false,
-                32.0,
-            ));
+        if call && let Some(b) = crate::videoconf::header_button(ws, &self.rid, Message::StartCall)
+        {
+            actions = actions.push(b);
         }
         for hb in inline {
             let active = ctx.panel == Some(&hb.kind);
@@ -597,7 +641,7 @@ impl Header {
             ),
             None => popover_menu(
                 trigger,
-                &menu_entries(ws, &self.rid, &overflow),
+                &with_call_entry(menu_entries(ws, &self.rid, &overflow), ws, &self.rid, call),
                 self.menu_open,
                 Message::CloseMenu,
                 Placement::BelowEnd,
@@ -833,6 +877,7 @@ mod tests {
             discussions: true,
             members: true,
             team_channels: true,
+            team_members: true,
             info: panel::Kind::Info,
         };
         let (inline, over, call) = layout_buttons(&b, 1200.0);
@@ -845,7 +890,11 @@ mod tests {
         let kinds: Vec<_> = inline.iter().map(|b| b.kind.clone()).collect();
         assert_eq!(
             kinds,
-            vec![panel::Kind::Info, panel::Kind::Members, panel::Kind::Search]
+            vec![
+                panel::Kind::Info,
+                panel::Kind::TeamMembers,
+                panel::Kind::Search
+            ]
         );
         let kinds: Vec<_> = over.iter().map(|b| b.kind.clone()).collect();
         assert_eq!(

@@ -63,6 +63,14 @@ pub enum Request {
     SetStatus(UserStatus),
     /// Open the previous/next (unread) room in sidebar order.
     RoomStep(shortcuts::RoomStep),
+    /// A notification server signal for a notification shown by another
+    /// component (call notifications, `crate::videoconf`).
+    ForeignSignal(u32, notifications::Signal),
+    /// "Join" on a server conference notification (`crate::videoconf`).
+    JoinCall {
+        server_id: ServerId,
+        call_id: String,
+    },
 }
 
 /// A value of `me.settings.preferences`.

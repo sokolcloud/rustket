@@ -22,8 +22,10 @@ pub mod room;
 pub mod screens;
 pub mod session;
 pub mod single_instance;
+pub mod teams;
 pub mod ui_state;
 pub mod url_handler;
+pub mod videoconf;
 pub mod workspace;
 
 pub use app::App;

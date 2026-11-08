@@ -67,6 +67,7 @@ impl App {
         };
         let (overlay, dismiss) = self.overlay();
         let content = modal(base, overlay, dismiss);
+        let content = crate::videoconf::view::layer(self, content);
         toasts(content, &self.toasts, Message::CloseToast)
     }
 

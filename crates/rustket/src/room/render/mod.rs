@@ -57,6 +57,8 @@ pub enum RenderMsg {
     Play(FileRef),
     /// Open a file that was downloaded before.
     OpenFile(PathBuf),
+    /// A `video_conf` block action (`crate::videoconf::block`).
+    Call(crate::videoconf::CallAction),
 }
 
 /// An image attachment to show full size.
@@ -244,6 +246,11 @@ pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, 
         col = col.push(p);
     }
     col.into()
+}
+
+/// The `video_conf` block of a `videoconf` message (`crate::videoconf`).
+pub fn video_conf(msg: &Message, rc: &RenderCtx<'_>) -> Option<Element<'static, RenderMsg>> {
+    crate::videoconf::block::view(msg, rc)
 }
 
 /// Only the text (markdown) part of `msg`, if it has any.

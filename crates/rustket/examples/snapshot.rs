@@ -679,8 +679,10 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "08-room-dark");
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
+    teams::teams_shots(&mut d, &server, &out, &sid, &user, &fixture.ledger).await;
     // `RUSTKET_SNAPSHOT_ONLY=glue`: only the integration shots.
-    let only_glue = std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() == Ok("glue");
+    let only_glue =
+        std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() == Ok("glue") || teams::only();
     if !only_glue {
         composer_snapshots(&mut d, &out, &sid, &rid).await;
         timeline_fixture::shoot(&mut d, &out, &sid).await;
@@ -880,6 +882,8 @@ mod glue;
 
 #[path = "snapshot/admin.rs"]
 mod admin_shots;
+#[path = "snapshot/teams.rs"]
+mod teams;
 #[path = "snapshot/timeline_fixture.rs"]
 mod timeline_fixture;
 /// Quick switcher, directory, create dialogs and account tabs (light + dark).

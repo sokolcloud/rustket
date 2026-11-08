@@ -441,6 +441,12 @@ fn system_row(env: &Env<'_>, m: &RcMessage) -> El {
     if let Some(d) = discussion_part(env, m) {
         col = col.push(d);
     }
+    if let Some(d) = crate::teams::discussions::deleted_label(m) {
+        col = col.push(text(d).size(TEXT_CAPTION).style(style::text_hint));
+    }
+    if let Some(b) = render::video_conf(m, &rc) {
+        col = col.push(b.map(Message::render));
+    }
     system_message_row(
         system::system_icon(kind),
         col,

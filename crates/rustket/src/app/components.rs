@@ -428,6 +428,17 @@ impl App {
                 desktop::Request::IdleTime(idle) => self.idle_presence(idle),
                 desktop::Request::SetStatus(status) => self.set_status_everywhere(status),
                 desktop::Request::RoomStep(step) => self.room_step(step),
+                desktop::Request::JoinCall { server_id, call_id } => {
+                    self.on_calls(crate::videoconf::Message::Action(
+                        server_id,
+                        crate::videoconf::CallAction::Join(call_id),
+                    ))
+                }
+                desktop::Request::ForeignSignal(id, signal) => {
+                    self.on_calls(crate::videoconf::Message::Notify(
+                        crate::videoconf::notify::Msg::Signal(id, signal),
+                    ))
+                }
             });
         }
         Task::batch(tasks)

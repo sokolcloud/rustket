@@ -402,7 +402,7 @@ fn notify_user_misc() {
     ));
     assert!(matches!(
         decode("synthetic_video_conference"),
-        SessionEvent::VideoConference(v) if v["params"]["callId"] == "call1"
+        SessionEvent::VideoConference(v) if v.call_id == "call1"
     ));
     assert!(matches!(
         decode("synthetic_banners"),

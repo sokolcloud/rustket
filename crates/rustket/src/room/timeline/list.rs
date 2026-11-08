@@ -273,7 +273,7 @@ pub(crate) fn row<'a>(
         .new_day
         .then(|| m.ts.map(|ts| row::day_label(ts, common.now_local)));
     let dep = RowKey {
-        msg: render::message_key(m),
+        msg: render::message_key(m) ^ crate::videoconf::block::key(env.ws, m),
         state,
         render: env.render.key(&m.id),
         flags,

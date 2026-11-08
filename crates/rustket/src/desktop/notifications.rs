@@ -396,6 +396,8 @@ struct Entry {
     tmid: Option<String>,
     /// The room was seen unread after the notification (so "read" means read).
     seen_unread: bool,
+    /// Call of a conference notification (its "Join" joins the call).
+    conference_id: Option<String>,
 }
 
 pub struct Notifications {
@@ -511,6 +513,13 @@ fn room_unread(ws: &Workspace, rid: &str) -> bool {
 }
 
 impl Notifications {
+    /// The notification backend (other components show their own
+    /// notifications through it; their signals come back as
+    /// [`Request::ForeignSignal`]).
+    pub fn backend(&self) -> Arc<dyn Notifier> {
+        Arc::clone(&self.backend)
+    }
+
     pub fn with_backend(backend: Arc<dyn Notifier>) -> Self {
         Self {
             backend,
@@ -587,10 +596,12 @@ impl Notifications {
             seq,
             tmid: None,
             seen_unread: false,
+            conference_id: None,
         });
         entry.seq = seq;
         entry.tmid = spec.tmid.clone();
         entry.seen_unread = false;
+        entry.conference_id = notification.payload.conference_id.clone();
         let out = Outgoing {
             replaces: entry.id,
             title,
@@ -698,6 +709,23 @@ impl Notifications {
                     if !activated {
                         return (Task::none(), Vec::new(), false);
                     }
+                    if signal == Signal::Action(ACTION_JOIN.to_owned())
+                        && let Some(call_id) = entry.conference_id
+                    {
+                        let server_id = t.server_id.clone();
+                        return (
+                            Task::none(),
+                            vec![
+                                Request::ShowWindow,
+                                Request::OpenRoom {
+                                    server_id: t.server_id,
+                                    rid: t.rid,
+                                },
+                                Request::JoinCall { server_id, call_id },
+                            ],
+                            false,
+                        );
+                    }
                     let open = match entry.tmid {
                         Some(tmid) => Request::OpenThread {
                             server_id: t.server_id,
@@ -710,6 +738,14 @@ impl Notifications {
                         },
                     };
                     return (Task::none(), vec![Request::ShowWindow, open], false);
+                }
+                if self.test_id != Some(id) {
+                    // Not ours (e.g. a call notification of `videoconf`).
+                    return (
+                        Task::none(),
+                        vec![Request::ForeignSignal(id, signal)],
+                        false,
+                    );
                 }
                 if self.test_id == Some(id) {
                     if activated {
@@ -960,12 +996,13 @@ mod tests {
                 seq: 3,
                 tmid: Some("t1".into()),
                 seen_unread: false,
+                conference_id: None,
             },
         );
         let signal = |id, signal| Message::Signal { id, signal };
-        // Another notification's signal, or an action we did not offer.
+        // Another component's notification: handed on; an action we did not offer.
         let (_, req, _) = n.update(signal(8, Signal::Action("default".into())));
-        assert!(req.is_empty());
+        assert!(matches!(req.as_slice(), [Request::ForeignSignal(8, _)]));
         let (_, req, _) = n.update(signal(7, Signal::Action("other".into())));
         assert!(req.is_empty() && n.len() == 1);
         let (_, req, _) = n.update(signal(7, Signal::Action("default".into())));
@@ -986,6 +1023,7 @@ mod tests {
                 seq: 4,
                 tmid: None,
                 seen_unread: false,
+                conference_id: None,
             },
         );
         let (_, req, _) = n.update(signal(5, Signal::Closed));
@@ -998,10 +1036,27 @@ mod tests {
                 seq: 5,
                 tmid: None,
                 seen_unread: false,
+                conference_id: None,
             },
         );
         let (_, req, _) = n.update(signal(6, Signal::Action("join".into())));
         assert!(matches!(&req[1], Request::OpenRoom { rid, .. } if rid == "r1"));
+        // A conference notification's "join" also joins the call.
+        n.shown.insert(
+            Target {
+                server_id: ServerId("s1".into()),
+                rid: "r1".into(),
+            },
+            Entry {
+                id: Some(10),
+                seq: 6,
+                tmid: None,
+                seen_unread: false,
+                conference_id: Some("c1".into()),
+            },
+        );
+        let (_, req, _) = n.update(signal(10, Signal::Action("join".into())));
+        assert!(matches!(&req[2], Request::JoinCall { call_id, .. } if call_id == "c1"));
     }
 
     #[test]
@@ -1036,6 +1091,7 @@ mod tests {
                 seq: 2,
                 tmid: None,
                 seen_unread: false,
+                conference_id: None,
             },
         );
         // An older showing finished late with a different id: closed.
@@ -1246,6 +1302,7 @@ mod tests {
                 seq: 1,
                 tmid: None,
                 seen_unread: false,
+                conference_id: None,
             },
         );
         let keep = ServerId("s1".into());

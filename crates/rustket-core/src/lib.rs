@@ -19,9 +19,11 @@ pub mod room_list;
 pub mod secrets;
 pub mod settings;
 pub mod sync;
+pub mod teams;
 pub mod timeline;
 pub mod typing;
 pub mod uikit;
+pub mod videoconf;
 pub mod workspace;
 
 pub use config::{AppConfig, ServerId};

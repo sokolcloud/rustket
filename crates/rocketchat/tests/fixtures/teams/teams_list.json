@@ -1,0 +1,22 @@
+{
+  "teams": [
+    {
+      "_id": "6aefd8abff2338a3f2a2fab3",
+      "name": "tvt-team-1794103465onp",
+      "type": 0,
+      "createdAt": "2026-11-08T02:04:27.800Z",
+      "createdBy": {
+        "_id": "jbH7MnWLmH2khpgJ5",
+        "username": "tvt-own-1794103465onp"
+      },
+      "_updatedAt": "2026-11-08T02:04:27.885Z",
+      "roomId": "6aefd8abff2338a3f2a2fab0",
+      "rooms": 2,
+      "numberOfUsers": 2
+    }
+  ],
+  "total": 1,
+  "count": 1,
+  "offset": 0,
+  "success": true
+}

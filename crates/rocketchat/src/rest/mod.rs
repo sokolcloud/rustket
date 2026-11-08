@@ -12,7 +12,9 @@ mod livechat;
 mod messages;
 mod misc;
 mod rooms;
+pub mod teams;
 mod users;
+pub mod videoconf;
 
 pub use apps::UI_INTERACTION_TIMEOUT;
 pub use auth::LoginRequest;
@@ -29,6 +31,7 @@ pub use livechat::{
 };
 pub use messages::{HistoryCursor, HistoryOptions};
 pub use rooms::{CreateRoom, RoomMembersOptions};
+pub use teams::{ChildKind, CreateTeam, MemberFilter, Page, TeamRef};
 pub use users::UserLookup;
 
 use std::fmt;

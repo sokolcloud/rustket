@@ -1,0 +1,23 @@
+{
+  "messages": [
+    {
+      "_id": "6aefd8acff2338a3f2a2fabf",
+      "t": "discussion-created",
+      "rid": "6aefd8abff2338a3f2a2fab0",
+      "ts": "2026-11-08T02:04:28.605Z",
+      "msg": "Disc 1794103465onp",
+      "u": {
+        "_id": "jbH7MnWLmH2khpgJ5",
+        "username": "tvt-own-1794103465onp",
+        "name": "Real tvt-own-1794103465onp"
+      },
+      "groupable": false,
+      "drid": "6aefd8acff2338a3f2a2fabd",
+      "_updatedAt": "2026-11-08T02:04:28.605Z"
+    }
+  ],
+  "count": 1,
+  "offset": 0,
+  "total": 1,
+  "success": true
+}
