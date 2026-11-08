@@ -921,9 +921,15 @@ impl RoomView {
         };
         let main = column![
             self.header.view(ctx).map(Message::Header),
-            container(timeline).width(Length::Fill).height(Length::Fill),
-            self.omni
-                .wrap_composer(self.composer.view(ctx).map(Message::Composer), ctx),
+            container(timeline)
+                .id(crate::focus::TIMELINE)
+                .width(Length::Fill)
+                .height(Length::Fill),
+            container(
+                self.omni
+                    .wrap_composer(self.composer.view(ctx).map(Message::Composer), ctx)
+            )
+            .id(crate::focus::COMPOSER),
         ]
         .width(Length::Fill)
         .height(Length::Fill);
@@ -932,12 +938,16 @@ impl RoomView {
         // child of a stack, so opening, closing or expanding a panel keeps
         // its widget state (timeline scroll, composer focus), and the panel
         // keeps its own when the thread is expanded or collapsed.
-        let (side, main_padding): (Element<'a, Message>, f32) = match self.panel.view(ctx) {
+        // A docked panel narrows the room column, down to a minimum
+        // (`rustket_ui::widget::side_panel`); the expanded thread is laid
+        // out over it.
+        let (side, side_width): (Element<'a, Message>, Option<f32>) = match self.panel.view(ctx) {
             Some(panel) => {
                 let side = container(opaque(
                     row![
                         vertical_divider(),
                         container(panel.map(Message::Panel))
+                            .id(crate::focus::PANEL)
                             .width(Length::Fill)
                             .height(Length::Fill)
                             .style(style::container_sidebar),
@@ -948,15 +958,15 @@ impl RoomView {
                 .height(Length::Fill);
                 // The expanded thread covers the room column (up to a maximum
                 // width) instead of squeezing it, like the web.
-                let (side, padding) = if self.panel.expanded() {
+                let (side, docked) = if self.panel.expanded() {
                     let side = side
                         .width(Length::Fill)
                         .max_width(panel::thread::WIDTH_EXPANDED);
-                    (side, 0.0)
+                    (side, None)
                 } else {
                     // The panel plus its 1px divider.
                     let width = self.panel.width() + 1.0;
-                    (side.width(Length::Fixed(width)), width)
+                    (side.width(Length::Fixed(width)), Some(width))
                 };
                 (
                     container(side)
@@ -964,22 +974,16 @@ impl RoomView {
                         .height(Length::Fill)
                         .align_x(iced::Alignment::End)
                         .into(),
-                    padding,
+                    docked,
                 )
             }
-            None => (space().into(), 0.0),
+            None => (space().into(), None),
         };
-        let body: Element<'a, Message> = stack![
-            container(main)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .padding(iced::Padding {
-                    right: main_padding,
-                    ..iced::Padding::ZERO
-                }),
+        let body = rustket_ui::widget::side_panel(
+            container(main).width(Length::Fill).height(Length::Fill),
             side,
-        ]
-        .into();
+            side_width,
+        );
         // Dialogs and the image lightbox of the timeline and the panel
         // cover the whole room.
         let overlay = self

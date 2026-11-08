@@ -2149,3 +2149,375 @@ async fn orphan_thread_upload_of_a_reopened_room_is_reported() {
         "failed upload of the old thread not reported"
     );
 }
+
+/// Messages a task yields right away (`Task::done`).
+fn ready_outputs(task: iced::Task<Message>) -> Vec<Message> {
+    use futures::{FutureExt as _, StreamExt as _};
+    let mut out = Vec::new();
+    if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+        while let Some(Some(action)) = stream.next().now_or_never() {
+            if let iced_runtime::Action::Output(m) = action {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// Phase 13: an Escape no widget took closes the open room's right panel,
+/// then nothing more; on the settings page it closes the page.
+#[tokio::test]
+async fn escape_closes_the_panel_and_the_settings_page() {
+    use rustket::app::Screen;
+    use rustket::room::panel::{Kind, Message as Pm};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let m = room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Info)),
+    );
+    let _ = app.update(m);
+    assert!(app.servers[&sid].rooms["r1"].panel.kind().is_some());
+    for m in ready_outputs(app.update(Message::Escape)) {
+        let _ = app.update(m);
+    }
+    assert!(app.servers[&sid].rooms["r1"].panel.kind().is_none());
+    assert!(ready_outputs(app.update(Message::Escape)).is_empty());
+    let _ = app.update(Message::Rail(rustket::workspace::rail::Message::Settings));
+    assert!(matches!(app.screen, Screen::Settings(_)));
+    for m in ready_outputs(app.update(Message::Escape)) {
+        let _ = app.update(m);
+    }
+    assert!(matches!(app.screen, Screen::Server));
+    // The directory and account pages close the same way.
+    app.screen = Screen::Directory(
+        sid.clone(),
+        Box::new(rustket::screens::directory::Directory::new()),
+    );
+    for m in ready_outputs(app.update(Message::Escape)) {
+        let _ = app.update(m);
+    }
+    assert!(matches!(app.screen, Screen::Server));
+    app.screen = Screen::Account(
+        sid.clone(),
+        Box::new(rustket::screens::account::Account::new()),
+    );
+    for m in ready_outputs(app.update(Message::Escape)) {
+        let _ = app.update(m);
+    }
+    assert!(matches!(app.screen, Screen::Server));
+}
+
+// ------------------------------------------------------ focus in the view --
+
+struct NoClip;
+impl iced::advanced::Clipboard for NoClip {
+    fn read(&self, _: iced::advanced::clipboard::Kind) -> Option<String> {
+        None
+    }
+    fn write(&mut self, _: iced::advanced::clipboard::Kind, _: String) {}
+}
+
+/// The focused widgets (id, bounds) of a view.
+struct Focused(Vec<(Option<iced::advanced::widget::Id>, iced::Rectangle)>);
+impl iced::advanced::widget::Operation for Focused {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        operate(self);
+    }
+    fn focusable(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        bounds: iced::Rectangle,
+        state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        if state.is_focused() {
+            self.0.push((id.cloned(), bounds));
+        }
+    }
+}
+
+type Ui<'a> = iced_runtime::user_interface::UserInterface<'a, Message, iced::Theme, iced::Renderer>;
+
+fn test_renderer() -> iced::Renderer {
+    iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+        rustket_ui::theme::DEFAULT_FONT,
+        iced::Pixels(rustket_ui::theme::TEXT_BODY),
+    ))
+}
+
+/// Runs the widget operations of `task` (and their chains) on `ui`.
+fn run_ops(ui: &mut Ui<'_>, renderer: &iced::Renderer, task: iced::Task<Message>) {
+    use futures::{FutureExt as _, StreamExt as _};
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return;
+    };
+    while let Some(Some(action)) = stream.next().now_or_never() {
+        if let iced_runtime::Action::Widget(op) = action {
+            let mut current = Some(op);
+            while let Some(mut op) = current.take() {
+                ui.operate(renderer, op.as_mut());
+                if let iced::advanced::widget::operation::Outcome::Chain(next) = op.finish() {
+                    current = Some(next);
+                }
+            }
+        }
+    }
+}
+
+fn focused(
+    ui: &mut Ui<'_>,
+    renderer: &iced::Renderer,
+) -> Vec<(Option<iced::advanced::widget::Id>, iced::Rectangle)> {
+    let mut f = Focused(Vec::new());
+    ui.operate(renderer, &mut f);
+    f.0
+}
+
+fn press(named: Option<iced::keyboard::key::Named>, ch: Option<&str>) -> iced::Event {
+    use iced::keyboard;
+    let k = match (named, ch) {
+        (Some(n), _) => keyboard::Key::Named(n),
+        (None, Some(c)) => keyboard::Key::Character(c.into()),
+        _ => keyboard::Key::Unidentified,
+    };
+    iced::Event::Keyboard(keyboard::Event::KeyPressed {
+        key: k.clone(),
+        modified_key: k,
+        physical_key: keyboard::key::Physical::Unidentified(
+            keyboard::key::NativeCode::Unidentified,
+        ),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::empty(),
+        text: ch.map(Into::into),
+        repeat: false,
+    })
+}
+
+/// Phase 13 review: with the thread expanded over the room column, F6 /
+/// Shift+F6 never focus the main composer under it, so typing goes nowhere
+/// near the main room.
+#[tokio::test]
+async fn f6_skips_the_room_column_under_an_expanded_thread() {
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    use rustket::room::panel::{BodyMsg, Kind, Message as Pm};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    deliver(&mut app, &sid, rc_msg("m1", "r1", T0 + 10, "B"));
+    let open = room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Thread("m1".into()))),
+    );
+    let _ = app.update(open);
+    let g = app.servers[&sid].rooms["r1"].panel.generation();
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Activate(g)),
+    ));
+    let g = app.servers[&sid].rooms["r1"].panel.generation();
+    let mut parent = rc_msg("m1", "r1", T0 + 10, "B");
+    parent.tcount = Some(1);
+    let thread = |m| rustket::room::Message::Panel(Pm::Body(g, BodyMsg::Thread(m)));
+    let m = room_msg(
+        &app,
+        &sid,
+        "r1",
+        thread(rustket::room::panel::thread::Msg::Parent(Ok(Box::new(
+            parent,
+        )))),
+    );
+    let _ = app.update(m);
+    let m = room_msg(
+        &app,
+        &sid,
+        "r1",
+        thread(rustket::room::panel::thread::Msg::ToggleExpand),
+    );
+    let _ = app.update(m);
+    assert!(app.servers[&sid].rooms["r1"].panel.expanded());
+    let mut renderer = test_renderer();
+    let mut ui = UserInterface::build(
+        app.view(),
+        iced::Size::new(1280.0, 800.0),
+        Cache::default(),
+        &mut renderer,
+    );
+    let thread_editor = rustket::focus::composer_id("r1", Some("m1"));
+    let main_editor = rustket::focus::composer_id("r1", None);
+    run_ops(
+        &mut ui,
+        &renderer,
+        iced::widget::operation::focus(thread_editor.clone()),
+    );
+    assert_eq!(
+        focused(&mut ui, &renderer)
+            .first()
+            .and_then(|f| f.0.clone()),
+        Some(thread_editor.clone())
+    );
+    let regions = || rustket::focus::regions(Some(("r1", Some("m1"))));
+    for forward in [false, true, true, true] {
+        run_ops(
+            &mut ui,
+            &renderer,
+            rustket_ui::widget::focus_region(regions(), forward),
+        );
+        let now = focused(&mut ui, &renderer);
+        assert_eq!(now.len(), 1, "{now:?}");
+        assert_ne!(now[0].0.as_ref(), Some(&main_editor), "forward {forward}");
+    }
+    // Focused programmatically anyway: the covered composer drops it.
+    run_ops(
+        &mut ui,
+        &renderer,
+        iced::widget::operation::focus(main_editor.clone()),
+    );
+    assert!(
+        focused(&mut ui, &renderer)
+            .iter()
+            .all(|f| f.0.as_ref() != Some(&main_editor))
+    );
+    let mut msgs = Vec::new();
+    let cursor = iced::mouse::Cursor::Available(iced::Point::new(-10.0, -10.0));
+    let evs = [
+        press(None, Some("h")),
+        press(Some(iced::keyboard::key::Named::Enter), None),
+    ];
+    let _ = ui.update(&evs, cursor, &mut renderer, &mut NoClip, &mut msgs);
+    let main_send = msgs
+        .iter()
+        .any(|m| format!("{m:?}").contains("\"r1\", Composer("));
+    assert!(!main_send, "{msgs:?}");
+}
+
+/// Phase 13 review: Escape in the focused composer with nothing to cancel
+/// only unfocuses it (captured), so the right panel stays open.
+#[tokio::test]
+async fn escape_in_the_composer_does_not_close_the_panel() {
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    use rustket::room::panel::{Kind, Message as Pm};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Info)),
+    ));
+    let mut renderer = test_renderer();
+    let mut ui = UserInterface::build(
+        app.view(),
+        iced::Size::new(1280.0, 800.0),
+        Cache::default(),
+        &mut renderer,
+    );
+    run_ops(
+        &mut ui,
+        &renderer,
+        iced::widget::operation::focus(rustket::focus::composer_id("r1", None)),
+    );
+    let mut msgs = Vec::new();
+    let cursor = iced::mouse::Cursor::Available(iced::Point::new(-10.0, -10.0));
+    let (_, statuses) = ui.update(
+        &[press(Some(iced::keyboard::key::Named::Escape), None)],
+        cursor,
+        &mut renderer,
+        &mut NoClip,
+        &mut msgs,
+    );
+    assert_eq!(statuses, [iced::event::Status::Captured]);
+    drop(ui);
+    for m in msgs {
+        for m in ready_outputs(app.update(m)) {
+            let _ = app.update(m);
+        }
+    }
+    assert!(app.servers[&sid].rooms["r1"].panel.kind().is_some());
+}
+
+/// Phase 13 review: F6 into a timeline longer than the window focuses a
+/// widget on screen (near the newest message), not the oldest built row.
+#[tokio::test]
+async fn f6_into_a_long_timeline_lands_on_screen() {
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    for i in 0..60 {
+        let user = if i % 2 == 0 { "B" } else { "C" };
+        deliver(
+            &mut app,
+            &sid,
+            rc_msg(&format!("m{i:02}"), "r1", T0 + 10 + i * 1000, user),
+        );
+    }
+    let mut renderer = test_renderer();
+    let size = iced::Size::new(1280.0, 800.0);
+    let mut ui = UserInterface::build(app.view(), size, Cache::default(), &mut renderer);
+    let cursor = iced::mouse::Cursor::Available(iced::Point::new(-10.0, -10.0));
+    let mut msgs = Vec::new();
+    let redraw = iced::Event::Window(iced::window::Event::RedrawRequested(
+        std::time::Instant::now(),
+    ));
+    let _ = ui.update(
+        std::slice::from_ref(&redraw),
+        cursor,
+        &mut renderer,
+        &mut NoClip,
+        &mut msgs,
+    );
+    run_ops(
+        &mut ui,
+        &renderer,
+        iced::widget::operation::focus(rustket::workspace::sidebar::SEARCH_INPUT_ID),
+    );
+    let before = scrollables(&mut ui, &renderer);
+    run_ops(
+        &mut ui,
+        &renderer,
+        rustket_ui::widget::focus_region(rustket::focus::regions(Some(("r1", None))), true),
+    );
+    let now = focused(&mut ui, &renderer);
+    assert_eq!(now.len(), 1, "{now:?}");
+    let after = scrollables(&mut ui, &renderer);
+    assert!(!after.is_empty());
+    assert_eq!(before, after, "the timeline stays at the newest messages");
+    let target = now[0].1;
+    let on_screen = after.iter().any(|(b, t)| {
+        let y = target.y - t.y;
+        b.contains(iced::Point::new(target.center_x(), y + target.height / 2.0))
+    });
+    assert!(on_screen, "focused {target:?}, scrollables {after:?}");
+}
+
+/// Long scrollables of a view (bounds, translation).
+fn scrollables(ui: &mut Ui<'_>, renderer: &iced::Renderer) -> Vec<(iced::Rectangle, iced::Vector)> {
+    struct Sc(Vec<(iced::Rectangle, iced::Vector)>);
+    impl iced::advanced::widget::Operation for Sc {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+        fn scrollable(
+            &mut self,
+            _id: Option<&iced::advanced::widget::Id>,
+            b: iced::Rectangle,
+            c: iced::Rectangle,
+            t: iced::Vector,
+            _s: &mut dyn iced::advanced::widget::operation::Scrollable,
+        ) {
+            if c.height > b.height * 2.0 {
+                self.0.push((b, t));
+            }
+        }
+    }
+    let mut sc = Sc(Vec::new());
+    ui.operate(renderer, &mut sc);
+    sc.0
+}

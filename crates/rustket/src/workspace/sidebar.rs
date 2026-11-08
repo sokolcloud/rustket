@@ -31,6 +31,8 @@ use crate::i18n::tr_dyn;
 use crate::images::Images;
 
 pub const SEARCH_INPUT_ID: &str = "sidebar-search";
+/// The room list's scrollable (scrolled by [`Sidebar::reveal`]).
+pub const LIST_ID: &str = "sidebar-list";
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -353,6 +355,7 @@ impl Sidebar {
             }
         })
         .padding([0.0, SPACE_1]);
+        let search = rustket_ui::widget::focus_within(search).radius(rustket_ui::theme::RADIUS_MD);
         let queue = crate::omnichannel::sidebar::queue_group(ctx, &self.filter);
         let body: Element<'a, Message> = if self.sections.is_empty() && queue.is_none() {
             if self.filter.trim().is_empty() {
@@ -404,6 +407,7 @@ impl Sidebar {
             let window = key.window;
             let sections = lazy(key, move |_| self.sections_list(&ctx, window));
             scrollable(column![omni, sections].width(Length::Fill))
+                .id(LIST_ID)
                 .on_scroll(Message::Scrolled)
                 .height(Length::Fill)
                 .style(style::scrollable)
@@ -414,10 +418,68 @@ impl Sidebar {
                 .spacing(SPACE_2)
                 .height(Length::Fill),
         )
+        .id(crate::focus::SIDEBAR)
         .height(Length::Fill)
         .width(Length::Fill)
         .style(style::container_sidebar)
         .into()
+    }
+
+    /// Scrolls the list so that the row of `rid` is visible (after
+    /// Alt+Up/Down opened it). Rooms of the omnichannel groups, and rows
+    /// already in view, need no scroll.
+    pub fn reveal<M: Send + 'static>(
+        &self,
+        rid: &str,
+        prefs: &UiPrefs,
+        collapsed: &BTreeSet<String>,
+    ) -> iced::Task<M> {
+        match self.reveal_offset(rid, prefs.density, collapsed) {
+            Some(y) => iced::widget::operation::scroll_to(
+                LIST_ID,
+                scrollable::AbsoluteOffset { x: 0.0, y },
+            ),
+            None => iced::Task::none(),
+        }
+    }
+
+    /// Scroll offset that shows the row of `rid`, if it is not in view.
+    fn reveal_offset(
+        &self,
+        rid: &str,
+        density: Density,
+        collapsed: &BTreeSet<String>,
+    ) -> Option<f32> {
+        let row_h = row_height(density);
+        let mut y = 0.0f32;
+        let mut found = None;
+        let mut total = 0.0f32;
+        for (s, is_collapsed) in self.listed_with(collapsed) {
+            total += HEADER_H;
+            let n = if is_collapsed { 0 } else { s.items.len() };
+            if found.is_none() {
+                y += HEADER_H;
+                match s.items[..n].iter().position(|i| i.rid == rid) {
+                    Some(k) => found = Some(y + k as f32 * row_h),
+                    None => y += n as f32 * row_h,
+                }
+            }
+            total += n as f32 * row_h;
+        }
+        let row_top = found?;
+        let (offset, height, content) = self.viewport.unwrap_or((0.0, DEFAULT_VIEWPORT_H, total));
+        let above = (content - total).max(0.0);
+        let top = above + row_top;
+        if top >= offset && top + row_h <= offset + height {
+            return None;
+        }
+        // Up: the row at the top; down: at the bottom.
+        let to = if top < offset {
+            top
+        } else {
+            top + row_h - height
+        };
+        Some(to.clamp(0.0, (content - height).max(0.0)))
     }
 
     fn header<'a>(
@@ -447,11 +509,18 @@ impl Sidebar {
         &'s self,
         ctx: &'s SidebarCtx<'_>,
     ) -> impl Iterator<Item = (&'s Section, bool)> + 's {
+        self.listed_with(ctx.collapsed)
+    }
+
+    fn listed_with<'s>(
+        &'s self,
+        collapsed: &'s BTreeSet<String>,
+    ) -> impl Iterator<Item = (&'s Section, bool)> + 's {
         let filtering = !self.filter.trim().is_empty();
         self.sections
             .iter()
             .filter(|s| s.kind != SectionKind::Omnichannel)
-            .map(move |s| (s, !filtering && ctx.collapsed.contains(s.kind.i18n_key())))
+            .map(move |s| (s, !filtering && collapsed.contains(s.kind.i18n_key())))
     }
 
     /// Slot range `[start, end)` of the list (a slot is a section header or a
@@ -739,13 +808,17 @@ mod tests {
 
         impl Fx {
             fn new() -> Self {
+                Self::with_rooms(ROOMS)
+            }
+
+            fn with_rooms(rooms: usize) -> Self {
                 let mut ws = Workspace::new();
                 ws.apply_me(User {
                     id: "me".into(),
                     username: Some("me".into()),
                     ..Default::default()
                 });
-                for i in 0..ROOMS {
+                for i in 0..rooms {
                     let rid = format!("r{i:04}");
                     ws.apply_subscription(Change::Inserted, sub(&rid, &rid, RoomType::Channel));
                     // r0000 is the newest: at the top.
@@ -962,6 +1035,104 @@ mod tests {
                 now: Instant::now(),
             };
             assert_eq!(fx.sidebar.window(&ctx), (0, 2));
+        }
+
+        /// Builds and lays out the sidebar at 300x800; returns the rows built
+        /// and the time it took.
+        fn build_and_layout(fx: &Fx) -> (usize, std::time::Duration) {
+            use iced_runtime::user_interface::{Cache, UserInterface};
+            let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+                rustket_ui::theme::DEFAULT_FONT,
+                iced::Pixels(rustket_ui::theme::TEXT_BODY),
+            ));
+            BUILDS.with(|b| b.set((0, 0)));
+            let t = Instant::now();
+            let ui = UserInterface::build(
+                fx.view(),
+                iced::Size::new(300.0, 800.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            let took = t.elapsed();
+            drop(ui);
+            (BUILDS.with(std::cell::Cell::get).1, took)
+        }
+
+        /// Phase 13: the first build (and any full rebuild) of a 2000-room
+        /// list builds and lays out only the rows near the viewport (without
+        /// virtualisation it built all 2001).
+        #[test]
+        fn first_build_lays_out_only_the_rows_on_screen() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(2000);
+            fx.refresh();
+            let total = total(&fx.sidebar);
+            fx.sidebar.viewport = Some((0.0, 800.0, total));
+            let (rows_virtual, _) = build_and_layout(&fx);
+            assert!(rows_virtual < 48, "{rows_virtual}");
+            // Scrolled to the middle: still only the rows around it.
+            fx.sidebar.viewport = Some((total / 2.0, 800.0, total));
+            let (rows_mid, _) = build_and_layout(&fx);
+            assert!(rows_mid < 64, "{rows_mid}");
+        }
+
+        /// The timings behind the row counts (wall clock, so not part of
+        /// the normal run). "Before" is the list with a window covering the
+        /// rows; building all 2001 takes a minute in a debug build, so it is
+        /// measured on 192 rows and extrapolated (rows cost the same each): `cargo test -p rustket sidebar_build_timings --
+        /// --ignored --nocapture`.
+        #[test]
+        #[ignore = "timing benchmark"]
+        fn sidebar_build_timings() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(2000);
+            fx.refresh();
+            let total = total(&fx.sidebar);
+            fx.sidebar.viewport = Some((0.0, 800.0, total));
+            // Warm up fonts and caches so the timings compare the lists.
+            build_and_layout(&fx);
+            let (rows_virtual, virtual_time) = build_and_layout(&fx);
+            let many = 192.0 * row_height(Density::Extended);
+            fx.sidebar.viewport = Some((0.0, many, total));
+            let (rows_many, many_time) = build_and_layout(&fx);
+            let all_time = many_time.mul_f64(2001.0 / rows_many as f64);
+            println!(
+                "2000 rooms: virtual {rows_virtual} rows in {virtual_time:?}; \
+                 {rows_many} rows in {many_time:?}, all 2001 ~{all_time:?}"
+            );
+            assert!(rows_many >= 192, "{rows_many}");
+        }
+
+        /// Alt+Up/Down to a room off screen scrolls its row into view;
+        /// rows in view and rooms not in the list need no scroll.
+        #[test]
+        fn reveal_scrolls_the_opened_room_into_view() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::new();
+            fx.refresh();
+            let total = total(&fx.sidebar);
+            let row_h = row_height(Density::Extended);
+            fx.sidebar.viewport = Some((0.0, 600.0, total));
+            let none = BTreeSet::new();
+            let d = Density::Extended;
+            assert_eq!(fx.sidebar.reveal_offset("r0002", d, &none), None);
+            assert_eq!(fx.sidebar.reveal_offset("nope", d, &none), None);
+            // Down to r0250: its row ends at the bottom of the viewport.
+            let to = fx.sidebar.reveal_offset("r0250", d, &none).unwrap();
+            let row_top = HEADER_H + 250.0 * row_h;
+            assert!((to - (row_top + row_h - 600.0)).abs() < 0.5, "{to}");
+            // Scrolled there, back up to r0000: its row at the top.
+            fx.sidebar.viewport = Some((to, 600.0, total));
+            assert_eq!(fx.sidebar.reveal_offset("r0250", d, &none), None);
+            let up = fx.sidebar.reveal_offset("r0000", d, &none).unwrap();
+            assert!((up - HEADER_H).abs() < 0.5, "{up}");
+            // Omnichannel groups drawn above the list shift it down.
+            fx.sidebar.viewport = Some((0.0, 600.0, total + 100.0));
+            let to = fx.sidebar.reveal_offset("r0250", d, &none).unwrap();
+            assert!((to - (100.0 + row_top + row_h - 600.0)).abs() < 0.5, "{to}");
+            // A room in a collapsed section has no row.
+            let channels: BTreeSet<String> = [SectionKind::Channels.i18n_key().to_owned()].into();
+            assert_eq!(fx.sidebar.reveal_offset("r0250", d, &channels), None);
         }
 
         fn first_keyed(tree: &Tree) -> Option<&Tree> {

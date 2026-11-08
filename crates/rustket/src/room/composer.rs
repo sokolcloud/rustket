@@ -239,6 +239,9 @@ pub enum Message {
     EditLast,
     /// Escape: close the popup, else cancel edit, else drop quotes.
     Cancel,
+    /// Escape with nothing to cancel: the editor gives up the focus (an
+    /// empty thread composer closes the thread, like the web).
+    Leave,
     CancelEdit,
     RemoveQuote(String),
     AcMove(i32),
@@ -409,6 +412,11 @@ impl Composer {
         self.uploads.is_dialog_open()
     }
 
+    /// Widget id of the editor (F6 target).
+    pub fn editor_id(&self) -> &iced::widget::Id {
+        &self.editor_id
+    }
+
     /// Focuses the editor.
     pub fn focus(&self) -> Task<Message> {
         iced::widget::operation::focus(self.editor_id.clone())
@@ -574,6 +582,14 @@ impl Composer {
                     }
                     None => Action::none(),
                 }
+            }
+            Message::Leave => {
+                if self.tmid.is_some() && self.content.text().trim().is_empty() {
+                    return Action::effect(Effect::ClosePanel);
+                }
+                Action::task(iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::unfocus(),
+                ))
             }
             Message::Cancel => {
                 if self.confirm_delete.is_some() {
@@ -2000,6 +2016,11 @@ fn key_binding(kp: KeyPress, k: Keys) -> Option<Binding<Message>> {
             }
             key::Named::Escape if k.popup || k.cancellable => {
                 return Some(Binding::Custom(Message::Cancel));
+            }
+            // A custom binding captures the key: Escape that only unfocuses
+            // the editor does not also close the right panel.
+            key::Named::Escape if !m.shift() && !m.command() && !m.alt() => {
+                return Some(Binding::Custom(Message::Leave));
             }
             _ => {}
         }

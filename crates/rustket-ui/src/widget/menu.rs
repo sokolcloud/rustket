@@ -162,6 +162,39 @@ pub fn menu_panel<'a, Message: Clone + 'a>(entries: &[MenuEntry<Message>]) -> El
     .into()
 }
 
+/// Keyboard navigation for a custom menu column (e.g. the status menu):
+/// `actions[i]` is what row `i` of `column` publishes (`None`: caption,
+/// divider, input row, disabled item). Up/Down/Home/End highlight a row
+/// (with the focus ring) and take the focus from an input in the column;
+/// Enter or Space selects it.
+pub fn menu_nav<'a, Message: Clone + 'a>(
+    column: impl Into<Element<'a, Message>>,
+    actions: Vec<Option<Message>>,
+) -> Element<'a, Message> {
+    Element::new(MenuNav {
+        content: column.into(),
+        actions,
+    })
+}
+
+/// Unfocuses every focusable it visits.
+struct Unfocus;
+
+impl Operation for Unfocus {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn focusable(
+        &mut self,
+        _id: Option<&iced::advanced::widget::Id>,
+        _bounds: Rectangle,
+        state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        state.unfocus();
+    }
+}
+
 /// Keyboard navigation over the rows of a menu column: `actions[i]` is what
 /// row `i` publishes (`None`: header, separator, disabled item).
 struct MenuNav<'a, Message> {
@@ -259,6 +292,10 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for MenuNav<'_, Mess
             cursor,
             viewport,
         );
+        // The keyboard highlight also gets the focus ring.
+        if let Some(row) = state.highlighted.and_then(|i| layout.children().nth(i)) {
+            super::focus_ring::draw_ring(renderer, theme, row.bounds(), RADIUS_SM);
+        }
     }
 
     fn operate(
@@ -284,7 +321,17 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for MenuNav<'_, Mess
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let highlighted = tree.state.downcast_ref::<NavState>().highlighted;
+        let mut highlighted = tree.state.downcast_ref::<NavState>().highlighted;
+        // An input of the menu (the status text) has the keyboard: its
+        // Home/End/Space/Enter are its own, and a highlight left from an
+        // earlier opening is dropped.
+        let input_focused =
+            super::layer::has_focus(&mut self.content, &mut tree.children[0], layout, renderer);
+        if input_focused && highlighted.is_some() {
+            highlighted = None;
+            tree.state.downcast_mut::<NavState>().highlighted = None;
+            shell.request_redraw();
+        }
         match event {
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(named),
@@ -295,12 +342,18 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for MenuNav<'_, Mess
                 let moved = match named {
                     Named::ArrowDown => Some(self.next(highlighted, 1)),
                     Named::ArrowUp => Some(self.next(highlighted, -1)),
-                    Named::Home => Some(self.next(None, 1)),
-                    Named::End => Some(self.next(None, -1)),
+                    Named::Home if !input_focused => Some(self.next(None, 1)),
+                    Named::End if !input_focused => Some(self.next(None, -1)),
                     _ => None,
                 };
                 if let Some(to) = moved {
                     tree.state.downcast_mut::<NavState>().highlighted = to;
+                    self.content.as_widget_mut().operate(
+                        &mut tree.children[0],
+                        layout,
+                        renderer,
+                        &mut Unfocus,
+                    );
                     shell.capture_event();
                     shell.request_redraw();
                     return;

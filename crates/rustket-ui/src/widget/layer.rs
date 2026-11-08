@@ -643,9 +643,9 @@ impl Operation for WithoutFocus<'_> {
 
 /// Counts focusables and finds the focused one.
 #[derive(Default)]
-struct FocusCount {
-    total: usize,
-    focused: Option<usize>,
+pub(crate) struct FocusCount {
+    pub(crate) total: usize,
+    pub(crate) focused: Option<usize>,
 }
 
 impl Operation for FocusCount {
@@ -703,41 +703,79 @@ pub fn focus_cycle<T: Send + 'static>(forward: bool) -> iced::Task<T> {
         }
     }
     if forward {
-        iced::advanced::widget::operate(then(focusable::count(), |count| FocusIndex {
-            target: index(count, true),
-            current: 0,
+        iced::advanced::widget::operate(then(focusable::count(), |count| {
+            FocusIndex::new(index(count, true))
         }))
     } else {
-        iced::advanced::widget::operate(then(focusable::count(), |count| FocusIndex {
-            target: index(count, false),
-            current: 0,
+        iced::advanced::widget::operate(then(focusable::count(), |count| {
+            FocusIndex::new(index(count, false))
         }))
     }
 }
 
-/// Focuses the `target`-th focusable and unfocuses the others.
+/// Focuses the `target`-th focusable, unfocuses the others and scrolls the
+/// focused one into view.
 struct FocusIndex {
     target: usize,
     current: usize,
+    scroll: super::focus_ring::ScrollTrack,
+    reveal: Option<super::focus_ring::ScrollFix>,
+}
+
+impl FocusIndex {
+    fn new(target: usize) -> Self {
+        Self {
+            target,
+            current: 0,
+            scroll: Default::default(),
+            reveal: None,
+        }
+    }
 }
 
 impl<T> Operation<T> for FocusIndex {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>)) {
+        let scrolled = self.scroll.enter();
         operate(self);
+        self.scroll.leave(scrolled);
+    }
+
+    fn container(&mut self, _id: Option<&widget::Id>, _bounds: Rectangle) {
+        self.scroll.interrupt();
+    }
+
+    fn scrollable(
+        &mut self,
+        _id: Option<&widget::Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn widget::operation::Scrollable,
+    ) {
+        self.scroll.scrollable(bounds, content_bounds, translation);
     }
 
     fn focusable(
         &mut self,
         _id: Option<&widget::Id>,
-        _bounds: Rectangle,
+        bounds: Rectangle,
         state: &mut dyn widget::operation::Focusable,
     ) {
+        self.scroll.interrupt();
         if self.current == self.target {
             state.focus();
+            self.reveal = self.scroll.reveal(bounds);
         } else if state.is_focused() {
             state.unfocus();
         }
         self.current += 1;
+    }
+
+    fn finish(&self) -> widget::operation::Outcome<T> {
+        match self.reveal {
+            Some(fix) => widget::operation::Outcome::Chain(Box::new(fix)),
+            None => widget::operation::Outcome::None,
+        }
     }
 }
 
@@ -759,10 +797,19 @@ fn cycle_focus<Message>(
         (Some(i), true) => (i + 1) % count.total,
         (Some(i), false) => (i + count.total - 1) % count.total,
     };
-    content.as_widget_mut().operate(
-        tree,
-        layout,
-        renderer,
-        &mut FocusIndex { target, current: 0 },
-    );
+    let mut op = FocusIndex::new(target);
+    content
+        .as_widget_mut()
+        .operate(tree, layout, renderer, &mut op);
+    if let Some(fix) = op.reveal {
+        let mut fix = fix;
+        content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, &mut fix);
+        if let widget::operation::Outcome::Chain(mut verify) = Operation::<()>::finish(&fix) {
+            content
+                .as_widget_mut()
+                .operate(tree, layout, renderer, verify.as_mut());
+        }
+    }
 }

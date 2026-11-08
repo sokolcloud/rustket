@@ -15,6 +15,7 @@ pub mod desktop;
 pub mod dialogs;
 pub mod e2e;
 pub mod error;
+pub mod focus;
 pub mod format;
 pub mod i18n;
 pub mod images;

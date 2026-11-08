@@ -360,7 +360,7 @@ fn summary_button<'a, Message: Clone + 'a>(
     content: Element<'a, Message>,
     on_open: Message,
 ) -> Element<'a, Message> {
-    button(content)
+    let b = button(content)
         .padding([4, 8])
         .style(|theme: &Theme, status| {
             let t = tokens(theme);
@@ -375,6 +375,6 @@ fn summary_button<'a, Message: Clone + 'a>(
                 ..button::Style::default()
             }
         })
-        .on_press(on_open)
-        .into()
+        .on_press(on_open.clone());
+    super::focus_ring::focus_ring(b, Some(on_open)).into()
 }

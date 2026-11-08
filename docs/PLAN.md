@@ -233,3 +233,18 @@ accessibility, performance (lazy timeline, image cache limits), packaging
   `pw-record`/`parecord` subprocesses (phase 8+), playback via external player.
 - Spell checking is out of scope for now.
 - Federation (Matrix) features are server-side; the client only renders them.
+- Accessibility (phase 13): iced 0.14 has no accessibility tree (no AccessKit
+  in iced, iced_winit or the widgets), so screen readers see an empty window;
+  revisit when iced ships AccessKit. What exists: keyboard focus on buttons,
+  rows and menu items (`rustket_ui::widget::focus_ring`, visible ring in both
+  themes, Enter/Space activate), Tab / Shift+Tab through the window (dialogs
+  keep Tab inside; the focused widget scrolls into view), F6 / Shift+F6 between sidebar, timeline, composer and the
+  right panel, Escape closes the innermost popover / dialog / input focus /
+  right panel or page, Alt+Up/Down switch rooms and scroll the sidebar to them, arrow
+  keys in menus and the status menu (see `crates/rustket/src/focus.rs`). Text
+  scaling is the zoom setting (iced scale factor: every size scales). Theme
+  tokens are checked against WCAG AA in `rustket-ui` tests (text 4.5:1, focus
+  ring and icons 3:1).
+- Image caches: decoded images in memory are an LRU bounded by 256 MB; the
+  disk cache is capped (Settings → Storage, 500 MB by default, decimal units) and trimmed
+  oldest first.

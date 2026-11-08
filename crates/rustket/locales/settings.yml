@@ -176,3 +176,18 @@ settings.tray_help_wayland:
 settings.minimize_wayland:
   en: "Not supported on Wayland."
   ru: "Не поддерживается в Wayland."
+settings.cache_limit:
+  en: "Disk cache limit"
+  ru: "Предел кэша на диске"
+settings.cache_limit_help:
+  en: "When the cache grows past the limit, the oldest images are removed."
+  ru: "Когда кэш превышает предел, самые старые изображения удаляются."
+settings.cache_used:
+  en: "In use: %{used} of %{limit}"
+  ru: "Занято: %{used} из %{limit}"
+settings.size_mb:
+  en: "%{n} MB"
+  ru: "%{n} МБ"
+settings.size_gb:
+  en: "%{n} GB"
+  ru: "%{n} ГБ"
