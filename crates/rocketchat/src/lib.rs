@@ -4,6 +4,7 @@
 
 pub mod auth;
 pub mod date;
+pub mod e2e;
 pub mod error;
 pub mod ids;
 pub mod models;

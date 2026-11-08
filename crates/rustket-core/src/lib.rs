@@ -8,6 +8,7 @@
 //! methods that take `rocketchat` model types.
 
 pub mod config;
+pub mod e2e;
 pub mod emoji;
 pub mod notify;
 pub mod permissions;

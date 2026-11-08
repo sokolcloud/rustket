@@ -1,0 +1,11 @@
+{
+  "success": true,
+  "users": [
+    {
+      "_id": "ebGaj7x9sYuAAaKZC",
+      "e2e": {
+        "public_key": "{\"kty\":\"RSA\",\"alg\":\"RSA-OAEP-256\",\"e\":\"AQAB\",\"n\":\"t2Y0uZnEdBXa0zEch_cMEuVAjPc9oCWu0dDk5a7SEiRLiV__HWaD990OXemeaeRqDPBFmIOZadxry_ptnoLby2eCi15GI43uO-eZSqLoo05LQj8LNjNVEsAkXpo6X6xgPLeYI7pKa_i7r2tunpRFYLjEclIoh17t3kcOdOvAmCPJmDssrw4GL_pucnhagKUfYreIq70ZlDUvv7XSC8rn9qeW5I7KatIqUlaSeLtwy2whP_GUYsPK4PJcQah7950zcwJ-C9r5iIZkRgOnm_DP1RkGhnqSeC9Bh6KLueew1kk5hXyQlAzFMa6aIyBvLZIFmUhYCGgg5Z8eHpXGk0uadw\",\"ext\":true,\"key_ops\":[\"encrypt\"]}"
+      }
+    }
+  ]
+}

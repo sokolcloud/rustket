@@ -146,9 +146,16 @@ pub struct Message {
     /// `pending` / `done` for encrypted messages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub e2e: Option<String>,
-    /// Encrypted payload (`{algorithm, ciphertext, iv?, kid?}`).
+    /// Encrypted payload (`{algorithm, ciphertext, iv?, kid?}`); see
+    /// [`Message::encrypted_content`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Value>,
+    /// Plaintext mentions of an encrypted message (sent by the client).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub e2e_mentions: Option<crate::e2e::E2eMentions>,
     #[serde(rename = "_hidden", skip_serializing_if = "Option::is_none")]
     pub hidden: Option<bool>,
     #[serde(
@@ -184,6 +191,16 @@ impl Message {
 
     pub fn is_encrypted(&self) -> bool {
         self.t.as_deref() == Some("e2e") || self.content.is_some()
+    }
+
+    /// The decoded encrypted part of an `e2e` message: `content`, else a legacy
+    /// v1 ciphertext in `msg`. `None` for other messages and for an `e2e`
+    /// message with neither (e.g. an upload confirmed without content).
+    pub fn encrypted_content(&self) -> Option<crate::e2e::Result<crate::e2e::EncryptedContent>> {
+        if self.t.as_deref() != Some("e2e") {
+            return None;
+        }
+        crate::e2e::EncryptedContent::from_message(self.content.as_ref(), &self.msg)
     }
 
     pub fn is_starred_by(&self, user_id: &str) -> bool {
@@ -421,6 +438,9 @@ pub struct MessageAttachment {
     pub encryption: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hashes: Option<Value>,
+    /// Encrypted content of the pinned message (`message_pinned_e2e`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
 }
 
 impl MessageAttachment {
@@ -430,6 +450,16 @@ impl MessageAttachment {
 
     pub fn is_image(&self) -> bool {
         self.image_url.is_some()
+    }
+
+    /// Typed `encryption` of a decrypted encrypted-file attachment.
+    pub fn e2e_encryption(&self) -> Option<crate::e2e::AttachmentEncryption> {
+        serde_json::from_value(self.encryption.clone()?).ok()
+    }
+
+    /// `hashes.sha256` of a decrypted encrypted-file attachment.
+    pub fn e2e_sha256(&self) -> Option<&str> {
+        self.hashes.as_ref()?.get("sha256")?.as_str()
     }
 }
 

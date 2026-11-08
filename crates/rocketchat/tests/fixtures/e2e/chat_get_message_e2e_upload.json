@@ -1,0 +1,55 @@
+{
+  "message": {
+    "_id": "8mQYtehsrK9CwsoB2",
+    "_updatedAt": "2026-11-08T00:09:53.271Z",
+    "attachments": [
+      {
+        "fileId": "6aefbdd1ff2338a3f2a2f386",
+        "format": "file",
+        "size": 70000,
+        "title": "e39538e7f27a7bf579cd9b85a103c0f0b86b60b788534295538d0301a9c5dce6",
+        "title_link": "/file-upload/6aefbdd1ff2338a3f2a2f386/e39538e7f27a7bf579cd9b85a103c0f0b86b60b788534295538d0301a9c5dce6",
+        "title_link_download": true,
+        "type": "file"
+      }
+    ],
+    "channels": [],
+    "content": {
+      "algorithm": "rc.v2.aes-sha2",
+      "ciphertext": "cvcw6OCqY2/O6SRe/cM7hR30TYutSVyKp1Nmp3mf0R0kY2cQNbvMf5hX18rfydj6BQ+Udstx1FfN50qzaJCqwhNI4Us8qSD2KRJSnH25NTAeaIZPr4HLMUMsYh+Nag2NTHzxsbF5wNPcTBIu1PkK3gYcsm+INrB7dnSAAY2oFca2f3bDtAs3bug/gc/kwXywW61Gbut1cDjUbtI1XJ779D/DmDpa1H4cAuqPyFki9AFgH7fyF1SpemopbZbNfu3D0Gl14pgfzKnsj0NF54VwCQyr0lWqkKGDkhCVKh85hPW3qXK17FVq/G/nlBXbv+/5vuwm3OL8Q48CPdavTahc7O4FDI2eUk0jonWVaj8/GTLVz+jTgvvF8E1yXblhdUMcbbhGkseyBZM4B5F8i4CdqxrkiydJclZvt5GOTXPoF5cZgpNnv3dhG8/6VVExkbhjzXOxJvbfJFJdcdJM8ZoSO0enIcx8MwkIlF/Qea37g/84CYIteD9LjeBxxDgeA1LGmfbwr6V021gvumy8Y7IOP5GQ8OzjXe5PgWqKBCGL2BAN9T3Mvf883oc2rC1Hj5iBJ81XimlQDte9JqEHQ5nIHH+ycLHQjmoDTIAxWBftT9A+7YPC1TW5u6qlB+Aw2RXYZvvdKH8pY/9YC9Ug8JaUBMKtFQ4a6NFIoS3Ymhl9sHydRkK9UaPIb+Zyg+bGYY93cagz91NNNm1kTzviKGxc9IxeVHeeVDpfkdeOJHX9BF8P5Riw5x8UOJuEO30a1C8xaxCbVGctsIMtJvlC2lLKzDpwMuiry5kmNhY7e/ewfLlmehRbOdas1/D7WC3LPvyJjU2xKs7zo45VKa4lKQBC2WYQS83UIegSCyEPAuKx2/Wj2T7hoS/tdRhgX329tTHkWPUFlpSb0S/wvFjHbL20tmnAKLbG722yfraEkeetsY6IrhdP+tJZNz8y40dA23ICZn8UYQkWL3ryufHs70wo8lDUTW2V5+FjgZNoTC8hfQksvMJLrS6arb6mnNnMzGA3kFLEGyodbOa0iZxNpmeK",
+      "iv": "TGoOAbYtqtBkh9Bu",
+      "kid": "a6900eb9-185e-4159-a37f-573353245ffe"
+    },
+    "file": {
+      "_id": "6aefbdd1ff2338a3f2a2f386",
+      "format": "",
+      "name": "e39538e7f27a7bf579cd9b85a103c0f0b86b60b788534295538d0301a9c5dce6",
+      "size": 70000,
+      "type": "application/octet-stream",
+      "typeGroup": "application"
+    },
+    "files": [
+      {
+        "_id": "6aefbdd1ff2338a3f2a2f386",
+        "format": "",
+        "name": "e39538e7f27a7bf579cd9b85a103c0f0b86b60b788534295538d0301a9c5dce6",
+        "size": 70000,
+        "type": "application/octet-stream",
+        "typeGroup": "application"
+      }
+    ],
+    "groupable": false,
+    "mentions": [],
+    "msg": "",
+    "rid": "6aefbdcfff2338a3f2a2f380",
+    "t": "e2e",
+    "ts": "2026-11-08T00:09:53.238Z",
+    "u": {
+      "_id": "seG64pz2QCta2uGQ9",
+      "name": "Name e2e-a-1794096581039-7c7m",
+      "username": "e2e-a-1794096581039-7c7m"
+    },
+    "urls": []
+  },
+  "success": true
+}

@@ -123,6 +123,8 @@ pub const NOTIFY_ROOM_EVENTS: &[&str] = &[
     "messagesRead",
     "videoconf",
     "messagesImported",
+    // Decoded by `crate::e2e::RoomE2eKeyRequest::from_event` (arrives as `Unknown`).
+    "e2e.keyRequest",
 ];
 
 /// Activity name of "typing" in [`Session::set_user_activity`].

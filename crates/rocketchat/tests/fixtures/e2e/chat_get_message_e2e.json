@@ -1,0 +1,38 @@
+{
+  "message": {
+    "_id": "JwFfZo4KohsEfuxG8",
+    "_updatedAt": "2026-11-08T00:09:52.702Z",
+    "channels": [],
+    "content": {
+      "algorithm": "rc.v2.aes-sha2",
+      "ciphertext": "6BZYOO44UTO7IdtK12ty702wT/7BJ5CiLsDcixEsmfvHu30br9eGi2NoBErWF2hloYFhjIsmp3TWWdEJ/J7RJ7ezbPc3",
+      "iv": "uNIUKCOvvnRuL4lf",
+      "kid": "a6900eb9-185e-4159-a37f-573353245ffe"
+    },
+    "e2eMentions": {
+      "e2eChannelMentions": [],
+      "e2eUserMentions": [
+        "@e2e-b-1794096582384-azxr"
+      ]
+    },
+    "mentions": [
+      {
+        "_id": "ebGaj7x9sYuAAaKZC",
+        "name": "Name e2e-b-1794096582384-azxr",
+        "type": "user",
+        "username": "e2e-b-1794096582384-azxr"
+      }
+    ],
+    "msg": "",
+    "rid": "6aefbdcfff2338a3f2a2f380",
+    "t": "e2e",
+    "ts": "2026-11-08T00:09:52.674Z",
+    "u": {
+      "_id": "seG64pz2QCta2uGQ9",
+      "name": "Name e2e-a-1794096581039-7c7m",
+      "username": "e2e-a-1794096581039-7c7m"
+    },
+    "urls": []
+  },
+  "success": true
+}

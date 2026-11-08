@@ -1,0 +1,30 @@
+{
+  "subscription": {
+    "E2EKey": "eecd58bc-fd4d-4c0f-9966-caeb62814839XqJAxm0NQYH+jzZJltVo/ucvcbykvsTpaj1rZDF7JdiIZhAkjkQVyhMg/SXLFY67F0ZHjNMDnADlSOWgkVMnxNjJpUZIalY30vP+ngZJ2dpItqqT+79Nw0AL0NrRamEA+r8BAFuXfgGHzX/Y7Jwbsg3y8qGmn589GbJlZAK2U+491k4Uk1PssUw4SM1IRPaUZSyzVfu/k+ktV0P4/AiPHzxfnxHx1b2GHavr6HKEFos2dM6RpVGvMu7oMDSXNZKuzoMYAS9H4Seb+wlkzZD1LT4WiDEp89qgfPxWtK0Jnk7JN4nK1JMws6X0AbjZL7TtS/PX5hUukTaUxvxsajKjIA==",
+    "_id": "6aefbdf1ff2338a3f2a2f396",
+    "_updatedAt": "2026-11-08T00:10:31.794Z",
+    "alert": true,
+    "fname": "e2e-live-1794096625026-bp4t",
+    "groupMentions": 0,
+    "name": "e2e-live-1794096625026-bp4t",
+    "oldRoomKeys": [
+      {
+        "E2EKey": "1d967c82-c3c1-470e-a511-da31e7dcfa60j8PdT81eFDIwvB1OEywFyglUFc6cHmTf9zSZKDrTyvuQq1XRpMrJy0HKdQAUu/qfX5bRncpVPi+TrA5XdIzZ80Ll+xuXzI7XT9lbsdRrQ7mIwXKpfEYAAgHUaaVfS23Mj86No1MJX1yVXPUmwu6jn51ImfEwIBB82HdBcl21MxEZDnSf1vSxQxL3Jw3K/TxiKa/wLBUx1XR/PolFGAcIhiXSvWUf4Ef+FxTaJx15FfYwIG+9D1fiiAHDe0TMEFO8uqx44Vx17/3E7c9+6rh4XjcRSLgJ7f4+JVcsaumMhgMO+Aqt04DA7MMCv6sVbmMYPUi4Ne2RoXRAJzWz199Srg==",
+        "e2eKeyId": "1d967c82-c3c1-470e-a511-da31e7dcfa60",
+        "ts": "2026-11-08T00:10:31.207Z"
+      }
+    ],
+    "open": true,
+    "rid": "6aefbdf1ff2338a3f2a2f394",
+    "t": "p",
+    "ts": "2026-11-08T00:10:25.034Z",
+    "u": {
+      "_id": "w4eskgtgg6QdpkKxT",
+      "name": "Name e2e-on-b-1794096610667-fwba",
+      "username": "e2e-on-b-1794096610667-fwba"
+    },
+    "unread": 0,
+    "userMentions": 0
+  },
+  "success": true
+}

@@ -206,6 +206,21 @@ impl RestClient {
         source: UploadSource,
         progress: Option<ProgressFn>,
     ) -> Result<UploadedFile> {
+        self.upload_media_with_fields(rid, filename, mime, source, progress, Vec::new())
+            .await
+    }
+
+    /// [`Self::upload_media`] with extra multipart text fields (e.g. `content`
+    /// of encrypted uploads), sent before the file part.
+    pub async fn upload_media_with_fields(
+        &self,
+        rid: &str,
+        filename: String,
+        mime: String,
+        source: UploadSource,
+        progress: Option<ProgressFn>,
+        fields: Vec<(String, String)>,
+    ) -> Result<UploadedFile> {
         let start = Instant::now();
         let state = Arc::new(UploadState::default());
         let (body, len) = counting_body(source, progress, state.clone(), start);
@@ -213,7 +228,10 @@ impl RestClient {
             .file_name(filename)
             .mime_str(&mime)
             .map_err(|e| Error::Protocol(format!("invalid MIME type {mime}: {e}")))?;
-        let form = Form::new().part("file", part);
+        let form = fields
+            .into_iter()
+            .fold(Form::new(), |f, (k, v)| f.text(k, v))
+            .part("file", part);
         let url = self.server().api(&format!(
             "rooms.media/{}",
             crate::server_url::encode_segment(rid)

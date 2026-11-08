@@ -29,6 +29,13 @@ pub struct Room {
     pub encrypted: Option<bool>,
     #[serde(rename = "e2eKeyId", skip_serializing_if = "Option::is_none")]
     pub e2e_key_id: Option<String>,
+    /// Members waiting for the room key (≤ 50); a hint for key distribution.
+    #[serde(
+        rename = "usersWaitingForE2EKeys",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt_vec"
+    )]
+    pub users_waiting_for_e2e_keys: Option<Vec<WaitingUser>>,
     /// Parent room of a discussion.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prid: Option<String>,
@@ -133,6 +140,18 @@ impl Room {
     pub fn is_team(&self) -> bool {
         self.team_main == Some(true)
     }
+}
+
+/// Entry of `usersWaitingForE2EKeys`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WaitingUser {
+    pub user_id: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub ts: Option<RcDate>,
 }
 
 /// `teams.info` → `teamInfo`.
