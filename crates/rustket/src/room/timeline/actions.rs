@@ -24,6 +24,7 @@ pub enum Act {
     Star,
     Unstar,
     MarkUnread,
+    StartDiscussion,
     Follow,
     Unfollow,
     Report,
@@ -44,6 +45,7 @@ impl Act {
             Act::Star => Icon::Star,
             Act::Unstar => Icon::StarOff,
             Act::MarkUnread => Icon::MailOpen,
+            Act::StartDiscussion => Icon::MessagesSquare,
             Act::Follow => Icon::Bell,
             Act::Unfollow => Icon::BellOff,
             Act::Report => Icon::Flag,
@@ -64,6 +66,7 @@ impl Act {
             Act::Star => "room_timeline.act_star",
             Act::Unstar => "room_timeline.act_unstar",
             Act::MarkUnread => "room_timeline.act_mark_unread",
+            Act::StartDiscussion => "room_timeline.act_start_discussion",
             Act::Follow => "room_timeline.act_follow",
             Act::Unfollow => "room_timeline.act_unfollow",
             Act::Report => "room_timeline.act_report",
@@ -122,6 +125,11 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
         .is_some_and(|e| e.room_type() == RoomType::Livechat);
     if subscribed && !own && !omnichannel {
         v.push(Act::MarkUnread);
+    }
+    // The web client's "Start a discussion" (prefills the parent room and
+    // the message).
+    if perm::can_start_discussion_from(ws, m) {
+        v.push(Act::StartDiscussion);
     }
     if ws.settings().threads_enabled() && !omnichannel {
         // Like the web: any message; a reply follows its parent thread.

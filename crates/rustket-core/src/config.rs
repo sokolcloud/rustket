@@ -24,6 +24,8 @@ pub const CONFIG_FILE: &str = "config.toml";
 pub const CONFIG_VERSION: u32 = 1;
 /// Maximum length of [`AppConfig::recent_emoji`].
 pub const MAX_RECENT_EMOJI: usize = 36;
+/// Maximum length of [`AppConfig::recent_status_texts`].
+pub const MAX_RECENT_STATUS_TEXTS: usize = 5;
 /// Accepted range of [`UiPrefs::zoom`].
 pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 /// Largest accepted window width/height.
@@ -261,6 +263,8 @@ pub struct AppConfig {
     pub ui: UiPrefs,
     /// Reaction/emoji keys (`:shortcode:`), most recent first.
     pub recent_emoji: Vec<String>,
+    /// Custom status texts used recently (status menu), most recent first.
+    pub recent_status_texts: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowGeometry>,
     #[serde(skip)]
@@ -275,6 +279,7 @@ impl Default for AppConfig {
             active_server: None,
             ui: UiPrefs::default(),
             recent_emoji: Vec::new(),
+            recent_status_texts: Vec::new(),
             window: None,
             unknown: Unknown::default(),
         }
@@ -288,6 +293,7 @@ const APP_KEYS: &[&str] = &[
     "active_server",
     "ui",
     "recent_emoji",
+    "recent_status_texts",
     "window",
 ];
 const UI_KEYS: &[&str] = &[
@@ -468,6 +474,15 @@ impl AppConfig {
                 .filter_map(|v| v.as_str().map(str::to_owned))
                 .collect();
         }
+        if let Some(list) = doc
+            .get("recent_status_texts")
+            .and_then(toml::Value::as_array)
+        {
+            cfg.recent_status_texts = list
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect();
+        }
         if let Some(t) = doc.get("window").and_then(toml::Value::as_table) {
             cfg.window = Some(lenient(t, "window"));
         }
@@ -493,6 +508,8 @@ impl AppConfig {
             self.window = None;
         }
         self.recent_emoji.truncate(MAX_RECENT_EMOJI);
+        let texts = std::mem::take(&mut self.recent_status_texts);
+        self.set_recent_status_texts(texts);
         let mut changed = false;
         let mut seen = std::collections::HashSet::new();
         for s in &mut self.servers {
@@ -597,6 +614,20 @@ impl AppConfig {
     /// Records a used emoji (most recent first, deduplicated, bounded).
     pub fn push_recent_emoji(&mut self, key: &str) {
         crate::emoji::push_recent(&mut self.recent_emoji, key, MAX_RECENT_EMOJI);
+    }
+
+    /// Replaces the recent status texts: trimmed, without blanks and
+    /// duplicates, at most [`MAX_RECENT_STATUS_TEXTS`].
+    pub fn set_recent_status_texts(&mut self, texts: Vec<String>) {
+        let mut out: Vec<String> = Vec::new();
+        for t in texts {
+            let t = t.trim();
+            if !t.is_empty() && !out.iter().any(|o| o == t) {
+                out.push(t.to_owned());
+            }
+        }
+        out.truncate(MAX_RECENT_STATUS_TEXTS);
+        self.recent_status_texts = out;
     }
 }
 
@@ -963,6 +994,28 @@ mod tests {
         assert_eq!(c.active_server, Some(b.clone()));
         c.remove_server(&b);
         assert_eq!(c.active_server, None);
+    }
+
+    #[test]
+    fn recent_status_texts_round_trip_and_are_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = AppConfig::default();
+        c.set_recent_status_texts(
+            ["a", " b ", "a", "", "c", "d", "e", "f", "g"]
+                .map(String::from)
+                .to_vec(),
+        );
+        assert_eq!(c.recent_status_texts, ["a", "b", "c", "d", "e"]);
+        c.save(dir.path()).unwrap();
+        let back = AppConfig::load(dir.path()).unwrap();
+        assert_eq!(back.recent_status_texts, ["a", "b", "c", "d", "e"]);
+        // Older files without the key, and too long or invalid lists.
+        assert!(AppConfig::parse("").unwrap().recent_status_texts.is_empty());
+        let c = AppConfig::parse(
+            "recent_status_texts = [1, \"x\", \"x\", \"2\", \"3\", \"4\", \"5\", \"6\"]",
+        )
+        .unwrap();
+        assert_eq!(c.recent_status_texts, ["x", "2", "3", "4", "5"]);
     }
 
     #[test]

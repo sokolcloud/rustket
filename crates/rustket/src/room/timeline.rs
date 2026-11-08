@@ -22,7 +22,7 @@ use iced::widget::{
     text,
 };
 use iced::{Alignment, Element, Length, Padding, Subscription, Task};
-use rocketchat::models::{Message as RcMessage, OutgoingMessage};
+use rocketchat::models::Message as RcMessage;
 use rust_i18n::t;
 use rustket_core::timeline::{
     DeliveryState, Timeline as CoreTimeline, TimelineItem, is_new_day, is_sequential,
@@ -74,7 +74,6 @@ pub enum Message {
     OpenUser(String),
     Retry(String),
     Discard(String),
-    Resent(String, Option<String>, Res<Box<RcMessage>>),
     ActionDone(Act, Res<()>),
     CloseDialog,
     ConfirmDelete,
@@ -195,32 +194,11 @@ impl Timeline {
                 }
             }
             Message::OpenUser(u) => Action::effect(Effect::OpenPanel(Kind::UserInfo(u))),
-            Message::Retry(mid) => self.retry(&mid, ctx),
-            Message::Discard(mid) => {
-                let tmid = self.pending_tmid(&mid, ctx);
-                ctx.workspace
-                    .discard_pending(ctx.rid, tmid.as_deref(), &mid);
-                Action::none()
-            }
-            Message::Resent(mid, tmid, r) => {
-                match r {
-                    Ok(m) => ctx.workspace.apply_message(*m),
-                    Err(e) => ctx.workspace.mark_pending_failed(
-                        ctx.rid,
-                        tmid.as_deref(),
-                        &mid,
-                        &e.user_text(),
-                    ),
-                }
-                Action::none()
-            }
+            // One send path for room and thread messages: the composer outbox.
+            Message::Retry(mid) => Action::effect(Effect::Compose(ComposeIntent::Retry(mid))),
+            Message::Discard(mid) => Action::effect(Effect::Compose(ComposeIntent::Discard(mid))),
             Message::ActionDone(act, r) => match r {
-                Ok(()) => match act {
-                    Act::MarkUnread => Action::effect(Self::toast_ok(
-                        t!("room_timeline.marked_unread").into_owned(),
-                    )),
-                    _ => Action::none(),
-                },
+                Ok(()) => Action::none(),
                 Err(e) => Action::effect(Self::toast_error(
                     t!("room_timeline.action_failed", action = act.label()).into_owned(),
                     e.user_text(),
@@ -433,39 +411,6 @@ impl Timeline {
         }
     }
 
-    fn pending_tmid(&self, mid: &str, ctx: &UpdateCtx<'_>) -> Option<String> {
-        ctx.workspace
-            .timeline(ctx.rid)
-            .and_then(|t| t.get(mid))
-            .and_then(|i| i.message.tmid.clone())
-    }
-
-    fn retry(&mut self, mid: &str, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
-        let Some(item) = ctx.workspace.timeline(ctx.rid).and_then(|t| t.get(mid)) else {
-            return Action::none();
-        };
-        if !matches!(item.state, DeliveryState::Failed { .. }) {
-            return Action::none();
-        }
-        let m = &item.message;
-        let out = OutgoingMessage {
-            id: Some(m.id.clone()),
-            rid: m.rid.clone(),
-            msg: m.msg.clone(),
-            tmid: m.tmid.clone(),
-            tshow: m.tshow.filter(|t| *t),
-            ..Default::default()
-        };
-        let tmid = m.tmid.clone();
-        ctx.workspace
-            .mark_pending_sending(ctx.rid, tmid.as_deref(), mid);
-        let mid = mid.to_owned();
-        Action::task(ctx.rest_task(
-            move |rest| async move { rest.send_message(&out).await.map(Box::new) },
-            move |r| Message::Resent(mid, tmid, r),
-        ))
-    }
-
     /// Downloads `f` into a new private media file with extension `ext` (from
     /// an allow-list of media types) and opens it with the system handler.
     fn open_privately(
@@ -584,7 +529,6 @@ impl Timeline {
         let rest_act = |ctx: &UpdateCtx<'_>, act: Act| {
             let mid = mid.clone();
             let thread = thread.clone();
-            let rid = ctx.rid.to_owned();
             Action::task(ctx.rest_task(
                 move |rest| async move {
                     match act {
@@ -594,7 +538,6 @@ impl Timeline {
                         Act::Unstar => rest.unstar_message(&mid).await,
                         Act::Follow => rest.follow_message(&thread).await,
                         Act::Unfollow => rest.unfollow_message(&thread).await,
-                        Act::MarkUnread => rest.subscriptions_unread(&rid, Some(&mid)).await,
                         _ => Ok(()),
                     }
                 },
@@ -608,6 +551,9 @@ impl Timeline {
             }
             Act::Quote => Action::effect(Effect::Compose(ComposeIntent::Quote(mid))),
             Act::Edit => Action::effect(Effect::Compose(ComposeIntent::Edit(mid))),
+            // Leaves the room first (the app), like the web client.
+            Act::MarkUnread => Action::effect(Effect::MarkUnread(Some(mid))),
+            Act::StartDiscussion => Action::effect(Effect::StartDiscussion { pmid: Some(mid) }),
             Act::CopyText => Action::task(iced::clipboard::write(render::plain_text(&m)))
                 .with(Self::toast_ok(t!("room_timeline.copied").into_owned())),
             Act::CopyLink => Action::task(iced::clipboard::write(permalink(
@@ -628,13 +574,9 @@ impl Timeline {
                 });
                 Action::task(iced::widget::operation::focus(dialogs::REPORT_INPUT_ID))
             }
-            Act::Pin
-            | Act::Unpin
-            | Act::Star
-            | Act::Unstar
-            | Act::Follow
-            | Act::Unfollow
-            | Act::MarkUnread => rest_act(ctx, act),
+            Act::Pin | Act::Unpin | Act::Star | Act::Unstar | Act::Follow | Act::Unfollow => {
+                rest_act(ctx, act)
+            }
         }
     }
 

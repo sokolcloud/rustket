@@ -56,15 +56,6 @@ room_composer.too_long_title:
 room_composer.too_long:
   en: "Messages may have at most %{max} characters."
   ru: "Сообщение может содержать не более %{max} символов."
-room_composer.failed:
-  en: "Not sent: %{error}"
-  ru: "Не отправлено: %{error}"
-room_composer.retry:
-  en: "Retry"
-  ru: "Повторить"
-room_composer.discard:
-  en: "Discard"
-  ru: "Удалить"
 room_composer.join:
   en: "Join"
   ru: "Присоединиться"
@@ -347,3 +338,6 @@ room_composer.cmd.your_message_optional:
 room_composer.cmd.your_message:
   en: "your message"
   ru: "ваше сообщение"
+room_composer.preview_notice:
+  en: "You are previewing this channel"
+  ru: "Вы просматриваете этот канал"

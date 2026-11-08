@@ -101,3 +101,15 @@ app.url_refused:
 app.revoke_failed:
   en: "The token could not be revoked on the server"
   ru: "Не удалось отозвать токен на сервере"
+app.marked_unread:
+  en: "Marked as unread"
+  ru: "Отмечено непрочитанным"
+app.mark_unread_failed:
+  en: "Could not mark as unread"
+  ru: "Не удалось отметить непрочитанным"
+app.preview_not_allowed:
+  en: "This channel can only be read by its members"
+  ru: "Этот канал могут читать только участники"
+app.preview_join_hint:
+  en: "Join it to see the messages."
+  ru: "Вступите в него, чтобы увидеть сообщения."

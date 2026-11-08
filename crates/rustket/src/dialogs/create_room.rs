@@ -157,6 +157,11 @@ pub struct CreateRoom {
     pub parent_query: String,
     pub parent_seq: u64,
     pub parent_suggestions: Vec<RoomSummary>,
+    /// Opened from a room (header, panel, message action): a discussion
+    /// only, no kind tabs.
+    pub from_room: bool,
+    /// Message the discussion starts from (`pmid`) and its excerpt.
+    pub pmid: Option<(String, String)>,
     pub busy: bool,
     pub error: Option<String>,
 }
@@ -174,8 +179,15 @@ impl CreateRoom {
         Self {
             kind: Kind::Discussion,
             parent: Some((rid.to_owned(), name.to_owned())),
+            from_room: true,
             ..Default::default()
         }
+    }
+
+    /// A discussion started from message `pmid` (`excerpt` is shown).
+    pub fn from_message(mut self, pmid: &str, excerpt: &str) -> Self {
+        self.pmid = Some((pmid.to_owned(), excerpt.to_owned()));
+        self
     }
 
     /// The kind actually used: the requested one if allowed, else the first
@@ -507,6 +519,7 @@ impl CreateRoom {
                 name,
                 reply: Some(self.first_message.trim().to_owned()).filter(|m| !m.is_empty()),
                 users: self.members.clone(),
+                pmid: self.pmid.as_ref().map(|p| p.0.clone()),
             },
         }
     }
@@ -548,16 +561,34 @@ impl CreateRoom {
                 .into()
             }))
         .spacing(SPACE_1);
-        let mut body = column![
-            tabs,
+        let mut body = column![].spacing(SPACE_3);
+        if !self.from_room {
+            body = body.push(tabs);
+        }
+        body = body.push(
             text(t!(kind.help_key()))
                 .size(TEXT_SMALL)
-                .style(style::text_secondary)
-        ]
-        .spacing(SPACE_3);
+                .style(style::text_secondary),
+        );
 
         if kind == Kind::Discussion {
             body = body.push(self.parent_picker(ctx));
+            if let Some((_, excerpt)) = &self.pmid {
+                body = body.push(
+                    column![
+                        text(t!("create_room.from_message")).size(TEXT_CAPTION),
+                        container(
+                            text(excerpt.as_str())
+                                .size(TEXT_SMALL)
+                                .style(style::text_secondary)
+                        )
+                        .padding([SPACE_1, SPACE_2])
+                        .width(Length::Fill)
+                        .style(style::container_card),
+                    ]
+                    .spacing(SPACE_1),
+                );
+            }
         }
         if Self::named(kind) {
             let label = if kind == Kind::Discussion {
@@ -625,8 +656,13 @@ impl CreateRoom {
         if let Some(e) = &self.error {
             body = body.push(text(e.as_str()).size(TEXT_SMALL).style(style::text_danger));
         }
+        let title = if self.from_room && kind == Kind::Discussion {
+            t!("create_room.title_discussion")
+        } else {
+            t!("create_room.title")
+        };
         dialog(
-            t!("create_room.title"),
+            title,
             body,
             vec![
                 secondary_button(t!("create_room.cancel"), Some(Message::Close)).into(),
@@ -846,6 +882,8 @@ pub enum Request {
         name: String,
         reply: Option<String>,
         users: Vec<String>,
+        /// Parent message (`pmid`).
+        pmid: Option<String>,
     },
 }
 
@@ -873,11 +911,18 @@ pub async fn create(rest: RestClient, req: Request) -> rocketchat::Result<Opened
             name,
             reply,
             users,
+            pmid,
         } => {
             let refs: Vec<&str> = users.iter().map(String::as_str).collect();
-            rest.rooms_create_discussion(&prid, &name, reply.as_deref(), &refs)
-                .await?
-                .id
+            rest.rooms_create_discussion_from(
+                &prid,
+                pmid.as_deref(),
+                &name,
+                reply.as_deref(),
+                &refs,
+            )
+            .await?
+            .id
         }
     };
     open::resolve(rest, Target::Room(rid)).await

@@ -91,6 +91,8 @@ pub enum Message {
     TokenStored(ServerId, Result<(), String>),
     RetryConnection(ServerId),
     LoggedOut(ServerId, Result<(), String>),
+    /// `subscriptions.unread` finished (the room was left before).
+    MarkedUnread(ServerId, Res<()>),
     /// Current handler, whether it is Rustket, and the executable check
     /// (warnings to confirm, or why registration is refused).
     HandlerQueried(Option<String>, bool, Result<Vec<String>, String>),

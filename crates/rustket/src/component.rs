@@ -109,6 +109,9 @@ pub enum Nav {
     Directory,
     /// Create a room on the active server (`dialogs/create_room.rs`).
     CreateRoom(crate::dialogs::create_room::Kind),
+    /// A discussion of room `rid` of the active server (optionally started
+    /// from message `pmid`): the create dialog with the parent preset.
+    CreateDiscussion { rid: String, pmid: Option<String> },
     /// Ctrl+K (`dialogs/quick_switcher.rs`).
     QuickSwitcher,
     /// Back to the workspace of the active server.
@@ -141,6 +144,9 @@ pub enum Effect {
     ClearImageCache,
     /// Show a test desktop notification.
     TestNotification,
+    /// The recently used custom status texts changed (most recent first):
+    /// store them in `AppConfig::recent_status_texts` and save.
+    RecentStatusTexts(Vec<String>),
 }
 
 /// Result of an app-level component `update`.

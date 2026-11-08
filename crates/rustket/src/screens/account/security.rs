@@ -1,7 +1,10 @@
 //! Security tab: TOTP two-factor authentication (`users.enableTotp`,
 //! `users.validateTotp`, `users.disableTotp`, `users.regenerateTotpCodes`;
 //! the `2fa:*` methods on older servers) and e-mail 2FA
-//! (`users.2fa.enableEmail` / `disableEmail`).
+//! (`users.2fa.enableEmail` / `disableEmail`); active sessions / devices
+//! (`sessions/list`, `sessions/logout.me`: the `device-management` license
+//! module, so Community servers answer "enterprise feature" and the section
+//! says it is not available).
 
 use iced::widget::{column, container, qr_code, row, text};
 use iced::{Alignment, Color, Element, Length};
@@ -44,6 +47,133 @@ pub enum Msg {
     EnableEmail,
     EmailEnabled(Res<()>),
     DisableEmail,
+    LoadSessions,
+    Sessions(Res<Vec<DeviceSession>>),
+    /// Ask before logging out session `sessionId`.
+    LogoutSession(String),
+    ConfirmLogoutSession,
+    CancelLogoutSession,
+    SessionLoggedOut(String, Res<()>),
+}
+
+/// One login session of the user (`sessions/list`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DeviceSession {
+    pub session_id: String,
+    pub device: Option<SessionDevice>,
+    pub host: Option<String>,
+    pub ip: Option<String>,
+    pub login_at: Option<rocketchat::RcDate>,
+    /// The session of this client's token.
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct SessionDevice {
+    pub name: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub version: Option<String>,
+    pub os: Option<SessionOs>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct SessionOs {
+    pub name: Option<String>,
+    pub version: Option<String>,
+}
+
+fn join_words(parts: [Option<String>; 2]) -> String {
+    parts
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+impl DeviceSession {
+    /// "Chrome 120 · Linux", or the session id when nothing is known.
+    pub fn title(&self) -> String {
+        let d = self.device.as_ref();
+        let client = join_words([
+            d.and_then(|d| d.name.clone()),
+            d.and_then(|d| d.version.clone()),
+        ]);
+        let os = d
+            .and_then(|d| d.os.as_ref())
+            .map(|o| join_words([o.name.clone(), o.version.clone()]))
+            .unwrap_or_default();
+        match (client.is_empty(), os.is_empty()) {
+            (false, false) => format!("{client} · {os}"),
+            (false, true) => client,
+            (true, false) => os,
+            (true, true) => self.session_id.clone(),
+        }
+    }
+}
+
+/// Sessions of the user (`sessions/list`, newest login first).
+pub async fn sessions_list(
+    rest: &rocketchat::RestClient,
+) -> rocketchat::Result<Vec<DeviceSession>> {
+    let v: serde_json::Value = rest
+        .get(
+            "sessions/list",
+            &rocketchat::rest::Query::new().push("count", "50"),
+        )
+        .await?;
+    let list = v.get("sessions").cloned().unwrap_or_default();
+    Ok(serde_json::from_value(list)?)
+}
+
+/// Logs out one of the user's sessions (`sessions/logout.me`).
+pub async fn sessions_logout(
+    rest: &rocketchat::RestClient,
+    session_id: &str,
+) -> rocketchat::Result<()> {
+    rest.post_ok(
+        "sessions/logout.me",
+        &serde_json::json!({ "sessionId": session_id }),
+    )
+    .await
+}
+
+/// The server has no device management: Community Edition ("enterprise
+/// feature", `error-action-not-allowed`), forbidden or unknown endpoint.
+pub fn sessions_unavailable(e: &rocketchat::Error) -> bool {
+    use rocketchat::Error;
+    match e {
+        Error::Status { status, .. } => matches!(status, 403 | 404),
+        Error::Api {
+            status,
+            error,
+            error_type,
+            ..
+        } => {
+            matches!(status, 403 | 404)
+                || error_type.as_deref() == Some("error-action-not-allowed")
+                || error
+                    .as_deref()
+                    .is_some_and(|m| m.contains("enterprise feature"))
+        }
+        _ => false,
+    }
+}
+
+/// State of the sessions section.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum SessionsState {
+    #[default]
+    Idle,
+    Loading,
+    Loaded(Vec<DeviceSession>),
+    /// Device management is not available on this server.
+    Unavailable,
+    Failed(String),
 }
 
 /// TOTP being set up: the secret, its QR code and the confirmation code.
@@ -85,6 +215,11 @@ pub struct Security {
     pub remaining: Option<u64>,
     /// Backup codes to show once (after enabling or regenerating).
     pub codes: Option<Vec<String>>,
+    pub sessions: SessionsState,
+    /// Session waiting for the logout confirmation.
+    pub confirm_logout: Option<String>,
+    /// Session being logged out.
+    pub logging_out: Option<String>,
 }
 
 /// Flags of the second factors on the workspace user. `services.*` changes
@@ -105,14 +240,30 @@ pub fn set_factor(ws: &mut Workspace, totp: Option<bool>, email: Option<bool>) {
 
 impl Security {
     /// Loads the number of remaining backup codes when TOTP is on.
+    /// Also (re)loads the sessions.
     pub fn refresh(&mut self, ctx: &Ctx<'_>) -> Action<Message> {
+        let sessions = self.load_sessions(ctx);
         if !ctx.workspace.me().is_some_and(|m| m.totp_enabled()) {
-            return Action::none();
+            return Action::task(sessions);
         }
-        Action::task(ctx.rest_task(
-            |rest| async move { api::totp_codes_remaining(&rest).await },
-            |r| Message::Security(Msg::Remaining(r)),
-        ))
+        Action::task(iced::Task::batch([
+            sessions,
+            ctx.rest_task(
+                |rest| async move { api::totp_codes_remaining(&rest).await },
+                |r| Message::Security(Msg::Remaining(r)),
+            ),
+        ]))
+    }
+
+    fn load_sessions(&mut self, ctx: &Ctx<'_>) -> iced::Task<Message> {
+        if self.sessions == SessionsState::Loading {
+            return iced::Task::none();
+        }
+        self.sessions = SessionsState::Loading;
+        ctx.rest_task(
+            |rest| async move { sessions_list(&rest).await },
+            |r| Message::Security(Msg::Sessions(r)),
+        )
     }
 
     pub fn update(&mut self, msg: Msg, ctx: &mut Ctx<'_>) -> Action<Message> {
@@ -260,6 +411,52 @@ impl Security {
                 self.notice = None;
                 Action::task(two_factor::run(ctx, Op::DisableEmail2fa, None))
             }
+            Msg::LoadSessions => Action::task(self.load_sessions(ctx)),
+            Msg::Sessions(r) => {
+                self.sessions = match r {
+                    Ok(list) => SessionsState::Loaded(list),
+                    Err(e) if sessions_unavailable(e.error()) => SessionsState::Unavailable,
+                    Err(e) => SessionsState::Failed(e.user_text()),
+                };
+                Action::none()
+            }
+            Msg::LogoutSession(id) => {
+                if self.logging_out.is_none() {
+                    self.confirm_logout = Some(id);
+                }
+                Action::none()
+            }
+            Msg::CancelLogoutSession => {
+                self.confirm_logout = None;
+                Action::none()
+            }
+            Msg::ConfirmLogoutSession => {
+                let Some(id) = self.confirm_logout.take() else {
+                    return Action::none();
+                };
+                self.logging_out = Some(id.clone());
+                let call = id.clone();
+                Action::task(ctx.rest_task(
+                    move |rest| async move { sessions_logout(&rest, &call).await },
+                    move |r| s(Msg::SessionLoggedOut(id.clone(), r)),
+                ))
+            }
+            Msg::SessionLoggedOut(id, r) => {
+                self.logging_out = None;
+                match r {
+                    Ok(()) => {
+                        if let SessionsState::Loaded(list) = &mut self.sessions {
+                            list.retain(|x| x.session_id != id);
+                        }
+                        self.notice = Some(t!("account.session_logged_out").into_owned());
+                    }
+                    Err(e) if sessions_unavailable(e.error()) => {
+                        self.sessions = SessionsState::Unavailable;
+                    }
+                    Err(e) => self.error = Some(e.user_text()),
+                }
+                Action::none()
+            }
         }
     }
 
@@ -352,6 +549,7 @@ impl Security {
                 t!("account.tfa_server_disabled"),
                 None,
             ));
+            body = body.push(self.sessions_view());
             return body.into();
         }
 
@@ -471,7 +669,124 @@ impl Security {
             }
             body = body.push(section(t!("account.sec_email2fa").into_owned(), c.into()));
         }
+        body = body.push(self.sessions_view());
         body.into()
+    }
+
+    /// Active sessions / devices.
+    fn sessions_view(&self) -> Element<'_, Message> {
+        let s = |m| Message::Security(m);
+        let mut c = column![
+            text(t!("account.sessions_help"))
+                .size(TEXT_SMALL)
+                .style(style::text_secondary)
+        ]
+        .spacing(SPACE_3);
+        match &self.sessions {
+            SessionsState::Idle | SessionsState::Loading => {
+                c = c.push(
+                    text(t!("account.sessions_loading"))
+                        .size(TEXT_SMALL)
+                        .style(style::text_hint),
+                );
+            }
+            SessionsState::Unavailable => {
+                c = c.push(banner(
+                    BannerKind::Info,
+                    t!("account.sessions_unavailable"),
+                    None,
+                ));
+            }
+            SessionsState::Failed(e) => {
+                c = c.push(banner(BannerKind::Error, e.clone(), None));
+                c = c.push(
+                    row![secondary_button(
+                        t!("account.sessions_retry"),
+                        Some(s(Msg::LoadSessions))
+                    )]
+                    .spacing(SPACE_2),
+                );
+            }
+            SessionsState::Loaded(list) if list.is_empty() => {
+                c = c.push(
+                    text(t!("account.sessions_empty"))
+                        .size(TEXT_SMALL)
+                        .style(style::text_hint),
+                );
+            }
+            SessionsState::Loaded(list) => {
+                for x in list {
+                    c = c.push(self.session_row(x));
+                }
+            }
+        }
+        section(t!("account.sec_sessions").into_owned(), c.into())
+    }
+
+    fn session_row<'a>(&'a self, x: &'a DeviceSession) -> Element<'a, Message> {
+        let s = |m| Message::Security(m);
+        let mut details: Vec<String> = Vec::new();
+        if let Some(at) = x.login_at {
+            let at =
+                at.0.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string();
+            details.push(t!("account.session_login_at", at = at).into_owned());
+        }
+        if let Some(ip) = x.ip.as_deref().filter(|s| !s.is_empty()) {
+            details.push(ip.to_owned());
+        }
+        if let Some(h) = x.host.as_deref().filter(|s| !s.is_empty()) {
+            details.push(h.to_owned());
+        }
+        let mut title = row![
+            icon::sized(Icon::Smartphone, 14.0),
+            text(x.title()).size(TEXT_BODY).font(FONT_SEMIBOLD)
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+        if x.current {
+            title = title.push(chip(
+                t!("account.session_current").into_owned(),
+                ChipKind::Success,
+            ));
+        }
+        let info = column![
+            title,
+            text(details.join(" · "))
+                .size(TEXT_CAPTION)
+                .style(style::text_secondary)
+        ]
+        .spacing(2)
+        .width(Length::Fill);
+        let action: Element<'a, Message> =
+            if self.confirm_logout.as_deref() == Some(x.session_id.as_str()) {
+                row![
+                    ghost_button(t!("account.cancel"), Some(s(Msg::CancelLogoutSession))),
+                    danger_button(
+                        t!("account.session_logout_confirm"),
+                        Some(s(Msg::ConfirmLogoutSession))
+                    ),
+                ]
+                .spacing(SPACE_1)
+                .into()
+            } else if x.current {
+                // This client: "Log out" in the status menu.
+                row![].into()
+            } else {
+                secondary_button(
+                    t!("account.session_logout"),
+                    self.logging_out
+                        .is_none()
+                        .then(|| s(Msg::LogoutSession(x.session_id.clone()))),
+                )
+                .loading(self.logging_out.as_deref() == Some(x.session_id.as_str()))
+                .into()
+            };
+        row![info, action]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .into()
     }
 
     /// The backup codes dialog (shown once).
@@ -696,6 +1011,82 @@ mod tests {
         assert_eq!(sec.codes.as_ref().unwrap().len(), 2);
         assert!(ws.me().unwrap().totp_enabled());
         assert_eq!(sec.remaining, Some(2));
+    }
+
+    const CE_ANSWER: &[u8] = br#"{"success":false,"error":"This is an enterprise feature [error-action-not-allowed]","errorType":"error-action-not-allowed"}"#;
+
+    #[test]
+    fn sessions_decode_and_title() {
+        let v = serde_json::json!({"sessions": [
+            {"_id": "a", "sessionId": "a", "device": {"name": "Chrome", "version": "120", "type": "browser",
+             "os": {"name": "Linux"}}, "ip": "1.2.3.4", "loginAt": "2026-01-02T03:04:05.000Z", "current": true},
+            {"sessionId": "b"}
+        ], "count": 2, "offset": 0, "total": 2});
+        let list: Vec<DeviceSession> = serde_json::from_value(v["sessions"].clone()).unwrap();
+        assert_eq!(list[0].title(), "Chrome 120 · Linux");
+        assert!(list[0].current && list[0].login_at.is_some());
+        assert_eq!(list[1].title(), "b");
+    }
+
+    #[test]
+    fn community_servers_have_no_device_management() {
+        // What 8.9 CE answers (captured from the dev server).
+        let e = rocketchat::Error::from_response(400, None, CE_ANSWER);
+        assert!(sessions_unavailable(&e));
+        let e = rocketchat::Error::Status {
+            status: 404,
+            body: String::new(),
+        };
+        assert!(sessions_unavailable(&e));
+        let e = rocketchat::Error::from_response(
+            400,
+            None,
+            br#"{"success":false,"error":"Session not found"}"#,
+        );
+        assert!(!sessions_unavailable(&e));
+    }
+
+    #[test]
+    fn session_logout_flow() {
+        let mut sec = Security {
+            sessions: SessionsState::Loaded(vec![
+                DeviceSession {
+                    session_id: "a".into(),
+                    ..Default::default()
+                },
+                DeviceSession {
+                    session_id: "b".into(),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let mut ws = Workspace::new();
+        let sid = rustket_core::ServerId("s".into());
+        let url = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let images = crate::images::Images::new(None);
+        let config = rustket_core::config::AppConfig::default();
+        let mut ctx = Ctx {
+            server_id: &sid,
+            server: &url,
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            config: &config,
+        };
+        let _ = sec.update(Msg::LogoutSession("b".into()), &mut ctx);
+        assert_eq!(sec.confirm_logout.as_deref(), Some("b"));
+        let _ = sec.update(Msg::ConfirmLogoutSession, &mut ctx);
+        assert_eq!(sec.logging_out.as_deref(), Some("b"));
+        let _ = sec.update(Msg::SessionLoggedOut("b".into(), Ok(())), &mut ctx);
+        assert!(sec.logging_out.is_none());
+        match &sec.sessions {
+            SessionsState::Loaded(l) => assert_eq!(l.len(), 1),
+            other => panic!("{other:?}"),
+        }
+        let e = crate::error::Failure::from(rocketchat::Error::from_response(400, None, CE_ANSWER));
+        let _ = sec.update(Msg::Sessions(Err(e)), &mut ctx);
+        assert_eq!(sec.sessions, SessionsState::Unavailable);
     }
 
     #[test]

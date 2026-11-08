@@ -36,10 +36,15 @@ pub enum Message {
     Cancel,
     Done(RoomAction, Res<()>),
     OpenRoom(String),
+    /// Menu: create a discussion in this room.
+    CreateDiscussion,
 }
 
 pub struct Header {
     rid: String,
+    /// The open right panel (set by `RoomView` before each update): menu
+    /// entries open their panel, or keep it open, instead of toggling it.
+    panel: Option<panel::Kind>,
     menu_open: bool,
     confirm: Option<RoomAction>,
     busy: bool,
@@ -158,6 +163,16 @@ pub fn menu_entries(
             panel::Kind::Invite,
         ));
     }
+    if permissions::can_create_discussion(ws, Some(rid)) && ws.subscription(rid).is_some() {
+        v.push(
+            MenuItem::new(
+                t!("room_header.create_discussion").into_owned(),
+                Message::CreateDiscussion,
+            )
+            .icon(Icon::MessagesSquare)
+            .into(),
+        );
+    }
     let fav = common::is_favorite(ws, rid);
     let actions = [
         RoomAction::Favorite(!fav),
@@ -273,6 +288,7 @@ impl Header {
     pub fn new(rid: &str) -> Self {
         Self {
             rid: rid.to_owned(),
+            panel: None,
             menu_open: false,
             confirm: None,
             busy: false,
@@ -293,7 +309,14 @@ impl Header {
             }
             Message::MenuPanel(kind) => {
                 self.menu_open = false;
+                if self.panel.as_ref() == Some(&kind) {
+                    return Action::none();
+                }
                 Action::effect(Effect::OpenPanel(kind))
+            }
+            Message::CreateDiscussion => {
+                self.menu_open = false;
+                Action::effect(Effect::StartDiscussion { pmid: None })
             }
             Message::Room(RoomAction::MarkRead) => {
                 self.menu_open = false;
@@ -328,6 +351,11 @@ impl Header {
             }
             Message::OpenRoom(rid) => Action::effect(Effect::OpenRoom(rid)),
         }
+    }
+
+    /// Which right panel is open (see [`Header::update`]).
+    pub fn set_panel(&mut self, kind: Option<panel::Kind>) {
+        self.panel = kind;
     }
 
     fn run(&mut self, a: RoomAction, ctx: &UpdateCtx<'_>) -> Action<Message> {
@@ -730,6 +758,64 @@ mod tests {
         let l = labels(&c);
         assert!(!l.contains(&t!("room_header.pinned").into_owned()));
         assert!(!l.contains(&RoomAction::Favorite(true).label()));
+    }
+
+    #[test]
+    fn menu_entries_open_or_keep_their_panel() {
+        let mut w = ws("c", json!({}));
+        let sid = rustket_core::ServerId("s".into());
+        let url = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "r",
+            workspace: &mut w,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let mut h = Header::new("r");
+        // Already open: the menu entry keeps it (no toggle effect).
+        h.set_panel(Some(panel::Kind::Files));
+        let a = h.update(Message::MenuPanel(panel::Kind::Files), &mut ctx);
+        assert!(a.effects.is_empty());
+        // Another panel open: the entry opens its own.
+        h.set_panel(Some(panel::Kind::Members));
+        let a = h.update(Message::MenuPanel(panel::Kind::Files), &mut ctx);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::OpenPanel(panel::Kind::Files)]
+        ));
+        // Header buttons still toggle.
+        h.set_panel(Some(panel::Kind::Files));
+        let a = h.update(Message::TogglePanel(panel::Kind::Files), &mut ctx);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::OpenPanel(panel::Kind::Files)]
+        ));
+        let a = h.update(Message::CreateDiscussion, &mut ctx);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::StartDiscussion { pmid: None }]
+        ));
+    }
+
+    #[test]
+    fn create_discussion_needs_the_permission() {
+        let entry = t!("room_header.create_discussion").into_owned();
+        let mut w = ws("c", json!({}));
+        assert!(!labels(&w).contains(&entry));
+        w.apply_permission(
+            Change::Updated,
+            Permission {
+                id: "start-discussion".into(),
+                roles: vec!["user".into()],
+                updated_at: None,
+            },
+        );
+        assert!(labels(&w).contains(&entry));
     }
 
     #[test]

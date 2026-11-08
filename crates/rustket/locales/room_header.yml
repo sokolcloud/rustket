@@ -59,3 +59,6 @@ room_header.archived:
 room_header.parent_room:
   en: "Parent room"
   ru: "Родительская комната"
+room_header.create_discussion:
+  en: "Create discussion"
+  ru: "Создать обсуждение"

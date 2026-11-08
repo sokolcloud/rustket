@@ -113,3 +113,9 @@ create_room.create:
 create_room.first_message_encrypted:
   en: "The parent room is end-to-end encrypted: an encrypted discussion cannot start with a message."
   ru: "Родительская комната зашифрована сквозным шифрованием: зашифрованное обсуждение нельзя начать с сообщения."
+create_room.title_discussion:
+  en: "Create discussion"
+  ru: "Создать обсуждение"
+create_room.from_message:
+  en: "Discussion of the message"
+  ru: "Обсуждение сообщения"

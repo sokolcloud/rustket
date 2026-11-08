@@ -625,12 +625,39 @@ async fn create_rooms_directory_and_open() {
                 name: format!("rk-acct disc {s}"),
                 reply: Some("first message".into()),
                 users: vec![peer.clone()],
+                pmid: None,
             },
         )
         .await
         .unwrap();
         env.room(&o.room.id);
         assert_eq!(o.room.prid.as_deref(), Some(channel.as_str()));
+
+        // Discussion started from a message ("Start a discussion"): the
+        // server takes the message text as the discussion description.
+        let parent: serde_json::Value = c
+            .post(
+                "chat.postMessage",
+                &serde_json::json!({"roomId": channel, "text": format!("parent {s}")}),
+            )
+            .await
+            .unwrap();
+        let pmid = parent["message"]["_id"].as_str().unwrap().to_owned();
+        let o = create_room::create(
+            c.clone(),
+            Request::Discussion {
+                prid: channel.clone(),
+                name: format!("rk-acct disc-msg {s}"),
+                reply: None,
+                users: vec![],
+                pmid: Some(pmid.clone()),
+            },
+        )
+        .await
+        .unwrap();
+        env.room(&o.room.id);
+        assert_eq!(o.room.prid.as_deref(), Some(channel.as_str()));
+        assert_eq!(o.room.description, Some(format!("parent {s}")));
 
         // DM and group DM.
         let o = create_room::create(c.clone(), Request::Direct(vec![peer.clone()]))

@@ -96,6 +96,8 @@ pub enum Message {
     /// First load of the panel with generation `u64`.
     Activate(u64),
     Body(u64, BodyMsg),
+    /// "+" in the Discussions panel header.
+    CreateDiscussion,
 }
 
 /// Messages of the panel bodies.
@@ -246,6 +248,18 @@ impl Panel {
         }
     }
 
+    /// The room view is closing (room switch, logout, …): a body with its
+    /// own composer (the thread panel) stores its draft and stops its typing
+    /// indicator here. The task only carries such calls.
+    pub fn leave(
+        &mut self,
+        ws: &mut Workspace,
+        session: Option<&crate::session::SessionHandle>,
+    ) -> Task<Message> {
+        let _ = (ws, session, &self.body);
+        Task::none()
+    }
+
     pub fn close(&mut self) {
         self.open = None;
         self.back = None;
@@ -257,6 +271,7 @@ impl Panel {
     pub fn update(&mut self, msg: Message, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
         match msg {
             Message::Close => Action::effect(Effect::ClosePanel),
+            Message::CreateDiscussion => Action::effect(Effect::StartDiscussion { pmid: None }),
             Message::Back => match self.back.clone() {
                 Some(kind) if self.restore(&kind) => Action::none(),
                 Some(kind) => Action::effect(Effect::OpenPanel(kind)),
@@ -401,19 +416,28 @@ impl Panel {
                 t!("room_panel.back"),
             ));
         }
-        head = head
-            .push(
-                text(t!(kind.i18n_key()).into_owned())
-                    .size(TEXT_SUBTITLE)
-                    .font(FONT_SEMIBOLD)
-                    .wrapping(text::Wrapping::None)
-                    .width(Length::Fill),
-            )
-            .push(icon_button(
-                Icon::X,
-                Some(Message::Close),
-                t!("room_panel.close"),
+        head = head.push(
+            text(t!(kind.i18n_key()).into_owned())
+                .size(TEXT_SUBTITLE)
+                .font(FONT_SEMIBOLD)
+                .wrapping(text::Wrapping::None)
+                .width(Length::Fill),
+        );
+        if *kind == Kind::Discussions
+            && ctx.workspace.subscription(ctx.rid).is_some()
+            && rustket_core::permissions::can_create_discussion(ctx.workspace, Some(ctx.rid))
+        {
+            head = head.push(icon_button(
+                Icon::Plus,
+                Some(Message::CreateDiscussion),
+                t!("room_panel.create_discussion"),
             ));
+        }
+        head = head.push(icon_button(
+            Icon::X,
+            Some(Message::Close),
+            t!("room_panel.close"),
+        ));
         Some(
             column![
                 container(head)

@@ -857,3 +857,15 @@ fn join_code_rooms_need_a_code() {
     let a = c.update(Message::Join, &mut ctx);
     assert!(names(&outputs(a.task)).contains(&"Joined".to_owned()));
 }
+
+#[test]
+fn leaving_stops_typing_once() {
+    let mut env = Env::new("t-leave");
+    let mut c = Composer::for_thread("R1", "T1");
+    type_text(&mut c, &mut env, "hel");
+    assert!(c.typing.is_active());
+    // Without a session nothing can be sent, but the indicator is over.
+    let _ = c.leave(None);
+    assert!(!c.typing.is_active());
+    assert_eq!(c.leave(None).units(), 0);
+}

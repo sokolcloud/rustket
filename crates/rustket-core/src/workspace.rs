@@ -1142,6 +1142,19 @@ impl Workspace {
         self.mark_room(&rid);
     }
 
+    /// Drops a room that is only known because it was previewed (no
+    /// subscription: opened from the directory or the quick switcher without
+    /// joining): the room entry, its timelines and pending messages. Joined
+    /// rooms are left alone. Returns whether something was dropped.
+    pub fn forget_preview(&mut self, rid: &str) -> bool {
+        if !self.rooms.get(rid).is_some_and(|e| e.sub.is_none()) {
+            return false;
+        }
+        self.realtime.rooms.remove(rid);
+        self.remove_room(rid);
+        true
+    }
+
     fn remove_room(&mut self, rid: &str) {
         if self.rooms.remove(rid).is_some() {
             self.mark_room(rid);
@@ -1712,6 +1725,25 @@ mod tests {
         ws.apply_subscription(Change::Removed, sub("r1", "one", RoomType::Channel));
         assert!(ws.room("r1").is_none());
         assert!(ws.timeline("r1").is_none());
+    }
+
+    #[test]
+    fn previewed_rooms_are_forgotten_joined_ones_kept() {
+        let mut ws = Workspace::new();
+        ws.apply_room(Change::Updated, room("p1", "preview", RoomType::Channel));
+        ws.open_room("p1");
+        ws.apply_message(msg("m1", "p1", 1000, "u"));
+        ws.take_changes();
+        assert!(ws.forget_preview("p1"));
+        assert!(ws.room("p1").is_none());
+        assert!(ws.timeline("p1").is_none());
+        assert!(ws.take_changes().rooms.contains("p1"));
+        // Joined: kept.
+        ws.apply_room(Change::Updated, room("r1", "one", RoomType::Channel));
+        ws.apply_subscription(Change::Inserted, sub("r1", "one", RoomType::Channel));
+        assert!(!ws.forget_preview("r1"));
+        assert!(ws.room("r1").is_some());
+        assert!(!ws.forget_preview("unknown"));
     }
 
     #[test]

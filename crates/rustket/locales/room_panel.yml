@@ -584,3 +584,6 @@ room_panel.sound_dialtone:
 room_panel.sound_ringtone:
   en: "Ringtone"
   ru: "Рингтон"
+room_panel.create_discussion:
+  en: "Create discussion"
+  ru: "Создать обсуждение"

@@ -22,6 +22,32 @@ pub(super) enum Source {
     StatusMenu,
 }
 
+/// The create dialog for a discussion of `rid` (from message `pmid`), or
+/// `None` when the room is unknown.
+pub(super) fn discussion_dialog(
+    ws: &rustket_core::Workspace,
+    rid: &str,
+    pmid: Option<&str>,
+    real_names: Option<bool>,
+) -> Option<create_room::CreateRoom> {
+    let e = ws.room(rid)?;
+    let use_real = ws.use_real_names(real_names);
+    let name = rustket_core::room_list::display_name(ws, e, use_real);
+    let dialog = create_room::CreateRoom::discussion_in(rid, &name);
+    Some(match pmid {
+        Some(mid) => {
+            let excerpt = ws
+                .timeline(rid)
+                .and_then(|t| t.get(mid))
+                .map(|i| crate::room::render::plain_text(&i.message))
+                .unwrap_or_default();
+            let excerpt: String = excerpt.chars().take(200).collect();
+            dialog.from_message(mid, &excerpt)
+        }
+        None => dialog,
+    })
+}
+
 impl App {
     /// Read-only context for a per-server component view.
     pub(super) fn component_view_ctx<'a>(&'a self, s: &'a ServerState) -> component::ViewCtx<'a> {
@@ -73,6 +99,19 @@ impl App {
                     Box::new(create_room::CreateRoom::new(kind)),
                 ));
                 Task::none()
+            }
+            (Nav::CreateDiscussion { rid, pmid }, Some(sid)) => {
+                let real = self.config.ui.use_real_names;
+                let Some(dialog) = self
+                    .servers
+                    .get(&sid)
+                    .and_then(|s| discussion_dialog(&s.workspace, &rid, pmid.as_deref(), real))
+                else {
+                    return Task::none();
+                };
+                self.modals.retain(|m| !matches!(m, Modal::CreateRoom(..)));
+                self.modals.push(Modal::CreateRoom(sid, Box::new(dialog)));
+                iced::widget::operation::focus(create_room::NAME_ID)
             }
             (Nav::QuickSwitcher, Some(sid)) => {
                 if self
@@ -142,6 +181,10 @@ impl App {
                     .desktop
                     .test_notification(&self.config.ui)
                     .map(Message::Desktop),
+                Effect::RecentStatusTexts(list) => {
+                    self.config.set_recent_status_texts(list);
+                    self.save_config()
+                }
             });
         }
         Task::batch(tasks)

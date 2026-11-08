@@ -60,7 +60,7 @@ secret_backend, … }` in `view`.
 | Effect | Meaning |
 |---|---|
 | `Toast(kind, title, body)` | transient notification |
-| `Navigate(Nav)` | `Settings`, `Account`, `Directory`, `CreateRoom(Kind)`, `QuickSwitcher`, `Workspace` |
+| `Navigate(Nav)` | `Settings`, `Account`, `Directory`, `CreateRoom(Kind)`, `CreateDiscussion { rid, pmid }`, `QuickSwitcher`, `Workspace` |
 | `OpenRoom(rid)` | open a room of the component's server |
 | `OpenUrl(url)` | browser (absolute http/https/mailto only) |
 | `Close` | close this screen/dialog |
@@ -70,6 +70,7 @@ secret_backend, … }` in `view`.
 | `RegisterUrlHandler` | the `rocketchat://` handler dialog |
 | `ClearImageCache` | drop every server's image cache (memory and disk) |
 | `TestNotification` | show a test desktop notification |
+| `RecentStatusTexts(list)` | store the status menu's recent texts in `AppConfig::recent_status_texts` and save |
 
 Wiring (already done in `app/components.rs`, `app/view.rs`): rail gear →
 settings; sidebar header avatar → status menu (`workspace/status_menu.rs`,
@@ -181,6 +182,8 @@ Return them in `Action { task, effects }` (`Action::none()`,
 | `OpenUrl(url)` | App | external browser; only absolute `http`, `https`, `mailto` URLs (others are refused) |
 | `RecentEmoji(key)` | App | an emoji was used (picker): pushed to `AppConfig::recent_emoji` and saved |
 | `CloseRoom` | App | close this room's view (e.g. after hiding the room); the room stays in the workspace |
+| `MarkUnread(Option<mid>)` | App | leaves the room (like the web client), then `subscriptions.unread`; toasts the result |
+| `StartDiscussion { pmid }` | App | the create dialog for a discussion of this room (`CreateRoom::discussion_in`, `from_message`) |
 
 What `RoomView` already does: `workspace.open_room` on open, keeps the
 `watch_room` guard (dropped with the view when the room is closed or removed),
@@ -231,7 +234,25 @@ shown kind closes it).
 something; `RoomView` routes it to `Composer::intent(intent, ctx)`:
 `Edit(mid)`, `Quote(mid)`, `Mention(username)`, `InsertText(text)`,
 `React(mid)` (emoji picker for a reaction), `ReplyInThread(tmid)` (also opens
-`Kind::Thread(tmid)`).
+`Kind::Thread(tmid)`), `Retry(mid)` / `Discard(mid)` (failed sends of the room
+or any of its threads: the single outbox path; rows only emit these, the
+composer has no failed list of its own).
+
+### Room lifecycle (glue)
+
+- `RoomView::close(ws, session)` stores drafts, sends the stop-typing activity
+  (`Composer::leave`, `Panel::leave` for a body with its own composer, e.g.
+  the thread panel: it must call `Composer::leave` on its thread composer)
+  and forgets a previewed room (`Workspace::forget_preview`). `RoomView::hide`
+  stops typing when another server becomes active.
+- The automatic read mark of the focused room (`RoomView::wants_auto_read`)
+  runs only for messages newer than the last read mark, so an unread mark
+  made elsewhere is not undone.
+- A room without a subscription is a preview (`RoomView::is_preview`): no read
+  mark, the composer shows the Join bar; without `preview-c-room` the history
+  is not requested and an explanation is shown instead.
+- The header gets the open panel (`Header::set_panel`): menu entries open or
+  keep their panel; the header buttons toggle.
 
 ### Composer (`room/composer.rs`, owned by the composer agent)
 

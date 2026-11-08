@@ -19,12 +19,14 @@ use iced::{Element, Length, Subscription, Task};
 use rocketchat::rest::HistoryCursor;
 use rocketchat::session::RoomWatch;
 use rocketchat::{RestClient, ServerUrl};
+use rust_i18n::t;
 use rustket_core::config::UiPrefs;
 use rustket_core::timeline::PageTicket;
 use rustket_core::workspace::Changes;
 use rustket_core::{ServerId, Workspace};
+use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::widget::{BannerKind, vertical_divider};
+use rustket_ui::widget::{BannerKind, empty_state, vertical_divider};
 
 use crate::error::{Failure, Res};
 use crate::images::Images;
@@ -113,6 +115,24 @@ impl UpdateCtx<'_> {
     }
 }
 
+/// A room the user has not joined whose history the server does not show to
+/// non-members (`preview-c-room`).
+pub fn preview_blocked(ws: &Workspace, rid: &str) -> bool {
+    ws.subscription(rid).is_none()
+        && ws.room(rid).is_some()
+        && ws.permission_roles("preview-c-room").is_some()
+        && !rustket_core::permissions::has_permission(ws, "preview-c-room", None)
+}
+
+/// `ts` (ms) of the newest message of the room timeline.
+fn newest_ts(ws: &Workspace, rid: &str) -> Option<i64> {
+    ws.timeline(rid)?
+        .iter()
+        .rev()
+        .find_map(|i| i.message.ts)
+        .map(|d| d.timestamp_millis())
+}
+
 fn no_session() -> rocketchat::Error {
     rocketchat::Error::Unauthorized {
         message: Some("not connected".into()),
@@ -143,6 +163,15 @@ pub enum Effect {
     Compose(ComposeIntent),
     /// An emoji was used (picker): record it in the persisted recent list.
     RecentEmoji(String),
+    /// Mark the room unread from message `mid` (`None`: the whole room). The
+    /// app leaves the room first, like the web client, so the auto-read of
+    /// the open room cannot undo it.
+    MarkUnread(Option<String>),
+    /// Open the "create discussion" dialog with this room as the parent,
+    /// optionally started from message `pmid`.
+    StartDiscussion {
+        pmid: Option<String>,
+    },
 }
 
 /// Requests other room components make to the composer.
@@ -159,6 +188,11 @@ pub enum ComposeIntent {
     React(String),
     /// Reply in thread `tmid` (also opens the thread panel).
     ReplyInThread(String),
+    /// Send failed message `mid` again (room or thread; the room composer's
+    /// outbox path).
+    Retry(String),
+    /// Drop failed message `mid` (room or thread).
+    Discard(String),
 }
 
 /// Result of a component `update`: a task producing the component's messages
@@ -241,6 +275,10 @@ pub struct RoomView {
     pub composer: composer::Composer,
     pub panel: panel::Panel,
     marking_read: bool,
+    /// Newest message (`ts` ms) when the room was last marked read: the
+    /// automatic read mark only runs for messages newer than that, so an
+    /// unread mark made elsewhere is not undone.
+    marked_upto: Option<i64>,
     /// A `watch_room` call is in flight.
     watching: bool,
     /// Set after the first history page arrived.
@@ -260,6 +298,7 @@ impl RoomView {
             composer: composer::Composer::new(&rid),
             panel: panel::Panel::new(&rid),
             marking_read: false,
+            marked_upto: None,
             watching: false,
             loaded: false,
         };
@@ -268,20 +307,56 @@ impl RoomView {
         } else {
             Task::none()
         };
-        let mut action = view.load_older(ctx);
+        // A channel the server does not let non-members read: no history.
+        let mut action = if preview_blocked(ctx.workspace, &rid) {
+            Action::none()
+        } else {
+            view.load_older(ctx)
+        };
         action.task = Task::batch([action.task, watch]);
         let composer = view.composer.on_open(ctx).map(Message::Composer);
         action.task = Task::batch([action.task, composer.task]);
         action.effects.extend(composer.effects);
-        let read = view.mark_read(ctx);
-        action.task = Task::batch([action.task, read]);
+        // A preview has no subscription to mark.
+        if !view.is_preview(ctx.workspace) {
+            let read = view.mark_read(ctx);
+            action.task = Task::batch([action.task, read]);
+        }
         (view, action)
     }
 
-    /// Forgets the timeline; the room watch ends when `self` is dropped.
-    pub fn close(self, ws: &mut Workspace) {
+    /// Forgets the timeline and stops the typing indicator; the room watch
+    /// ends when `self` is dropped. The returned task only carries the
+    /// stop-typing call (its result is not needed).
+    pub fn close(mut self, ws: &mut Workspace, session: Option<&SessionHandle>) -> Task<Message> {
         self.composer.on_close(ws);
+        let typing = self.composer.leave(session).map(Message::Composer);
+        let panel = self.panel.leave(ws, session).map(Message::Panel);
         ws.close_room(&self.rid);
+        // A previewed room (never joined) leaves no trace in the workspace.
+        ws.forget_preview(&self.rid);
+        Task::batch([typing, panel])
+    }
+
+    /// The room stays open but is no longer shown (another server became
+    /// active): stop the typing indicator.
+    pub fn hide(&mut self, session: Option<&SessionHandle>) -> Task<Message> {
+        self.composer.leave(session).map(Message::Composer)
+    }
+
+    /// Whether the room is shown as a preview (not joined).
+    pub fn is_preview(&self, ws: &Workspace) -> bool {
+        ws.subscription(&self.rid).is_none()
+    }
+
+    /// Whether the automatic read mark (focused room, new messages) should
+    /// run: the room is unread and a message newer than the last read mark
+    /// arrived.
+    pub fn wants_auto_read(&self, ws: &Workspace) -> bool {
+        let unread = ws
+            .subscription(&self.rid)
+            .is_some_and(|sub| sub.unread > 0 || sub.alert);
+        unread && newest_ts(ws, &self.rid) > self.marked_upto
     }
 
     pub fn has_watch(&self) -> bool {
@@ -296,10 +371,11 @@ impl RoomView {
         if self.watch.is_none() && !self.watching {
             tasks.push(self.watch_task(ctx));
         }
-        let needs_history = ctx
-            .workspace
-            .timeline(&self.rid)
-            .is_none_or(|t| !t.pagination.loaded || t.pagination.error.is_some());
+        let needs_history = !preview_blocked(ctx.workspace, &self.rid)
+            && ctx
+                .workspace
+                .timeline(&self.rid)
+                .is_none_or(|t| !t.pagination.loaded || t.pagination.error.is_some());
         if ctx.workspace.timeline(&self.rid).is_none() {
             ctx.workspace.open_room(&self.rid);
         }
@@ -355,6 +431,7 @@ impl RoomView {
             return Task::none();
         }
         self.marking_read = true;
+        self.marked_upto = self.marked_upto.max(newest_ts(ctx.workspace, &self.rid));
         let rid = self.rid.clone();
         ctx.rest_task(
             move |rest| async move { rest.subscriptions_read(&rid).await },
@@ -364,7 +441,11 @@ impl RoomView {
 
     pub fn update(&mut self, msg: Message, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
         let action = match msg {
-            Message::Header(m) => self.header.update(m, ctx).map(Message::Header),
+            Message::Header(m) => {
+                // Menu entries open (or keep) their panel instead of toggling it.
+                self.header.set_panel(self.panel.kind().cloned());
+                self.header.update(m, ctx).map(Message::Header)
+            }
             Message::Timeline(m) => self.timeline.update(m, ctx).map(Message::Timeline),
             Message::Composer(m) => self.composer.update(m, ctx).map(Message::Composer),
             Message::Panel(m) => self.panel.update(m, ctx).map(Message::Panel),
@@ -478,11 +559,18 @@ impl RoomView {
     }
 
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
+        let timeline: Element<'a, Message> = if preview_blocked(ctx.workspace, &self.rid) {
+            empty_state(
+                Icon::Lock,
+                t!("app.preview_not_allowed"),
+                t!("app.preview_join_hint"),
+            )
+        } else {
+            self.timeline.view(ctx).map(Message::Timeline)
+        };
         let main = column![
             self.header.view(ctx).map(Message::Header),
-            container(self.timeline.view(ctx).map(Message::Timeline))
-                .width(Length::Fill)
-                .height(Length::Fill),
+            container(timeline).width(Length::Fill).height(Length::Fill),
             self.composer.view(ctx).map(Message::Composer),
         ]
         .width(Length::Fill)

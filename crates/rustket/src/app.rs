@@ -578,7 +578,7 @@ impl App {
                 .collect();
             for rid in gone {
                 if let Some(rv) = s.rooms.remove(&rid) {
-                    rv.close(&mut s.workspace);
+                    tasks.push(rv.close(&mut s.workspace, s.session.as_ref()).discard());
                 }
                 if s.active_room.as_deref() == Some(rid.as_str()) {
                     s.active_room = None;
@@ -603,15 +603,13 @@ impl App {
                     prefs: &self.config.ui,
                 };
                 let mut action = rv.on_changes(&changes, &mut ctx);
-                // Mark the focused room read when new messages arrive.
+                // Mark the focused room read when new messages arrive (not
+                // when it was marked unread elsewhere).
                 if is_active_server
                     && focused
                     && active_room.as_deref() == Some(rid.as_str())
-                    && changes.rooms.contains(rid)
-                    && ctx
-                        .workspace
-                        .subscription(rid)
-                        .is_some_and(|sub| sub.unread > 0 || sub.alert)
+                    && (changes.rooms.contains(rid) || changes.timelines.contains(rid))
+                    && rv.wants_auto_read(ctx.workspace)
                 {
                     action.task = Task::batch([action.task, rv.mark_read(&ctx)]);
                 }
@@ -914,6 +912,17 @@ impl App {
                     Err(_) => Task::none(),
                 }
             }
+            Message::MarkedUnread(sid, r) => match r {
+                Ok(()) => self.toast(BannerKind::Success, t!("app.marked_unread"), String::new()),
+                Err(e) => {
+                    tracing::warn!(server = %sid, error = %e, "subscriptions.unread failed");
+                    self.toast(
+                        BannerKind::Error,
+                        t!("app.mark_unread_failed"),
+                        e.user_text(),
+                    )
+                }
+            },
             Message::Modal(m) => self.on_modal(m),
             Message::CloseModal => {
                 if let Some(Modal::ConfirmToken { server_id, .. }) = self.modals.pop() {
@@ -979,13 +988,22 @@ impl App {
         if !self.servers.contains_key(&sid) {
             return Task::none();
         }
+        // The rooms of the server left behind stay open but hidden.
+        let mut tasks = Vec::new();
+        if let Some(prev) = self.active.clone().filter(|p| *p != sid)
+            && let Some(s) = self.servers.get_mut(&prev)
+        {
+            for rv in s.rooms.values_mut() {
+                tasks.push(rv.hide(s.session.as_ref()).discard());
+            }
+        }
         self.active = Some(sid.clone());
         self.screen = Screen::Server;
         if self.config.active_server.as_ref() != Some(&sid) {
             self.config.active_server = Some(sid);
-            return self.save_config();
+            tasks.push(self.save_config());
         }
-        Task::none()
+        Task::batch(tasks)
     }
 
     fn on_add_server(&mut self, m: add_server::Message) -> Task<Message> {
@@ -1090,7 +1108,8 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
-        s.reset();
+        // A fresh login: no session of the old one is left to tell.
+        let _ = s.reset();
         s.login = None;
         s.restoring = false;
         s.credentials = Some(r.credentials());
@@ -1142,7 +1161,8 @@ impl App {
     /// The server rejected the token: drop it and show the login screen.
     fn logged_out(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
         if let Some(s) = self.servers.get_mut(sid) {
-            s.reset();
+            // The token was rejected: nothing can be sent with it any more.
+            let _ = s.reset();
         }
         let delete = self.delete_token(sid);
         let purge = self.purge_images(sid);
@@ -1166,9 +1186,11 @@ impl App {
         let (url, tls) = (s.url.clone(), s.tls.clone());
         let kind = self.config.server(sid).and_then(|e| e.token_kind);
         let revoke = everywhere || kind == Some(TokenKind::Login);
-        if let Some(s) = self.servers.get_mut(sid) {
-            s.reset();
-        }
+        // Stop-typing calls of the open rooms go out before the logout.
+        let typing = match self.servers.get_mut(sid) {
+            Some(s) => s.reset().discard(),
+            None => Task::none(),
+        };
         let call = match (revoke, handle, credentials) {
             (true, Some(h), _) => {
                 let sid = sid.clone();
@@ -1206,7 +1228,12 @@ impl App {
         };
         let delete = self.delete_token(sid);
         let purge = self.purge_images(sid);
-        Task::batch([call, delete, purge, self.show_login(sid, None)])
+        Task::batch([
+            typing.chain(call),
+            delete,
+            purge,
+            self.show_login(sid, None),
+        ])
     }
 
     fn remove_server(&mut self, sid: &ServerId) -> Task<Message> {
@@ -1298,9 +1325,10 @@ impl App {
             .filter(|r| r.as_str() != rid)
             .cloned()
             .collect();
+        let mut closed = Vec::new();
         for r in old {
             if let Some(rv) = s.rooms.remove(&r) {
-                rv.close(&mut s.workspace);
+                closed.push(rv.close(&mut s.workspace, s.session.as_ref()).discard());
             }
         }
         s.active_room = Some(rid.to_owned());
@@ -1320,11 +1348,12 @@ impl App {
         if let Some(e) = self.config.server_mut(sid) {
             e.last_room = Some(rid.to_owned());
         }
-        Task::batch([
+        closed.extend([
             task,
             self.handle_effects(sid, rid, action.effects),
             self.save_config(),
-        ])
+        ]);
+        Task::batch(closed)
     }
 
     fn mark_active_room_read(&mut self) -> Task<Message> {
@@ -1337,15 +1366,11 @@ impl App {
         let Some(rid) = s.active_room.clone() else {
             return Task::none();
         };
-        let unread = s
-            .workspace
-            .subscription(&rid)
-            .is_some_and(|sub| sub.unread > 0 || sub.alert);
         let epoch = s.generation;
         let Some(rv) = s.rooms.get_mut(&rid) else {
             return Task::none();
         };
-        if !unread {
+        if !rv.wants_auto_read(&s.workspace) {
             return Task::none();
         }
         let ctx = UpdateCtx {
@@ -1427,9 +1452,10 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
-        if let Some(rv) = s.rooms.remove(rid) {
-            rv.close(&mut s.workspace);
-        }
+        let typing = match s.rooms.remove(rid) {
+            Some(rv) => rv.close(&mut s.workspace, s.session.as_ref()).discard(),
+            None => Task::none(),
+        };
         if s.active_room.as_deref() == Some(rid) {
             s.active_room = None;
         }
@@ -1437,9 +1463,9 @@ impl App {
             && e.last_room.as_deref() == Some(rid)
         {
             e.last_room = None;
-            return self.save_config();
+            return Task::batch([typing, self.save_config()]);
         }
-        Task::none()
+        typing
     }
 
     fn handle_effects(
@@ -1461,6 +1487,8 @@ impl App {
                 | room::Effect::OpenPanel(_)
                 | room::Effect::ClosePanel
                 | room::Effect::Compose(_) => Task::none(),
+                room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
+                room::Effect::StartDiscussion { pmid } => self.start_discussion(sid, rid, pmid),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
                     crate::room::emoji_picker::set_recent(&self.config.recent_emoji);
@@ -1469,6 +1497,47 @@ impl App {
             });
         }
         Task::batch(tasks)
+    }
+
+    /// "Mark unread": leaves the room first (like the web client), so the
+    /// automatic read mark of the open room cannot undo it, then calls
+    /// `subscriptions.unread`.
+    fn mark_unread(&mut self, sid: &ServerId, rid: &str, mid: Option<String>) -> Task<Message> {
+        let close = self.close_room_view(sid, rid);
+        let Some(rest) = self
+            .servers
+            .get(sid)
+            .and_then(|s| s.session.as_ref())
+            .map(|h| h.rest().clone())
+        else {
+            return close;
+        };
+        let (sid, rid) = (sid.clone(), rid.to_owned());
+        let call = Task::perform(
+            async move {
+                rest.subscriptions_unread(&rid, mid.as_deref())
+                    .await
+                    .map_err(Failure::from)
+            },
+            move |r| Message::MarkedUnread(sid.clone(), r),
+        );
+        Task::batch([close, call])
+    }
+
+    /// The "create discussion" dialog with `rid` as the parent room
+    /// (optionally from message `pmid`).
+    fn start_discussion(
+        &mut self,
+        sid: &ServerId,
+        rid: &str,
+        pmid: Option<String>,
+    ) -> Task<Message> {
+        let a = self.activate(sid.clone());
+        let nav = self.navigate(component::Nav::CreateDiscussion {
+            rid: rid.to_owned(),
+            pmid,
+        });
+        Task::batch([a, nav])
     }
 
     /// Hands a dropped file to the composer of the active room.

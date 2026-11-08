@@ -104,14 +104,17 @@ impl ServerState {
     }
 
     /// Drops the session, room views and workspace state (logout). Bumps the
-    /// generation so late results of the old session are discarded.
-    pub fn reset(&mut self) {
+    /// generation so late results of the old session are discarded. The
+    /// returned task stops the typing indicators of the closed rooms (sent
+    /// through the old session; results are not needed).
+    pub fn reset(&mut self) -> iced::Task<crate::room::Message> {
         self.generation += 1;
         self.credentials = None;
-        self.session = None;
+        let session = self.session.take();
         let rooms: Vec<_> = self.rooms.drain().collect();
+        let mut tasks = Vec::new();
         for (_, rv) in rooms {
-            rv.close(&mut self.workspace);
+            tasks.push(rv.close(&mut self.workspace, session.as_ref()));
         }
         self.active_room = None;
         self.workspace = Workspace::new();
@@ -121,6 +124,7 @@ impl ServerState {
         self.sync_attempt = 0;
         self.sync_error = None;
         self.start_error = None;
+        iced::Task::batch(tasks)
     }
 
     /// Whether a result tagged with `epoch` belongs to the current session.
