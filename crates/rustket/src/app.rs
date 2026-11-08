@@ -2412,10 +2412,13 @@ impl App {
                 _ => None,
             },
         ));
-        if self
-            .servers
-            .values()
-            .any(|s| s.workspace.typing().next_expiry().is_some())
+        // Every message redraws the window; typing labels are not visible while
+        // it is hidden to the tray (expired entries go at the next tick).
+        if !self.desktop.hidden
+            && self
+                .servers
+                .values()
+                .any(|s| s.workspace.typing().next_expiry().is_some())
         {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
         }

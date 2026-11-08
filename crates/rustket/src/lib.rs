@@ -20,6 +20,7 @@ pub mod i18n;
 pub mod images;
 pub mod message;
 pub mod omnichannel;
+pub mod renderer;
 pub mod room;
 pub mod screens;
 pub mod session;
