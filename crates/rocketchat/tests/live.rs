@@ -424,6 +424,23 @@ async fn message_lifecycle() {
     assert_eq!(reply.tmid.as_deref(), Some(sent.id.as_str()));
     let thread = a.thread_messages(&sent.id, 0, 50).await.unwrap();
     assert_eq!(thread.items.len(), 1);
+    let latest = a.thread_messages_latest(&sent.id, 0, 50).await.unwrap();
+    assert_eq!(latest.items[0].id, reply.id);
+    // The parent's author follows the thread: the reply is unread for them
+    // until `chat.readThread`.
+    let tunread = |s: rocketchat::models::Subscription| s.tunread.unwrap_or_default();
+    let mut unread = Vec::new();
+    for _ in 0..20 {
+        unread = tunread(a.subscriptions_get_one(&room.id).await.unwrap());
+        if !unread.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(unread.contains(&sent.id), "{unread:?}");
+    a.read_thread(&sent.id).await.unwrap();
+    let unread = tunread(a.subscriptions_get_one(&room.id).await.unwrap());
+    assert!(!unread.contains(&sent.id), "{unread:?}");
     let threads = a.threads_list(&room.id, None, None, 0, 50).await.unwrap();
     assert_eq!(threads.items[0].id, sent.id);
     assert_eq!(

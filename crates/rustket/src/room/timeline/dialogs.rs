@@ -1,4 +1,4 @@
-//! Modal dialogs of the timeline: delete confirmation, report, image lightbox.
+//! Modal dialogs of message lists: delete confirmation, report, image lightbox.
 
 use iced::widget::{column, container, image, row, text, text_input};
 use iced::{Alignment, ContentFit, Element, Length};
@@ -10,7 +10,8 @@ use rustket_ui::widget::{
     danger_button, dialog, ellipsis, icon_button_with, loading_placeholder, secondary_button,
 };
 
-use super::Message;
+use super::interact::Msg as Message;
+use super::viewer::ViewerMsg;
 use crate::images::Loaded;
 use crate::room::render::ImageRef;
 
@@ -25,11 +26,6 @@ pub enum Dialog {
         mid: String,
         description: String,
         busy: bool,
-    },
-    Image {
-        image: ImageRef,
-        /// 1:1 with panning and wheel zoom instead of fit-to-window.
-        zoom: bool,
     },
 }
 
@@ -89,10 +85,15 @@ pub fn report(description: &str, busy: bool) -> Element<'static, Message> {
 }
 
 /// Full-window image viewer: fit or 1:1 with zoom, open in browser, save.
-pub fn lightbox(img: &ImageRef, zoom: bool, loaded: Option<&Loaded>) -> Element<'static, Message> {
-    let tool = |i: Icon, label: String, msg: Message, active: bool| -> Element<'static, Message> {
-        icon_button_with(i, Some(msg), label, active, 32.0)
-    };
+pub fn lightbox(
+    img: &ImageRef,
+    zoom: bool,
+    loaded: Option<&Loaded>,
+) -> Element<'static, ViewerMsg> {
+    let tool =
+        |i: Icon, label: String, msg: ViewerMsg, active: bool| -> Element<'static, ViewerMsg> {
+            icon_button_with(i, Some(msg), label, active, 32.0)
+        };
     let header = row![
         ellipsis(img.title.clone())
             .size(TEXT_BODY)
@@ -105,31 +106,31 @@ pub fn lightbox(img: &ImageRef, zoom: bool, loaded: Option<&Loaded>) -> Element<
             } else {
                 t!("room_timeline.image_zoom").into_owned()
             },
-            Message::ToggleZoom,
+            ViewerMsg::ToggleZoom,
             zoom,
         ),
         tool(
             Icon::ExternalLink,
             t!("room_timeline.open_in_viewer").into_owned(),
-            Message::OpenImageExternally,
+            ViewerMsg::OpenImageExternally,
             false,
         ),
         tool(
             Icon::Download,
             t!("room_timeline.save_image").into_owned(),
-            Message::SaveImage,
+            ViewerMsg::SaveImage,
             false,
         ),
         tool(
             Icon::X,
             t!("room_timeline.close").into_owned(),
-            Message::CloseDialog,
+            ViewerMsg::CloseImage,
             false
         ),
     ]
     .spacing(SPACE_2)
     .align_y(Alignment::Center);
-    let body: Element<'static, Message> = match loaded {
+    let body: Element<'static, ViewerMsg> = match loaded {
         Some(l) if zoom => image::viewer(l.handle.clone())
             .width(Length::Fill)
             .height(Length::Fill)

@@ -494,9 +494,6 @@ room_panel.link_copied:
 room_panel.link_expires:
   en: "Expires %{time}"
   ru: "Истекает %{time}"
-room_panel.thread_soon:
-  en: "The thread view is coming soon"
-  ru: "Просмотр тредов скоро появится"
 room_panel.err_archived_duplicate_name:
   en: "An archived room with this name already exists"
   ru: "Архивная комната с таким названием уже существует"
@@ -584,3 +581,45 @@ room_panel.sound_dialtone:
 room_panel.sound_ringtone:
   en: "Ringtone"
   ru: "Рингтон"
+room_panel.thread_also_send:
+  en: "Also send to channel"
+  ru: "Также отправить в канал"
+room_panel.thread_follow_failed:
+  en: "Couldn't change thread following"
+  ru: "Не удалось изменить подписку на тред"
+room_panel.thread_expand:
+  en: "Expand"
+  ru: "Развернуть"
+room_panel.thread_collapse:
+  en: "Collapse"
+  ru: "Свернуть"
+room_panel.thread_following:
+  en: "Following"
+  ru: "Вы подписаны"
+room_panel.thread_not_following:
+  en: "Not following"
+  ru: "Вы не подписаны"
+room_panel.thread_replies_one:
+  en: "%{count} reply"
+  ru: "%{count} ответ"
+room_panel.thread_replies_few:
+  en: "%{count} replies"
+  ru: "%{count} ответа"
+room_panel.thread_replies_many:
+  en: "%{count} replies"
+  ru: "%{count} ответов"
+room_panel.thread_loading:
+  en: "Loading older replies…"
+  ru: "Загрузка более ранних ответов…"
+room_panel.thread_failed:
+  en: "Couldn't load replies."
+  ru: "Не удалось загрузить ответы."
+room_panel.thread_older:
+  en: "Show older replies"
+  ru: "Показать более ранние ответы"
+room_panel.file_downloading:
+  en: "Downloading %{received} of %{total}"
+  ru: "Загружено %{received} из %{total}"
+room_panel.file_open:
+  en: "Open"
+  ru: "Открыть"

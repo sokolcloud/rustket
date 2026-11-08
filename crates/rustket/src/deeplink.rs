@@ -276,6 +276,36 @@ pub fn room_name_from_path(path: &str) -> Option<(&str, &str)> {
     (!name.is_empty()).then_some((kind, name))
 }
 
+/// The `msg` query parameter of a room path (`group/x?msg=abc`): the
+/// message a permalink points at.
+pub fn message_id_from_path(path: &str) -> Option<String> {
+    let (_, query) = path.split_once('?')?;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == "msg")
+        .map(|(_, v)| v.into_owned())
+        .filter(|v| !v.is_empty() && v.len() <= 64)
+}
+
+/// Room path (`channel/general?msg=abc`) of a web permalink to a message
+/// on one of `bases` (server URL, `Site_Url`); other URLs give `None`.
+pub fn permalink_path(link: &str, bases: &[String]) -> Option<String> {
+    let rest = bases.iter().find_map(|b| {
+        let b = b.trim_end_matches('/');
+        let rest = link.strip_prefix(b)?;
+        rest.starts_with('/').then_some(rest)
+    })?;
+    let path = rest
+        .trim_start_matches('/')
+        .split('#')
+        .next()
+        .unwrap_or_default();
+    let (kind, _) = room_name_from_path(path)?;
+    if !matches!(kind, "channel" | "group" | "direct") {
+        return None;
+    }
+    message_id_from_path(path).map(|_| path.to_owned())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -455,6 +485,37 @@ mod tests {
         );
         assert_eq!(room_name_from_path("direct/bob"), Some(("direct", "bob")));
         assert_eq!(room_name_from_path("nothing"), None);
+    }
+
+    #[test]
+    fn permalinks() {
+        assert_eq!(
+            message_id_from_path("group/x?msg=abc&foo=1").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(message_id_from_path("group/x"), None);
+        let bases = ["https://chat.example.com/sub/".to_owned()];
+        assert_eq!(
+            permalink_path("https://chat.example.com/sub/channel/dev?msg=m1", &bases).as_deref(),
+            Some("channel/dev?msg=m1")
+        );
+        assert_eq!(
+            permalink_path("https://chat.example.com/sub/channel/dev", &bases),
+            None,
+            "no message"
+        );
+        assert_eq!(
+            permalink_path("https://chat.example.com/subway/channel/dev?msg=1", &bases),
+            None
+        );
+        assert_eq!(
+            permalink_path("https://evil.example/channel/dev?msg=m1", &bases),
+            None
+        );
+        assert_eq!(
+            permalink_path("https://chat.example.com/sub/admin/x?msg=1", &bases),
+            None
+        );
     }
 
     /// Review #24: one pending login accepts exactly one Token link.

@@ -13,15 +13,15 @@ use rustket_ui::style;
 use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_TITLE};
 use rustket_ui::widget::{ChipKind, divider};
 
+use super::Kind;
 use super::common::{self, RoomAction};
-use super::{Kind, render_action};
 use crate::error::Res;
-use crate::room::render::{self, RenderMsg};
+use crate::room::timeline::{Viewer, ViewerMsg};
 use crate::room::{Action, Effect, UpdateCtx, ViewCtx};
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    Render(RenderMsg),
+    View(ViewerMsg),
     Action(RoomAction),
     Confirm,
     Cancel,
@@ -35,6 +35,7 @@ pub struct Info {
     texts: Vec<(&'static str, RcMessage)>,
     confirm: Option<RoomAction>,
     busy: bool,
+    viewer: Viewer,
 }
 
 /// Fake messages so room texts get the same markdown rendering as messages.
@@ -71,6 +72,13 @@ impl Info {
         Action::none()
     }
 
+    /// The image lightbox, if open, and the message that closes it.
+    pub fn overlay<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<(Element<'a, Msg>, Msg)> {
+        self.viewer
+            .overlay(ctx)
+            .map(|e| (e.map(Msg::View), Msg::View(ViewerMsg::CloseImage)))
+    }
+
     /// Which room texts are shown (i18n keys), for tests.
     pub fn text_keys(&self) -> Vec<&'static str> {
         self.texts.iter().map(|(k, _)| *k).collect()
@@ -85,7 +93,7 @@ impl Info {
 
     pub fn update(&mut self, msg: Msg, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
         match msg {
-            Msg::Render(m) => render_action(ctx.workspace, m),
+            Msg::View(m) => self.viewer.update(m, ctx).map(Msg::View),
             Msg::Open(kind) => Action::effect(Effect::OpenPanel(kind)),
             Msg::Action(a) if a.needs_confirm() => {
                 self.confirm = Some(a);
@@ -178,7 +186,7 @@ impl Info {
         for (key, m) in &self.texts {
             col = col.push(common::field(
                 t!(*key).into_owned(),
-                render::message_body(m, ctx).map(Msg::Render),
+                self.viewer.body(m, ctx).map(Msg::View),
             ));
         }
         if let Some(n) = entry.room.as_ref().and_then(|r| r.users_count) {

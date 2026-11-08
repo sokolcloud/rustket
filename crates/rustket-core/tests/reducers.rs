@@ -734,41 +734,35 @@ fn deletions_during_a_page_request() {
         m.tmid = Some("p".into());
         m
     };
+    let page = |items: Vec<Message>, offset: u64, total: u64| Paginated {
+        count: items.len() as u64,
+        raw_len: items.len(),
+        items,
+        offset,
+        total,
+        dropped: 0,
+    };
     let mut ws = Workspace::new();
     ws.apply_subscription(Change::Inserted, sub("r1", "s1", 1));
     ws.open_thread("r1", "p");
+    // Newest first: c8, c7, c6 of nine replies.
     let (off, t) = ws.begin_load_thread_ticket("p").unwrap();
-    ws.finish_load_thread_ticket(
-        "p",
-        t,
-        Ok(Paginated {
-            items: (0..3).map(reply).collect(),
-            count: 3,
-            offset: off,
-            total: 9,
-            raw_len: 3,
-            dropped: 0,
-        }),
-    );
+    ws.finish_load_thread_ticket("p", t, Ok(page((6..9).rev().map(reply).collect(), off, 9)));
     let (off, t) = ws.begin_load_thread_ticket("p").unwrap();
     assert_eq!(off, 3);
-    ws.apply_message_deleted("r1", "c1");
+    ws.apply_message_deleted("r1", "c7");
     ws.apply_message_deleted("r1", "c4");
-    // The page was built before the deletions.
-    ws.finish_load_thread_ticket(
-        "p",
-        t,
-        Ok(Paginated {
-            items: (3..6).map(reply).collect(),
-            count: 3,
-            offset: off,
-            total: 9,
-            raw_len: 3,
-            dropped: 0,
-        }),
-    );
+    // The page was built before the deletions; a loaded reply is gone, so
+    // the positions moved: the page is dropped and asked again.
+    ws.finish_load_thread_ticket("p", t, Ok(page((3..6).rev().map(reply).collect(), off, 9)));
     let th = ws.thread("p").unwrap();
-    assert!(!th.contains("c4") && !th.contains("c1"));
+    assert!(!th.contains("c7") && !th.contains("c5"));
+    let (off, t) = ws.begin_load_thread_ticket("p").unwrap();
+    assert_eq!(off, 2);
+    ws.finish_load_thread_ticket("p", t, Ok(page(vec![reply(5), reply(3), reply(2)], off, 7)));
+    let th = ws.thread("p").unwrap();
+    let ids: Vec<&str> = th.messages().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["c2", "c3", "c5", "c6", "c8"]);
     assert_eq!(ws.begin_load_thread("p"), Some(5));
 }
 

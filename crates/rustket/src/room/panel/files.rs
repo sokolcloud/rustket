@@ -1,25 +1,23 @@
 //! Files of the room (`channels.files` / `groups.files` / `im.files`) with a
 //! type filter, name search and download through a save dialog.
 
-use std::path::PathBuf;
-
-use iced::futures::StreamExt;
-use iced::widget::{column, row, scrollable, text};
+use iced::widget::{column, mouse_area, row, scrollable, text};
 use iced::{Alignment, Element, Length};
 use rocketchat::models::Paginated;
 use rust_i18n::t;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{FONT_MEDIUM, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
-use rustket_ui::widget::{BannerKind, ellipsis, icon_button};
-use tokio::io::AsyncWriteExt;
+use rustket_ui::widget::{ellipsis, icon_button};
 
 use super::api::{self, FILE_TYPES, FileItem};
 use super::common;
 use super::debounce;
 use super::paged::{LoadState, PageReq, Paged};
 use crate::error::Res;
-use crate::room::{Action, Effect, UpdateCtx, ViewCtx};
+use crate::room::render::{FileRef, ImageRef, RenderMsg, Transfer};
+use crate::room::timeline::{Viewer, ViewerMsg};
+use crate::room::{Action, UpdateCtx, ViewCtx};
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -29,9 +27,8 @@ pub enum Msg {
     Page(PageReq, Res<Paginated<FileItem>>),
     More,
     Retry,
-    /// Download the file with this id.
-    Download(String),
-    Downloaded(String, Res<Option<PathBuf>>),
+    /// Downloads, media and the image lightbox (shared with the timeline).
+    View(ViewerMsg),
 }
 
 #[derive(Default)]
@@ -40,7 +37,7 @@ pub struct Files {
     query_seq: u64,
     type_group: Option<&'static str>,
     list: Paged<FileItem>,
-    downloading: Vec<String>,
+    viewer: Viewer,
 }
 
 /// `1.5 MB`-style size with translated units.
@@ -85,69 +82,6 @@ fn file_icon(f: &FileItem) -> Icon {
         Some("text") => Icon::FileText,
         _ => Icon::File,
     }
-}
-
-/// Saves `path` (server-relative or absolute) to a file chosen in a dialog.
-async fn save(
-    rest: rocketchat::RestClient,
-    url: String,
-    name: String,
-) -> rocketchat::Result<Option<PathBuf>> {
-    let Some(handle) = rfd::AsyncFileDialog::new()
-        .set_file_name(&name)
-        .save_file()
-        .await
-    else {
-        return Ok(None);
-    };
-    let target = handle.path().to_owned();
-    let dl = rest.download(&url).await?;
-    // A fresh temporary file next to the target: never truncates an existing
-    // file, and is removed on every failure.
-    let (part, mut file) = create_part(&target).await?;
-    let result = async {
-        let mut stream = std::pin::pin!(dl.stream());
-        while let Some(chunk) = stream.next().await {
-            file.write_all(&chunk?).await?;
-        }
-        file.flush().await?;
-        drop(file);
-        tokio::fs::rename(&part, &target).await?;
-        Ok::<_, rocketchat::Error>(())
-    }
-    .await;
-    if let Err(e) = result {
-        let _ = tokio::fs::remove_file(&part).await;
-        return Err(e);
-    }
-    Ok(Some(target))
-}
-
-/// Creates `<target>.<n>.part` with `create_new`, trying a few suffixes.
-async fn create_part(target: &std::path::Path) -> std::io::Result<(PathBuf, tokio::fs::File)> {
-    let base = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let mut last = None;
-    for i in 0..16u32 {
-        let part = target.with_file_name(format!("{base}.{:x}.part", stamp.wrapping_add(i)));
-        match tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&part)
-            .await
-        {
-            Ok(f) => return Ok((part, f)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
-            Err(e) => return Err(e),
-        }
-    }
-    Err(last.unwrap_or_else(|| std::io::Error::other("no temporary file name")))
 }
 
 impl Files {
@@ -195,38 +129,15 @@ impl Files {
                 None => Action::none(),
             },
             Msg::Retry => self.reload(ctx),
-            Msg::Download(id) => {
-                let Some(f) = self.list.items.iter().find(|f| f.id == id) else {
-                    return Action::none();
-                };
-                let Some(url) = f.download_path().map(str::to_owned) else {
-                    return Action::none();
-                };
-                if self.downloading.contains(&f.id) {
-                    return Action::none();
-                }
-                self.downloading.push(f.id.clone());
-                let (id, name) = (f.id.clone(), f.name.clone());
-                Action::task(ctx.rest_task(
-                    move |rest| save(rest, url, name),
-                    move |r| Msg::Downloaded(id, r),
-                ))
-            }
-            Msg::Downloaded(id, r) => {
-                self.downloading.retain(|d| d != &id);
-                match r {
-                    Ok(Some(path)) => Action::effect(Effect::Toast(
-                        BannerKind::Success,
-                        t!("room_panel.downloaded").into_owned(),
-                        path.display().to_string(),
-                    )),
-                    Ok(None) => Action::none(),
-                    Err(e) => {
-                        Action::effect(common::error_toast(&t!("room_panel.download_failed"), &e))
-                    }
-                }
-            }
+            Msg::View(m) => self.viewer.update(m, ctx).map(Msg::View),
         }
+    }
+
+    /// The image lightbox, if open, and the message that closes it.
+    pub fn overlay<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<(Element<'a, Msg>, Msg)> {
+        self.viewer
+            .overlay(ctx)
+            .map(|e| (e.map(Msg::View), Msg::View(ViewerMsg::CloseImage)))
     }
 
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
@@ -262,7 +173,80 @@ impl Files {
                     if f.uploaded_at.is_some() {
                         meta.push(common::time_label(f.uploaded_at, ctx));
                     }
-                    let busy = self.downloading.contains(&f.id);
+                    let url = f.download_path().map(|p| ctx.server.absolute(p));
+                    let file = url.as_ref().map(|url| FileRef {
+                        mid: f.id.clone(),
+                        url: url.clone(),
+                        name: f.name.clone(),
+                        size: Some(f.size),
+                        mime: f.mime.clone(),
+                    });
+                    let transfer = url
+                        .as_deref()
+                        .and_then(|u| self.viewer.render.transfer(&f.id, u));
+                    match transfer {
+                        Some(Transfer::Running { received, total }) => {
+                            let total = total.unwrap_or(f.size);
+                            meta = vec![
+                                t!(
+                                    "room_panel.file_downloading",
+                                    received = human_size(*received),
+                                    total = human_size(total)
+                                )
+                                .into_owned(),
+                            ];
+                        }
+                        Some(Transfer::Failed(e)) => meta = vec![e.clone()],
+                        _ => {}
+                    }
+                    let action = match (transfer, &file) {
+                        (Some(Transfer::Done(path)), _) => icon_button(
+                            Icon::FolderOpen,
+                            Some(Msg::View(ViewerMsg::Render(RenderMsg::OpenFile(
+                                path.clone(),
+                            )))),
+                            t!("room_panel.file_open"),
+                        ),
+                        (Some(Transfer::Running { .. }), _) => {
+                            icon_button(Icon::Download, None, t!("room_panel.download"))
+                        }
+                        (_, Some(file)) => icon_button(
+                            Icon::Download,
+                            Some(Msg::View(ViewerMsg::Render(RenderMsg::Download(
+                                file.clone(),
+                            )))),
+                            t!("room_panel.download"),
+                        ),
+                        (_, None) => icon_button(Icon::Download, None, t!("room_panel.download")),
+                    };
+                    // Images open in the lightbox, audio/video in the player.
+                    let open = match (f.type_group.as_deref(), &file) {
+                        (Some("image"), Some(file)) => Some(RenderMsg::OpenImage(ImageRef {
+                            mid: file.mid.clone(),
+                            url: file.url.clone(),
+                            title: file.name.clone(),
+                            mime: file.mime.clone(),
+                        })),
+                        (Some("video" | "audio"), Some(file)) => {
+                            Some(RenderMsg::Play(file.clone()))
+                        }
+                        _ => None,
+                    };
+                    let name: Element<'a, Msg> = match open {
+                        Some(m) => mouse_area(
+                            ellipsis(f.name.clone())
+                                .size(TEXT_BODY)
+                                .font(FONT_MEDIUM)
+                                .style(|theme| Some(rustket_ui::theme::tokens(theme).link)),
+                        )
+                        .interaction(iced::mouse::Interaction::Pointer)
+                        .on_press(Msg::View(ViewerMsg::Render(m)))
+                        .into(),
+                        None => ellipsis(f.name.clone())
+                            .size(TEXT_BODY)
+                            .font(FONT_MEDIUM)
+                            .into(),
+                    };
                     let line = row![
                         iced::widget::container(
                             icon::sized(file_icon(f), 20.0).style(style::text_secondary)
@@ -270,18 +254,13 @@ impl Files {
                         .padding(6)
                         .style(style::container_card),
                         column![
-                            ellipsis(f.name.clone()).size(TEXT_BODY).font(FONT_MEDIUM),
+                            name,
                             text(meta.join(" · "))
                                 .size(TEXT_CAPTION)
                                 .style(style::text_hint),
                         ]
                         .width(Length::Fill),
-                        icon_button(
-                            Icon::Download,
-                            (!busy && f.download_path().is_some())
-                                .then(|| Msg::Download(f.id.clone())),
-                            t!("room_panel.download"),
-                        ),
+                        action,
                     ]
                     .spacing(SPACE_3)
                     .align_y(Alignment::Center);

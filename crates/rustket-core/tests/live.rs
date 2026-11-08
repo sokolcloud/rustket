@@ -481,7 +481,7 @@ async fn room_sync_reset_reloads_the_whole_window() {
     .await;
 }
 
-/// Offset-based thread pagination must not skip a reply when an already loaded
+/// Newest-first thread pagination must not skip a reply when an already loaded
 /// reply is deleted between pages.
 #[tokio::test(flavor = "multi_thread")]
 async fn thread_pagination_survives_deleted_replies() {
@@ -511,15 +511,15 @@ async fn thread_pagination_survives_deleted_replies() {
         ws.open_thread(&room.id, &parent.id);
         let off = ws.begin_load_thread(&parent.id).unwrap();
         let p = ra
-            .thread_messages(&parent.id, off, 3)
+            .thread_messages_latest(&parent.id, off, 3)
             .await
             .map_err(|e| e.to_string());
         ws.finish_load_thread(&parent.id, p);
-        ra.delete_message(&room.id, &replies[1]).await.unwrap();
-        ws.apply_message_deleted(&room.id, &replies[1]);
+        ra.delete_message(&room.id, &replies[4]).await.unwrap();
+        ws.apply_message_deleted(&room.id, &replies[4]);
         while let Some(off) = ws.begin_load_thread(&parent.id) {
             let p = ra
-                .thread_messages(&parent.id, off, 3)
+                .thread_messages_latest(&parent.id, off, 3)
                 .await
                 .map_err(|e| e.to_string());
             ws.finish_load_thread(&parent.id, p);
@@ -530,7 +530,7 @@ async fn thread_pagination_survives_deleted_replies() {
             .messages()
             .map(|m| m.msg.clone())
             .collect();
-        assert_eq!(got, ["r0", "r2", "r3", "r4", "r5"]);
+        assert_eq!(got, ["r0", "r1", "r2", "r3", "r5"]);
     })
     .await;
 }

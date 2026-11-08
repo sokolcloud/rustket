@@ -20,15 +20,14 @@ pub mod settings;
 pub mod thread;
 pub mod user_info;
 
-use iced::widget::{column, container, row, text};
+use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use rust_i18n::t;
 use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_4, TEXT_SUBTITLE};
-use rustket_ui::widget::{divider, icon_button};
+use rustket_ui::widget::{divider, ellipsis, icon_button};
 
-use super::render::RenderMsg;
 use super::{Action, Effect, UpdateCtx, ViewCtx};
 
 /// Width of the panel.
@@ -124,11 +123,11 @@ enum Body {
     Notify(notify::Notify),
     Settings(settings::Settings),
     Invite(invite::Invite),
-    Thread(thread::Thread),
+    Thread(Box<thread::Thread>),
 }
 
 impl Body {
-    fn new(kind: &Kind) -> Self {
+    fn new(kind: &Kind, rid: &str) -> Self {
         match kind {
             Kind::Info => Body::Info(info::Info::default()),
             Kind::UserInfo(u) => Body::User(user_info::UserInfo::new(u)),
@@ -150,7 +149,7 @@ impl Body {
             Kind::NotificationPrefs => Body::Notify(notify::Notify::default()),
             Kind::RoomSettings => Body::Settings(settings::Settings::default()),
             Kind::Invite => Body::Invite(invite::Invite::default()),
-            Kind::Thread(tmid) => Body::Thread(thread::Thread::new(tmid)),
+            Kind::Thread(tmid) => Body::Thread(Box::new(thread::Thread::new(rid, tmid))),
         }
     }
 }
@@ -174,6 +173,9 @@ pub struct Panel {
     /// Generation waiting for its activation.
     pending: Option<u64>,
     stash: Option<Stash>,
+    /// Bodies replaced or closed since the last [`Panel::retire`] (a thread
+    /// keeps its draft and closes its workspace timeline there).
+    retired: Vec<Body>,
 }
 
 fn wrap<M: Send + 'static>(generation: u64, a: Action<M>, f: fn(M) -> BodyMsg) -> Action<Message> {
@@ -191,6 +193,107 @@ impl Panel {
             counter: 0,
             pending: None,
             stash: None,
+            retired: Vec::new(),
+        }
+    }
+
+    /// Lets replaced/closed bodies release workspace state (thread
+    /// timelines, drafts). Runs before every panel update; the room view
+    /// also calls it after opening or closing the panel.
+    pub fn retire(&mut self, ws: &mut Workspace) {
+        for body in self.retired.drain(..) {
+            if let Body::Thread(mut t) = body {
+                t.on_close(ws);
+            }
+        }
+    }
+
+    fn drop_body(&mut self, body: Option<Body>) {
+        if let Some(b) = body {
+            self.retired.push(b);
+        }
+    }
+
+    /// Width of the open panel (the thread view is wider).
+    pub fn width(&self) -> f32 {
+        match &self.body {
+            Some(Body::Thread(t)) => t.width(),
+            _ => WIDTH,
+        }
+    }
+
+    /// The open thread, if the panel shows one.
+    pub fn thread_tmid(&self) -> Option<&str> {
+        match &self.body {
+            Some(Body::Thread(t)) => Some(t.tmid()),
+            _ => None,
+        }
+    }
+
+    /// Focuses the thread composer (reply in thread on an open thread).
+    pub fn focus_thread_composer(&self) -> Task<Message> {
+        let g = self.generation;
+        match &self.body {
+            Some(Body::Thread(t)) if self.pending.is_none() => t
+                .focus_composer()
+                .map(move |m| Message::Body(g, BodyMsg::Thread(m))),
+            _ => Task::none(),
+        }
+    }
+
+    /// Highlights reply `mid` in the open thread once it is loaded.
+    pub fn focus_thread_reply(&mut self, mid: &str) {
+        if let Some(Body::Thread(t)) = &mut self.body {
+            t.set_focus(Some(mid.to_owned()));
+        }
+    }
+
+    /// Marks the open thread read when it is at the bottom and has unread
+    /// replies; the caller knows the window is focused.
+    pub fn mark_thread_read(&mut self, ctx: &UpdateCtx<'_>) -> Task<Message> {
+        let g = self.generation;
+        match &mut self.body {
+            Some(Body::Thread(t)) if self.pending.is_none() => t
+                .mark_read(ctx)
+                .map(move |m| Message::Body(g, BodyMsg::Thread(m))),
+            _ => Task::none(),
+        }
+    }
+
+    /// The dialog or lightbox of the open body (shown over the whole room),
+    /// with its key and the message that dismisses it.
+    pub fn overlay<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<(u8, Element<'a, Message>, Message)> {
+        let g = self.generation;
+        match self.body.as_ref()? {
+            Body::Thread(b) => b.overlay(ctx).map(|(k, e, d)| {
+                (
+                    k,
+                    e.map(move |m| Message::Body(g, BodyMsg::Thread(m))),
+                    Message::Body(g, BodyMsg::Thread(d)),
+                )
+            }),
+            Body::Messages(b) => b.overlay(ctx).map(|(e, d)| {
+                (
+                    3,
+                    e.map(move |m| Message::Body(g, BodyMsg::Messages(m))),
+                    Message::Body(g, BodyMsg::Messages(d)),
+                )
+            }),
+            Body::Files(b) => b.overlay(ctx).map(|(e, d)| {
+                (
+                    3,
+                    e.map(move |m| Message::Body(g, BodyMsg::Files(m))),
+                    Message::Body(g, BodyMsg::Files(d)),
+                )
+            }),
+            Body::Info(b) => b.overlay(ctx).map(|(e, d)| {
+                (
+                    3,
+                    e.map(move |m| Message::Body(g, BodyMsg::Info(m))),
+                    Message::Body(g, BodyMsg::Info(d)),
+                )
+            }),
+            _ => None,
         }
     }
 
@@ -215,6 +318,8 @@ impl Panel {
             .filter(|from| kind.back_target(from))
             .cloned();
         let previous = self.body.take();
+        let old_stash = self.stash.take();
+        self.drop_body(old_stash.map(|s| s.body));
         self.stash = match (&self.back, previous) {
             // A body that never ran its first load is not worth keeping.
             (Some(from), Some(body)) if self.pending != Some(self.generation) => Some(Stash {
@@ -222,9 +327,12 @@ impl Panel {
                 body,
                 generation: self.generation,
             }),
-            _ => None,
+            (_, body) => {
+                self.drop_body(body);
+                None
+            }
         };
-        self.body = Some(Body::new(&kind));
+        self.body = Some(Body::new(&kind, &self.rid));
         self.open = Some(kind);
         self.counter += 1;
         self.generation = self.counter;
@@ -236,7 +344,8 @@ impl Panel {
         match self.stash.take() {
             Some(st) if &st.kind == kind => {
                 self.open = Some(st.kind);
-                self.body = Some(st.body);
+                let current = self.body.replace(st.body);
+                self.drop_body(current);
                 self.generation = st.generation;
                 self.back = None;
                 self.pending = None;
@@ -249,12 +358,15 @@ impl Panel {
     pub fn close(&mut self) {
         self.open = None;
         self.back = None;
-        self.body = None;
+        let body = self.body.take();
+        self.drop_body(body);
+        let stash = self.stash.take();
+        self.drop_body(stash.map(|s| s.body));
         self.pending = None;
-        self.stash = None;
     }
 
     pub fn update(&mut self, msg: Message, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        self.retire(ctx.workspace);
         match msg {
             Message::Close => Action::effect(Effect::ClosePanel),
             Message::Back => match self.back.clone() {
@@ -335,6 +447,7 @@ impl Panel {
     }
 
     pub fn on_changes(&mut self, changes: &Changes, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        self.retire(ctx.workspace);
         let g = self.generation;
         if self.pending.is_some() {
             return Action::none();
@@ -350,13 +463,21 @@ impl Panel {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        match self.pending {
+        let activate = match self.pending {
             Some(g) => Subscription::run_with(g, |g| {
                 let g = *g;
                 iced::futures::stream::once(async move { Message::Activate(g) })
             }),
             None => Subscription::none(),
-        }
+        };
+        let body = match &self.body {
+            Some(Body::Thread(t)) if self.pending.is_none() => t
+                .subscription()
+                .with(self.generation)
+                .map(|(g, m)| Message::Body(g, BodyMsg::Thread(m))),
+            _ => Subscription::none(),
+        };
+        Subscription::batch([activate, body])
     }
 
     /// `None` when closed.
@@ -401,19 +522,26 @@ impl Panel {
                 t!("room_panel.back"),
             ));
         }
-        head = head
-            .push(
-                text(t!(kind.i18n_key()).into_owned())
-                    .size(TEXT_SUBTITLE)
-                    .font(FONT_SEMIBOLD)
-                    .wrapping(text::Wrapping::None)
-                    .width(Length::Fill),
-            )
-            .push(icon_button(
-                Icon::X,
-                Some(Message::Close),
-                t!("room_panel.close"),
-            ));
+        let title = match self.body.as_ref() {
+            Some(Body::Thread(t)) => t.title(),
+            _ => t!(kind.i18n_key()).into_owned(),
+        };
+        head = head.push(
+            ellipsis(title)
+                .size(TEXT_SUBTITLE)
+                .font(FONT_SEMIBOLD)
+                .width(Length::Fill),
+        );
+        if let Some(Body::Thread(t)) = self.body.as_ref() {
+            for b in t.header_actions(ctx) {
+                head = head.push(b.map(move |m| Message::Body(g, BodyMsg::Thread(m))));
+            }
+        }
+        head = head.push(icon_button(
+            Icon::X,
+            Some(Message::Close),
+            t!("room_panel.close"),
+        ));
         Some(
             column![
                 container(head)
@@ -426,23 +554,6 @@ impl Panel {
             .height(Length::Fill)
             .into(),
         )
-    }
-}
-
-/// Turns an interaction inside a rendered message body into effects.
-pub(crate) fn render_action<M: Send + 'static>(ws: &Workspace, m: RenderMsg) -> Action<M> {
-    match m {
-        RenderMsg::OpenUrl(url) => Action::effect(Effect::OpenUrl(url)),
-        RenderMsg::OpenRoom(name) => match common::rid_by_name(ws, &name) {
-            Some(rid) => Action::effect(Effect::OpenRoom(rid)),
-            None => Action::none(),
-        },
-        RenderMsg::OpenUser(username) => {
-            Action::effect(Effect::OpenPanel(Kind::UserInfo(username)))
-        }
-        RenderMsg::Copy(text) => Action::task(iced::clipboard::write(text)),
-        #[allow(unreachable_patterns)]
-        _ => Action::none(),
     }
 }
 

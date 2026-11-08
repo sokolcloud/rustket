@@ -17,9 +17,9 @@ use rustket_ui::widget::{BadgeKind, divider, dot, ellipsis};
 use super::api::{self, MessageList, ThreadFilter};
 use super::common;
 use super::paged::{LoadState, PageReq, Paged};
-use super::{Kind, debounce, render_action};
+use super::{Kind, debounce};
 use crate::error::Res;
-use crate::room::render::{self, RenderMsg};
+use crate::room::timeline::{Viewer, ViewerMsg};
 use crate::room::{Action, Effect, UpdateCtx, ViewCtx};
 
 /// Translated action text of a system message (the sidebar's preview keys).
@@ -49,9 +49,11 @@ pub enum Msg {
     Page(PageReq, Res<Paginated<RcMessage>>),
     More,
     Retry,
-    Render(RenderMsg),
+    View(ViewerMsg),
     OpenThread(String),
     OpenUser(String),
+    /// A result was clicked: show it in its thread or in the timeline.
+    Show(String),
 }
 
 pub struct Messages {
@@ -60,6 +62,7 @@ pub struct Messages {
     query_seq: u64,
     filter: ThreadFilter,
     list: Paged<RcMessage>,
+    viewer: Viewer,
 }
 
 impl Messages {
@@ -70,7 +73,15 @@ impl Messages {
             query_seq: 0,
             filter: ThreadFilter::All,
             list: Paged::default(),
+            viewer: Viewer::new(),
         }
+    }
+
+    /// The image lightbox, if open, and the message that closes it.
+    pub fn overlay<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<(Element<'a, Msg>, Msg)> {
+        self.viewer
+            .overlay(ctx)
+            .map(|e| (e.map(Msg::View), Msg::View(ViewerMsg::CloseImage)))
     }
 
     pub fn activate(&mut self, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
@@ -126,7 +137,14 @@ impl Messages {
                 None => Action::none(),
             },
             Msg::Retry => self.reload(ctx),
-            Msg::Render(m) => render_action(ctx.workspace, m),
+            Msg::View(m) => self.viewer.update(m, ctx).map(Msg::View),
+            Msg::Show(id) => match self.list.items.iter().find(|m| m.id == id) {
+                Some(m) if self.mode == Mode::Threads => {
+                    Action::effect(Effect::OpenPanel(Kind::Thread(m.id.clone())))
+                }
+                Some(m) => Action::effect(Effect::ShowMessage(Box::new(m.clone()))),
+                None => Action::none(),
+            },
             Msg::OpenThread(tmid) => Action::effect(Effect::OpenPanel(Kind::Thread(tmid))),
             Msg::OpenUser(u) => Action::effect(Effect::OpenPanel(Kind::UserInfo(u))),
         }
@@ -207,7 +225,7 @@ impl Messages {
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
-        let mut content = column![head, render::message_body(m, ctx).map(Msg::Render)].spacing(2);
+        let mut content = column![head, self.viewer.body(m, ctx).map(Msg::View)].spacing(2);
         if self.mode == Mode::Threads {
             let unread = ws
                 .subscription(ctx.rid)
@@ -247,14 +265,15 @@ impl Messages {
         let cell = container(line)
             .padding([SPACE_2, SPACE_4])
             .width(Length::Fill);
-        if self.mode == Mode::Threads {
-            mouse_area(cell)
-                .interaction(iced::mouse::Interaction::Pointer)
-                .on_press(Msg::OpenThread(m.id.clone()))
-                .into()
+        let target = if self.mode == Mode::Threads {
+            Msg::OpenThread(m.id.clone())
         } else {
-            cell.into()
-        }
+            Msg::Show(m.id.clone())
+        };
+        mouse_area(cell)
+            .interaction(iced::mouse::Interaction::Pointer)
+            .on_press(target)
+            .into()
     }
 
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {

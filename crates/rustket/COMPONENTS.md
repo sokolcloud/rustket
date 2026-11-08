@@ -181,6 +181,7 @@ Return them in `Action { task, effects }` (`Action::none()`,
 | `OpenUrl(url)` | App | external browser; only absolute `http`, `https`, `mailto` URLs (others are refused) |
 | `RecentEmoji(key)` | App | an emoji was used (picker): pushed to `AppConfig::recent_emoji` and saved |
 | `CloseRoom` | App | close this room's view (e.g. after hiding the room); the room stays in the workspace |
+| `ShowMessage(msg)` | RoomView | a thread reply opens its thread; otherwise the timeline jumps to the message (loading older pages if needed) and highlights it |
 
 What `RoomView` already does: `workspace.open_room` on open, keeps the
 `watch_room` guard (dropped with the view when the room is closed or removed),
@@ -258,3 +259,24 @@ pub enum RenderMsg { OpenUrl(String), OpenRoom(String), OpenUser(String), Toggle
 Callers map `RenderMsg` into their own `Message` and turn it into effects
 (`OpenUrl`, `OpenRoom`, `OpenPanel(UserInfo(..))`, …). New variants may be
 added by the timeline agent; callers should keep a catch-all arm.
+
+Message lists share more than the body renderer (`room/timeline/`):
+- `viewer::Viewer` (+ `ViewerMsg`): interactive bodies (`Viewer::body`),
+  spoilers/collapse state, downloads with progress, media opened with the
+  system player, the image lightbox (`Viewer::overlay`). Every panel that
+  renders messages keeps one.
+- `interact::Interactions` (+ `ItemMsg`): row actions (permission-gated),
+  the "more" menu, retry/discard of failed sends, delete/report dialogs; for
+  `Source::Room` or `Source::Thread(tmid)`. `Effect::Compose` requests are
+  routed by the owner to its composer.
+- `list::{plan, row, Common}`, `row::{Env, RowFlags}`: grouping, day and
+  unread separators and the `lazy` rows, used by the timeline and the thread.
+- Dialogs and the lightbox are drawn by `RoomView` over the whole room
+  (`Timeline::overlay`, `Panel::overlay`).
+
+The thread view (`room/panel/thread.rs`) owns `Composer::for_thread` with
+"Also send to channel" (`Composer::set_tshow`), pages replies newest first
+(`RestClient::thread_messages_latest`), and marks the thread read
+(`chat.readThread`) on open and, while focused at the bottom, when replies
+arrive (`RoomView::mark_thread_read`, called by the app). Panel bodies that
+hold workspace state are released through `Panel::retire`.
