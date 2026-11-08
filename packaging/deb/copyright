@@ -9,10 +9,7 @@ Comment: /usr/bin/rustket is statically linked with about 480 Rust crates
 
 Files: *
 Copyright: 2026 Sergey Sokolov <sokol@xi-ix.org>
-License: LicenseRef-Rustket
- All rights reserved. The project has not chosen a public license yet;
- redistribution requires the copyright holder's permission. This does not
- restrict the third-party components, which keep their own licenses.
+License: MIT
 
 Files: crates/rustket-ui/assets/fonts/*
 Copyright: 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
@@ -47,3 +44,22 @@ License: CC0-1.0
  .
  On Debian systems, the complete text of the CC0 1.0 Universal license can be
  found in /usr/share/common-licenses/CC0-1.0.
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.

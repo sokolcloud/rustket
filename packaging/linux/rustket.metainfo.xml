@@ -4,6 +4,7 @@
 <component type="desktop-application">
   <id>rustket</id>
   <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
   <name>Rustket</name>
   <summary>Native Rocket.Chat desktop client</summary>
   <summary xml:lang="ru">Нативный клиент Rocket.Chat для рабочего стола</summary>
