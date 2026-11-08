@@ -44,7 +44,8 @@ keyboard-focusable through `rustket_ui::widget::focus_ring(button, on_press)`
 `None` for a disabled button, the tree shape stays the same). The
 `rustket-ui` builders (`action_button`/`primary_button`…, `icon_button`,
 `room_list_item`, `section_header`, rail items, reaction pills,
-thread/discussion summaries) already wrap themselves; wrap your own
+thread/discussion summaries, title-bar workspaces, buttons and window
+controls) already wrap themselves; wrap your own
 `iced::widget::button`s the same way. `focus_within(content)` draws the ring
 around a styled box whose inner (borderless) input has the focus. Custom
 menus use `menu_nav(column, actions)` for Up/Down/Enter (the status menu
@@ -52,7 +53,8 @@ does). Hover toolbars (`hover_box`) show while one of their buttons has the
 focus. Tab and F6 scroll the focused widget into view; `side_panel` hides
 the room column's focusables while a panel covers it. Regions for F6 are
 containers with the ids in `crate::focus` (sidebar, timeline, composer,
-panel); Escape that no widget took closes the right panel or the open page
+panel); the custom title bar is not a region (Tab reaches it first). Escape
+that no widget took closes the right panel or the open page
 (`Message::Escape`). A widget that handles Escape itself must capture it.
 
 ## App-level components (`src/component.rs`)

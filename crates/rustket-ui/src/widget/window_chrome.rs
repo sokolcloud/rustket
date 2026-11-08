@@ -15,6 +15,7 @@ use iced::{
 
 use super::avatar::{AvatarShape, AvatarSource, face};
 use super::badge::{BadgeKind, badge, dot};
+use super::focus_ring::focus_ring;
 use super::misc::{TooltipPosition, tooltip};
 use crate::icon::{self, Icon};
 use crate::theme::{RADIUS_MD, RADIUS_PILL, tokens};
@@ -138,7 +139,8 @@ pub fn title_bar_workspace<'a, Message: Clone + 'a>(
     let b = button(layers)
         .padding(0)
         .style(item_style(selected))
-        .on_press_maybe(on_press);
+        .on_press_maybe(on_press.clone());
+    let b = focus_ring(b, on_press).radius(RADIUS_MD + 2.0);
     tooltip(b, name, TooltipPosition::Bottom)
 }
 
@@ -171,7 +173,8 @@ pub fn title_bar_button<'a, Message: Clone + 'a>(
                 ..button::Style::default()
             }
         })
-        .on_press_maybe(on_press);
+        .on_press_maybe(on_press.clone());
+    let b = focus_ring(b, on_press).radius(RADIUS_MD);
     tooltip(b, label, TooltipPosition::Bottom)
 }
 
@@ -209,7 +212,8 @@ fn control<'a, Message: Clone + 'a>(
                 ..button::Style::default()
             }
         })
-        .on_press(on_press);
+        .on_press(on_press.clone());
+    let b = focus_ring(b, Some(on_press)).radius(0.0);
     tooltip(b, label, TooltipPosition::Bottom)
 }
 

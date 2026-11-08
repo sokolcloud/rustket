@@ -8,8 +8,10 @@
 //! - F6 / Shift+F6 move between the regions: sidebar (its search field),
 //!   timeline (the last focusable on screen, i.e. near the newest message),
 //!   composer, right panel (the thread composer when a thread is open).
-//!   Regions without anything focusable are skipped. Ctrl+Shift+Arrow is not
-//!   used: text fields select words with it.
+//!   Regions without anything focusable are skipped. The custom title bar
+//!   (workspaces, add, settings, window controls) is not an F6 region: it is
+//!   the first stop of Tab instead. Ctrl+Shift+Arrow is not used: text
+//!   fields select words with it.
 //! - Escape closes the innermost thing: popovers and menus, then dialogs, an
 //!   input's focus (an empty thread composer closes the thread), then the
 //!   right panel, or the settings/account/directory/administration page.
