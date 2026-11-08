@@ -130,9 +130,10 @@ pub struct Admin {
     pub i18n_loaded: bool,
     pub guard: Option<guard::Prompt>,
     pub confirm: Option<Confirm>,
-    /// Where the user wanted to go (rail) while the settings had unsaved
-    /// edits; `ready` once they were discarded.
-    leave: Option<(crate::workspace::rail::Message, bool)>,
+    /// Where the user wanted to go (the app message that leaves the screen:
+    /// rail, room link, notification, quick switcher, window close, …) while
+    /// the settings had unsaved edits; `ready` once they were discarded.
+    leave: Option<(Box<crate::message::Message>, bool)>,
 }
 
 impl Default for Admin {
@@ -155,14 +156,19 @@ impl Admin {
         }
     }
 
-    /// The rail asks before leaving the admin screen: `true` when it may
+    /// Whether a settings page has unsaved edits.
+    pub fn is_dirty(&self) -> bool {
+        matches!(&self.page, Page::Settings(p) if p.is_dirty())
+    }
+
+    /// The app asks before leaving the admin screen: `true` when it may
     /// leave now; otherwise the unsaved-changes dialog is shown and, after
-    /// "Discard", [`Admin::take_leave`] hands `to` back.
-    pub fn ask_leave(&mut self, to: crate::workspace::rail::Message) -> bool {
-        if !matches!(&self.page, Page::Settings(p) if p.is_dirty()) {
+    /// "Discard", [`Admin::take_leave`] hands `to` back to be replayed.
+    pub fn ask_leave(&mut self, to: crate::message::Message) -> bool {
+        if !self.is_dirty() {
             return true;
         }
-        self.leave = Some((to, false));
+        self.leave = Some((Box::new(to), false));
         self.confirm = Some(Confirm::ask(
             t!("admin.unsaved_title").into_owned(),
             t!("admin.unsaved_body").into_owned(),
@@ -172,10 +178,10 @@ impl Admin {
         false
     }
 
-    /// The rail navigation to carry out after the edits were discarded.
-    pub fn take_leave(&mut self) -> Option<crate::workspace::rail::Message> {
+    /// The navigation to carry out after the edits were discarded.
+    pub fn take_leave(&mut self) -> Option<crate::message::Message> {
         match self.leave.take() {
-            Some((to, true)) => Some(to),
+            Some((to, true)) => Some(*to),
             pending => {
                 self.leave = pending;
                 None
@@ -442,7 +448,12 @@ impl Admin {
                 }
                 self.select(s, ctx)
             }
-            Message::Settings(settings::Msg::DiscardAndClose) => Action::effect(Effect::Close),
+            Message::Settings(settings::Msg::DiscardAndClose) => {
+                if let Page::Settings(p) = &mut self.page {
+                    p.discard();
+                }
+                Action::effect(Effect::Close)
+            }
             Message::DiscardAndLeave => {
                 if let Page::Settings(p) = &mut self.page {
                     p.discard();

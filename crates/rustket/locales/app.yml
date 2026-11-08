@@ -113,3 +113,6 @@ app.preview_not_allowed:
 app.preview_join_hint:
   en: "Join it to see the messages."
   ru: "Вступите в него, чтобы увидеть сообщения."
+app.signed_out_of:
+  en: "Signed out of %{server}"
+  ru: "Выполнен выход из %{server}"

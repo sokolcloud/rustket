@@ -121,6 +121,7 @@ impl App {
                 avatar: AvatarSource::initials(&s.name, s.url.as_str()),
                 unread: room_list::unread_totals(&s.workspace),
                 selected: !adding && self.active.as_ref() == Some(&s.id),
+                signed_out: !s.is_logged_in() && !s.restoring,
             })
             .collect();
         rail::view(entries).map(Message::Rail)

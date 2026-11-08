@@ -10,6 +10,7 @@ mod group;
 mod widgets;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use iced::widget::text_editor;
@@ -89,7 +90,8 @@ pub enum Msg {
     RefreshOAuth,
     Saml,
     SamlNow,
-    SamlParsed(Res<SamlMetadata>),
+    /// `saml.parseMetadata` answer for the group page instance that asked.
+    SamlParsed(u64, Res<SamlMetadata>),
     DialogText(String),
     CloseDialog,
     DiscardAndGo(Option<AdminSection>),
@@ -107,7 +109,12 @@ pub enum Dialog {
 }
 
 /// One open group page with its edit session and widget state.
+/// Group page instances (a late answer never lands in another page).
+static GROUP_VIEWS: AtomicU64 = AtomicU64::new(1);
+
 pub struct GroupView {
+    /// This showing of the page.
+    pub instance: u64,
     pub page: GroupPage,
     pub session: EditSession,
     pub tab: usize,
@@ -126,6 +133,7 @@ pub struct GroupView {
 impl GroupView {
     fn new(page: GroupPage, store: &SettingsStore) -> Self {
         let mut gv = Self {
+            instance: GROUP_VIEWS.fetch_add(1, Ordering::Relaxed),
             session: EditSession::new(&page.group),
             page,
             tab: 0,
@@ -398,6 +406,10 @@ impl State {
             ..SettingPatch::default()
         };
         self.store.apply_stream_event(action, patch);
+        // Untouched editors show the merged value right away: an edit typed
+        // before the delta would otherwise start from the old text and
+        // overwrite the remote change without a conflict.
+        self.after_change();
     }
 
     pub fn subscription(&self) -> Subscription<Msg> {
@@ -891,13 +903,16 @@ impl State {
             Msg::SamlNow => {
                 if let Some(Dialog::SamlUrl(u)) = self.dialog.take() {
                     g.busy = true;
+                    let instance = g.instance;
                     return cx.ctx.rest_task(
                         move |r| async move { r.saml_parse_metadata(u.trim()).await },
-                        |r| Message::Settings(Msg::SamlParsed(r)),
+                        move |r| Message::Settings(Msg::SamlParsed(instance, r)),
                     );
                 }
             }
-            Msg::SamlParsed(r) => {
+            // The page that asked is gone: its answer is dropped.
+            Msg::SamlParsed(instance, _) if instance != g.instance => {}
+            Msg::SamlParsed(_, r) => {
                 g.busy = false;
                 match r {
                     Ok(meta) => {
@@ -915,7 +930,8 @@ impl State {
                             ),
                         ] {
                             if let Some(v) = v.filter(|v| !v.is_empty())
-                                && store.get(id).is_some()
+                                && g.page.setting_ids().any(|x| x == id)
+                                && g.session.is_editable(store, ectx, id)
                             {
                                 g.session.set_value(store, id, Value::String(v));
                                 any = true;

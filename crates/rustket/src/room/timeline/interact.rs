@@ -43,6 +43,9 @@ pub enum Msg {
     React(String, String),
     OpenThread(String),
     OpenRoom(String),
+    /// `rooms.info` of a room the workspace does not have (a discussion the
+    /// user is not in): opened as a preview with the Join bar.
+    RoomFetched(Box<Res<crate::screens::directory::open::Opened>>),
     OpenUser(String),
     Retry(String),
     Discard(String),
@@ -174,14 +177,26 @@ impl Interactions {
             Msg::OpenThread(mid) => Action::effect(Effect::OpenPanel(Kind::Thread(mid))),
             Msg::OpenRoom(rid) => {
                 if ctx.workspace.room(&rid).is_some() {
-                    Action::effect(Effect::OpenRoom(rid))
-                } else {
-                    Action::effect(toast_error(
-                        t!("room_timeline.not_a_member").into_owned(),
-                        String::new(),
-                    ))
+                    return Action::effect(Effect::OpenRoom(rid));
                 }
+                // Members of the parent may read and join its discussions,
+                // like in the web client.
+                use crate::screens::directory::open;
+                Action::task(ctx.rest_task(
+                    move |rest| open::resolve(rest, open::Target::Room(rid)),
+                    |r| Msg::RoomFetched(Box::new(r)),
+                ))
             }
+            Msg::RoomFetched(r) => match *r {
+                Ok(o) => {
+                    let rid = crate::screens::directory::open::apply(ctx.workspace, o);
+                    Action::effect(Effect::OpenRoom(rid))
+                }
+                Err(e) => Action::effect(toast_error(
+                    t!("room_timeline.not_a_member").into_owned(),
+                    e.user_text(),
+                )),
+            },
             Msg::OpenUser(u) => Action::effect(Effect::OpenPanel(Kind::UserInfo(u))),
             Msg::Retry(mid) => Action::effect(Effect::Compose(ComposeIntent::Retry(mid))),
             Msg::Discard(mid) => Action::effect(Effect::Compose(ComposeIntent::Discard(mid))),
@@ -431,5 +446,40 @@ mod tests {
         ));
         // Nothing changed here: the composer's outbox owns the message.
         assert_eq!(ctx.workspace.pending_messages("r").len(), 1);
+    }
+    #[test]
+    fn discussion_not_joined_opens_as_a_preview() {
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let sid = rustket_core::ServerId("s".into());
+        let url = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let mut ws = Workspace::new();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "r",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let mut i = Interactions::new(Source::Room);
+        // Unknown room: fetched (no "not a member" dead end).
+        let a = i.update(Msg::OpenRoom("d1".into()), &mut ctx);
+        assert!(a.effects.is_empty());
+        let room: rocketchat::models::Room = serde_json::from_value(json!({
+            "_id": "d1", "t": "c", "name": "disc", "prid": "r"
+        }))
+        .unwrap();
+        let a = i.update(
+            Msg::RoomFetched(Box::new(Ok(crate::screens::directory::open::Opened {
+                room,
+                sub: None,
+            }))),
+            &mut ctx,
+        );
+        assert!(matches!(a.effects.as_slice(), [Effect::OpenRoom(r)] if r == "d1"));
+        assert!(ctx.workspace.room("d1").is_some());
+        assert!(ctx.workspace.subscription("d1").is_none());
     }
 }

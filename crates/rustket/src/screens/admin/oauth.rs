@@ -1,6 +1,8 @@
 //! OAuth apps — Rocket.Chat as an OAuth2 provider (docs/admin.md §11): list,
 //! create/edit with the read-only client credentials and endpoint URLs, delete.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Length, Task};
 use rocketchat::models::admin::OAuthApp;
@@ -27,15 +29,21 @@ pub enum Msg {
     Redirect(String),
     Active(bool),
     Save,
-    Saved(Res<OAuthApp>),
+    /// The answer for the form showing with this token.
+    Saved(u64, Res<OAuthApp>),
     Copy(String),
     Delete,
     DeleteNow(String),
-    Deleted(Res<()>),
+    Deleted(String, Res<()>),
 }
+
+/// Form showings: a late save answer never retargets another form.
+static FORMS: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Default)]
 pub struct Form {
+    /// This showing of the form.
+    pub token: u64,
     pub app: Option<OAuthApp>,
     pub name: String,
     pub redirect: String,
@@ -86,6 +94,7 @@ impl State {
             },
             Msg::New => {
                 self.form = Some(Form {
+                    token: FORMS.fetch_add(1, Ordering::Relaxed),
                     active: true,
                     ..Form::default()
                 });
@@ -93,6 +102,7 @@ impl State {
             Msg::Open(id) => {
                 if let Some(a) = self.list.items.iter().find(|a| a.id == id) {
                     self.form = Some(Form {
+                        token: FORMS.fetch_add(1, Ordering::Relaxed),
                         name: a.name.clone(),
                         redirect: a.redirect_uri.clone(),
                         active: a.active,
@@ -134,6 +144,7 @@ impl State {
                     f.active,
                 );
                 let id = f.app.as_ref().map(|a| a.id.clone());
+                let token = f.token;
                 return cx.ctx.rest_task(
                     move |r| async move {
                         match id {
@@ -141,27 +152,34 @@ impl State {
                             None => r.oauth_app_create(&name, active, &redirect).await,
                         }
                     },
-                    |r| Message::OAuth(Msg::Saved(r)),
+                    move |r| Message::OAuth(Msg::Saved(token, r)),
                 );
             }
-            Msg::Saved(r) => match r {
-                Ok(app) => {
-                    cx.ok(t!("admin.oauth.saved").into_owned());
-                    // Stay open after create: the client credentials are shown now.
-                    if let Some(f) = form {
-                        f.busy = false;
-                        f.app = Some(app);
+            Msg::Saved(token, r) => {
+                // Only the form that saved takes the answer.
+                let form = form.filter(|f| f.token == token);
+                match r {
+                    Ok(app) => {
+                        cx.ok(t!("admin.oauth.saved").into_owned());
+                        // Stay open after create: the client credentials are shown now.
+                        if let Some(f) = form {
+                            f.busy = false;
+                            f.app = Some(app);
+                        }
+                        return self.load(cx);
                     }
-                    return self.load(cx);
-                }
-                Err(e) => {
-                    let text = err_text(&e, cx.i18n);
-                    if let Some(f) = form {
-                        f.busy = false;
-                        f.error = Some(text);
+                    Err(e) => {
+                        let text = err_text(&e, cx.i18n);
+                        match form {
+                            Some(f) => {
+                                f.busy = false;
+                                f.error = Some(text);
+                            }
+                            None => cx.fail(&e),
+                        }
                     }
                 }
-            },
+            }
             Msg::Copy(s) => {
                 cx.ok(t!("admin.copied").into_owned());
                 return iced::clipboard::write(s);
@@ -176,15 +194,22 @@ impl State {
                 }
             }
             Msg::DeleteNow(id) => {
+                let id2 = id.clone();
                 return cx.ctx.rest_task(
-                    move |r| async move { r.oauth_app_delete(&id).await },
-                    |r| Message::OAuth(Msg::Deleted(r)),
+                    move |r| async move { r.oauth_app_delete(&id2).await },
+                    move |r| Message::OAuth(Msg::Deleted(id.clone(), r)),
                 );
             }
-            Msg::Deleted(r) => {
+            Msg::Deleted(id, r) => {
                 if cx.check(&r) {
                     cx.ok(t!("admin.oauth.deleted").into_owned());
-                    self.form = None;
+                    if self
+                        .form
+                        .as_ref()
+                        .is_some_and(|f| f.app.as_ref().is_some_and(|a| a.id == id))
+                    {
+                        self.form = None;
+                    }
                     return self.load(cx);
                 }
             }

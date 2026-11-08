@@ -155,6 +155,9 @@ pub struct App {
     last_unread: (u64, u64),
     /// Video calls: ringing, popups, call dialogs (`crate::videoconf`).
     pub calls: crate::videoconf::Calls,
+    /// Instance of the create-room / quick-switcher dialog opened last: task
+    /// results of a closed dialog never reach the next one.
+    dialog_instances: (u64, u64),
 }
 
 fn notice_text(n: &SecretNotice) -> String {
@@ -295,6 +298,7 @@ impl App {
             desktop,
             last_unread: (0, 0),
             calls: crate::videoconf::Calls::default(),
+            dialog_instances: (0, 0),
         };
         let wanted: Vec<(ServerId, String)> = app
             .config
@@ -755,6 +759,8 @@ impl App {
         match message {
             Message::Noop => Task::none(),
             Message::FileDropped(path) => self.route_file_drop(path),
+            Message::Go(go) => self.go(go),
+            Message::Dialog(instance, m) => self.on_dialog_result(instance, *m),
             Message::E2e(sid, epoch, m) => self.on_e2e(sid, epoch, m),
             Message::SecretsReady(s) => self.on_secrets_ready(s),
             Message::SystemTheme(mode) => {
@@ -787,13 +793,14 @@ impl App {
                 self.toasts.retain(|t| t.id != id);
                 Task::none()
             }
+            Message::ShowAddServer if !self.may_leave(Message::ShowAddServer) => Task::none(),
             Message::ShowAddServer => {
                 self.screen = Screen::AddServer(Box::new(AddServer::new(!self.servers.is_empty())));
                 iced::widget::operation::focus(add_server::URL_INPUT_ID)
             }
             Message::AddServer(m) => self.on_add_server(m),
             Message::Login(sid, m) => self.on_login(sid, m),
-            Message::Rail(m) if !self.may_leave_admin(&m) => Task::none(),
+            Message::Rail(m) if !self.may_leave(Message::Rail(m.clone())) => Task::none(),
             Message::Rail(m) => match m {
                 rail::Message::Select(sid) => self.activate(sid),
                 rail::Message::Add => Task::done(Message::ShowAddServer),
@@ -880,6 +887,9 @@ impl App {
             Message::CloseRequested(id) => {
                 if let Some(hide) = self.desktop.on_close_requested(&self.config.ui) {
                     return hide.map(Message::Desktop);
+                }
+                if !self.may_leave(Message::CloseRequested(id)) {
+                    return Task::none();
                 }
                 self.flush_config();
                 iced::window::close(id)
@@ -1262,7 +1272,43 @@ impl App {
             "force_logout" => t!("app.force_logout").into_owned(),
             _ => t!("app.session_expired").into_owned(),
         });
-        Task::batch([e2e, delete, purge, self.show_login(sid, reason)])
+        let page = self.leave_pages_of(sid);
+        // A server out of sight would otherwise go silent (the rail marks it too).
+        let visible = self.active.as_ref() == Some(sid) && matches!(self.screen, Screen::Server);
+        let notice = match self.servers.get(sid) {
+            Some(s) if !visible => {
+                let title = t!("app.signed_out_of", server = s.name.clone());
+                let body = reason
+                    .clone()
+                    .unwrap_or_else(|| t!("app.session_expired").into_owned());
+                self.toast(BannerKind::Warning, title, body)
+            }
+            _ => Task::none(),
+        };
+        Task::batch([
+            e2e,
+            delete,
+            purge,
+            page,
+            notice,
+            self.show_login(sid, reason),
+        ])
+    }
+
+    /// The account, directory or admin page of a server that was just logged
+    /// out gives way to its login screen; its dialogs close.
+    fn leave_pages_of(&mut self, sid: &ServerId) -> Task<Message> {
+        self.modals.retain(
+            |m| !matches!(m, Modal::CreateRoom(id, _) | Modal::QuickSwitcher(id, _) if id == sid),
+        );
+        let shown = match &self.screen {
+            Screen::Account(id, _) | Screen::Directory(id, _) | Screen::Admin(id, _) => id == sid,
+            _ => false,
+        };
+        if shown {
+            return self.activate(sid.clone());
+        }
+        Task::none()
     }
 
     /// User logout. A login token is revoked on the server (through the
@@ -1334,7 +1380,15 @@ impl App {
         };
         let delete = self.delete_token(sid);
         let purge = self.purge_images(sid);
-        Task::batch([typing, call, delete, purge, self.show_login(sid, None)])
+        let page = self.leave_pages_of(sid);
+        Task::batch([
+            typing,
+            call,
+            delete,
+            purge,
+            page,
+            self.show_login(sid, None),
+        ])
     }
 
     fn remove_server(&mut self, sid: &ServerId) -> Task<Message> {
@@ -1651,6 +1705,9 @@ impl App {
         rid: &str,
         pmid: Option<String>,
     ) -> Task<Message> {
+        if !self.may_leave(Message::Noop) {
+            return Task::none();
+        }
         let a = self.activate(sid.clone());
         let nav = self.navigate(component::Nav::CreateDiscussion {
             rid: rid.to_owned(),
@@ -2000,10 +2057,10 @@ impl App {
             .collect();
         let decision = deeplink::decide(&link, &self.pending_logins(), &servers, Instant::now());
         tracing::info!(?decision, "deep link");
-        self.apply_decision(decision)
+        self.apply_decision(decision, url)
     }
 
-    fn apply_decision(&mut self, decision: Decision) -> Task<Message> {
+    fn apply_decision(&mut self, decision: Decision, url: &str) -> Task<Message> {
         match decision {
             Decision::LoginOAuth {
                 server_id,
@@ -2073,6 +2130,11 @@ impl App {
                 {
                     l.show_link_error(&error);
                 }
+                Task::none()
+            }
+            Decision::OpenRoom { .. } | Decision::OpenInvite { .. }
+                if !self.may_leave(Message::DeepLinks(vec![url.to_owned()])) =>
+            {
                 Task::none()
             }
             Decision::OpenRoom {
@@ -2230,7 +2292,12 @@ impl App {
     }
 
     fn complete_login(&mut self, sid: &ServerId, req: LoginRequest) -> Task<Message> {
-        let a = self.activate(sid.clone());
+        // Unsaved admin settings keep the screen; the login goes on behind it.
+        let a = if self.admin_dirty() {
+            Task::none()
+        } else {
+            self.activate(sid.clone())
+        };
         let Some(l) = self.servers.get_mut(sid).and_then(|s| s.login.as_mut()) else {
             return a;
         };
@@ -2328,7 +2395,11 @@ impl App {
                 if !live {
                     return Task::none();
                 }
-                let a = self.activate(server_id.clone());
+                let a = if self.admin_dirty() {
+                    Task::none()
+                } else {
+                    self.activate(server_id.clone())
+                };
                 let r = LoginResult {
                     user_id: credentials.user_id,
                     auth_token: credentials.auth_token,
@@ -2340,10 +2411,7 @@ impl App {
                 let Some(Modal::OfferAddServer { url }) = self.modals.pop() else {
                     return Task::none();
                 };
-                self.screen = Screen::AddServer(Box::new(
-                    AddServer::new(!self.servers.is_empty()).with_url(url.as_str()),
-                ));
-                Task::done(Message::AddServer(add_server::Message::Submit))
+                self.go(crate::message::Go::AddServer(url))
             }
             ModalMessage::OpenRegisterHandler => {
                 self.modals.pop();

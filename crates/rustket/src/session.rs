@@ -403,15 +403,36 @@ pub fn apply_event(ws: &mut Workspace, ev: &SessionEvent) -> Followup {
             Followup::None
         }
         E::Notification(n) => Followup::Notification(n.clone()),
-        // Not modelled in the workspace yet (later phases): user renames and
-        // deletions, own-document diffs, UIKit, video conferences, E2E, banners.
+        // Not modelled in the workspace yet (later phases): own-document
+        // diffs, UIKit, video conferences, E2E, banners.
         // Re-read from `/me` by the session (the raw `userData` is never
         // delivered: other room members can forge it).
         E::MeChanged(me) => {
             ws.apply_me((**me).clone());
             Followup::None
         }
-        E::UserNameChanged { .. } | E::UserDeleted { .. } | E::UserData(_) => Followup::None,
+        E::UserNameChanged {
+            uid,
+            username,
+            name,
+        } => {
+            user_renamed(ws, uid, username.as_deref(), name.as_deref());
+            Followup::None
+        }
+        E::UserDeleted {
+            uid,
+            message_erasure_type,
+            replace_by_user,
+        } => {
+            user_deleted(
+                ws,
+                uid,
+                message_erasure_type.as_deref(),
+                replace_by_user.as_ref(),
+            );
+            Followup::None
+        }
+        E::UserData(_) => Followup::None,
         E::UiInteraction(si) => Followup::UiKit(crate::uikit::SessionHook::Interaction(si.clone())),
         E::Banner(_) | E::BannerChanged { .. } => {
             Followup::UiKit(crate::uikit::SessionHook::Banners)
@@ -427,6 +448,91 @@ pub fn apply_event(ws: &mut Workspace, ev: &SessionEvent) -> Followup {
         | E::Calendar(_)
         | E::Webdav(_)
         | E::Unknown { .. } => Followup::None,
+    }
+}
+
+/// `Users:NameChanged` (web `useUsersNameChanged`): authors, editors and
+/// mentions of the loaded messages take the new name and username.
+fn user_renamed(ws: &mut Workspace, uid: &str, username: Option<&str>, name: Option<&str>) {
+    for rid in ws.rooms_with_timelines() {
+        ws.rewrite_messages(&rid, &mut |m| {
+            let mut changed = false;
+            if m.u.id == uid {
+                if let Some(u) = username
+                    && m.u.username.as_deref() != Some(u)
+                {
+                    m.u.username = Some(u.to_owned());
+                    changed = true;
+                }
+                if m.u.name.as_deref() != name {
+                    m.u.name = name.map(str::to_owned);
+                    changed = true;
+                }
+            }
+            if let Some(e) = m.edited_by.as_mut().filter(|e| e.id == uid)
+                && username.is_some()
+                && e.username.as_deref() != username
+            {
+                e.username = username.map(str::to_owned);
+                changed = true;
+            }
+            for mention in m.mentions.iter_mut().flatten().filter(|x| x.id == uid) {
+                let new_username = username.map(str::to_owned).or(mention.username.clone());
+                let new_name = name.map(str::to_owned);
+                if mention.username != new_username || mention.name != new_name {
+                    mention.username = new_username;
+                    mention.name = new_name;
+                    changed = true;
+                }
+            }
+            changed
+        });
+    }
+}
+
+/// `Users:Deleted` (web `useDeleteUser`): with `Unlink` the messages now
+/// belong to `replaceByUser`; otherwise the server removed them in bulk
+/// (no per-message event) and the loaded ones go too.
+fn user_deleted(
+    ws: &mut Workspace,
+    uid: &str,
+    erasure: Option<&str>,
+    replace_by: Option<&serde_json::Value>,
+) {
+    let rids = ws.rooms_with_timelines();
+    if erasure == Some("Unlink")
+        && let Some(r) = replace_by
+        && let Some(new_id) = r.get("_id").and_then(|v| v.as_str())
+    {
+        let new_username = r.get("username").and_then(|v| v.as_str());
+        let alias = r.get("alias").and_then(|v| v.as_str());
+        for rid in rids {
+            ws.rewrite_messages(&rid, &mut |m| {
+                if m.u.id != uid {
+                    return false;
+                }
+                m.u.id = new_id.to_owned();
+                if let Some(u) = new_username {
+                    m.u.username = Some(u.to_owned());
+                }
+                m.u.name = None;
+                m.alias = alias.map(str::to_owned);
+                true
+            });
+        }
+        return;
+    }
+    for rid in rids {
+        let mut ids = Vec::new();
+        ws.rewrite_messages(&rid, &mut |m| {
+            if m.u.id == uid {
+                ids.push(m.id.clone());
+            }
+            false
+        });
+        for id in ids {
+            ws.apply_message_deleted(&rid, &id);
+        }
     }
 }
 
@@ -476,6 +582,106 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    fn ws_with(msgs: &[(&str, &str)]) -> Workspace {
+        let mut ws = Workspace::new();
+        ws.apply_subscription(Change::Inserted, sub("r1"));
+        ws.open_room("r1");
+        ws.open_thread("r1", "t");
+        for (i, (id, user)) in msgs.iter().enumerate() {
+            let mut m = msg("r1", id, 1000 + i as i64, user);
+            if id.starts_with("reply") {
+                m.tmid = Some("t".into());
+            }
+            ws.apply_message(m);
+        }
+        ws
+    }
+
+    fn all_ids(ws: &Workspace) -> Vec<String> {
+        let mut v: Vec<String> = ws
+            .timeline("r1")
+            .unwrap()
+            .messages()
+            .map(|m| m.id.clone())
+            .collect();
+        v.extend(ws.thread("t").unwrap().messages().map(|m| m.id.clone()));
+        v
+    }
+
+    #[test]
+    fn deleted_user_messages_leave_open_timelines() {
+        let mut ws = ws_with(&[("a", "bob"), ("b", "spam"), ("reply1", "spam")]);
+        assert!(all_ids(&ws).contains(&"reply1".to_owned()));
+        apply_event(
+            &mut ws,
+            &SessionEvent::UserDeleted {
+                uid: "spam".into(),
+                message_erasure_type: Some("Delete".into()),
+                replace_by_user: None,
+            },
+        );
+        assert_eq!(all_ids(&ws), ["a"]);
+    }
+
+    #[test]
+    fn unlinked_user_messages_get_the_new_author() {
+        let mut ws = ws_with(&[("a", "bob"), ("b", "spam")]);
+        apply_event(
+            &mut ws,
+            &SessionEvent::UserDeleted {
+                uid: "spam".into(),
+                message_erasure_type: Some("Unlink".into()),
+                replace_by_user: Some(serde_json::json!({
+                    "_id": "rocket.cat", "username": "rocket.cat", "alias": "spam"
+                })),
+            },
+        );
+        let m = ws.timeline("r1").unwrap().get("b").unwrap().message.clone();
+        assert_eq!(m.u.id, "rocket.cat");
+        assert_eq!(m.u.username.as_deref(), Some("rocket.cat"));
+        assert_eq!(m.alias.as_deref(), Some("spam"));
+        assert_eq!(all_ids(&ws).len(), 2);
+    }
+
+    #[test]
+    fn renamed_user_shows_the_new_name() {
+        let mut ws = ws_with(&[("a", "bob"), ("reply1", "bob")]);
+        let mut m = msg("r1", "c", 2000, "carol");
+        m.mentions = Some(vec![rocketchat::models::Mention {
+            id: "bob".into(),
+            username: Some("bob".into()),
+            ..Default::default()
+        }]);
+        m.edited_by = Some(UserRef {
+            id: "bob".into(),
+            username: Some("bob".into()),
+            name: None,
+        });
+        ws.apply_message(m);
+        apply_event(
+            &mut ws,
+            &SessionEvent::UserNameChanged {
+                uid: "bob".into(),
+                username: Some("robert".into()),
+                name: Some("Robert".into()),
+            },
+        );
+        let t = ws.timeline("r1").unwrap();
+        let a = &t.get("a").unwrap().message;
+        assert_eq!(a.u.username.as_deref(), Some("robert"));
+        assert_eq!(a.u.name.as_deref(), Some("Robert"));
+        let c = &t.get("c").unwrap().message;
+        let mention = &c.mentions.as_ref().unwrap()[0];
+        assert_eq!(mention.username.as_deref(), Some("robert"));
+        assert_eq!(mention.name.as_deref(), Some("Robert"));
+        assert_eq!(
+            c.edited_by.as_ref().unwrap().username.as_deref(),
+            Some("robert")
+        );
+        let reply = &ws.thread("t").unwrap().get("reply1").unwrap().message;
+        assert_eq!(reply.u.username.as_deref(), Some("robert"));
     }
 
     #[test]

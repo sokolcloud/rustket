@@ -1,13 +1,13 @@
 //! Left rail: one icon per server with unread badges, add-server and settings
 //! buttons. Strings: `locales/rail.yml`.
 
-use iced::widget::{Column, column, container, scrollable, space};
-use iced::{Alignment, Element, Length};
+use iced::widget::{Column, column, container, scrollable, space, stack};
+use iced::{Alignment, Element, Length, Theme, border};
 use rust_i18n::t;
 use rustket_core::ServerId;
-use rustket_ui::icon::Icon;
+use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{RAIL_WIDTH, SPACE_2, SPACE_3};
+use rustket_ui::theme::{RAIL_WIDTH, SPACE_2, SPACE_3, tokens};
 use rustket_ui::widget::{
     AvatarSource, BadgeKind, RailIcon, add_server_button, icon_button, workspace_rail_item,
 };
@@ -26,6 +26,9 @@ pub struct RailEntry {
     /// (unread rooms, mentions)
     pub unread: (u64, u64),
     pub selected: bool,
+    /// Logged out (token rejected, signed out by the server, never signed
+    /// in): nothing arrives from this server until the user signs in.
+    pub signed_out: bool,
 }
 
 pub fn badge(unread: (u64, u64)) -> Option<(u32, BadgeKind)> {
@@ -39,15 +42,51 @@ pub fn badge(unread: (u64, u64)) -> Option<(u32, BadgeKind)> {
     }
 }
 
+/// A small "signed out" emblem on the bottom-right corner of the face.
+fn signed_out_marker(item: Element<'_, Message>) -> Element<'_, Message> {
+    let emblem = container(icon::sized(Icon::LogOut, 10.0))
+        .center(16)
+        .style(|theme: &Theme| {
+            let t = tokens(theme);
+            container::Style {
+                text_color: Some(t.on_danger),
+                background: Some(t.danger.into()),
+                border: border::rounded(8).width(2).color(t.surface_rail),
+                ..container::Style::default()
+            }
+        });
+    stack![
+        item,
+        container(emblem)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::End)
+            .align_y(Alignment::End)
+            .padding(iced::Padding::ZERO.right(6.0).bottom(-2.0)),
+    ]
+    .clip(false)
+    .into()
+}
+
 pub fn view<'a>(entries: Vec<RailEntry>) -> Element<'a, Message> {
     let items = entries.into_iter().map(|e| {
-        workspace_rail_item(
+        let name = if e.signed_out {
+            t!("rail.signed_out", name = e.name).into_owned()
+        } else {
+            e.name
+        };
+        let item = workspace_rail_item(
             RailIcon::Avatar(e.avatar),
-            e.name,
+            name,
             badge(e.unread),
             e.selected,
             Message::Select(e.id),
-        )
+        );
+        if e.signed_out {
+            signed_out_marker(item)
+        } else {
+            item
+        }
     });
     let list = Column::with_children(items)
         .push(add_server_button(t!("rail.add_server"), Message::Add))

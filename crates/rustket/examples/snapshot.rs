@@ -679,6 +679,11 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "08-room-dark");
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
+    shell::shell_shots(&mut d, &out, &sid, &rid).await;
+    // `RUSTKET_SNAPSHOT_SHELL`: only the shots up to the shell states.
+    if std::env::var("RUSTKET_SNAPSHOT_SHELL").is_ok() {
+        return;
+    }
     e2e::e2e_shots(&mut d, &server, &out, &sid, &user, &fixture.ledger).await;
     // Any `RUSTKET_SNAPSHOT_ONLY` value skips the shared component shots.
     let only_glue = std::env::var("RUSTKET_SNAPSHOT_ONLY").is_ok();
@@ -884,6 +889,8 @@ fn image_bytes(w: u32, h: u32) -> Vec<u8> {
 mod e2e;
 #[path = "snapshot/glue.rs"]
 mod glue;
+#[path = "snapshot/shell.rs"]
+mod shell;
 
 #[path = "snapshot/admin.rs"]
 mod admin_shots;
