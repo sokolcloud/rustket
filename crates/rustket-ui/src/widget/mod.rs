@@ -22,6 +22,7 @@ mod sidebar;
 mod spinner;
 mod split;
 mod timeline;
+mod window_chrome;
 
 pub use arrow_keys::arrow_keys;
 pub use avatar::{
@@ -60,3 +61,7 @@ pub use sidebar::{
 pub use spinner::{empty_state, loading_placeholder, spinner, spinner_colored};
 pub use split::{HANDLE_WIDTH, split};
 pub use timeline::{date_separator, emoji_text, reaction_pill, unread_separator};
+pub use window_chrome::{
+    RESIZE_EDGE, TITLE_BAR_HEIGHT, TITLE_BAR_ITEM, WINDOW_CONTROL_WIDTH, WindowControlLabels,
+    resize_cursor, title_bar_button, title_bar_workspace, window_controls, window_frame,
+};

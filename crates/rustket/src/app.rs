@@ -84,6 +84,9 @@ pub struct Flags {
     /// Real desktop integration: tray, notifications, sounds, idle → away,
     /// window hiding (off for tests/snapshots).
     pub desktop: bool,
+    /// Whether the window was opened with system decorations (`main.rs`);
+    /// `None`: as `UiPrefs::system_title_bar` says.
+    pub window_decorated: Option<bool>,
 }
 
 pub enum Screen {
@@ -158,6 +161,11 @@ pub struct App {
     /// Instance of the create-room / quick-switcher dialog opened last: task
     /// results of a closed dialog never reach the next one.
     dialog_instances: (u64, u64),
+    /// Custom title bar pointer and maximize state.
+    pub titlebar: crate::workspace::titlebar::TitleBar,
+    /// Whether the window has system decorations now (kept in step with
+    /// `UiPrefs::system_title_bar` by `sync_decorations`).
+    pub decorated: bool,
 }
 
 fn notice_text(n: &SecretNotice) -> String {
@@ -272,6 +280,7 @@ impl App {
             .clone()
             .map(|d| d.join("images"))
             .or_else(images::default_cache_dir);
+        let decorated = flags.window_decorated.unwrap_or(config.ui.system_title_bar);
         let app = Self {
             config,
             config_dir,
@@ -301,6 +310,8 @@ impl App {
             last_unread: (0, 0),
             calls: crate::videoconf::Calls::default(),
             dialog_instances: (0, 0),
+            titlebar: Default::default(),
+            decorated,
         };
         let wanted: Vec<(ServerId, String)> = app
             .config
@@ -841,7 +852,11 @@ impl App {
                 rail::Message::Settings => self.navigate(component::Nav::Settings),
             },
             Message::Sidebar(sid, m) => self.on_sidebar(sid, m),
-            Message::Settings(m) => self.on_settings(m),
+            Message::Settings(m) => {
+                let task = self.on_settings(m);
+                Task::batch([task, self.sync_decorations()])
+            }
+            Message::TitleBar(m) => self.on_title_bar(m),
             Message::Account(sid, m) => self.on_account(sid, m),
             Message::Directory(sid, m) => self.on_directory(sid, m),
             Message::Admin(sid, m) => self.on_admin(sid, m),
@@ -2506,6 +2521,43 @@ impl App {
         }
     }
 
+    // --- custom title bar ------------------------------------------------------
+
+    /// Whether the app draws its own title bar and window frame.
+    pub fn custom_chrome(&self) -> bool {
+        !self.decorated
+    }
+
+    /// Applies `UiPrefs::system_title_bar` to the window. iced can only flip
+    /// decorations, so the current state is tracked and only a difference
+    /// issues a toggle.
+    fn sync_decorations(&mut self) -> Task<Message> {
+        if self.config.ui.system_title_bar == self.decorated {
+            return Task::none();
+        }
+        self.decorated = self.config.ui.system_title_bar;
+        window::latest().and_then(window::toggle_decorations)
+    }
+
+    fn on_title_bar(&mut self, m: crate::workspace::titlebar::Message) -> Task<Message> {
+        use crate::workspace::titlebar::{Message as Tm, Outcome, WindowOp};
+        match self.titlebar.update(m, Instant::now()) {
+            Outcome::None => Task::none(),
+            Outcome::Rail(m) => Task::done(Message::Rail(m)),
+            Outcome::QueryMaximized => window::latest().and_then(|id| {
+                window::is_maximized(id).map(|m| Message::TitleBar(Tm::Maximized(m)))
+            }),
+            Outcome::Window(op) => window::latest().and_then(move |id| match op {
+                WindowOp::Drag => window::drag(id),
+                WindowOp::ToggleMaximize => window::toggle_maximize(id),
+                WindowOp::Minimize => window::minimize(id, true),
+                WindowOp::SystemMenu => window::show_system_menu(id),
+                WindowOp::Resize(d) => window::drag_resize(id, d),
+                WindowOp::Close => Task::done(Message::CloseRequested(id)),
+            }),
+        }
+    }
+
     // --- subscriptions -----------------------------------------------------------
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -2568,6 +2620,12 @@ impl App {
             },
         ));
         subs.push(window::close_requests().map(Message::CloseRequested));
+        if self.custom_chrome() {
+            subs.push(
+                window::resize_events()
+                    .map(|_| Message::TitleBar(crate::workspace::titlebar::Message::Resized)),
+            );
+        }
         // Files dropped onto the window go to the active composer.
         subs.push(iced::event::listen_with(
             |event, _status, _id| match event {

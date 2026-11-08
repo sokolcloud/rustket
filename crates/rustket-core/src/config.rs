@@ -206,6 +206,9 @@ pub struct UiPrefs {
     pub zoom: f32,
     /// Render with the GPU (wgpu); `false` restarts with the CPU renderer.
     pub hardware_acceleration: bool,
+    /// Use the window manager's title bar; `false` draws Rustket's own title
+    /// bar with the workspace switcher in it.
+    pub system_title_bar: bool,
 }
 
 impl Default for UiPrefs {
@@ -228,6 +231,7 @@ impl Default for UiPrefs {
             start_minimized: false,
             zoom: 1.0,
             hardware_acceleration: true,
+            system_title_bar: false,
         }
     }
 }
@@ -317,6 +321,7 @@ const UI_KEYS: &[&str] = &[
     "start_minimized",
     "zoom",
     "hardware_acceleration",
+    "system_title_bar",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -934,6 +939,23 @@ mod tests {
         assert!(!AppConfig::parse(&text).unwrap().ui.hardware_acceleration);
         let c = AppConfig::parse("[ui]\nhardware_acceleration = \"no\"").unwrap();
         assert!(c.ui.hardware_acceleration, "invalid value falls back");
+    }
+
+    #[test]
+    fn system_title_bar_defaults_off() {
+        assert!(!UiPrefs::default().system_title_bar);
+        assert!(
+            !AppConfig::parse("[ui]\nzoom = 1.0")
+                .unwrap()
+                .ui
+                .system_title_bar
+        );
+        let c = AppConfig::parse("[ui]\nsystem_title_bar = true").unwrap();
+        assert!(c.ui.system_title_bar);
+        let text = toml::to_string(&c).unwrap();
+        assert!(AppConfig::parse(&text).unwrap().ui.system_title_bar);
+        let c = AppConfig::parse("[ui]\nsystem_title_bar = 1").unwrap();
+        assert!(!c.ui.system_title_bar, "invalid value falls back");
     }
 
     #[test]

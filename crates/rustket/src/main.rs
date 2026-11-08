@@ -107,11 +107,14 @@ fn main() -> iced::Result {
     };
 
     let primary = listener.is_some();
+    let config_dir = rustket_core::config::AppConfig::default_dir().ok();
+    let decorations = rustket::workspace::titlebar::saved_system_title_bar(config_dir.as_deref());
     let flags = Flags {
         urls,
         listener,
         open_urls: true,
         desktop: true,
+        window_decorated: Some(decorations),
         ..Flags::default()
     };
     let result = iced::application(move || App::new(flags.clone()), App::update, App::view)
@@ -122,6 +125,7 @@ fn main() -> iced::Result {
         .scale_factor(App::scale_factor)
         .window(iced::window::Settings {
             icon: rustket::desktop::icon::window_icon(),
+            decorations,
             platform_specific: iced::window::settings::PlatformSpecific {
                 application_id: "rustket".into(),
                 ..Default::default()

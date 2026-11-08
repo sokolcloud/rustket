@@ -107,6 +107,8 @@ pub const APP_ICONS: &[Icon] = &[
     Icon::Menu,
     Icon::ArrowDown,
     Icon::LoaderCircle,
+    Icon::Minus,
+    Icon::Square,
 ];
 
 #[cfg(test)]

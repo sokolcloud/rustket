@@ -16,7 +16,7 @@ use rustket_ui::theme::{
 use rustket_ui::widget::{
     AvatarShape, AvatarSource, BannerKind, Toast, above, avatar, banner, dialog, empty_state,
     loading_placeholder, modal_keyed, primary_button, secondary_button, spinner, split,
-    status_strip, toasts_with,
+    status_strip, toasts_with, window_frame,
 };
 
 use super::{App, Modal, Screen};
@@ -26,7 +26,7 @@ use crate::screens::add_server;
 use crate::screens::login;
 use crate::url_handler;
 use crate::workspace::sidebar::SidebarCtx;
-use crate::workspace::{ServerState, rail};
+use crate::workspace::{ServerState, rail, titlebar};
 use rustket_core::ServerId;
 
 /// `base` under the app's layers: the open modal (keyed by dialog identity),
@@ -62,15 +62,13 @@ impl App {
                 if self.servers.is_empty() {
                     screen
                 } else {
-                    row![self.rail(), screen].into()
+                    self.with_rail(screen)
                 }
             }
             Screen::Server => self.server_view(),
-            Screen::Settings(c) => row![
-                self.rail(),
-                c.view(&self.settings_view_data()).map(Message::Settings)
-            ]
-            .into(),
+            Screen::Settings(c) => {
+                self.with_rail(c.view(&self.settings_view_data()).map(Message::Settings))
+            }
             Screen::Account(sid, c) => self.server_page(sid, |s| {
                 let sid = sid.clone();
                 c.view(&self.component_view_ctx(s))
@@ -88,8 +86,9 @@ impl App {
             }),
         };
         let (overlay, dismiss) = self.overlay();
+        let blocked = overlay.is_some() || self.calls.dialog.is_some();
         let key = self.overlay_key();
-        layered(
+        let content = layered(
             base,
             overlay.map(|o| (key, o)),
             dismiss,
@@ -97,7 +96,45 @@ impl App {
             crate::videoconf::view::popups(self),
             &self.toasts,
             Message::CloseToast,
+        );
+        if !self.custom_chrome() {
+            return content;
+        }
+        // The title bar stays above the app's layers so the window can be
+        // moved and closed with a modal open.
+        window_frame(
+            column![self.title_bar(!blocked), content].into(),
+            self.titlebar.maximized,
+            |d| Message::TitleBar(titlebar::Message::Resize(d)),
         )
+    }
+
+    /// `page` after the left rail (system title bar) or alone (the
+    /// workspaces are in the custom title bar).
+    fn with_rail<'a>(&'a self, page: Element<'a, Message>) -> Element<'a, Message> {
+        if self.custom_chrome() {
+            page
+        } else {
+            row![self.rail(), page].into()
+        }
+    }
+
+    fn title_bar(&self, interactive: bool) -> Element<'_, Message> {
+        let workspace_buttons = !self.servers.is_empty() && !matches!(self.screen, Screen::Loading);
+        titlebar::view(titlebar::View {
+            entries: if workspace_buttons {
+                self.rail_entries()
+            } else {
+                Vec::new()
+            },
+            workspace_buttons,
+            settings_active: matches!(self.screen, Screen::Settings(_)),
+            title: self.title(),
+            maximized: self.titlebar.maximized,
+            interactive,
+            tracking: self.titlebar.tracking(),
+        })
+        .map(Message::TitleBar)
     }
 
     /// Rail plus a page of server `sid`.
@@ -107,18 +144,21 @@ impl App {
         page: impl FnOnce(&'a ServerState) -> Element<'a, Message>,
     ) -> Element<'a, Message> {
         match self.servers.get(sid) {
-            Some(s) => row![self.rail(), page(s)].into(),
+            Some(s) => self.with_rail(page(s)),
             None => loading_placeholder(None),
         }
     }
 
     fn rail(&self) -> Element<'_, Message> {
+        rail::view(self.rail_entries()).map(Message::Rail)
+    }
+
+    fn rail_entries(&self) -> Vec<rail::RailEntry> {
         let adding = !matches!(
             self.screen,
             Screen::Server | Screen::Account(..) | Screen::Directory(..) | Screen::Admin(..)
         );
-        let entries = self
-            .config
+        self.config
             .sorted_servers()
             .into_iter()
             .filter_map(|e| self.servers.get(&e.id))
@@ -130,8 +170,7 @@ impl App {
                 selected: !adding && self.active.as_ref() == Some(&s.id),
                 signed_out: !s.is_logged_in() && !s.restoring,
             })
-            .collect();
-        rail::view(entries).map(Message::Rail)
+            .collect()
     }
 
     fn server_view(&self) -> Element<'_, Message> {
@@ -146,7 +185,7 @@ impl App {
         } else {
             self.workspace_view(s)
         };
-        row![self.rail(), main].into()
+        self.with_rail(main)
     }
 
     fn workspace_view<'a>(&'a self, s: &'a ServerState) -> Element<'a, Message> {

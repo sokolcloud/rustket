@@ -3,6 +3,7 @@
 pub mod rail;
 pub mod sidebar;
 pub mod status_menu;
+pub mod titlebar;
 
 use std::collections::HashMap;
 

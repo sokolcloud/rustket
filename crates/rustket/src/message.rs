@@ -14,7 +14,7 @@ use crate::images::FetchResult;
 use crate::room;
 use crate::screens::{add_server, login};
 use crate::session::ServerEvent;
-use crate::workspace::{rail, sidebar};
+use crate::workspace::{rail, sidebar, titlebar};
 
 /// The secret store opened at startup plus the tokens read from it.
 #[derive(Clone)]
@@ -82,6 +82,7 @@ pub enum Message {
     ShowAddServer,
     Login(ServerId, login::Message),
     Rail(rail::Message),
+    TitleBar(titlebar::Message),
     Sidebar(ServerId, sidebar::Message),
     Settings(crate::screens::settings::Message),
     Account(ServerId, crate::screens::account::Message),

@@ -1,0 +1,19 @@
+_version: 2
+titlebar.minimize:
+  en: "Minimize"
+  ru: "Свернуть"
+titlebar.maximize:
+  en: "Maximize"
+  ru: "Развернуть"
+titlebar.restore:
+  en: "Restore"
+  ru: "Восстановить"
+titlebar.close:
+  en: "Close"
+  ru: "Закрыть"
+titlebar.setting:
+  en: "Use system window title bar"
+  ru: "Системный заголовок окна"
+titlebar.setting_help:
+  en: "Off: workspaces, settings and window buttons share one row at the top instead of the left column."
+  ru: "Если выключено, рабочие пространства, настройки и кнопки окна располагаются в одной строке сверху, а не в левой колонке."
