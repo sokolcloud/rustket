@@ -88,9 +88,22 @@ impl App {
                 if commands {
                     room::composer::forget_commands(sid);
                 }
-                // `admin`: hook point for an apps administration list (§6.5).
-                let _ = admin;
-                Task::none()
+                // An open apps administration list reloads (§6.5).
+                match &self.screen {
+                    super::Screen::Admin(id, a)
+                        if admin
+                            && id == sid
+                            && matches!(a.page, crate::screens::admin::Page::Apps(_)) =>
+                    {
+                        Task::done(Message::Admin(
+                            sid.clone(),
+                            crate::screens::admin::Message::Apps(
+                                crate::screens::admin::apps::Msg::Reload,
+                            ),
+                        ))
+                    }
+                    _ => Task::none(),
+                }
             }
             Effect::OpenUser(username) => {
                 match self.servers.get(sid).and_then(|s| s.active_room.clone()) {

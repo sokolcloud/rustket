@@ -350,8 +350,8 @@ dialog, the floating busy pill and banners are drawn by the app
 (`uikit::overlay`, `App::uikit_busy_over`, `uikit::strips`). `stream-apps`
 events are consumed by the UIKit dispatcher arm; what other components need
 comes out as `controller::Effect::AppsChanged { commands, admin }` (the glue
-drops the composer's command cache; `admin` is a hook point for an apps admin
-list). `video_conf` blocks are left to the video-conference module
+drops the composer's command cache; `admin` reloads an open admin Apps
+page). `video_conf` blocks are left to the video-conference module
 (`uikit::render` skips them).
 ### End-to-end encryption (`src/e2e/`)
 
