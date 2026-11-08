@@ -33,6 +33,11 @@ pub enum Msg {
 }
 
 impl Confirm {
+    /// A request of the dialog is in flight.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
     pub fn new(kind: ConfirmKind, rid: &str) -> Self {
         Self {
             kind,

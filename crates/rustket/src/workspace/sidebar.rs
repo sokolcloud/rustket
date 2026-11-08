@@ -98,6 +98,9 @@ impl Sidebar {
             }
             Message::Toggle(kind) => Out::ToggleSection(kind.i18n_key().to_owned()),
             Message::Open(rid) => Out::OpenRoom(rid),
+            Message::Status(super::status_menu::Message::Omni(
+                crate::omnichannel::status::Msg::ContactCenter,
+            )) => Out::Omni(crate::omnichannel::sidebar::Msg::ContactCenter),
             Message::Status(m) => Out::Status(m),
             Message::Directory => Out::Directory,
             Message::Create => Out::Create,
@@ -167,7 +170,7 @@ impl Sidebar {
         ctx: &SidebarCtx<'a>,
         status: Element<'a, super::status_menu::Message>,
     ) -> Element<'a, Message> {
-        let header = self.header(status, crate::omnichannel::sidebar::header_button(ctx));
+        let header = self.header(status);
         let search = container(
             row![
                 icon::sized(Icon::Search, 16.0).style(style::text_hint),
@@ -249,24 +252,23 @@ impl Sidebar {
     fn header<'a>(
         &'a self,
         status: Element<'a, super::status_menu::Message>,
-        omni: Option<Element<'a, Message>>,
     ) -> Element<'a, Message> {
         let menu = status.map(Message::Status);
-        let mut bar = row![
-            container(menu).width(Length::Fill),
-            icon_button(
-                Icon::Globe,
-                Some(Message::Directory),
-                t!("sidebar.directory")
-            ),
-            icon_button(Icon::SquarePen, Some(Message::Create), t!("sidebar.create")),
-        ]
-        .spacing(SPACE_1)
-        .align_y(Alignment::Center);
-        if let Some(b) = omni {
-            bar = bar.push(b);
-        }
-        container(bar).padding([SPACE_2, SPACE_2]).into()
+        container(
+            row![
+                container(menu).width(Length::Fill),
+                icon_button(
+                    Icon::Globe,
+                    Some(Message::Directory),
+                    t!("sidebar.directory")
+                ),
+                icon_button(Icon::SquarePen, Some(Message::Create), t!("sidebar.create")),
+            ]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_2])
+        .into()
     }
 
     fn row<'a>(&'a self, item: &'a RoomListItem, ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
@@ -307,6 +309,7 @@ impl Sidebar {
         p.is_selected = ctx.active_room == Some(item.rid.as_str());
         p.presence = item.dm_status.map(presence);
         p.icon = Some(room_icon(item.kind));
+        crate::omnichannel::sidebar::decorate(&mut p, item, ctx);
         if let Some(label) = ctx.workspace.typing_label(&item.rid, None, ctx.now) {
             p.typing = true;
             p.typing_label = typing_text(&label);

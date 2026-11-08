@@ -80,6 +80,16 @@ impl Dialog {
         }
     }
 
+    /// A request of the dialog is in flight.
+    pub fn busy(&self) -> bool {
+        match self {
+            Dialog::Close(d) => d.busy(),
+            Dialog::Forward(d) => d.busy(),
+            Dialog::Confirm(d) => d.busy(),
+            Dialog::Transcript(d) => d.busy(),
+        }
+    }
+
     /// The message that dismisses the dialog (Escape / backdrop), unless busy.
     pub fn dismiss(&self) -> Msg {
         match self {

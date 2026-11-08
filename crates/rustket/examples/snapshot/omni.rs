@@ -1,4 +1,5 @@
-//! Omnichannel shots and live checks (`RUSTKET_SNAPSHOT_ONLY=omni` or unset):
+//! Omnichannel shots and live checks (`RUSTKET_SNAPSHOT_ONLY` unset, `glue`
+//! (the integration shots) or `omni`):
 //! the snapshot user becomes a livechat agent (and manager, for "Forward"),
 //! a throwaway visitor opens a chat that the user serves; then the sidebar
 //! groups, the open chat with its quick actions, the info and contact panels,
@@ -103,7 +104,7 @@ pub async fn omni_shots(
     user: &(String, String, String),
 ) {
     match std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() {
-        Err(_) | Ok("omni") => {}
+        Err(_) | Ok("omni" | "glue") => {}
         Ok(_) => return,
     }
     let mut created = Created::default();

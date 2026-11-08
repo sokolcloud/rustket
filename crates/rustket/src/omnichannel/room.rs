@@ -197,6 +197,11 @@ impl OmniRoom {
         }
     }
 
+    /// A dialog request is in flight (its result must still reach the view).
+    pub fn request_in_flight(&self) -> bool {
+        self.dialog.as_ref().is_some_and(Dialog::busy)
+    }
+
     fn finish(&mut self, out: Outcome) -> Action<Msg> {
         match out {
             Outcome::Stay => Action::none(),

@@ -32,7 +32,7 @@ use std::sync::Arc;
 use iced::Task;
 use rocketchat::models::{
     AgentDepartment, CannedResponse, CustomFieldDef, Inquiry, LicenseInfo, Paginated, Priority,
-    RoutingConfig,
+    Room, RoutingConfig,
 };
 use rocketchat::rest::LivechatPage;
 use rocketchat::session::{
@@ -45,10 +45,11 @@ use rustket_core::omnichannel::{OmnichannelState, OmnichannelUpdate};
 use rustket_core::{Dirty, ServerId, Workspace};
 
 use crate::error::{Failure, Res};
+use crate::room::RoomView;
 use crate::screens::directory::open;
 use crate::session::SessionHandle;
 
-pub use glue::sign_out_agent;
+pub use glue::AgentSignOut;
 pub use status::is_available_agent;
 
 /// Default queue page when the pool size setting is 0 (`count=0` is only
@@ -72,6 +73,9 @@ pub enum Message {
     Priorities(Res<Paginated<Priority>>),
     /// A room fetched for opening (queued chat preview, contact center).
     Opened(Box<Res<open::Opened>>),
+    /// A closed chat whose view stays open, re-read after its subscription
+    /// was removed (`closedAt`, `open: false`).
+    Refreshed(Box<Res<open::Opened>>),
     ContactCenter(contact_center::Msg),
 }
 
@@ -96,10 +100,14 @@ pub struct Omni {
     canned_watch: Option<Watch>,
     canned_wanted: bool,
     pub contact_center: Option<contact_center::ContactCenter>,
-    /// The active room when the contact center opened (another room closes it).
-    contact_center_room: Option<String>,
     /// Livechat subscriptions seen (the new-room sound is for new ones).
     seen_live: HashSet<String>,
+    /// Views of chats whose subscription was just removed but that stay open
+    /// (`omnichannelHideConversationAfterClosing` off, or a dialog request in
+    /// flight): put back with their room after the removal was applied.
+    parked: Vec<(Room, Box<RoomView>)>,
+    /// The state changed since the last publish.
+    dirty: bool,
 }
 
 /// User-facing text of a failed omnichannel call, with wording for the
@@ -137,8 +145,23 @@ pub fn error_text(f: &Failure) -> String {
 }
 
 /// The new-room sound of the user (`newRoomNotification`, default `door`);
-/// `None` when switched off.
-pub fn new_room_sound(ws: &Workspace) -> Option<String> {
+/// `None` when switched off, when Rustket's "Play a sound" setting
+/// (`play_sounds`) is off or when the notification or master volume is zero
+/// (like the message sound, `desktop::notifications::sound_allowed`).
+pub fn new_room_sound(ws: &Workspace, play_sounds: bool) -> Option<String> {
+    if !play_sounds {
+        return None;
+    }
+    let muted = ["notificationsSoundVolume", "masterVolume"]
+        .iter()
+        .any(|k| {
+            crate::desktop::user_pref(ws, k)
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(|v| v <= 0.0)
+        });
+    if muted {
+        return None;
+    }
     let name = crate::desktop::user_pref(ws, "newRoomNotification")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("door");
@@ -152,8 +175,16 @@ impl Omni {
         shared::forget(sid);
     }
 
-    fn publish(&self, sid: &ServerId) {
-        shared::publish(sid, &self.state);
+    /// Publishes the state when it changed since the last publish.
+    fn publish(&mut self, sid: &ServerId) {
+        if std::mem::take(&mut self.dirty) {
+            shared::publish(sid, &self.state);
+        }
+    }
+
+    /// Marks the state changed (published after the current update).
+    pub fn touch(&mut self) {
+        self.dirty = true;
     }
 
     fn rest_task<T: Send + 'static>(
@@ -211,6 +242,7 @@ impl Omni {
         let rev = ws.revision(Dirty::ME | Dirty::SETTINGS | Dirty::PERMISSIONS | Dirty::ROLES);
         if self.rev != Some(rev) {
             self.rev = Some(rev);
+            self.dirty = true;
             u = u.merge(self.state.recompute_update(ws));
             if new_session && self.state.accessible {
                 u.refetch_routing = true;
@@ -374,6 +406,7 @@ impl Omni {
     ) -> Task<Message> {
         let mut follow = OmnichannelUpdate::default();
         let mut tasks = Vec::new();
+        self.dirty = true;
         match m {
             Message::Routing(r) => {
                 self.routing_loading = false;
@@ -450,7 +483,7 @@ impl Omni {
                 Ok(p) => self.state.priorities = p.items,
                 Err(e) => tracing::debug!(error = %e, "priorities"),
             },
-            Message::Opened(_) | Message::ContactCenter(_) => {}
+            Message::Opened(_) | Message::Refreshed(_) | Message::ContactCenter(_) => {}
         }
         if let Some(h) = h {
             tasks.push(self.handle(follow, ws, h));
@@ -475,18 +508,25 @@ impl Omni {
         self.seen_live.insert(rid.to_owned())
     }
 
-    pub fn open_contact_center(&mut self, active_room: Option<&str>) {
+    /// The subscription of `rid` was removed: a chat that comes back to the
+    /// user (forwarded back, re-routed) is new again.
+    pub fn forget_seen(&mut self, rid: &str) {
+        self.seen_live.remove(rid);
+    }
+
+    pub fn park(&mut self, room: Room, view: RoomView) {
+        self.parked.push((room, Box::new(view)));
+    }
+
+    pub fn take_parked(&mut self) -> Vec<(Room, Box<RoomView>)> {
+        std::mem::take(&mut self.parked)
+    }
+
+    pub fn open_contact_center(&mut self) {
         self.contact_center = Some(contact_center::ContactCenter::new());
-        self.contact_center_room = active_room.map(str::to_owned);
     }
 
-    /// Closes the contact center when another room was opened meanwhile.
-    pub fn follow_active_room(&mut self, active_room: Option<&str>) {
-        if self.contact_center.is_some() && self.contact_center_room.as_deref() != active_room {
-            self.contact_center = None;
-        }
-    }
-
+    /// Closed on explicit navigation (a room opened by the user).
     pub fn close_contact_center(&mut self) {
         self.contact_center = None;
     }
@@ -527,12 +567,36 @@ mod tests {
     }
 
     #[test]
-    fn contact_center_follows_the_active_room() {
+    fn new_room_sound_follows_the_preferences() {
+        let ws_with = |prefs: serde_json::Value| {
+            let mut ws = Workspace::new();
+            ws.apply_me(
+                serde_json::from_value(serde_json::json!({
+                    "_id": "me", "username": "me", "settings": {"preferences": prefs}
+                }))
+                .unwrap(),
+            );
+            ws
+        };
+        let ws = ws_with(serde_json::json!({}));
+        assert_eq!(new_room_sound(&ws, true).as_deref(), Some("door"));
+        assert_eq!(new_room_sound(&ws, false), None);
+        let ws = ws_with(serde_json::json!({"newRoomNotification": "none"}));
+        assert_eq!(new_room_sound(&ws, true), None);
+        let ws = ws_with(serde_json::json!({"notificationsSoundVolume": 0}));
+        assert_eq!(new_room_sound(&ws, true), None);
+        let ws = ws_with(serde_json::json!({"masterVolume": 0, "newRoomNotification": "chime"}));
+        assert_eq!(new_room_sound(&ws, true), None);
+        let ws = ws_with(serde_json::json!({"newRoomNotification": "chime"}));
+        assert_eq!(new_room_sound(&ws, true).as_deref(), Some("chime"));
+    }
+
+    #[test]
+    fn removed_chats_are_new_again() {
         let mut o = Omni::default();
-        o.open_contact_center(Some("a"));
-        o.follow_active_room(Some("a"));
-        assert!(o.contact_center.is_some());
-        o.follow_active_room(Some("b"));
-        assert!(o.contact_center.is_none());
+        assert!(o.first_seen("L"));
+        assert!(!o.first_seen("L"));
+        o.forget_seen("L");
+        assert!(o.first_seen("L"));
     }
 }

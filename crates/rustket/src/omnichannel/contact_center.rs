@@ -43,6 +43,10 @@ pub enum Msg {
     More,
     Retry,
     OpenChat(String),
+    /// Show a contact's past chats (`contacts.history`): id, name.
+    OpenContact(String, String),
+    /// Back from a contact's chats to the contact list.
+    Back,
     Close,
 }
 
@@ -64,6 +68,8 @@ pub struct ContactCenter {
     pub contacts: Vec<Contact>,
     pub chats: Vec<Room>,
     total: u64,
+    /// The contact whose chats are listed (id, name).
+    pub contact: Option<(String, String)>,
 }
 
 fn run<T: Send + 'static>(
@@ -95,9 +101,9 @@ impl ContactCenter {
     }
 
     fn len(&self) -> u64 {
-        match self.tab {
-            Tab::Contacts => self.contacts.len() as u64,
-            Tab::Chats => self.chats.len() as u64,
+        match (self.tab, &self.contact) {
+            (Tab::Contacts, None) => self.contacts.len() as u64,
+            _ => self.chats.len() as u64,
         }
     }
 
@@ -109,6 +115,16 @@ impl ContactCenter {
         let seq = self.seq;
         let page = LivechatPage::new(offset, PAGE);
         let text = Some(self.query.trim().to_owned()).filter(|s| !s.is_empty());
+        if let Some((id, _)) = &self.contact {
+            let id = id.clone();
+            return run(
+                rest,
+                move |r| {
+                    Box::pin(async move { r.omnichannel_contact_history(&id, None, page).await })
+                },
+                move |r| Msg::Chats(seq, r),
+            );
+        }
         match self.tab {
             Tab::Contacts => run(
                 rest,
@@ -150,6 +166,7 @@ impl ContactCenter {
         let task = match msg {
             Msg::Tab(t) if t != self.tab => {
                 self.tab = t;
+                self.contact = None;
                 self.contacts.clear();
                 self.chats.clear();
                 self.load(rest, ws, 0)
@@ -200,12 +217,24 @@ impl ContactCenter {
                 self.load(rest, ws, 0)
             }
             Msg::OpenChat(rid) => return (Task::none(), Some(Out::OpenChat(rid))),
+            Msg::OpenContact(id, name) => {
+                self.contact = Some((id, name));
+                self.chats.clear();
+                self.load(rest, ws, 0)
+            }
+            Msg::Back => {
+                self.contact = None;
+                self.chats.clear();
+                self.contacts.clear();
+                self.load(rest, ws, 0)
+            }
             Msg::Close => return (Task::none(), Some(Out::Close)),
         };
         (task, None)
     }
 
     fn contact_row<'a>(&self, c: &'a Contact) -> Element<'a, Msg> {
+        let open = Msg::OpenContact(c.id.clone(), c.name.clone().unwrap_or_default());
         let name = c.name.clone().unwrap_or_default();
         let mut sub: Vec<String> = Vec::new();
         if let Some(e) = c.emails.first() {
@@ -223,7 +252,7 @@ impl ContactCenter {
                 ChipKind::Warning,
             ));
         }
-        container(
+        list_row(
             row![
                 rustket_ui::widget::avatar(
                     rustket_ui::widget::AvatarSource::initials(&name, &c.id),
@@ -244,13 +273,11 @@ impl ContactCenter {
             ]
             .spacing(SPACE_3)
             .align_y(Alignment::Center),
+            Some(open),
         )
-        .padding([SPACE_2, SPACE_4])
-        .width(Length::Fill)
-        .into()
     }
 
-    fn chat_row<'a>(&self, r: &'a Room) -> Element<'a, Msg> {
+    fn chat_row<'a>(&self, r: &'a Room, clock_24h: bool) -> Element<'a, Msg> {
         let open = r.open == Some(true);
         let status = if r.on_hold == Some(true) {
             chip(
@@ -281,7 +308,7 @@ impl ContactCenter {
         let when = r
             .closed_at
             .or(r.ts)
-            .map(|ts| crate::format::short_time(ts, chrono::Local::now(), true))
+            .map(|ts| crate::format::short_time(ts, chrono::Local::now(), clock_24h))
             .unwrap_or_default();
         let src = r.omnichannel_source().map(|s| s.kind).unwrap_or_default();
         list_row(
@@ -305,7 +332,7 @@ impl ContactCenter {
         )
     }
 
-    pub fn view(&self) -> Element<'_, Msg> {
+    pub fn view(&self, clock_24h: bool) -> Element<'_, Msg> {
         let head = container(
             row![
                 icon::sized(Icon::Contact, 18.0),
@@ -326,34 +353,52 @@ impl ContactCenter {
             Tab::Contacts => t!("omnichannel.search_contacts"),
             Tab::Chats => t!("omnichannel.search_chats"),
         };
-        let tools = container(
-            column![
-                filter_pills(
-                    &[
-                        (Tab::Contacts, t!("omnichannel.tab_contacts").into_owned()),
-                        (Tab::Chats, t!("omnichannel.tab_chats").into_owned()),
-                    ],
-                    self.tab,
-                    Msg::Tab
-                ),
-                search_field(&self.query, placeholder.into_owned(), Msg::Query),
-            ]
-            .spacing(SPACE_2),
-        )
-        .padding([SPACE_3, SPACE_4]);
+        let tools = if let Some((_, name)) = &self.contact {
+            container(
+                row![
+                    icon_button(Icon::ChevronLeft, Some(Msg::Back), t!("omnichannel.back")),
+                    column![
+                        ellipsis(name.clone()).size(TEXT_BODY).font(FONT_SEMIBOLD),
+                        text(t!("omnichannel.contact_chats").into_owned())
+                            .size(TEXT_CAPTION)
+                            .style(style::text_secondary),
+                    ]
+                    .width(Length::Fill),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+            )
+            .padding([SPACE_3, SPACE_4])
+        } else {
+            container(
+                column![
+                    filter_pills(
+                        &[
+                            (Tab::Contacts, t!("omnichannel.tab_contacts").into_owned()),
+                            (Tab::Chats, t!("omnichannel.tab_chats").into_owned()),
+                        ],
+                        self.tab,
+                        Msg::Tab
+                    ),
+                    search_field(&self.query, placeholder.into_owned(), Msg::Query),
+                ]
+                .spacing(SPACE_2),
+            )
+            .padding([SPACE_3, SPACE_4])
+        };
         let mut list: Column<'_, Msg> = column![].spacing(0);
         if let (Some(e), 0) = (&self.error, self.len()) {
             list = list.push(crate::room::panel::common::error_state(e, Msg::Retry));
         } else {
-            match self.tab {
-                Tab::Contacts => {
+            match (self.tab, &self.contact) {
+                (Tab::Contacts, None) => {
                     for c in &self.contacts {
                         list = list.push(self.contact_row(c));
                     }
                 }
-                Tab::Chats => {
+                _ => {
                     for r in &self.chats {
-                        list = list.push(self.chat_row(r));
+                        list = list.push(self.chat_row(r, clock_24h));
                     }
                 }
             }

@@ -187,13 +187,17 @@ pub fn text(m: &Message, loc: &str) -> Option<String> {
         "livechat_transfer_history" => transfer_text(m, loc),
         "livechat_transfer_history_fallback" => {
             let td = m.transfer_data.as_ref();
+            // The server writes `prevDepartment` (a name) and `department`.
             let from = td
-                .and_then(|t| t.previous_department.as_ref())
-                .and_then(|v| v.as_str().or_else(|| str_at(Some(v), &["name"])))
+                .and_then(|t| t.prev_department.as_deref())
+                .or_else(|| {
+                    td.and_then(|t| t.previous_department.as_ref())
+                        .and_then(|v| v.as_str().or_else(|| str_at(Some(v), &["name"])))
+                })
                 .map(clean)
                 .unwrap_or_default();
             let to = td
-                .and_then(|t| t.next_department.as_ref())
+                .and_then(|t| t.department.as_ref().or(t.next_department.as_ref()))
                 .map(|d| clean(&d.name))
                 .unwrap_or_default();
             let fallback = t!(
@@ -301,6 +305,16 @@ mod tests {
             "u":{"_id":"a"},"transferData":{"scope":"teleport","transferredBy":{"_id":"a","username":"x"}}}),
         );
         assert!(text(&m, "en").unwrap().contains('x'));
+        // EE fallback forward, as saved by the server.
+        let m = msg(
+            json!({"_id":"m","rid":"r","t":"livechat_transfer_history_fallback","msg":"",
+            "u":{"_id":"a"},
+            "transferData":{"scope":"department","transferredBy":{"_id":"a","username":"alice"},
+                "prevDepartment":"Sales","department":{"_id":"d2","name":"Support"},
+                "usingFallbackDep":true}}),
+        );
+        let s = text(&m, "en").unwrap();
+        assert!(s.contains("( Sales )") && s.ends_with("Support"), "{s}");
     }
 
     #[test]

@@ -65,6 +65,11 @@ pub enum Msg {
 }
 
 impl ForwardDialog {
+    /// A request of the dialog is in flight.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
     pub fn open(room: &Room, ctx: &UpdateCtx<'_>) -> (Self, Task<Msg>) {
         let mut d = Self {
             rid: room.id.clone(),
@@ -94,7 +99,13 @@ impl ForwardDialog {
         let text = Some(self.query.trim().to_owned()).filter(|s| !s.is_empty());
         match self.kind {
             TargetKind::Agent => {
-                let q = AgentQuery::for_forward(text, self.serving.as_deref());
+                let mut q = AgentQuery::for_forward(text, self.serving.as_deref());
+                // Like the web picker: offline-presence agents are offered
+                // when idle agents may receive chats (default true).
+                q.show_idle_agents = ctx
+                    .workspace
+                    .settings()
+                    .bool_or("Livechat_enabled_when_agent_idle", true);
                 ctx.rest_task(
                     move |rest| async move { rest.livechat_agents(&q).await },
                     move |r| Msg::Agents(seq, r),

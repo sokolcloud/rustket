@@ -23,6 +23,15 @@ pub enum Msg {
     /// Switch to the given availability.
     Set(AgentStatus),
     Done(AgentStatus, Res<AgentStatus>),
+    /// Open the Contact Center (handled by the sidebar / app).
+    ContactCenter,
+}
+
+/// Whether the Contact Center entry is offered (`Livechat_enabled`,
+/// `view-omnichannel-contact-center`).
+pub fn contact_center_allowed(ws: &Workspace) -> bool {
+    ws.settings().bool_or(settings::ENABLED, false)
+        && has_permission(ws, perm::VIEW_OMNICHANNEL_CONTACT_CENTER, None)
 }
 
 /// The availability to show a toggle for: only for agents (§2: admins with
@@ -70,17 +79,49 @@ pub fn update(msg: Msg, ctx: &mut Ctx<'_>) -> Action<Msg> {
             t!("omnichannel.availability_failed").into_owned(),
             crate::omnichannel::error_text(&f),
         )),
+        // Intercepted by the sidebar before it reaches the status menu.
+        Msg::ContactCenter => Action::none(),
     }
 }
 
-/// The status menu entry: "Available for chats" with a switch, plus a hint
-/// when the user is offline (offline agents get no chats, §3.2).
+/// The status menu entries: "Available for chats" with a switch (agents),
+/// a hint when the user is offline (offline agents get no chats, §3.2), and
+/// the Contact Center.
 pub fn menu_entry<'a, M: Clone + 'a>(
     ws: &Workspace,
     enabled: bool,
     wrap: fn(Msg) -> M,
 ) -> Option<Element<'a, M>> {
-    let status = availability(ws)?;
+    let toggle = availability(ws).map(|status| toggle_entry(ws, status, enabled, wrap));
+    let cc: Option<Element<'a, M>> = contact_center_allowed(ws).then(|| {
+        button(
+            row![
+                icon::sized(Icon::Contact, 16.0),
+                ellipsis(t!("omnichannel.contact_center").into_owned())
+                    .size(TEXT_BODY)
+                    .width(Length::Fill),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([6, 8])
+        .style(style::button_menu_item(false))
+        .on_press(wrap(Msg::ContactCenter))
+        .into()
+    });
+    match (toggle, cc) {
+        (None, None) => None,
+        (t, c) => Some(iced::widget::column![t, c].into()),
+    }
+}
+
+fn toggle_entry<'a, M: Clone + 'a>(
+    ws: &Workspace,
+    status: AgentStatus,
+    enabled: bool,
+    wrap: fn(Msg) -> M,
+) -> Element<'a, M> {
     let on = status == AgentStatus::Available;
     let next = if on {
         AgentStatus::NotAvailable
@@ -131,7 +172,7 @@ pub fn menu_entry<'a, M: Clone + 'a>(
             .padding([SPACE_1, SPACE_2]),
         );
     }
-    Some(col.into())
+    col.into()
 }
 
 /// A small headset next to the account name while the agent is available.

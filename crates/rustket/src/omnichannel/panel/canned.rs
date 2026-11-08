@@ -77,21 +77,15 @@ impl CannedPanel {
                 t!("omnichannel.canned_unavailable").into_owned(),
             );
         }
-        let items: Vec<CannedResponse> = omni
+        let mut list: Column<'a, Msg> = column![].spacing(0);
+        let mut any = false;
+        for r in omni
             .canned
             .all()
             .into_iter()
             .filter(|r| matches(r, &self.query, self.filter))
-            .cloned()
-            .collect();
-        let mut list: Column<'a, Msg> = column![].spacing(0);
-        if items.is_empty() {
-            list = list.push(common::empty(
-                Icon::MessageSquareText,
-                t!("omnichannel.canned_none").into_owned(),
-            ));
-        }
-        for r in items {
+        {
+            any = true;
             let scope = match r.scope {
                 CannedScope::Global => t!("omnichannel.canned_public"),
                 CannedScope::Department => t!("omnichannel.canned_department"),
@@ -123,6 +117,12 @@ impl CannedPanel {
                 .padding([SPACE_2, SPACE_3])
                 .width(Length::Fill),
             );
+        }
+        if !any {
+            list = list.push(common::empty(
+                Icon::MessageSquareText,
+                t!("omnichannel.canned_none").into_owned(),
+            ));
         }
         column![
             container(

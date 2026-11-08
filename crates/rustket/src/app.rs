@@ -600,8 +600,8 @@ impl App {
         let after = self.after_update();
         let confirm = self.show_next_confirmation();
         let unread = self.unread_hook();
-        let omni = self.omni_after_update();
-        Task::batch([task, after, confirm, unread, omni])
+        let unread = Task::batch([unread, self.omni_after_update()]);
+        Task::batch([task, after, confirm, unread])
     }
 
     /// Applies pending workspace changes to derived views and fetches wanted images.
@@ -1257,7 +1257,7 @@ impl App {
         let (url, tls) = (s.url.clone(), s.tls.clone());
         let kind = self.config.server(sid).and_then(|e| e.token_kind);
         let revoke = everywhere || kind == Some(TokenKind::Login);
-        let agent = crate::omnichannel::is_available_agent(&s.workspace);
+        let agent = crate::omnichannel::AgentSignOut::of(&s.workspace);
         // Stop-typing calls of the open rooms; not chained before the
         // logout, which must not wait for a DDP call while the socket is down
         // (the server drops the activity with the connection anyway).
@@ -1274,8 +1274,9 @@ impl App {
                 let sid = sid.clone();
                 Task::perform(
                     async move {
-                        if agent {
-                            crate::omnichannel::sign_out_agent(&h).await;
+                        if agent.revoke(&h).await {
+                            h.session().close().await;
+                            return Ok(());
                         }
                         tokio::time::timeout(LOGOUT_TIMEOUT, h.session().logout())
                             .await
@@ -1301,9 +1302,7 @@ impl App {
             }
             (false, Some(h), _) => Task::perform(
                 async move {
-                    if agent {
-                        crate::omnichannel::sign_out_agent(&h).await;
-                    }
+                    agent.keep_token(&h).await;
                     h.session().close().await;
                 },
                 |_| Message::Noop,
@@ -1344,19 +1343,15 @@ impl App {
         let Some(s) = self.servers.get(&sid) else {
             return Task::none();
         };
-        let rows: Vec<(&str, bool)> = s
-            .sidebar
-            .sections
-            .iter()
-            .filter(|sec| {
-                !self
-                    .ui_state
-                    .collapsed_sections
-                    .contains(sec.kind.i18n_key())
-            })
-            .flat_map(|sec| sec.items.iter())
-            .map(|i| (i.rid.as_str(), i.badge.count > 0 || i.badge.dot))
-            .collect();
+        let rows: Vec<(&str, bool)> = crate::omnichannel::sidebar::step_order(
+            &s.id,
+            &s.workspace,
+            &s.sidebar.sections,
+            &self.ui_state.collapsed_sections,
+        )
+        .into_iter()
+        .map(|i| (i.rid.as_str(), i.badge.count > 0 || i.badge.dot))
+        .collect();
         let Some(rid) = crate::desktop::shortcuts::target(&rows, s.active_room.as_deref(), step)
             .map(str::to_owned)
         else {
@@ -1396,6 +1391,7 @@ impl App {
         if s.workspace.room(rid).is_none() {
             return Task::none();
         }
+        s.omni.close_contact_center();
         if s.active_room.as_deref() == Some(rid) && s.rooms.contains_key(rid) {
             return Task::none();
         }

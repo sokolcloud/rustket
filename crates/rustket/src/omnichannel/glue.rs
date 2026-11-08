@@ -6,31 +6,78 @@
 use std::time::Duration;
 
 use iced::{Element, Task};
-use rocketchat::models::{AgentStatus, RoomType, UserStatus};
+use rocketchat::models::{AgentStatus, Room, RoomType, UserStatus};
 use rocketchat::session::{ChangeKind, OmnichannelEvent, SessionEvent};
 use rust_i18n::t;
-use rustket_core::{Change, ServerId};
+use rustket_core::{Change, ServerId, Workspace};
 use rustket_ui::widget::BannerKind;
 
 use super::{Message as OMsg, contact_center, sidebar};
 use crate::app::App;
 use crate::message::Message;
+use crate::room::UpdateCtx;
 use crate::screens::directory::open;
 use crate::session::{ServerEvent, SessionHandle};
 use crate::workspace::ServerState;
 
-/// Before signing out: an available agent becomes unavailable, like the web
-/// client's DDP `logout` does (Rustket's REST logout does not, §3.4).
-pub async fn sign_out_agent(h: &SessionHandle) {
-    let call = h
-        .rest()
-        .livechat_agent_status(Some(AgentStatus::NotAvailable));
-    match tokio::time::timeout(Duration::from_secs(5), call).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => tracing::debug!(error = %e, "agent not-available on sign-out"),
-        Err(_) => tracing::debug!("agent not-available on sign-out: timeout"),
+/// The omnichannel side of a sign-out (`docs/omnichannel.md` §22.3a),
+/// captured before the server state is reset.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AgentSignOut {
+    agent: bool,
+    available: bool,
+}
+
+impl AgentSignOut {
+    pub fn of(ws: &Workspace) -> Self {
+        Self {
+            agent: ws.me().is_some_and(|m| m.is_livechat_agent()),
+            available: super::is_available_agent(ws),
+        }
+    }
+
+    /// Token-revoking sign-out of an agent: the DDP `logout` method, like the
+    /// web client. It destroys the login token and runs the server's
+    /// `onLogout` hook, which sets the agent not-available with
+    /// `livechatStatusSystemModified`, so the next login restores the
+    /// availability. Returns whether it succeeded (no REST logout needed then).
+    pub async fn revoke(self, h: &SessionHandle) -> bool {
+        if !self.agent {
+            return false;
+        }
+        let call = h.session().call("logout", Vec::new());
+        match tokio::time::timeout(SIGN_OUT_TIMEOUT, call).await {
+            Ok(Ok(_)) => true,
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "DDP logout");
+                false
+            }
+            Err(_) => {
+                tracing::debug!("DDP logout: timeout");
+                false
+            }
+        }
+    }
+
+    /// Sign-out that keeps the token (personal access tokens): an available
+    /// agent is set not-available through REST. Unlike the DDP `logout`, the
+    /// server then keeps the agent not-available at the next login.
+    pub async fn keep_token(self, h: &SessionHandle) {
+        if !self.available {
+            return;
+        }
+        let call = h
+            .rest()
+            .livechat_agent_status(Some(AgentStatus::NotAvailable));
+        match tokio::time::timeout(SIGN_OUT_TIMEOUT, call).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::debug!(error = %e, "agent not-available on sign-out"),
+            Err(_) => tracing::debug!("agent not-available on sign-out: timeout"),
+        }
     }
 }
+
+const SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn wrap(sid: &ServerId, epoch: u64, t: Task<OMsg>) -> Task<Message> {
     let sid = sid.clone();
@@ -46,20 +93,23 @@ impl App {
         if s.workspace.my_status() == UserStatus::Busy {
             return;
         }
-        if let Some(name) = super::new_room_sound(&s.workspace) {
+        if let Some(name) = super::new_room_sound(&s.workspace, self.config.ui.sound) {
             self.desktop.sound.play(Some(&name));
         }
     }
 
-    /// After every update: per logged-in server, loads for a new session,
-    /// recompute after workspace changes, stream watches, snapshot.
+    /// After every update: per logged-in server, parked chat views back,
+    /// loads for a new session, recompute after workspace changes, stream
+    /// watches, snapshot.
     pub(crate) fn omni_after_update(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
         for s in self.servers.values_mut() {
             if !s.is_logged_in() {
                 continue;
             }
-            s.omni.follow_active_room(s.active_room.as_deref());
+            for (room, view) in s.omni.take_parked() {
+                tasks.push(unpark(s, room, *view, &self.images, &self.config.ui));
+            }
             let t = s.omni.tick(&s.id, &s.workspace, s.session.as_ref());
             tasks.push(wrap(&s.id, s.generation, t));
         }
@@ -89,7 +139,7 @@ impl App {
             tasks.push(wrap(&s.id, s.generation, t));
         }
         if u.changed {
-            super::shared::publish(&s.id, &s.omni.state);
+            s.omni.touch();
         }
         match &**ev {
             SessionEvent::Resync { .. } => s.omni.on_resync(),
@@ -105,14 +155,24 @@ impl App {
                     }
                     ChangeKind::Removed => {
                         // Closed, forwarded or returned to the queue (§7.4).
-                        if s.rooms.contains_key(&sub.rid)
-                            && super::dialogs::hide_after_closing(&s.workspace)
-                            && let Some(rv) = s.rooms.remove(&sub.rid)
-                        {
-                            let close = rv.close(&mut s.workspace, s.session.as_ref()).discard();
-                            tasks.push(close);
-                            if s.active_room.as_deref() == Some(sub.rid.as_str()) {
-                                s.active_room = None;
+                        s.omni.forget_seen(&sub.rid);
+                        if let Some(rv) = s.rooms.remove(&sub.rid) {
+                            // Kept open (as a closed preview) when the user
+                            // keeps closed conversations, or until the result
+                            // of the dialog's own request arrives (its toast).
+                            let keep = !super::dialogs::hide_after_closing(&s.workspace)
+                                || rv.omni.request_in_flight();
+                            let room = s.workspace.room(&sub.rid).and_then(|e| e.room.clone());
+                            match room {
+                                Some(room) if keep => s.omni.park(room, rv),
+                                _ => {
+                                    let close =
+                                        rv.close(&mut s.workspace, s.session.as_ref()).discard();
+                                    tasks.push(close);
+                                    if s.active_room.as_deref() == Some(sub.rid.as_str()) {
+                                        s.active_room = None;
+                                    }
+                                }
                             }
                         }
                     }
@@ -142,6 +202,16 @@ impl App {
             return Task::none();
         }
         match m {
+            OMsg::Refreshed(r) => {
+                match *r {
+                    Ok(o) if s.rooms.contains_key(&o.room.id) => {
+                        open::apply(&mut s.workspace, o);
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::debug!(error = %e, "closed chat refresh"),
+                }
+                Task::none()
+            }
             OMsg::Opened(r) => match *r {
                 Ok(o) => {
                     let rid = open::apply(&mut s.workspace, o);
@@ -211,7 +281,8 @@ impl App {
                 let Some(s) = self.servers.get_mut(&sid) else {
                     return Task::none();
                 };
-                s.omni.open_contact_center(s.active_room.as_deref());
+                s.status_menu.open = false;
+                s.omni.open_contact_center();
                 let rest = s.session.as_ref().map(|h| h.rest().clone());
                 let epoch = s.generation;
                 let task = match s.omni.contact_center.as_mut() {
@@ -230,8 +301,54 @@ impl App {
         let cc = s.omni.contact_center.as_ref()?;
         let (sid, epoch) = (s.id.clone(), s.generation);
         Some(
-            cc.view()
+            cc.view(self.config.ui.clock_24h)
                 .map(move |m| Message::Omni(sid.clone(), epoch, OMsg::ContactCenter(m))),
         )
     }
+}
+
+/// Puts a parked chat view back after its subscription was removed: the
+/// room as a preview (the server's copy is re-read for `open: false`), the
+/// history reloaded (the removal dropped the timeline).
+fn unpark(
+    s: &mut ServerState,
+    room: Room,
+    mut view: crate::room::RoomView,
+    images: &crate::images::Images,
+    prefs: &rustket_core::config::UiPrefs,
+) -> Task<Message> {
+    let rid = room.id.clone();
+    if s.workspace.room(&rid).is_none() {
+        s.workspace.apply_room(Change::Updated, room);
+    }
+    let epoch = s.generation;
+    let mut ctx = UpdateCtx {
+        server_id: &s.id,
+        server: &s.url,
+        rid: &rid,
+        workspace: &mut s.workspace,
+        session: s.session.as_ref(),
+        images,
+        prefs,
+    };
+    let history = view.on_reconnect(&mut ctx).task;
+    s.rooms.insert(rid.clone(), view);
+    let (sid, r) = (s.id.clone(), rid.clone());
+    let history = history.map(move |m| Message::Room(sid.clone(), epoch, r.clone(), m));
+    let refresh = match s.session.as_ref().map(|h| h.rest().clone()) {
+        Some(rest) => wrap(
+            &s.id,
+            epoch,
+            Task::perform(
+                async move {
+                    open::resolve(rest, open::Target::Room(rid))
+                        .await
+                        .map_err(crate::error::Failure::from)
+                },
+                |r| OMsg::Refreshed(Box::new(r)),
+            ),
+        ),
+        None => Task::none(),
+    };
+    Task::batch([history, refresh])
 }

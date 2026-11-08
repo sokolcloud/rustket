@@ -10,6 +10,7 @@ pub mod history;
 pub mod info;
 
 use iced::Element;
+use rust_i18n::t;
 use rustket_core::workspace::Changes;
 
 use crate::room::{Action, UpdateCtx, ViewCtx};
@@ -125,11 +126,11 @@ pub fn duration(secs: i64) -> String {
     let secs = secs.max(0);
     let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
     if h > 0 {
-        format!("{h}h {m}m")
+        t!("omnichannel.duration_hm", h = h, m = m).into_owned()
     } else if m > 0 {
-        format!("{m}m {s}s")
+        t!("omnichannel.duration_ms", m = m, s = s).into_owned()
     } else {
-        format!("{s}s")
+        t!("omnichannel.duration_s", s = s).into_owned()
     }
 }
 
@@ -139,6 +140,7 @@ mod tests {
 
     #[test]
     fn durations_and_back_targets() {
+        rust_i18n::set_locale("en");
         assert_eq!(duration(12), "12s");
         assert_eq!(duration(185), "3m 5s");
         assert_eq!(duration(3720), "1h 2m");

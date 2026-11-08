@@ -557,7 +557,7 @@ impl Header {
                             .style(|t: &Theme| Some(tokens(t).text_secondary)),
                     )
                     .interaction(iced::mouse::Interaction::Pointer)
-                    .on_press(Message::TogglePanel(panel::Kind::Info))
+                    .on_press(Message::TogglePanel(buttons(ws, &self.rid).info))
                     .into()
                 })
         };

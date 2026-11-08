@@ -43,6 +43,11 @@ pub enum Msg {
 }
 
 impl TranscriptDialog {
+    /// A request of the dialog is in flight.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
     pub fn open(room: &Room, ctx: &UpdateCtx<'_>) -> (Self, Task<Msg>) {
         let requested = room.transcript_request.as_ref().and_then(|r| {
             let email = r.get("email")?.as_str()?.to_owned();

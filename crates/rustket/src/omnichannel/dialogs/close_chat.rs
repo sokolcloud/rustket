@@ -57,6 +57,11 @@ pub enum Msg {
 }
 
 impl CloseChatDialog {
+    /// A request of the dialog is in flight.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
     /// Opens the dialog for `room`, loading its department (closing tags) and
     /// the visitor (transcript e-mail).
     pub fn open(room: &Room, ctx: &UpdateCtx<'_>) -> (Self, Task<Msg>) {
@@ -234,6 +239,11 @@ impl CloseChatDialog {
             body =
                 body.push(text(t!("omnichannel.close_confirm_body").into_owned()).size(TEXT_BODY));
         } else {
+            body = body.push(
+                text(t!("omnichannel.close_room_description").into_owned())
+                    .size(TEXT_BODY)
+                    .style(rustket_ui::style::text_secondary),
+            );
             let comment_label = if self.comment_required {
                 t!("omnichannel.comment_required")
             } else {

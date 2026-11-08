@@ -1,19 +1,20 @@
 //! Omnichannel groups of the sidebar (`docs/omnichannel.md` §6): "Queued
 //! chats" (manual selection queue, rows are inquiries, not subscriptions),
-//! "Chats in progress" and "On hold" (the generic omnichannel section split),
-//! and the Contact Center button in the sidebar header.
+//! "Chats in progress" and "On hold" (the generic omnichannel section split).
 
 use iced::Element;
 use iced::widget::Column;
 use rust_i18n::t;
-use rustket_core::omnichannel::permissions as perm;
-use rustket_core::omnichannel::room_list::{OmnichannelSectionKind, QueueRow, queue_section};
-use rustket_core::permissions::has_permission;
-use rustket_core::room_list::{RoomListItem, RoomListOptions, Section, SectionKind};
-use rustket_ui::icon::Icon;
-use rustket_ui::widget::{
-    AvatarSource, RoomListItemProps, icon_button, room_list_item, section_header,
+use std::collections::BTreeSet;
+
+use rustket_core::omnichannel::room::month_key;
+use rustket_core::omnichannel::room_list::{
+    OmnichannelSectionKind, QueueRow, decor, queue_section,
 };
+use rustket_core::room_list::{RoomKind, RoomListItem, RoomListOptions, Section, SectionKind};
+use rustket_core::{ServerId, Workspace};
+use rustket_ui::icon::Icon;
+use rustket_ui::widget::{AvatarSource, RoomListItemProps, room_list_item, section_header};
 
 use crate::workspace::sidebar::{Message, SidebarCtx, preview_text};
 
@@ -68,13 +69,18 @@ fn on_hold(ws: &rustket_core::Workspace, rid: &str) -> bool {
     })
 }
 
+/// Whether omnichannel rooms are shown at all: `Livechat_enabled` and
+/// `view-l-room` (the web drops them from the room list otherwise). Shown
+/// while the routing config is still loading.
+pub fn shown(sid: &ServerId) -> bool {
+    super::shared::get(sid).is_some_and(|o| o.accessible)
+}
+
 /// Splits the generic omnichannel section into "Chats in progress" and "On
 /// hold" (empty groups omitted).
-pub fn split_groups<'a>(ctx: &SidebarCtx<'_>, section: &'a Section) -> Vec<Group<'a>> {
-    let (hold, open): (Vec<&RoomListItem>, Vec<&RoomListItem>) = section
-        .items
-        .iter()
-        .partition(|i| on_hold(ctx.workspace, &i.rid));
+pub fn split_groups<'a>(ws: &Workspace, section: &'a Section) -> Vec<Group<'a>> {
+    let (hold, open): (Vec<&RoomListItem>, Vec<&RoomListItem>) =
+        section.items.iter().partition(|i| on_hold(ws, &i.rid));
     [
         (OmnichannelSectionKind::Open, open),
         (OmnichannelSectionKind::OnHold, hold),
@@ -161,26 +167,68 @@ pub fn push_groups<'a>(
     if let Some(q) = queue {
         list = push_group(list, q, ctx, filter, row);
     }
+    if !shown(ctx.server_id) {
+        return list;
+    }
     for s in sections
         .iter()
         .filter(|s| s.kind == SectionKind::Omnichannel)
     {
-        for g in split_groups(ctx, s) {
+        for g in split_groups(ctx.workspace, s) {
             list = push_group(list, g, ctx, filter, row);
         }
     }
     list
 }
 
-/// The Contact Center button of the sidebar header.
-pub fn header_button<'a>(ctx: &SidebarCtx<'a>) -> Option<Element<'a, Message>> {
-    let omni = super::shared::get(ctx.server_id)?;
-    (omni.enabled && has_permission(ctx.workspace, perm::VIEW_OMNICHANNEL_CONTACT_CENTER, None))
-        .then(|| {
-            icon_button(
-                Icon::Contact,
-                Some(Message::Omni(Msg::ContactCenter)),
-                t!("omnichannel.contact_center"),
-            )
-        })
+/// The subscribed rooms in the order the sidebar draws them, without
+/// collapsed groups (Alt+Up/Down): the omnichannel groups first, then the
+/// other sections.
+pub fn step_order<'a>(
+    sid: &ServerId,
+    ws: &Workspace,
+    sections: &'a [Section],
+    collapsed: &BTreeSet<String>,
+) -> Vec<&'a RoomListItem> {
+    let mut out = Vec::new();
+    let (omni, rest): (Vec<&Section>, Vec<&Section>) = sections
+        .iter()
+        .partition(|s| s.kind == SectionKind::Omnichannel);
+    if shown(sid) {
+        for s in omni {
+            for g in split_groups(ws, s) {
+                if !collapsed.contains(section_key(g.kind)) {
+                    out.extend(g.rooms);
+                }
+            }
+        }
+    }
+    for s in rest {
+        if !collapsed.contains(s.kind.i18n_key()) {
+            out.extend(s.items.iter());
+        }
+    }
+    out
+}
+
+/// Row decorations of a livechat room (§6): source icon (a warning while
+/// over the MAC limit) and the visitor's status.
+pub fn decorate<M>(p: &mut RoomListItemProps<M>, item: &RoomListItem, ctx: &SidebarCtx<'_>) {
+    if item.kind != RoomKind::Omnichannel {
+        return;
+    }
+    let Some(e) = ctx.workspace.room(&item.rid) else {
+        return;
+    };
+    let over = super::shared::get(ctx.server_id).is_some_and(|o| o.over_mac);
+    let month = month_key(chrono::Local::now());
+    let d = decor(e, over, &month);
+    p.icon = Some(if d.over_mac {
+        Icon::TriangleAlert
+    } else {
+        super::panel::info::source_icon(d.source)
+    });
+    if let Some(st) = d.visitor_status {
+        p.presence = Some(crate::workspace::sidebar::presence(st));
+    }
 }

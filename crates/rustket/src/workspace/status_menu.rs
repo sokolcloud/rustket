@@ -324,12 +324,9 @@ impl StatusMenu {
                         .style(|theme: &Theme| Some(tokens(theme).text_secondary)),
                 ]
                 .width(Length::Fill),
+                crate::omnichannel::status::indicator(ws),
+                icon::sized(Icon::ChevronDown, 14.0),
             ]
-            .push(
-                crate::omnichannel::status::indicator(ws)
-                    .unwrap_or_else(|| iced::widget::space().into()),
-            )
-            .push(icon::sized(Icon::ChevronDown, 14.0))
             .spacing(SPACE_2)
             .align_y(Alignment::Center),
         )

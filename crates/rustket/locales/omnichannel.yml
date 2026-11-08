@@ -578,3 +578,21 @@ omnichannel.sys.unprioritized:
 omnichannel.sys.without_sla:
   en: "Without SLA"
   ru: "Без SLA"
+omnichannel.back:
+  en: "Back"
+  ru: "Назад"
+omnichannel.contact_chats:
+  en: "Conversations of this contact"
+  ru: "Беседы этого контакта"
+omnichannel.close_room_description:
+  en: "You are about to close this chat. Are you sure you want to continue?"
+  ru: "Вы собираетесь закрыть этот чат. Вы уверены, что хотите продолжить?"
+omnichannel.duration_hm:
+  en: "%{h}h %{m}m"
+  ru: "%{h} ч %{m} мин"
+omnichannel.duration_ms:
+  en: "%{m}m %{s}s"
+  ru: "%{m} мин %{s} с"
+omnichannel.duration_s:
+  en: "%{s}s"
+  ru: "%{s} с"

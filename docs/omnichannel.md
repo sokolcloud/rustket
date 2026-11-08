@@ -1423,25 +1423,45 @@ Deviations from §22.1/§22.2, forced by keeping `crates/rustket` source-compati
 - `src/omnichannel/`: `Omni` (per server, `ServerState::omni`) owns the `OmnichannelState`;
   `glue.rs` hooks into `App::update` (after every update: new-session loads, recompute when
   the `ME | SETTINGS | PERMISSIONS | ROLES` revision changed, queue / canned stream watches;
-  before each session event: `apply_event`, new-room sound, closing the view of a removed `t:l`
-  subscription, `stream-room-data` rooms applied). Room components and the sidebar only get the
+  before each session event: `apply_event`, new-room sound, the view of a removed `t:l`
+  subscription, `stream-room-data` rooms applied). The state is published only after it changed. Room components and the sidebar only get the
   workspace in their contexts, so the state is published as a read-only snapshot per server
   (`omnichannel::shared`), read by views.
 - Sidebar: queue rows (inquiries) and the split "Chats in progress" / "On hold" groups are
-  drawn first; clicking a queued chat fetches it (`rooms.info`, preview) and opens it.
+  drawn first; clicking a queued chat fetches it (`rooms.info`, preview) and opens it. `t:l`
+  rooms are hidden unless omnichannel is accessible (`Livechat_enabled` + `view-l-room`; shown
+  while the routing config loads). Group rows get the source icon (a warning icon over the MAC
+  limit) and the visitor's status; no priority icon. Alt+Up/Down follows the drawn order and the
+  groups' own collapse keys (`omnichannel::sidebar::step_order`).
+- Removed `t:l` subscription with its view open: the view closes when
+  `omnichannelHideConversationAfterClosing` (default true) is on, otherwise it stays as a
+  preview (room kept, re-read with `rooms.info`, history reloaded) with the "closed" callout.
+  While a dialog request (close / forward / return) is in flight the view also stays until the
+  result arrives, so its success toast is shown; the dialog then closes the view as before.
+- New-room sound: also off when Rustket's "Play a sound" setting is off or
+  `notificationsSoundVolume` / `masterVolume` is 0. A chat that comes back to the agent
+  (forwarded back, re-routed) sounds again.
 - Room: `RoomView::omni` (`omnichannel::room::OmniRoom`) wraps the composer slot (callouts of
   §7.1, the unknown-contact banner) and owns the dialogs (`dialogs/{close_chat, forward_chat,
   confirm (return to queue + on hold), transcript}.rs`); the header shows the quick actions
   of §7.2 plus contact/canned panel buttons; panels are `room::panel::Kind::Omnichannel(PanelKind
   ::{Info, Edit, Contact, ContactHistory, ContactHistoryChat(rid), Canned})`.
-- Contact center: opened from a sidebar header button, drawn in place of the room area
-  (contacts / chats tabs; chats are restricted to `agents=[me]` without `view-livechat-rooms`).
-- Sign-out: an available agent is set `not-available` (REST `agent.status`) before the logout,
-  like the web client's DDP `logout`; the DDP `logout` method itself is not called (it would
-  remove the login token, which is wrong for personal access tokens).
+- Contact center: opened from the status menu ("Contact Center", with
+  `view-omnichannel-contact-center`), drawn in place of the room area (contacts / chats tabs;
+  chats are restricted to `agents=[me]` without `view-livechat-rooms`; a contact row lists the
+  contact's chats via `contacts.history`). It closes when the user opens a room (sidebar, quick
+  switcher, links, also the already active room), not when the active room disappears.
+- Sign-out: when the login token is revoked, an agent's session calls the DDP `logout` method
+  like the web client (it destroys the token and the server's `onLogout` hook sets the agent
+  not-available with `livechatStatusSystemModified: true`, so the next login makes the agent
+  available again); the REST logout is only the fallback when that call fails. A sign-out
+  that keeps the token (personal access token) sets an available agent `not-available` through
+  REST `agent.status` instead; that writes `livechatStatusSystemModified: false`, so the agent
+  stays not-available at the next login (unlike the web).
+- Forward picker: `showIdleAgents = Livechat_enabled_when_agent_idle` (default true), like the web.
 - `agent.status` with an explicit status is retried once after a transient HTTP failure (a
   pooled keep-alive connection closed by the server was seen in the headless snapshot run).
-- Not done: the continuous new-room sound loop (`Livechat_continuous_sound_notification_new_
+- Not done: editing the subject of a closed chat's transcript (the web can), the continuous new-room sound loop (`Livechat_continuous_sound_notification_new_
   livechat_room`), the EE tag/priority/SLA pickers, contact editing/blocking, creating canned
   responses, queue preview through `stream-room-data`.
 

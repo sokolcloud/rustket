@@ -676,8 +676,8 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "08-room-dark");
     d.app.config.ui.theme = rustket_core::config::Theme::Light;
     d.shoot(&out, "09-room-light");
-    // `RUSTKET_SNAPSHOT_ONLY=glue|omni`: only the integration shots.
-    let only_glue = std::env::var("RUSTKET_SNAPSHOT_ONLY").is_ok();
+    // `RUSTKET_SNAPSHOT_ONLY=glue`: only the integration shots.
+    let only_glue = std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() == Ok("glue");
     if !only_glue {
         composer_snapshots(&mut d, &out, &sid, &rid).await;
         timeline_fixture::shoot(&mut d, &out, &sid).await;
