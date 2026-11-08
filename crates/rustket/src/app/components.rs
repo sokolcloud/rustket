@@ -193,6 +193,12 @@ impl App {
                     self.config.set_recent_status_texts(list);
                     self.save_config()
                 }
+                Effect::UiKit(m) => match sid {
+                    Some(sid) => {
+                        self.on_uikit(sid.clone(), crate::uikit::Msg::Ui { rid: None, msg: *m })
+                    }
+                    None => Task::none(),
+                },
             });
         }
         Task::batch(tasks)

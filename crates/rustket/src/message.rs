@@ -62,6 +62,8 @@ pub enum Message {
     CreateRoom(ServerId, crate::dialogs::create_room::Message),
     QuickSwitcher(ServerId, crate::dialogs::quick_switcher::Message),
     StatusMenu(ServerId, crate::workspace::status_menu::Message),
+    /// UIKit controller (`crate::uikit`) of a server.
+    UiKit(ServerId, crate::uikit::Msg),
     Desktop(crate::desktop::Message),
     /// Ctrl+K.
     OpenQuickSwitcher,

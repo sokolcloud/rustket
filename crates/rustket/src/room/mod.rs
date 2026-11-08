@@ -179,6 +179,9 @@ pub enum Effect {
     StartDiscussion {
         pmid: Option<String>,
     },
+    /// A UIKit interaction (blocks, app panel, app buttons); handled by the
+    /// app's UIKit controller (`crate::uikit`).
+    UiKit(Box<crate::uikit::UiKitMsg>),
 }
 
 /// Requests other room components make to the composer.

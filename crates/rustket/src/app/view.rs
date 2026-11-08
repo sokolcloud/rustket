@@ -172,6 +172,9 @@ impl App {
         if let Some(strip) = self.connection_strip(s) {
             area = area.push(strip);
         }
+        for strip in self.uikit_strips(s) {
+            area = area.push(strip);
+        }
         area = area.push(room_area);
         split(
             sidebar_view,
@@ -244,7 +247,7 @@ impl App {
                     return (None, None);
                 };
                 let Some(l) = &s.login else {
-                    return (None, None);
+                    return self.uikit_overlay(s);
                 };
                 let sid = s.id.clone();
                 match l.overlay() {

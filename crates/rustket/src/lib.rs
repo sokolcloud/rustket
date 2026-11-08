@@ -23,6 +23,7 @@ pub mod screens;
 pub mod session;
 pub mod single_instance;
 pub mod ui_state;
+pub mod uikit;
 pub mod url_handler;
 pub mod workspace;
 

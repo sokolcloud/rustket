@@ -147,6 +147,8 @@ pub enum Effect {
     /// The recently used custom status texts changed (most recent first):
     /// store them in `AppConfig::recent_status_texts` and save.
     RecentStatusTexts(Vec<String>),
+    /// A UIKit interaction (app action button of the user menu).
+    UiKit(Box<crate::uikit::UiKitMsg>),
 }
 
 /// Result of an app-level component `update`.

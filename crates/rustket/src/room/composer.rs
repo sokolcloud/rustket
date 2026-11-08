@@ -246,7 +246,9 @@ pub enum Message {
     Fetched(FetchFor, Res<Box<rocketchat::models::Message>>),
     Sent(String, Res<Box<rocketchat::models::Message>>),
     Updated(Res<Box<rocketchat::models::Message>>),
-    CommandRan(Res<serde_json::Value>),
+    CommandRan(crate::uikit::commands::Ran),
+    /// The composer's app menu (`crate::uikit::buttons`).
+    UiKit(Box<crate::uikit::UiKitMsg>),
     Typed(Res<()>),
     TypingTick,
     DraftTick(u64),
@@ -710,14 +712,12 @@ impl Composer {
                     e.user_text(),
                 )),
             },
-            Message::CommandRan(r) => match r {
-                Ok(_) => Action::none(),
-                Err(e) => Action::effect(Effect::Toast(
-                    BannerKind::Error,
-                    t!("room_composer.command_failed").into_owned(),
-                    e.user_text(),
-                )),
-            },
+            Message::CommandRan(r) => {
+                // A failure shows as a local ephemeral message (like the web).
+                crate::uikit::commands::finished(ctx.workspace, &r);
+                Action::none()
+            }
+            Message::UiKit(m) => Action::effect(Effect::UiKit(m)),
             Message::Typed(r) => {
                 if let Err(e) = r {
                     tracing::debug!(error = %e, "user-activity failed");
@@ -1278,17 +1278,15 @@ impl Composer {
         Action::task(self.send_text(text, ctx))
     }
 
-    fn run_command(&self, name: String, params: String, ctx: &UpdateCtx<'_>) -> Task<Message> {
-        let rid = self.rid.clone();
-        let tmid = self.tmid.clone();
-        ctx.rest_task(
-            move |rest| async move {
-                let trigger = rocketchat::ids::random_id();
-                rest.commands_run(&name, &params, &rid, tmid.as_deref(), Some(&trigger))
-                    .await
-            },
-            Message::CommandRan,
-        )
+    /// `commands.run` with a trigger registered in the UIKit store (§7).
+    fn run_command(&self, name: String, params: String, ctx: &mut UpdateCtx<'_>) -> Task<Message> {
+        let app_id = cached_commands(ctx.server_id).and_then(|c| {
+            c.iter()
+                .find(|c| c.command == name)
+                .and_then(|c| c.app_id.clone())
+        });
+        crate::uikit::commands::run(ctx, &self.rid, self.tmid.as_deref(), name, params, app_id)
+            .map(Message::CommandRan)
     }
 
     /// Adds a pending message to the outbox and sends it with `chat.sendMessage`.
@@ -1495,6 +1493,38 @@ impl Composer {
             .into()
     }
 
+    /// The app actions menu (`messageBoxAction` buttons), if there are any.
+    fn apps_menu<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, Message>> {
+        use crate::uikit::{UiKitMsg, buttons};
+        let ws = ctx.workspace;
+        if !buttons::composer_has_buttons(ws, &self.rid) {
+            return None;
+        }
+        let tmid = self.tmid.as_deref();
+        let open = buttons::composer_menu_open(ws, &self.rid, tmid);
+        let key = buttons::composer_menu_key(&self.rid, tmid);
+        let wrap = |m: UiKitMsg| Message::UiKit(Box::new(m));
+        let entries = if open {
+            buttons::composer_entries(ws, &self.rid, tmid, &self.content.text(), wrap)
+        } else {
+            Vec::new()
+        };
+        let trigger = icon_button_with(
+            buttons::COMPOSER_ICON,
+            Some(wrap(UiKitMsg::Popover((!open).then_some(key)))),
+            t!("uikit.apps"),
+            open,
+            30.0,
+        );
+        Some(rustket_ui::widget::popover_menu(
+            trigger,
+            &entries,
+            open,
+            wrap(UiKitMsg::Popover(None)),
+            Placement::AboveEnd,
+        ))
+    }
+
     fn toolbar_view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
         let emoji_btn = icon_button_with(
             Icon::Smile,
@@ -1521,6 +1551,9 @@ impl Composer {
             ));
         }
         bar = bar.push(space().width(Length::Fill));
+        if let Some(apps) = self.apps_menu(ctx) {
+            bar = bar.push(apps);
+        }
         if permissions::can_upload(ctx.workspace, &self.rid) {
             // Files cannot be added to an edited message.
             bar = bar.push(icon_button_with(

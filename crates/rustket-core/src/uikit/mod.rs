@@ -5,6 +5,7 @@
 
 pub mod buttons;
 pub mod i18n;
+pub mod scratch;
 pub mod trigger;
 pub mod trust;
 pub mod view_state;
@@ -23,6 +24,7 @@ use serde_json::Value;
 
 pub use buttons::{ButtonCategory, ButtonQuery, button_visible, visible_buttons};
 pub use i18n::AppTranslations;
+pub use scratch::{ActionRequest, Scratch, Suggestion, SurfaceKey};
 pub use trigger::{Origin, OriginKind, Trigger, TriggerRegistry};
 pub use trust::{
     Permit, actions_allowed, element_permit, is_local_videoconf_action, is_openable_url,
@@ -217,6 +219,9 @@ pub struct UiKitStore {
     /// Triggers of app requests in flight (built-in slash commands excluded).
     busy: HashSet<String>,
     generations: u64,
+    scratch: Scratch,
+    /// Bumped by every [`Self::scratch_mut`] (row caches key on it).
+    scratch_revision: u64,
 }
 
 impl UiKitStore {
@@ -294,6 +299,21 @@ impl UiKitStore {
     /// Interactions in flight (the "Loading" pill shows while > 0).
     pub fn busy(&self) -> u32 {
         u32::try_from(self.busy.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Transient widget state of the surfaces (see [`Scratch`]).
+    pub fn scratch(&self) -> &Scratch {
+        &self.scratch
+    }
+
+    /// Mutable [`Scratch`]; counts as a change ([`Self::scratch_revision`]).
+    pub fn scratch_mut(&mut self) -> &mut Scratch {
+        self.scratch_revision = self.scratch_revision.wrapping_add(1);
+        &mut self.scratch
+    }
+
+    pub fn scratch_revision(&self) -> u64 {
+        self.scratch_revision
     }
 
     fn next_generation(&mut self) -> u64 {

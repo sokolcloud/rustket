@@ -229,6 +229,7 @@ impl Viewer {
                 Action::task(Task::perform(transfer::open_path(p), ViewerMsg::Opened))
             }
             RenderMsg::ToggleSpoiler(..) | RenderMsg::ToggleCollapsed(..) => Action::none(),
+            RenderMsg::UiKit(m) => Action::effect(Effect::UiKit(m)),
         }
     }
 

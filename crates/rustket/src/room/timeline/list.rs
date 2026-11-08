@@ -275,7 +275,7 @@ pub(crate) fn row<'a>(
     let dep = RowKey {
         msg: render::message_key(m),
         state,
-        render: env.render.key(&m.id),
+        render: env.render.key(&m.id) ^ crate::uikit::row_key(env.ws, env.images, m),
         flags,
         separators: (r.new_day, r.unread_before),
         dark: common.dark,

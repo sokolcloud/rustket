@@ -38,6 +38,8 @@ pub enum Message {
     OpenRoom(String),
     /// Menu: create a discussion in this room.
     CreateDiscussion,
+    /// Menu: an app action button (`crate::uikit::buttons`).
+    UiKit(Box<crate::uikit::UiKitMsg>),
 }
 
 pub struct Header {
@@ -195,6 +197,9 @@ pub fn menu_entries(
                 .into(),
         );
     }
+    v.extend(crate::uikit::buttons::room_entries(ws, rid, |m| {
+        Message::UiKit(Box::new(m))
+    }));
     v
 }
 
@@ -317,6 +322,10 @@ impl Header {
             Message::CreateDiscussion => {
                 self.menu_open = false;
                 Action::effect(Effect::StartDiscussion { pmid: None })
+            }
+            Message::UiKit(m) => {
+                self.menu_open = false;
+                Action::effect(Effect::UiKit(m))
             }
             Message::Room(RoomAction::MarkRead) => {
                 self.menu_open = false;

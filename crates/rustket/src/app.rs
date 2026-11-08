@@ -1,6 +1,7 @@
 //! Application state, update and subscriptions (`view` is in `app/view.rs`).
 
 mod components;
+mod uikit;
 mod view;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -793,6 +794,7 @@ impl App {
             Message::CreateRoom(sid, m) => self.on_create_room(sid, m),
             Message::QuickSwitcher(sid, m) => self.on_quick_switcher(sid, m),
             Message::StatusMenu(sid, m) => self.on_status_menu(sid, m),
+            Message::UiKit(sid, m) => self.on_uikit(sid, m),
             Message::Desktop(m) => self.on_desktop(m),
             Message::OpenQuickSwitcher => self.navigate(component::Nav::QuickSwitcher),
             Message::SidebarResized(w) => {
@@ -1530,6 +1532,8 @@ impl App {
             Some(rv) => rv.close(&mut s.workspace, s.session.as_ref()).discard(),
             None => Task::none(),
         };
+        // App panels of the room go away without `viewClosed` (§5.6).
+        let _ = s.workspace.uikit_mut().close_room_bars(rid);
         if s.active_room.as_deref() == Some(rid) {
             s.active_room = None;
         }
@@ -1563,6 +1567,13 @@ impl App {
                 | room::Effect::ShowMessage(_)
                 | room::Effect::Compose(_) => Task::none(),
                 room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
+                room::Effect::UiKit(m) => self.on_uikit(
+                    sid.clone(),
+                    crate::uikit::Msg::Ui {
+                        rid: Some(rid.to_owned()),
+                        msg: *m,
+                    },
+                ),
                 room::Effect::StartDiscussion { pmid } => self.start_discussion(sid, rid, pmid),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
@@ -1672,11 +1683,16 @@ impl App {
                         .on_notification(&sid, &name, &n, &s.workspace, &self.config.ui, &env)
                         .map(Message::Desktop)
                 }
-                Followup::InitialLoad => self.initial_load(&sid),
+                Followup::InitialLoad => {
+                    let boot = self.uikit_bootstrap(&sid);
+                    Task::batch([self.initial_load(&sid), boot])
+                }
                 Followup::Resync { reconnected } => {
                     let sync = self.resync(&sid);
                     let rooms = if reconnected {
-                        self.for_rooms(&sid, None, |rv, ctx| rv.on_reconnect(ctx))
+                        let boot = self.uikit_bootstrap(&sid);
+                        let rooms = self.for_rooms(&sid, None, |rv, ctx| rv.on_reconnect(ctx));
+                        Task::batch([rooms, boot])
                     } else {
                         Task::none()
                     };
@@ -1686,6 +1702,7 @@ impl App {
                     self.for_rooms(&sid, Some(&rid), |rv, ctx| rv.reload(ctx))
                 }
                 Followup::LoggedOut(reason) => self.logged_out(&sid, Some(reason)),
+                Followup::UiKit(hook) => self.on_uikit_session(&sid, hook),
                 Followup::AvatarChanged { username, rid } => {
                     let url = s.url.clone();
                     self.images
