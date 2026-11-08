@@ -32,6 +32,9 @@ pub struct Origin {
     pub view_id: Option<String>,
     /// The element that was used (for its loading state).
     pub action_id: Option<String>,
+    /// Instance of the view `view_id` the interaction came from: view ids are
+    /// often fixed strings, so a reopened view must not take a stale answer.
+    pub generation: Option<u64>,
 }
 
 impl Origin {
@@ -43,6 +46,7 @@ impl Origin {
             mid: None,
             view_id: None,
             action_id: None,
+            generation: None,
         }
     }
 
@@ -63,6 +67,11 @@ impl Origin {
 
     pub fn view(mut self, view_id: &str) -> Self {
         self.view_id = Some(view_id.to_owned());
+        self
+    }
+
+    pub fn generation(mut self, generation: u64) -> Self {
+        self.generation = Some(generation);
         self
     }
 

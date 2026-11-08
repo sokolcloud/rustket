@@ -9,12 +9,12 @@ use serde_json::{Map, Value};
 use super::lenient;
 use crate::RcDate;
 
-/// `UIActionButtonContext`.
+/// `UIActionButtonContext`. A missing or unknown context is `Unknown`, which
+/// is shown nowhere (the web compares the exact value).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum ButtonContext {
     #[serde(rename = "messageAction")]
     MessageAction,
-    #[default]
     #[serde(rename = "roomAction")]
     RoomAction,
     #[serde(rename = "messageBoxAction")]
@@ -23,7 +23,8 @@ pub enum ButtonContext {
     UserDropdownAction,
     #[serde(rename = "roomSideBarAction")]
     RoomSideBarAction,
-    #[serde(other)]
+    #[default]
+    #[serde(rename = "unknown", other)]
     Unknown,
 }
 

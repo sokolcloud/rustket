@@ -8,12 +8,35 @@ use serde_json::{Map, Value};
 
 use super::text::TextObject;
 
-/// Most top-level blocks decoded from one list.
+/// Most top-level blocks decoded from one message list.
 pub const MAX_BLOCKS: usize = 50;
-/// Most elements decoded per `actions` / `context` block or info-card row.
+/// Most elements decoded per `actions` / `context` block or info-card row of a message.
 pub const MAX_ELEMENTS: usize = 25;
-/// Most options decoded per select / overflow / checkbox list.
+/// Most options decoded per select / overflow / checkbox list of a message.
 pub const MAX_OPTIONS: usize = 500;
+
+/// List caps applied while decoding. Message blocks are untrusted (anyone can
+/// post them, §3.2) and use [`Limits::MESSAGE`]; views only come from accepted
+/// interactions of installed or core apps and use the much looser [`Limits::VIEW`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    pub blocks: usize,
+    pub elements: usize,
+    pub options: usize,
+}
+
+impl Limits {
+    pub const MESSAGE: Self = Self {
+        blocks: MAX_BLOCKS,
+        elements: MAX_ELEMENTS,
+        options: MAX_OPTIONS,
+    };
+    pub const VIEW: Self = Self {
+        blocks: 1_000,
+        elements: 250,
+        options: 10_000,
+    };
+}
 /// Most points rendered for a `linear_scale`.
 pub const MAX_SCALE_POINTS: i64 = 101;
 
@@ -57,11 +80,11 @@ fn strings(v: Option<&Value>) -> Vec<String> {
     }
 }
 
-fn options(o: &Obj, k: &str) -> Vec<UiOption> {
+fn options(o: &Obj, k: &str, lim: Limits) -> Vec<UiOption> {
     match o.get(k) {
         Some(Value::Array(a)) => a
             .iter()
-            .take(MAX_OPTIONS)
+            .take(lim.options)
             .filter_map(UiOption::from_value)
             .collect(),
         _ => Vec::new(),
@@ -120,14 +143,14 @@ pub struct OptionGroup {
     pub options: Vec<UiOption>,
 }
 
-fn option_groups(o: &Obj) -> Vec<OptionGroup> {
+fn option_groups(o: &Obj, lim: Limits) -> Vec<OptionGroup> {
     match o.get("optionGroups") {
         Some(Value::Array(a)) => a
             .iter()
             .filter_map(Value::as_object)
             .map(|g| OptionGroup {
                 label: text(g, "label").unwrap_or_default(),
-                options: options(g, "options"),
+                options: options(g, "options", lim),
             })
             .collect(),
         _ => Vec::new(),
@@ -359,10 +382,15 @@ fn initial_options(o: &Obj) -> Option<Vec<String>> {
 impl Element {
     /// Decodes one element; unknown types and unusable values become `Unknown`.
     pub fn from_value(v: &Value) -> Self {
-        Self::decode(v).unwrap_or_else(|| Self::Unknown(v.clone()))
+        Self::from_value_with(v, Limits::MESSAGE)
     }
 
-    fn decode(v: &Value) -> Option<Self> {
+    /// [`Self::from_value`] with explicit list caps.
+    pub fn from_value_with(v: &Value, lim: Limits) -> Self {
+        Self::decode(v, lim).unwrap_or_else(|| Self::Unknown(v.clone()))
+    }
+
+    fn decode(v: &Value, lim: Limits) -> Option<Self> {
         let o = v.as_object()?;
         let kind = o.get("type")?.as_str()?;
         let a = || Actionable::from_obj(o);
@@ -378,20 +406,20 @@ impl Element {
             },
             "overflow" => Self::Overflow {
                 a: a(),
-                options: options(o, "options"),
+                options: options(o, "options", lim),
             },
             "static_select" => Self::StaticSelect {
                 a: a(),
                 placeholder: placeholder(),
-                options: options(o, "options"),
-                groups: option_groups(o),
+                options: options(o, "options", lim),
+                groups: option_groups(o, lim),
                 initial: s(o, "initialValue").or_else(|| initial_option_value(o)),
             },
             "multi_static_select" => Self::MultiStaticSelect {
                 a: a(),
                 placeholder: placeholder(),
-                options: options(o, "options"),
-                groups: option_groups(o),
+                options: options(o, "options", lim),
+                groups: option_groups(o, lim),
                 max: int(o, "maxSelectItems").and_then(|m| u32::try_from(m).ok()),
                 initial: match o.get("initialValue") {
                     Some(v @ (Value::Array(_) | Value::String(_))) => Some(strings(Some(v))),
@@ -443,17 +471,17 @@ impl Element {
             },
             "checkbox" => Self::Checkbox {
                 a: a(),
-                options: options(o, "options"),
+                options: options(o, "options", lim),
                 initial: initial_options(o),
             },
             "toggle_switch" => Self::ToggleSwitch {
                 a: a(),
-                options: options(o, "options"),
+                options: options(o, "options", lim),
                 initial: initial_options(o),
             },
             "radio_button" => Self::RadioButton {
                 a: a(),
-                options: options(o, "options"),
+                options: options(o, "options", lim),
                 initial: s(o, "initialValue").or_else(|| initial_option_value(o)),
             },
             "tab" => Self::Tab {
@@ -790,12 +818,12 @@ pub enum LayoutBlock {
     Unknown(Value),
 }
 
-fn elements(o: &Obj, k: &str) -> Vec<Element> {
+fn elements(o: &Obj, k: &str, lim: Limits) -> Vec<Element> {
     match o.get(k) {
         Some(Value::Array(a)) => a
             .iter()
-            .take(MAX_ELEMENTS)
-            .map(Element::from_value)
+            .take(lim.elements)
+            .map(|e| Element::from_value_with(e, lim))
             .collect(),
         _ => Vec::new(),
     }
@@ -804,10 +832,15 @@ fn elements(o: &Obj, k: &str) -> Vec<Element> {
 impl LayoutBlock {
     /// Decodes one block; unknown types and unusable values become `Unknown`.
     pub fn from_value(v: &Value) -> Self {
-        Self::decode(v, true).unwrap_or_else(|| Self::Unknown(v.clone()))
+        Self::from_value_with(v, Limits::MESSAGE)
     }
 
-    fn decode(v: &Value, top: bool) -> Option<Self> {
+    /// [`Self::from_value`] with explicit list caps.
+    pub fn from_value_with(v: &Value, lim: Limits) -> Self {
+        Self::decode(v, true, lim).unwrap_or_else(|| Self::Unknown(v.clone()))
+    }
+
+    fn decode(v: &Value, top: bool, lim: Limits) -> Option<Self> {
         let o = v.as_object()?;
         let kind = o.get("type")?.as_str()?;
         let meta = BlockMeta::from_obj(o);
@@ -815,8 +848,10 @@ impl LayoutBlock {
             "section" => Self::Section {
                 meta,
                 text: text(o, "text"),
-                fields: texts(o, "fields").into_iter().take(MAX_ELEMENTS).collect(),
-                accessory: o.get("accessory").map(|a| Box::new(Element::from_value(a))),
+                fields: texts(o, "fields").into_iter().take(lim.elements).collect(),
+                accessory: o
+                    .get("accessory")
+                    .map(|a| Box::new(Element::from_value_with(a, lim))),
             },
             "divider" => Self::Divider { meta },
             "image" => Self::Image {
@@ -827,16 +862,16 @@ impl LayoutBlock {
             },
             "actions" => Self::Actions {
                 meta,
-                elements: elements(o, "elements"),
+                elements: elements(o, "elements", lim),
             },
             "context" => Self::Context {
                 meta,
-                elements: elements(o, "elements"),
+                elements: elements(o, "elements", lim),
             },
             "input" => Self::Input {
                 meta,
                 label: text(o, "label").unwrap_or_default(),
-                element: Box::new(Element::from_value(o.get("element")?)),
+                element: Box::new(Element::from_value_with(o.get("element")?, lim)),
                 hint: text(o, "hint"),
                 optional: flag(o, "optional"),
             },
@@ -851,8 +886,10 @@ impl LayoutBlock {
                 render: match o.get("render") {
                     Some(Value::Array(a)) => a
                         .iter()
-                        .take(MAX_BLOCKS)
-                        .map(|b| Self::decode(b, false).unwrap_or_else(|| Self::Unknown(b.clone())))
+                        .take(lim.blocks)
+                        .map(|b| {
+                            Self::decode(b, false, lim).unwrap_or_else(|| Self::Unknown(b.clone()))
+                        })
                         .collect(),
                     _ => Vec::new(),
                 },
@@ -864,7 +901,7 @@ impl LayoutBlock {
                 footer: o
                     .get("footer")
                     .and_then(Value::as_object)
-                    .map(|f| elements(f, "elements")),
+                    .map(|f| elements(f, "elements", lim)),
                 thumb: o.get("thumb").and_then(PreviewImage::from_value),
                 preview: o.get("preview").and_then(PreviewImage::from_value),
                 external_url: s(o, "externalUrl").filter(|u| !u.is_empty()),
@@ -885,23 +922,27 @@ impl LayoutBlock {
                     Some("success") => CalloutVariant::Success,
                     _ => CalloutVariant::Info,
                 },
-                accessory: o.get("accessory").map(|a| Box::new(Element::from_value(a))),
+                accessory: o
+                    .get("accessory")
+                    .map(|a| Box::new(Element::from_value_with(a, lim))),
             },
             "tab_navigation" => Self::TabNavigation {
                 meta,
-                tabs: elements(o, "tabs"),
+                tabs: elements(o, "tabs", lim),
             },
             "info_card" => Self::InfoCard {
                 meta,
                 rows: match o.get("rows") {
                     Some(Value::Array(a)) => a
                         .iter()
-                        .take(MAX_ELEMENTS)
+                        .take(lim.elements)
                         .filter_map(Value::as_object)
                         .map(|r| InfoCardRow {
                             background: s(r, "background").unwrap_or_else(|| "default".into()),
-                            elements: elements(r, "elements"),
-                            action: r.get("action").map(|a| Box::new(Element::from_value(a))),
+                            elements: elements(r, "elements", lim),
+                            action: r
+                                .get("action")
+                                .map(|a| Box::new(Element::from_value_with(a, lim))),
                         })
                         .collect(),
                     _ => Vec::new(),
@@ -1037,12 +1078,17 @@ impl Surface {
     }
 
     /// The blocks of `blocks` this surface renders: conditionals resolved for
-    /// [`ENGINE`], disallowed and unknown blocks dropped, capped at [`MAX_BLOCKS`].
+    /// [`ENGINE`], disallowed and unknown blocks dropped, capped at the
+    /// surface's [`Limits`] block count.
     pub fn renderable(self, blocks: &[LayoutBlock]) -> Vec<LayoutBlock> {
+        let cap = match self {
+            Self::Message => Limits::MESSAGE.blocks,
+            _ => Limits::VIEW.blocks,
+        };
         resolve_conditionals(blocks, ENGINE)
             .into_iter()
             .filter(|b| self.allows(b))
-            .take(MAX_BLOCKS)
+            .take(cap)
             .collect()
     }
 }

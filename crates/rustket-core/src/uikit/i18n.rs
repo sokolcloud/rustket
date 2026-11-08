@@ -27,11 +27,12 @@ pub fn normalize_lang(lang: &str) -> String {
 }
 
 /// CLDR plural category of `n` for `lang` (enough for the languages Rustket
-/// ships plus a generic one/other rule).
+/// ships plus a generic one/other rule). The sign is ignored, as in `Intl`.
 pub fn plural_category(lang: &str, n: f64) -> &'static str {
+    let n = n.abs();
     let base = normalize_lang(lang);
     let base = base.split('-').next().unwrap_or_default();
-    let int = n.fract() == 0.0 && n >= 0.0;
+    let int = n.fract() == 0.0;
     match base {
         "ru" | "uk" | "be" | "sr" | "hr" | "bs" if int => {
             let i = n as u64;
@@ -84,6 +85,15 @@ impl AppTranslations {
     /// Sets one app's bundle (`GET /api/apps/{id}/languages`, banner dictionaries).
     pub fn set_app(&mut self, app_id: &str, languages: LanguageMap) {
         self.apps.insert(app_id.to_owned(), languages);
+    }
+
+    /// Adds keys to one app's bundle, per language (banner dictionaries; the
+    /// web uses `i18n.addResources`, which merges).
+    pub fn merge_app(&mut self, app_id: &str, languages: LanguageMap) {
+        let bundle = self.apps.entry(app_id.to_owned()).or_default();
+        for (lang, keys) in languages {
+            bundle.entry(lang).or_default().extend(keys);
+        }
     }
 
     pub fn remove_app(&mut self, app_id: &str) {
@@ -155,11 +165,14 @@ impl AppTranslations {
         let Some(i18n) = &t.i18n else {
             return t.text.clone();
         };
-        let ns_app = i18n
-            .ns
-            .as_deref()
-            .and_then(|ns| ns.strip_prefix("app-"))
-            .or(app_id);
+        // An `ns` that is not `app-{id}` names a namespace Rustket lacks.
+        let ns_app = match i18n.ns.as_deref() {
+            Some(ns) => match ns.strip_prefix("app-") {
+                Some(a) => Some(a),
+                None => return t.text.clone(),
+            },
+            None => app_id,
+        };
         let Some(app) = ns_app.filter(|a| !a.ends_with("-core") || i18n.ns.is_some()) else {
             return t.text.clone();
         };
@@ -278,6 +291,33 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(t.text(&ns, Some("other-core"), "pt-BR"), "Criar enquete");
+        // A namespace other than `app-*` is one Rustket lacks: show `text`.
+        let core_ns: TextObject = serde_json::from_value(json!({
+            "type": "plain_text", "text": "x", "i18n": {"key": "label", "ns": "core"}
+        }))
+        .unwrap();
+        assert_eq!(t.text(&core_ns, Some("poll"), "en"), "x");
+    }
+
+    #[test]
+    fn negative_counts_use_the_absolute_value() {
+        assert_eq!(plural_category("en", -1.0), "one");
+        assert_eq!(plural_category("ru", -21.0), "one");
+        assert_eq!(plural_category("ru", -3.0), "few");
+        assert_eq!(plural_category("ru", -1.5), "other");
+    }
+
+    #[test]
+    fn merged_bundles_keep_earlier_keys() {
+        let mut t = AppTranslations::default();
+        t.merge_app("x", language_map(&json!({"en": {"k1": "First"}})));
+        t.merge_app(
+            "x",
+            language_map(&json!({"en": {"k2": "Second"}, "ru": {"k1": "Первый"}})),
+        );
+        assert_eq!(t.lookup("x", "en", "k1"), Some("First"));
+        assert_eq!(t.lookup("x", "en", "k2"), Some("Second"));
+        assert_eq!(t.lookup("x", "ru", "k1"), Some("Первый"));
     }
 
     #[test]

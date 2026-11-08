@@ -363,8 +363,232 @@ fn contextual_bars_open_in_the_origin_room() {
     let t = i.trigger_id().to_owned();
     s.apply(si("synthetic_contextual_bar_open", &t), now);
     assert_eq!(s.bar("bar-1").unwrap().rid, None);
-    // Closing the room view drops its panels silently.
-    assert!(s.close_room_bars("r1").is_empty());
+    // Its interactions carry no room until the UI places it.
+    let (_, i) = s
+        .view_block_action("bar-1", None, "tabs", "t1", None, now)
+        .unwrap();
+    assert!(serde_json::to_value(&i).unwrap().get("rid").is_none());
+    assert_eq!(
+        s.place_bar("bar-1", "r2"),
+        vec![UiKitChange::BarOpened {
+            rid: Some("r2".into()),
+            view_id: "bar-1".into()
+        }]
+    );
+    assert!(s.place_bar("bar-1", "r3").is_empty());
+    let (_, i) = s.view_submit("bar-1", now).unwrap();
+    assert_eq!(serde_json::to_value(&i).unwrap()["rid"], "r2");
+}
+
+#[test]
+fn closing_a_room_drops_only_its_bars() {
+    let now = Instant::now();
+    let mut s = UiKitStore::new();
+    let open = |s: &mut UiKitStore, rid: Option<&str>, id: &str| {
+        let origin = Origin::new(OriginKind::ViewBlock).rid(rid);
+        let t = s.begin(Some("app1"), origin, now);
+        let mut v = fixture("uikit/synthetic_contextual_bar_open.json");
+        v["triggerId"] = json!(t);
+        v["view"]["id"] = json!(id);
+        s.apply(ServerInteraction::from_value(v), now);
+    };
+    open(&mut s, Some("r1"), "bar-r1");
+    open(&mut s, Some("r2"), "bar-r2");
+    open(&mut s, None, "bar-free");
+    assert_eq!(s.bars().len(), 3);
+    assert_eq!(
+        s.close_room_bars("r1"),
+        vec![UiKitChange::BarClosed {
+            rid: Some("r1".into()),
+            view_id: "bar-r1".into()
+        }]
+    );
+    assert!(s.bar_for_room("r1").is_none());
+    assert!(s.bar("bar-r2").is_some());
+    assert!(s.bar("bar-free").is_some());
+    // A second unplaced bar replaces the first instead of piling up.
+    open(&mut s, None, "bar-free2");
+    assert!(s.bar("bar-free").is_none());
+    assert_eq!(s.bars().len(), 2);
+}
+
+#[test]
+fn bar_moving_rooms_closes_it_in_the_old_room() {
+    let now = Instant::now();
+    let mut s = UiKitStore::new();
+    for rid in ["r1", "r2"] {
+        let t = s.begin(
+            Some("app1"),
+            Origin::new(OriginKind::ViewBlock).rid(Some(rid)),
+            now,
+        );
+        let ch = s.apply(si("synthetic_contextual_bar_open", &t), now);
+        if rid == "r2" {
+            assert_eq!(
+                ch,
+                vec![
+                    UiKitChange::BarClosed {
+                        rid: Some("r1".into()),
+                        view_id: "bar-1".into()
+                    },
+                    UiKitChange::BarOpened {
+                        rid: Some("r2".into()),
+                        view_id: "bar-1".into()
+                    },
+                ]
+            );
+        }
+    }
+    assert!(s.bar_for_room("r1").is_none());
+    // Reopening in the same room is an in-place replacement.
+    let t = s.begin(
+        Some("app1"),
+        Origin::new(OriginKind::ViewBlock).rid(Some("r2")),
+        now,
+    );
+    assert_eq!(
+        s.apply(si("synthetic_contextual_bar_open", &t), now),
+        vec![UiKitChange::BarOpened {
+            rid: Some("r2".into()),
+            view_id: "bar-1".into()
+        }]
+    );
+}
+
+#[test]
+fn stale_submit_answer_keeps_a_newer_modal_with_the_same_id() {
+    let now = Instant::now();
+    let mut s = with_modal(now);
+    let old = submit(&mut s, now);
+    // Another trigger reopens `view-1` while the submit is in flight.
+    let t = s.slash_command_trigger(Some("app1"), "r1", None, now);
+    s.apply(si("synthetic_modal_open", &t), now);
+    s.finish_command(&t, now);
+    s.view_state_mut("view-1")
+        .unwrap()
+        .set("question", Some("b_q"), json!("typing"));
+    let ch = s.finish(
+        &old,
+        InteractionResult::Response(InteractionResponse::Ack),
+        now,
+    );
+    assert!(ch.is_empty(), "{ch:?}");
+    let m = s.modal().unwrap();
+    assert_eq!(m.state.get("question"), Some(&json!("typing")));
+    assert!(!m.submitting);
+}
+
+#[test]
+fn builtin_commands_do_not_count_as_busy() {
+    let now = Instant::now();
+    let mut s = UiKitStore::new();
+    let t = s.slash_command_trigger(None, "r1", None, now);
+    assert_eq!(s.busy(), 0);
+    s.finish_command(&t, now);
+    let app = s.slash_command_trigger(Some("app1"), "r1", None, now);
+    let builtin = s.slash_command_trigger(None, "r1", None, now);
+    assert_eq!(s.busy(), 1);
+    s.finish_command(&builtin, now);
+    assert_eq!(s.busy(), 1);
+    s.finish_command(&app, now);
+    s.finish_command(&app, now);
+    assert_eq!(s.busy(), 0);
+}
+
+#[test]
+fn views_without_app_ids_fall_back_to_the_trigger_app() {
+    let now = Instant::now();
+    let mut s = UiKitStore::new();
+    let strip = |name: &str, t: &str| {
+        let mut v = fixture(&format!("uikit/{name}.json"));
+        v["triggerId"] = json!(t);
+        v.as_object_mut().unwrap().remove("appId");
+        v["view"].as_object_mut().unwrap().remove("appId");
+        ServerInteraction::from_value(v)
+    };
+    let t = s.slash_command_trigger(Some("poll-app"), "r1", None, now);
+    s.apply(strip("synthetic_modal_open", &t), now);
+    assert_eq!(s.modal().unwrap().app_id, "poll-app");
+    let (app, _) = s.view_submit("view-1", now).unwrap();
+    assert_eq!(app, "poll-app");
+    // No app anywhere (a built-in command never accepts pushes; a bare
+    // registry trigger with an empty id stands in for that): not opened.
+    let mut s = UiKitStore::new();
+    let t = s.begin(
+        Some(""),
+        Origin::new(OriginKind::ViewBlock).rid(Some("r1")),
+        now,
+    );
+    assert!(
+        s.apply(strip("synthetic_contextual_bar_open", &t), now)
+            .is_empty()
+    );
+    assert!(s.bars().is_empty());
+}
+
+#[test]
+fn rate_limits_and_expired_sessions_are_not_app_errors() {
+    let now = Instant::now();
+    let mut s = with_modal(now);
+    let t = submit(&mut s, now);
+    let r: InteractionResult = Err(rocketchat::Error::RateLimited {
+        retry_after: Some(Duration::from_secs(7)),
+        message: None,
+    })
+    .into();
+    assert_eq!(
+        s.finish(&t, r, now),
+        vec![UiKitChange::Toast(UiKitToast::RateLimited(Some(
+            Duration::from_secs(7)
+        )))]
+    );
+    assert!(s.modal().is_some());
+    let t = submit(&mut s, now);
+    let r: InteractionResult = Err(rocketchat::Error::from_response(
+        401,
+        None,
+        br#"{"status":"error","message":"You must be logged in to do this."}"#,
+    ))
+    .into();
+    assert_eq!(s.finish(&t, r, now), vec![UiKitChange::Unauthorized]);
+    assert!(s.modal().is_some());
+}
+
+#[test]
+fn view_lists_are_not_capped_like_messages() {
+    let now = Instant::now();
+    let mut s = UiKitStore::new();
+    let t = s.slash_command_trigger(Some("app1"), "r1", None, now);
+    let options: Vec<Value> = (0..600)
+        .map(|i| json!({"text": {"type": "plain_text", "text": format!("o{i}")}, "value": format!("v{i}")}))
+        .collect();
+    let mut blocks: Vec<Value> = (0..60)
+        .map(
+            |i| json!({"type": "section", "text": {"type": "plain_text", "text": format!("s{i}")}}),
+        )
+        .collect();
+    blocks.push(json!({"type": "input", "blockId": "tz", "label": {"type": "plain_text", "text": "TZ"},
+        "element": {"type": "static_select", "actionId": "tz", "options": options, "initialValue": "v550"}}));
+    let v = json!({"type": "modal.open", "triggerId": t, "appId": "app1",
+        "view": {"appId": "app1", "id": "big", "title": {"type": "plain_text", "text": "Big"}, "blocks": blocks}});
+    s.apply(ServerInteraction::from_value(v), now);
+    let m = s.modal().unwrap();
+    assert_eq!(m.view.view.blocks.len(), 61);
+    let Some(rocketchat::uikit::LayoutBlock::Input { element, .. }) = m.view.view.blocks.last()
+    else {
+        panic!()
+    };
+    let rocketchat::uikit::Element::StaticSelect { options, .. } = element.as_ref() else {
+        panic!()
+    };
+    assert_eq!(options.len(), 600);
+    assert_eq!(m.state.get("tz"), Some(&json!("v550")));
+    assert_eq!(
+        rocketchat::uikit::Surface::Modal
+            .renderable(&m.view.view.blocks)
+            .len(),
+        61
+    );
 }
 
 #[test]
@@ -466,9 +690,12 @@ fn banners_from_rest_and_interactions() {
     let banners: Vec<Banner> = rocketchat::models::lenient::vec_from_value(
         fixture("uikit/synthetic_banners.json")["banners"].clone(),
     );
-    s.set_banners(banners);
-    // The inactive one is skipped; the modal announcement is kept apart.
-    assert_eq!(s.banners().len(), 2);
+    // The inactive one is skipped; the modal announcement opens as the modal.
+    assert_eq!(
+        s.set_banners(banners.clone()),
+        vec![UiKitChange::ModalOpened("announcement-1".into())]
+    );
+    assert_eq!(s.banners().len(), 1);
     let b = s.current_banner().unwrap();
     assert_eq!(b.app_id, CLOUD_ANNOUNCEMENTS_APP);
     assert_eq!(b.view_id(), "ban1-view");
@@ -477,8 +704,32 @@ fn banners_from_rest_and_interactions() {
         _ => panic!(),
     };
     assert_eq!(s.translations().text(&title, None, "en"), "Cloud news");
-    let modal = s.banners().iter().find(|b| b.modal.is_some()).unwrap();
-    assert_eq!(modal.view_id(), "announcement-1");
+    let m = s.modal().unwrap();
+    assert_eq!(
+        (m.id(), m.app_id.as_str()),
+        ("announcement-1", CLOUD_ANNOUNCEMENTS_APP)
+    );
+    assert!(s.view_state_mut("announcement-1").is_some());
+    // A refetch while it is open keeps it pending instead of duplicating it.
+    assert!(s.set_banners(banners).is_empty());
+    assert_eq!(s.banners().len(), 2);
+    assert!(s.open_announcement_modal().is_none());
+    let (app, i) = s.view_submit("announcement-1", now).unwrap();
+    assert_eq!(app, CLOUD_ANNOUNCEMENTS_APP);
+    let t = i.trigger_id().to_owned();
+    s.finish(
+        &t,
+        InteractionResult::Response(InteractionResponse::Ack),
+        now,
+    );
+    assert!(s.modal().is_none());
+    assert_eq!(
+        s.open_announcement_modal(),
+        Some(UiKitChange::ModalOpened("announcement-1".into()))
+    );
+    let (app, _, ch) = s.view_closed("announcement-1", true, now).unwrap();
+    assert_eq!(app, CLOUD_ANNOUNCEMENTS_APP);
+    assert_eq!(ch, UiKitChange::ModalClosed("announcement-1".into()));
 
     // banner.open / banner.close interactions.
     let t = s.slash_command_trigger(Some("banner-core"), "r1", None, now);
@@ -587,7 +838,8 @@ mod ephemeral {
             &s,
             ws.is_ephemeral(&rid, &m.id),
             false,
-            Some("mention-core")
+            Some("mention-core"),
+            "add-users"
         ));
 
         // The dismiss replacement: same `_id`, new ts, no blocks; still ephemeral.
@@ -611,7 +863,8 @@ mod ephemeral {
             &s,
             ws.is_ephemeral(&rid, &m.id),
             false,
-            Some("mention-core")
+            Some("mention-core"),
+            "add-users"
         ));
     }
 
@@ -642,6 +895,22 @@ mod ephemeral {
     }
 
     #[test]
+    fn room_removal_drops_the_flag() {
+        let mut ws = Workspace::new();
+        let m = mention_message();
+        let rid = m.rid.clone();
+        ws.open_room(&rid);
+        ws.apply_ephemeral_message(m.clone());
+        assert!(ws.is_ephemeral(&rid, &m.id));
+        let room = rocketchat::models::Room {
+            id: rid.clone(),
+            ..Default::default()
+        };
+        ws.apply_room(crate::workspace::Change::Removed, room);
+        assert!(!ws.is_ephemeral(&rid, &m.id));
+    }
+
+    #[test]
     fn forged_message_fields_never_set_the_flag() {
         let mut ws = Workspace::new();
         let mut m = mention_message();
@@ -651,7 +920,13 @@ mod ephemeral {
         ws.open_room(&rid);
         ws.apply_message(m.clone());
         assert!(!ws.is_ephemeral(&rid, "forged1"));
-        assert!(!actions_allowed(&m, false, false, Some("mention-core")));
+        assert!(!actions_allowed(
+            &m,
+            false,
+            false,
+            Some("mention-core"),
+            "add-users"
+        ));
     }
 
     #[test]

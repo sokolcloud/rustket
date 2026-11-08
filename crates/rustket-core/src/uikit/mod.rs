@@ -9,8 +9,8 @@ pub mod trigger;
 pub mod trust;
 pub mod view_state;
 
-use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use rocketchat::models::{
     ActionButton, AppsStreamEvent, Banner, BannerSurface, ButtonContext, Message,
@@ -24,7 +24,10 @@ use serde_json::Value;
 pub use buttons::{ButtonCategory, ButtonQuery, button_visible, visible_buttons};
 pub use i18n::AppTranslations;
 pub use trigger::{Origin, OriginKind, Trigger, TriggerRegistry};
-pub use trust::{Permit, actions_allowed, element_permit};
+pub use trust::{
+    Permit, actions_allowed, element_permit, is_local_videoconf_action, is_openable_url,
+    openable_url,
+};
 pub use view_state::ViewState;
 
 /// App id of banners without one.
@@ -40,24 +43,34 @@ pub struct OpenView<V> {
     pub errors: HashMap<String, String>,
     /// A `viewSubmit` is in flight (blocks a second one).
     pub submitting: bool,
-    /// Room of a contextual bar (`None`: show in the active room or as a dialog).
+    /// Room of a contextual bar (`None`: not placed yet; the UI shows it in
+    /// the active room and records that with [`UiKitStore::place_bar`]).
     pub rid: Option<String>,
+    /// Instance counter: a view reopened with the same id gets a new one.
+    pub generation: u64,
 }
 
 impl<V: ViewKind> OpenView<V> {
-    fn new(fallback_app: &str, view: RawView<V>, rid: Option<String>) -> Self {
-        let app_id = Some(view.view.app_id())
-            .filter(|a| !a.is_empty())
-            .unwrap_or(fallback_app)
+    /// `None` when neither the view, the interaction nor the trigger names an app.
+    fn new(
+        fallback_apps: [&str; 2],
+        view: RawView<V>,
+        rid: Option<String>,
+        generation: u64,
+    ) -> Option<Self> {
+        let app_id = std::iter::once(view.view.app_id())
+            .chain(fallback_apps)
+            .find(|a| !a.is_empty())?
             .to_owned();
-        Self {
+        Some(Self {
             app_id,
             state: ViewState::from_blocks(view.view.blocks()),
             view,
             errors: HashMap::new(),
             submitting: false,
             rid,
-        }
+            generation,
+        })
     }
 
     pub fn id(&self) -> &str {
@@ -98,6 +111,8 @@ pub enum UiKitToast {
     Timeout,
     /// The request failed (HTTP error); the text is for logs/details.
     AppError(String),
+    /// Rate limited (HTTP 429); retry after this long when known.
+    RateLimited(Option<Duration>),
     /// A server interaction `type` this client does not support.
     Unsupported(String),
 }
@@ -125,6 +140,8 @@ pub enum UiKitChange {
     BannerUpdated(String),
     BannerClosed(String),
     Toast(UiKitToast),
+    /// The session token was refused (HTTP 401): start the re-login flow.
+    Unauthorized,
 }
 
 /// Result of `RestClient::ui_interaction`, cloneable for UI messages.
@@ -132,6 +149,8 @@ pub enum UiKitChange {
 pub enum InteractionResult {
     Response(InteractionResponse),
     Timeout,
+    RateLimited(Option<Duration>),
+    Unauthorized,
     Failed(String),
 }
 
@@ -140,6 +159,10 @@ impl From<rocketchat::Result<InteractionResponse>> for InteractionResult {
         match r {
             Ok(resp) => Self::Response(resp),
             Err(rocketchat::Error::Timeout(_)) => Self::Timeout,
+            Err(rocketchat::Error::RateLimited { retry_after, .. }) => {
+                Self::RateLimited(retry_after)
+            }
+            Err(rocketchat::Error::Unauthorized { .. }) => Self::Unauthorized,
             Err(e) => Self::Failed(e.to_string()),
         }
     }
@@ -191,7 +214,9 @@ pub struct UiKitStore {
     banners: Vec<BannerEntry>,
     buttons: Vec<ActionButton>,
     translations: AppTranslations,
-    busy: u32,
+    /// Triggers of app requests in flight (built-in slash commands excluded).
+    busy: HashSet<String>,
+    generations: u64,
 }
 
 impl UiKitStore {
@@ -268,20 +293,29 @@ impl UiKitStore {
 
     /// Interactions in flight (the "Loading" pill shows while > 0).
     pub fn busy(&self) -> u32 {
-        self.busy
+        u32::try_from(self.busy.len()).unwrap_or(u32::MAX)
+    }
+
+    fn next_generation(&mut self) -> u64 {
+        self.generations += 1;
+        self.generations
     }
 
     // --- issuing interactions -----------------------------------------------------
 
-    /// Registers a trigger and counts the request as in flight. Pair with
-    /// [`Self::finish`] (or [`Self::finish_command`]).
+    /// Registers a trigger and, for app requests (`app_id` set), counts it as
+    /// in flight. Pair with [`Self::finish`] (or [`Self::finish_command`]).
     pub fn begin(&mut self, app_id: Option<&str>, origin: Origin, now: Instant) -> String {
-        self.busy += 1;
-        self.triggers.issue(app_id, origin, now)
+        let id = self.triggers.issue(app_id, origin, now);
+        if app_id.is_some() {
+            self.busy.insert(id.clone());
+        }
+        id
     }
 
     /// A block action on a message. `None` when the trust rule (§3.2) forbids
-    /// it; `is_ephemeral` must come from `Workspace::is_ephemeral`.
+    /// it, including `video_conf` `join` / `callBack`, which the client handles
+    /// itself; `is_ephemeral` must come from `Workspace::is_ephemeral`.
     #[allow(clippy::too_many_arguments)]
     pub fn message_block_action(
         &mut self,
@@ -294,7 +328,7 @@ impl UiKitStore {
         value: Option<Value>,
         now: Instant,
     ) -> Option<(String, UserInteraction)> {
-        if !actions_allowed(msg, is_ephemeral, in_video_conf_block, app_id) {
+        if !actions_allowed(msg, is_ephemeral, in_video_conf_block, app_id, action_id) {
             return None;
         }
         let app = app_id?.to_owned();
@@ -370,7 +404,7 @@ impl UiKitStore {
         view_id: &str,
         now: Instant,
     ) -> Option<(String, UserInteraction)> {
-        let (app, raw, state, rid) =
+        let (app, raw, state, rid, generation) =
             if let Some(m) = self.modal.as_mut().filter(|m| m.id() == view_id) {
                 if m.submitting {
                     return None;
@@ -381,6 +415,7 @@ impl UiKitStore {
                     m.view.raw.clone(),
                     m.state.to_state_json(),
                     None,
+                    m.generation,
                 )
             } else {
                 let b = self.bar_mut(view_id)?;
@@ -393,11 +428,13 @@ impl UiKitStore {
                     b.view.raw.clone(),
                     b.state.to_state_json(),
                     b.rid.clone(),
+                    b.generation,
                 )
             };
         let origin = Origin::new(OriginKind::ViewSubmit)
             .rid(rid.as_deref())
-            .view(view_id);
+            .view(view_id)
+            .generation(generation);
         let trigger_id = self.begin(Some(&app), origin, now);
         let i = UserInteraction::view_submit(&raw, state, view_id, &app, rid, trigger_id);
         Some((app, i))
@@ -552,7 +589,7 @@ impl UiKitStore {
     }
 
     pub fn finish_command(&mut self, trigger_id: &str, now: Instant) {
-        self.busy = self.busy.saturating_sub(1);
+        self.busy.remove(trigger_id);
         self.triggers.settle(trigger_id, now);
     }
 
@@ -566,7 +603,7 @@ impl UiKitStore {
         result: InteractionResult,
         now: Instant,
     ) -> Vec<UiKitChange> {
-        self.busy = self.busy.saturating_sub(1);
+        self.busy.remove(trigger_id);
         self.triggers.settle(trigger_id, now);
         let mut changes = Vec::new();
         let outcome = match result {
@@ -580,6 +617,14 @@ impl UiKitStore {
                 changes.push(UiKitChange::Toast(UiKitToast::Timeout));
                 HttpOutcome::Timeout
             }
+            InteractionResult::RateLimited(after) => {
+                changes.push(UiKitChange::Toast(UiKitToast::RateLimited(after)));
+                HttpOutcome::Failed
+            }
+            InteractionResult::Unauthorized => {
+                changes.push(UiKitChange::Unauthorized);
+                HttpOutcome::Failed
+            }
             InteractionResult::Failed(e) => {
                 tracing::debug!(error = %e, "app interaction failed");
                 changes.push(UiKitChange::Toast(UiKitToast::AppError(e)));
@@ -589,7 +634,12 @@ impl UiKitStore {
         let Some(t) = self.triggers.get(trigger_id) else {
             return changes;
         };
-        let (kind, handled, view_id) = (t.origin.kind, t.handled, t.origin.view_id.clone());
+        let (kind, handled, view_id, generation) = (
+            t.origin.kind,
+            t.handled,
+            t.origin.view_id.clone(),
+            t.origin.generation,
+        );
         if kind != OriginKind::ViewSubmit {
             return changes;
         }
@@ -597,14 +647,16 @@ impl UiKitStore {
             return changes;
         };
         let close = close_decision(kind, handled, outcome);
-        if let Some(m) = self.modal.as_mut().filter(|m| m.id() == view_id) {
+        // Only the view instance that was submitted: one reopened with the same
+        // id since (another trigger's `*.open`) keeps its state.
+        let same = |id: &str, g: u64| id == view_id && generation.is_none_or(|x| x == g);
+        if let Some(m) = self.modal.as_mut().filter(|m| same(m.id(), m.generation)) {
             m.submitting = false;
-            // After `modal.open` the modal with this id is a new one: keep it.
             if close {
                 self.modal = None;
                 changes.push(UiKitChange::ModalClosed(view_id));
             }
-        } else if let Some(i) = self.bars.iter().position(|b| b.id() == view_id) {
+        } else if let Some(i) = self.bars.iter().position(|b| same(b.id(), b.generation)) {
             self.bars[i].submitting = false;
             if close {
                 let b = self.bars.remove(i);
@@ -629,13 +681,20 @@ impl UiKitStore {
         };
         t.handled = Some(si.type_name());
         let origin = t.origin.clone();
+        let trigger_app = t.app_id.clone().unwrap_or_default();
         let app_id = si.app_id().to_owned();
         let mut out = Vec::new();
         match si {
             ServerInteraction::ModalOpen { view, .. } => {
                 let id = view.id().to_owned();
-                self.modal = Some(OpenView::new(&app_id, *view, None));
-                out.push(UiKitChange::ModalOpened(id));
+                let g = self.next_generation();
+                match OpenView::new([&app_id, &trigger_app], *view, None, g) {
+                    Some(m) => {
+                        self.modal = Some(m);
+                        out.push(UiKitChange::ModalOpened(id));
+                    }
+                    None => tracing::debug!("ignoring modal.open without an app id"),
+                }
             }
             ServerInteraction::ModalUpdate { view, .. } => {
                 if let Some(m) = self.modal.as_mut().filter(|m| m.id() == view.id()) {
@@ -656,18 +715,25 @@ impl UiKitStore {
             ServerInteraction::ContextualBarOpen { view, .. } => {
                 let rid = origin.rid.clone();
                 let id = view.id().to_owned();
-                let replaced: Vec<_> = self
-                    .bars
-                    .iter()
-                    .filter(|b| b.id() == id || (rid.is_some() && b.rid == rid))
-                    .map(|b| (b.rid.clone(), b.id().to_owned()))
-                    .collect();
-                self.bars
-                    .retain(|b| !(b.id() == id || (rid.is_some() && b.rid == rid)));
-                for (r, v) in replaced.into_iter().filter(|(_, v)| *v != id) {
-                    out.push(UiKitChange::BarClosed { rid: r, view_id: v });
+                let g = self.next_generation();
+                let Some(bar) = OpenView::new([&app_id, &trigger_app], *view, rid.clone(), g)
+                else {
+                    tracing::debug!("ignoring contextual_bar.open without an app id");
+                    return out;
+                };
+                // One bar per id and per room (one unplaced bar at most).
+                let replaced = |b: &OpenView<ContextualBarView>| b.id() == id || b.rid == rid;
+                for b in self.bars.iter().filter(|b| replaced(b)) {
+                    // Same id in the same room is a replacement in place.
+                    if !(b.id() == id && b.rid == rid) {
+                        out.push(UiKitChange::BarClosed {
+                            rid: b.rid.clone(),
+                            view_id: b.id().to_owned(),
+                        });
+                    }
                 }
-                self.bars.push(OpenView::new(&app_id, *view, rid.clone()));
+                self.bars.retain(|b| !replaced(b));
+                self.bars.push(bar);
                 out.push(UiKitChange::BarOpened { rid, view_id: id });
             }
             ServerInteraction::ContextualBarUpdate { view, .. } => {
@@ -745,7 +811,41 @@ impl UiKitStore {
         out
     }
 
-    /// The room view `rid` closed: its app panels go away without `viewClosed`.
+    /// Records the room the UI shows an unplaced bar in (opened from the user
+    /// menu, a modal or with no room open), so its interactions carry `rid`
+    /// like the web's. Replaces another bar of that room. Empty when the bar is
+    /// unknown or already placed.
+    pub fn place_bar(&mut self, view_id: &str, rid: &str) -> Vec<UiKitChange> {
+        let mut out = Vec::new();
+        if !self
+            .bars
+            .iter()
+            .any(|b| b.id() == view_id && b.rid.is_none())
+        {
+            return out;
+        }
+        self.bars.retain(|b| {
+            let keep = b.rid.as_deref() != Some(rid);
+            if !keep {
+                out.push(UiKitChange::BarClosed {
+                    rid: b.rid.clone(),
+                    view_id: b.id().to_owned(),
+                });
+            }
+            keep
+        });
+        if let Some(b) = self.bar_mut(view_id) {
+            b.rid = Some(rid.to_owned());
+        }
+        out.push(UiKitChange::BarOpened {
+            rid: Some(rid.to_owned()),
+            view_id: view_id.to_owned(),
+        });
+        out
+    }
+
+    /// The room view `rid` closed: its app panels go away without `viewClosed`
+    /// (reported as `BarClosed`).
     pub fn close_room_bars(&mut self, rid: &str) -> Vec<UiKitChange> {
         let mut out = Vec::new();
         self.bars.retain(|b| {
@@ -763,8 +863,11 @@ impl UiKitStore {
 
     /// Replaces the banners from `GET /api/v1/banners?platform=web` (keeps
     /// banners opened by interactions). Views without `appId` belong to
-    /// `cloud-announcements-core`; dictionaries go into that app's namespace.
-    pub fn set_banners(&mut self, banners: Vec<Banner>) {
+    /// `cloud-announcements-core`; dictionaries are merged into that app's
+    /// namespace. A modal-surface announcement opens as the store modal when
+    /// none is open (state, submit and close then work like any app modal);
+    /// otherwise it waits for [`Self::open_announcement_modal`].
+    pub fn set_banners(&mut self, banners: Vec<Banner>) -> Vec<UiKitChange> {
         self.banners.retain(|b| b.banner_id.is_none());
         for b in banners {
             if b.active == Some(false) {
@@ -783,7 +886,7 @@ impl UiKitStore {
             }
             let dict = b.dictionary_map();
             if !dict.is_empty() {
-                self.translations.set_app(CLOUD_ANNOUNCEMENTS_APP, dict);
+                self.translations.merge_app(CLOUD_ANNOUNCEMENTS_APP, dict);
             }
             let modal = (b.surface == BannerSurface::Modal)
                 .then(|| RawView::<ModalView>::from_value(raw.clone()))
@@ -807,6 +910,32 @@ impl UiKitStore {
                 modal,
             });
         }
+        self.open_announcement_modal().into_iter().collect()
+    }
+
+    /// Opens the next pending modal-surface announcement as the store modal
+    /// when no modal is open (call after a modal closes). The announcement
+    /// leaves the banner list; closing it sends `viewClosed` to its app, which
+    /// dismisses it server-side.
+    pub fn open_announcement_modal(&mut self) -> Option<UiKitChange> {
+        if self.modal.is_some() {
+            return None;
+        }
+        let i = self
+            .banners
+            .iter()
+            .position(|b| b.surface == BannerSurface::Modal && b.modal.is_some())?;
+        let b = self.banners.remove(i);
+        let view = b.modal?;
+        let id = view.id().to_owned();
+        let g = self.next_generation();
+        self.modal = Some(OpenView::new(
+            [b.app_id.as_str(), CLOUD_ANNOUNCEMENTS_APP],
+            view,
+            None,
+            g,
+        )?);
+        Some(UiKitChange::ModalOpened(id))
     }
 
     /// Reacts to a `stream-apps` event; returns what to refetch.

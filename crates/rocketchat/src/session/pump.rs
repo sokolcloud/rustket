@@ -27,11 +27,11 @@ pub(super) fn is_session_stream(collection: &str) -> bool {
         collection,
         streams::ROOM_MESSAGES
             | streams::NOTIFY_USER
+            | streams::APPS
             | streams::NOTIFY_LOGGED
             | streams::NOTIFY_ALL
             | streams::NOTIFY_ROOM
             | streams::ROLES
-            | streams::APPS
     )
 }
 

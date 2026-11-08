@@ -33,6 +33,95 @@ fn app_segment(app_id: &str) -> Result<String> {
     Ok(encode_segment(app_id))
 }
 
+/// Rate-limit reset (Unix ms) of an error answer. The apps router uses
+/// express-rate-limit 5: `Retry-After` in seconds on 429, `X-RateLimit-Reset`
+/// in Unix seconds; the REST API sends `x-ratelimit-reset` in Unix ms.
+fn ratelimit_reset_ms(headers: &reqwest::header::HeaderMap, now_ms: i64) -> Option<i64> {
+    let num = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<i64>().ok())
+    };
+    if let Some(secs) = num("retry-after") {
+        return Some(now_ms.saturating_add(secs.max(0).saturating_mul(1000)));
+    }
+    num("x-ratelimit-reset").map(|r| {
+        if r < 100_000_000_000 {
+            r.saturating_mul(1000)
+        } else {
+            r
+        }
+    })
+}
+
+/// `settings` of `GET /api/apps/{id}/settings` in the order the server sent
+/// (an object keyed by id in the app's declaration order, or an array).
+#[derive(Default)]
+struct OrderedSettings(Vec<AppSetting>);
+
+impl<'de> serde::Deserialize<'de> for OrderedSettings {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = OrderedSettings;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an object or array of settings")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut out = Vec::new();
+                while let Some((_, v)) = map.next_entry::<serde::de::IgnoredAny, Value>()? {
+                    out.extend(lenient::try_convert(v));
+                }
+                Ok(OrderedSettings(out))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut out = Vec::new();
+                while let Some(v) = seq.next_element::<Value>()? {
+                    out.extend(lenient::try_convert(v));
+                }
+                Ok(OrderedSettings(out))
+            }
+            fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedSettings::default())
+            }
+            fn visit_bool<E>(self, _: bool) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedSettings::default())
+            }
+            fn visit_i64<E>(self, _: i64) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedSettings::default())
+            }
+            fn visit_u64<E>(self, _: u64) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedSettings::default())
+            }
+            fn visit_f64<E>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedSettings::default())
+            }
+            fn visit_str<E>(self, _: &str) -> std::result::Result<Self::Value, E> {
+                Ok(OrderedSettings::default())
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SettingsBody {
+    #[serde(default)]
+    settings: OrderedSettings,
+}
+
+/// Parses a settings answer body, keeping the server's order.
+fn parse_settings(body: &[u8]) -> Result<Vec<AppSetting>> {
+    Ok(serde_json::from_slice::<SettingsBody>(body)?.settings.0)
+}
+
 fn logs_query(q: &AppLogsQuery) -> Query {
     Query::new()
         .opt("count", q.count)
@@ -115,6 +204,7 @@ impl RestClient {
             return Err(redirect_error(&resp));
         }
         let status = resp.status().as_u16();
+        let reset = ratelimit_reset_ms(resp.headers(), chrono::Utc::now().timestamp_millis());
         let body = resp.bytes().await.map_err(map_timeout)?;
         if !(200..300).contains(&status) {
             tracing::debug!(
@@ -123,7 +213,7 @@ impl RestClient {
                 kind = interaction.type_name(),
                 "ui.interaction failed"
             );
-            return Err(Error::from_response(status, None, &body));
+            return Err(Error::from_response(status, reset, &body));
         }
         InteractionResponse::from_body(&body)
     }
@@ -212,23 +302,30 @@ impl RestClient {
     }
 
     /// `GET /api/apps/{id}/settings`: an object keyed by setting id (the typings
-    /// say array); returned as a list ordered by id. Hidden settings are removed
-    /// by the server.
+    /// say array); returned as a list in the app's declaration order (the
+    /// object's key order). Hidden settings are removed by the server.
     pub async fn app_settings(&self, app_id: &str) -> Result<Vec<AppSetting>> {
-        let v: Value = self
-            .apps_get(
-                &format!("apps/{}/settings", app_segment(app_id)?),
-                &Query::new(),
-            )
-            .await?;
-        Ok(match v.get("settings") {
-            Some(Value::Object(o)) => o
-                .values()
-                .filter_map(|s| lenient::try_convert(s.clone()))
-                .collect(),
-            Some(a @ Value::Array(_)) => lenient::vec_from_value(a.clone()),
-            _ => Vec::new(),
-        })
+        // Parsed from the bytes: a `Value` (sorted map) would lose the order.
+        let url = self
+            .inner
+            .server
+            .api_root(&format!("apps/{}/settings", app_segment(app_id)?));
+        let resp = self.request(Method::GET, &url, None).send().await?;
+        if resp.status().is_redirection() {
+            return Err(redirect_error(&resp));
+        }
+        let status = resp.status().as_u16();
+        let reset = ratelimit_reset_ms(resp.headers(), chrono::Utc::now().timestamp_millis());
+        let body = resp.bytes().await?;
+        let failed = !(200..300).contains(&status)
+            || serde_json::from_slice::<Value>(&body).is_ok_and(|v| {
+                v.get("success").and_then(Value::as_bool) == Some(false)
+                    || v.get("status").and_then(Value::as_str) == Some("error")
+            });
+        if failed {
+            return Err(Error::from_response(status, reset, &body));
+        }
+        parse_settings(&body)
     }
 
     /// `POST /api/apps/{id}/settings` with an array (only entries whose value
@@ -307,6 +404,53 @@ impl RestClient {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_keep_the_server_order() {
+        let body = br#"{"settings":{"zeta":{"id":"zeta","type":"string","packageValue":"","required":false,"public":false,"i18nLabel":"Z"},
+            "alpha":{"id":"alpha","type":"boolean","packageValue":false,"required":false,"public":false,"i18nLabel":"A"},
+            "mid":{"id":"mid","type":"int","packageValue":1,"required":false,"public":false,"i18nLabel":"M"}},"success":true}"#;
+        let ids: Vec<String> = parse_settings(body)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["zeta", "alpha", "mid"]);
+        let arr = br#"{"settings":[{"id":"b"},{"id":"a"}]}"#;
+        let ids: Vec<String> = parse_settings(arr)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["b", "a"]);
+        assert!(parse_settings(br#"{"settings":null}"#).unwrap().is_empty());
+        assert!(parse_settings(br#"{}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ratelimit_reset_headers() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let now = 1_700_000_000_000;
+        let mut h = HeaderMap::new();
+        assert_eq!(ratelimit_reset_ms(&h, now), None);
+        h.insert("x-ratelimit-reset", HeaderValue::from_static("1700000060"));
+        assert_eq!(ratelimit_reset_ms(&h, now), Some(1_700_000_060_000));
+        h.insert(
+            "x-ratelimit-reset",
+            HeaderValue::from_static("1700000030000"),
+        );
+        assert_eq!(ratelimit_reset_ms(&h, now), Some(1_700_000_030_000));
+        h.insert("retry-after", HeaderValue::from_static("12"));
+        assert_eq!(ratelimit_reset_ms(&h, now), Some(now + 12_000));
+        let e = Error::from_response(429, ratelimit_reset_ms(&h, now), b"Too many requests");
+        assert!(matches!(e, Error::RateLimited { .. }));
+        let e = Error::from_response(
+            401,
+            None,
+            br#"{"status":"error","message":"You must be logged in to do this."}"#,
+        );
+        assert!(matches!(e, Error::Unauthorized { .. }));
+    }
 
     #[test]
     fn app_ids_in_paths() {

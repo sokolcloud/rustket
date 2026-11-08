@@ -255,6 +255,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn buttons_without_a_context_show_nowhere() {
+        let ws = ws();
+        for raw in [
+            serde_json::json!({"appId": "app", "actionId": "a", "labelI18n": "l"}),
+            serde_json::json!({"appId": "app", "actionId": "a", "labelI18n": "l", "context": null}),
+            serde_json::json!({"appId": "app", "actionId": "a", "labelI18n": "l", "context": 3}),
+        ] {
+            let b: ActionButton = serde_json::from_value(raw).unwrap();
+            assert_eq!(b.context, ButtonContext::Unknown);
+            for q in [
+                ButtonQuery::room("c1"),
+                ButtonQuery::composer("c1"),
+                ButtonQuery::user_menu(),
+            ] {
+                assert!(!button_visible(&ws, &b, &q));
+            }
+        }
+    }
+
     fn types(t: &[&str]) -> Option<ActionButtonWhen> {
         Some(ActionButtonWhen {
             room_types: Some(t.iter().map(|s| (*s).to_owned()).collect()),

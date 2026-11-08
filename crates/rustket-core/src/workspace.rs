@@ -1110,6 +1110,7 @@ impl Workspace {
 
     fn drop_room_timelines(&mut self, rid: &str) {
         self.outbox.retain(|_, i| i.message.rid != rid);
+        self.ephemeral.remove(rid);
         if self.timelines.remove(rid).is_some() {
             self.mark_timeline(rid);
         }

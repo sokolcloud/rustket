@@ -2,8 +2,8 @@
 
 use serde_json::{Map, Value};
 
-use super::blocks::{Element, LayoutBlock};
-use super::decode_blocks;
+use super::blocks::{Element, LayoutBlock, Limits};
+use super::decode_view_blocks;
 use super::text::{StrOrText, TextObject};
 
 /// The JSON of a view as received plus its parsed form. Submit/close echo `raw`
@@ -40,12 +40,12 @@ fn s(o: &Map<String, Value>, k: &str) -> String {
 
 fn button(o: &Map<String, Value>, k: &str) -> Option<Element> {
     o.get(k)
-        .map(Element::from_value)
+        .map(|e| Element::from_value_with(e, Limits::VIEW))
         .filter(|e| matches!(e, Element::Button { .. }))
 }
 
 fn blocks(o: &Map<String, Value>) -> Vec<LayoutBlock> {
-    o.get("blocks").map(decode_blocks).unwrap_or_default()
+    o.get("blocks").map(decode_view_blocks).unwrap_or_default()
 }
 
 /// `ModalView`.
