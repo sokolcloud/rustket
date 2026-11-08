@@ -7,6 +7,11 @@
 //! `[label](url)`, `<url|label>`, bare URLs, `:emoji:`, `@user` and
 //! `#channel`.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::rc::Rc;
+
 use rocketchat::models::md::{
     Block, CodeLine, Emoji, Inline, LinkValue, ListItem, OneOrMany, Plain,
 };
@@ -23,6 +28,38 @@ fn plain(s: &str) -> Plain {
     Plain {
         value: s.to_owned(),
     }
+}
+
+/// Parsed texts kept before the cache starts over.
+const CACHE_CAPACITY: usize = 1024;
+
+/// Text hash → (text, parsed blocks).
+type Cache = HashMap<u64, (String, Rc<Vec<Block>>)>;
+
+thread_local! {
+    static CACHE: RefCell<Cache> = RefCell::new(HashMap::new());
+}
+
+/// [`parse`] through a per-thread cache: views re-render often and block
+/// texts rarely change.
+pub fn parse_cached(text: &str) -> Rc<Vec<Block>> {
+    let mut h = DefaultHasher::new();
+    text.hash(&mut h);
+    let key = h.finish();
+    CACHE.with(|c| {
+        if let Some((t, b)) = c.borrow().get(&key)
+            && t == text
+        {
+            return b.clone();
+        }
+        let parsed = Rc::new(parse(text));
+        let mut c = c.borrow_mut();
+        if c.len() >= CACHE_CAPACITY {
+            c.clear();
+        }
+        c.insert(key, (text.to_owned(), parsed.clone()));
+        parsed
+    })
 }
 
 /// Parses `text` into `md` blocks.
@@ -110,28 +147,62 @@ fn paragraph(text: &str) -> Block {
     }
 }
 
-/// Byte index of the closing `delim` for an opening one ending at `from`:
-/// non-empty content on one line that does not start or end with a space;
-/// `_` must not be followed by a word character.
-fn closing(text: &str, from: usize, delim: &str) -> Option<usize> {
-    let rest = &text[from..];
-    if rest.starts_with(char::is_whitespace) || rest.starts_with(delim) {
-        return None;
-    }
-    let mut search = 0;
-    while let Some(off) = rest[search..].find(delim) {
-        let at = search + off;
-        let end = from + at;
-        let before_ok = at > 0 && !rest[..at].ends_with(char::is_whitespace);
-        let after = &text[end + delim.len()..];
-        let after_ok = !delim.starts_with('_') || !after.starts_with(char::is_alphanumeric);
-        let doubled = delim.len() == 1 && after.starts_with(delim);
-        if before_ok && after_ok && !doubled {
-            return Some(end);
+/// Memo of one `inlines` pass that keeps the scan linear: a failed search
+/// for a closing delimiter (or for the next `pattern`) fails for every later
+/// start as well, and a found position stays valid while it lies ahead.
+#[derive(Default)]
+struct Memo {
+    /// Per delimiter: the smallest start whose closing search failed.
+    failed: Vec<(&'static str, usize)>,
+    /// Per pattern: (search start, first match at or after it).
+    next: Vec<(&'static str, usize, Option<usize>)>,
+}
+
+impl Memo {
+    /// Byte index of the first `pat` in `text` at or after `from`.
+    fn find(&mut self, text: &str, pat: &'static str, from: usize) -> Option<usize> {
+        if let Some((_, start, hit)) = self.next.iter().find(|(p, ..)| *p == pat)
+            && from >= *start
+            && hit.is_none_or(|h| h >= from)
+        {
+            return *hit;
         }
-        search = at + delim.len();
+        let hit = text.get(from..)?.find(pat).map(|o| from + o);
+        self.next.retain(|(p, ..)| *p != pat);
+        self.next.push((pat, from, hit));
+        hit
     }
-    None
+
+    /// Byte index of the closing `delim` for an opening one ending at `from`:
+    /// non-empty content on one line that does not start or end with a space;
+    /// `_` must not be followed by a word character. Whether a candidate
+    /// closes depends only on its position, so a failed search from `from`
+    /// fails from any later start too.
+    fn closing(&mut self, text: &str, from: usize, delim: &'static str) -> Option<usize> {
+        let rest = &text[from..];
+        if rest.starts_with(char::is_whitespace) || rest.starts_with(delim) {
+            return None;
+        }
+        if self.failed.iter().any(|(d, at)| *d == delim && from >= *at) {
+            return None;
+        }
+        let mut search = 0;
+        while let Some(off) = rest[search..].find(delim) {
+            let at = search + off;
+            let end = from + at;
+            let before_ok = at > 0 && !rest[..at].ends_with(char::is_whitespace);
+            let after = &text[end + delim.len()..];
+            let after_ok = !delim.starts_with('_') || !after.starts_with(char::is_alphanumeric);
+            let doubled = delim.len() == 1 && after.starts_with(delim);
+            if before_ok && after_ok && !doubled {
+                return Some(end);
+            }
+            search = at + delim.len();
+        }
+        self.failed.retain(|(d, _)| *d != delim);
+        self.failed.push((delim, from));
+        None
+    }
 }
 
 fn is_name_char(c: char) -> bool {
@@ -184,6 +255,7 @@ fn inlines(text: &str, depth: usize) -> Vec<Inline> {
         push_plain(&mut out, text);
         return out;
     }
+    let mut memo = Memo::default();
     let mut plain_from = 0;
     let mut i = 0;
     while i < text.len() {
@@ -192,7 +264,11 @@ fn inlines(text: &str, depth: usize) -> Vec<Inline> {
         let prev_word = prev.is_some_and(char::is_alphanumeric);
         let mut matched: Option<(usize, Inline)> = None;
         if let Some(after) = rest.strip_prefix('`') {
-            if let Some(len) = after.find('`').filter(|l| *l > 0) {
+            if let Some(len) = memo
+                .find(text, "`", i + 1)
+                .map(|at| at - i - 1)
+                .filter(|l| *l > 0)
+            {
                 matched = Some((
                     len + 2,
                     Inline::InlineCode {
@@ -201,8 +277,8 @@ fn inlines(text: &str, depth: usize) -> Vec<Inline> {
                 ));
             }
         } else if rest.starts_with('[') {
-            if let Some(mid) = rest.find("](")
-                && let Some(close) = rest[mid + 2..].find(')')
+            if let Some(mid) = memo.find(text, "](", i).map(|at| at - i)
+                && let Some(close) = memo.find(text, ")", i + mid + 2).map(|at| at - i - mid - 2)
             {
                 let label = &rest[1..mid];
                 let src = &rest[mid + 2..mid + 2 + close];
@@ -218,7 +294,7 @@ fn inlines(text: &str, depth: usize) -> Vec<Inline> {
                 }
             }
         } else if rest.starts_with('<') {
-            if let Some(close) = rest.find('>') {
+            if let Some(close) = memo.find(text, ">", i).map(|at| at - i) {
                 let inner = &rest[1..close];
                 let (src, label) = inner.split_once('|').unwrap_or((inner, inner));
                 if !src.is_empty()
@@ -233,7 +309,7 @@ fn inlines(text: &str, depth: usize) -> Vec<Inline> {
             }
         } else if rest.starts_with(':') && !prev_word {
             let body = &rest[1..];
-            if let Some(end) = body.find(':')
+            if let Some(end) = memo.find(text, ":", i + 1).map(|at| at - i - 1)
                 && end > 0
                 && end <= 64
                 && body[..end]
@@ -268,7 +344,7 @@ fn inlines(text: &str, depth: usize) -> Vec<Inline> {
                 if !rest.starts_with(delim) {
                     continue;
                 }
-                if let Some(end) = closing(text, i + delim.len(), delim) {
+                if let Some(end) = memo.closing(text, i + delim.len(), delim) {
                     let inner = inlines(&text[i + delim.len()..end], depth + 1);
                     let node = match delim.as_bytes()[0] {
                         b'*' => Inline::Bold { value: inner },
@@ -395,6 +471,49 @@ mod tests {
         );
         assert!(matches!(b[6], Block::Paragraph { .. }));
         assert_eq!(b.len(), 7);
+    }
+
+    #[test]
+    fn hostile_input_parses_quickly() {
+        // Each of these was quadratic: every opener searched the whole rest.
+        for s in [
+            "*a ".repeat(6666),
+            " _a".repeat(6666),
+            "[".repeat(20_000),
+            "<".repeat(20_000),
+            "`a ".repeat(6666),
+            ":a ".repeat(6666),
+            "~~a ".repeat(5000),
+            "[a](".repeat(5000),
+        ] {
+            let started = std::time::Instant::now();
+            let b = parse(&s);
+            assert_eq!(b.len(), 1);
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(500),
+                "{:?} took {:?}",
+                &s[..8],
+                started.elapsed()
+            );
+        }
+    }
+
+    #[test]
+    fn memo_keeps_results() {
+        let p = parse("`a` and `b`, [x](https://x.example) [y](https://y.example) :a: :b:");
+        let p = para(&p[0]);
+        let codes = p
+            .iter()
+            .filter(|i| matches!(i, Inline::InlineCode { .. }))
+            .count();
+        let links = p
+            .iter()
+            .filter(|i| matches!(i, Inline::Link { .. }))
+            .count();
+        let emoji = p.iter().filter(|i| matches!(i, Inline::Emoji(_))).count();
+        assert_eq!((codes, links, emoji), (2, 2, 2));
+        let p = parse("*a *b* c*");
+        assert!(matches!(&para(&p[0])[0], Inline::Bold { .. }));
     }
 
     #[test]

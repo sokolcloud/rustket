@@ -343,7 +343,8 @@ fn modal_values_toggles_text_and_submit() {
         dispatch: true,
     });
     assert_eq!(fx.triggers(), before, "debounced");
-    let stamp = fx.ws.uikit().scratch().stamp;
+    let key = surface.element("question");
+    let stamp = fx.ws.uikit().scratch().current_stamp(&key).unwrap();
     controller::update(
         &mut fx.ctx(),
         Msg::Debounced {
@@ -376,31 +377,41 @@ fn modal_values_toggles_text_and_submit() {
     assert_eq!(state["b_act"]["chk"], json!(["x", "y"]));
     assert_eq!(state["b_d"]["date"], json!("2026-11-30"));
 
-    // Submit, then the app answers with validation errors: the view stays,
-    // the errored input gets the focus.
-    fx.ui(UiKitMsg::Submit(surface.clone()));
+    // Submit (the store call the controller makes, to learn the trigger);
+    // a second submit while it runs sends nothing.
+    let (_, submit) = fx
+        .ws
+        .uikit_mut()
+        .view_submit("view-1", Instant::now())
+        .unwrap();
+    let trigger = submit.trigger_id().to_owned();
     assert!(fx.ws.uikit().modal().unwrap().submitting);
+    let before = fx.triggers();
     fx.ui(UiKitMsg::Submit(surface.clone()));
-    let submit = fx.ws.uikit().triggers().len();
-    let out = fx.answer(
-        Origin::new(OriginKind::ViewBlock).view("view-1"),
-        serde_json::from_str(ERRORS).unwrap(),
+    assert_eq!(fx.triggers(), before, "second submit blocked");
+    // The app answers the submit with validation errors: the view stays open,
+    // can be submitted again, and the errored input gets the focus.
+    let mut errors: Value = serde_json::from_str(ERRORS).unwrap();
+    errors["triggerId"] = json!(trigger);
+    let out = controller::update(
+        &mut fx.ctx(),
+        Msg::Finished {
+            trigger,
+            result: InteractionResult::Response(InteractionResponse::Interaction(
+                ServerInteraction::from_value(errors),
+            )),
+        },
     );
     assert_eq!(
         out.effects,
         vec![Effect::Focus(surface.element("question"))]
     );
+    let m = fx.ws.uikit().modal().expect("still open");
+    assert!(!m.submitting);
     assert_eq!(
-        fx.ws
-            .uikit()
-            .modal()
-            .unwrap()
-            .errors
-            .get("question")
-            .map(String::as_str),
+        m.errors.get("question").map(String::as_str),
         Some("Question is required")
     );
-    assert!(submit > 0);
 }
 
 #[test]
@@ -496,10 +507,16 @@ fn people_select_keeps_labels_of_chosen_suggestions() {
     );
     let s = SurfaceKey::Modal("view-1".into());
     let key = s.element("who");
+    fx.ws
+        .uikit_mut()
+        .scratch_mut()
+        .texts
+        .insert(key.clone(), "bo".into());
     controller::update(
         &mut fx.ctx(),
         Msg::Suggestions {
             key: key.clone(),
+            term: "bo".into(),
             result: Ok(vec![super::Suggestion {
                 value: "bob".into(),
                 label: "Bob Builder".into(),
@@ -523,13 +540,153 @@ fn people_select_keeps_labels_of_chosen_suggestions() {
     let state = fx.ws.uikit().modal().unwrap().state.to_state_json();
     assert_eq!(state["b_who"]["who"], json!(["bob"]));
     // A failed autocomplete keeps the old list.
+    let one = || {
+        vec![super::Suggestion {
+            value: "carol".into(),
+            label: "Carol".into(),
+            detail: None,
+            avatar: None,
+        }]
+    };
+    fx.ws
+        .uikit_mut()
+        .scratch_mut()
+        .texts
+        .insert(key.clone(), "ca".into());
     controller::update(
         &mut fx.ctx(),
         Msg::Suggestions {
-            key,
+            key: key.clone(),
+            term: "ca".into(),
+            result: Ok(one()),
+        },
+    );
+    controller::update(
+        &mut fx.ctx(),
+        Msg::Suggestions {
+            key: key.clone(),
+            term: "ca".into(),
             result: Err(Failure::from(rocketchat::Error::Protocol("x".into()))),
         },
     );
+    assert_eq!(fx.ws.uikit().scratch().suggestions.get(&key), Some(&one()));
+}
+
+#[test]
+fn stale_suggestions_are_ignored() {
+    let mut fx = Fx::new();
+    fx.answer(
+        Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)),
+        serde_json::from_str(MODAL).unwrap(),
+    );
+    let key = SurfaceKey::Modal("view-1".into()).element("who");
+    let list = |v: &str| {
+        Ok(vec![super::Suggestion {
+            value: v.into(),
+            label: v.into(),
+            detail: None,
+            avatar: None,
+        }])
+    };
+    fx.ws
+        .uikit_mut()
+        .scratch_mut()
+        .texts
+        .insert(key.clone(), "bobby".into());
+    // The answer for an older query arrives after the field changed.
+    controller::update(
+        &mut fx.ctx(),
+        Msg::Suggestions {
+            key: key.clone(),
+            term: "bob".into(),
+            result: list("bob"),
+        },
+    );
+    assert!(!fx.ws.uikit().scratch().suggestions.contains_key(&key));
+    assert!(fx.ws.uikit().scratch().open.is_none());
+    // Another popover stays open when the right answer arrives.
+    fx.ws.uikit_mut().scratch_mut().open = Some("other".into());
+    controller::update(
+        &mut fx.ctx(),
+        Msg::Suggestions {
+            key: key.clone(),
+            term: "bobby".into(),
+            result: list("bobby"),
+        },
+    );
+    let sc = fx.ws.uikit().scratch();
+    assert!(sc.suggestions.contains_key(&key));
+    assert_eq!(sc.open.as_deref(), Some("other"));
+}
+
+#[test]
+fn debounce_timers_do_not_cancel_each_other() {
+    let mut fx = Fx::new();
+    fx.answer(
+        Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)),
+        serde_json::from_str(MODAL).unwrap(),
+    );
+    let surface = SurfaceKey::Modal("view-1".into());
+    let a = req(surface.clone(), None, "b_q", "question", Some(json!("A")));
+    let b = req(surface.clone(), None, "b_x", "other", Some(json!("B")));
+    fx.ui(UiKitMsg::Text {
+        req: a.clone(),
+        dispatch: true,
+    });
+    let sa = fx
+        .ws
+        .uikit()
+        .scratch()
+        .current_stamp(&surface.element("question"))
+        .unwrap();
+    fx.ui(UiKitMsg::Text {
+        req: b,
+        dispatch: true,
+    });
+    // An `actions/changed` refresh starts its own timer as well.
+    controller::session(
+        &mut fx.ctx(),
+        SessionHook::Apps(Box::new(
+            rocketchat::models::AppsStreamEvent::ActionsChanged,
+        )),
+    );
+    let before = fx.triggers();
+    controller::update(&mut fx.ctx(), Msg::Debounced { req: a, stamp: sa });
+    assert_eq!(fx.triggers(), before + 1, "A's value is still sent");
+}
+
+#[test]
+fn closing_a_room_drops_its_bars() {
+    let mut fx = Fx::new();
+    fx.answer(
+        Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)).rid(Some("r1")),
+        serde_json::from_str(BAR).unwrap(),
+    );
+    let s = SurfaceKey::Bar("bar-1".into());
+    fx.ws
+        .uikit_mut()
+        .scratch_mut()
+        .texts
+        .insert(s.element("x"), "typed".into());
+    controller::room_closed(&mut fx.ws, "r1");
+    assert!(fx.ws.uikit().bar("bar-1").is_none());
+    assert!(fx.ws.uikit().scratch().texts.is_empty());
+}
+
+#[test]
+fn commands_run_at_app_level() {
+    let mut fx = Fx::new();
+    // Without a session the request fails at once; the result still settles
+    // the trigger without any room view.
+    let out = fx.ui(commands::request(
+        "r1",
+        None,
+        "poll".into(),
+        "x".into(),
+        Some("app1".into()),
+    ));
+    assert!(out.effects.is_empty());
+    assert_eq!(fx.ws.uikit().busy(), 1);
 }
 
 fn button(ctx: ButtonContext, action: &str) -> ActionButton {
@@ -657,12 +814,24 @@ fn failed_slash_commands_leave_a_local_message() {
 fn apps_stream_and_banner_hooks() {
     let mut fx = Fx::new();
     let ev = rocketchat::models::AppsStreamEvent::ActionsChanged;
-    let before = fx.ws.uikit().scratch().stamp;
+    assert!(fx.ws.uikit().scratch().current_stamp("#buttons").is_none());
     controller::session(&mut fx.ctx(), SessionHook::Apps(Box::new(ev)));
-    assert_eq!(
-        fx.ws.uikit().scratch().stamp,
-        before + 1,
+    assert!(
+        fx.ws.uikit().scratch().current_stamp("#buttons").is_some(),
         "buttons refetch is debounced"
+    );
+    let out = controller::session(
+        &mut fx.ctx(),
+        SessionHook::Apps(Box::new(rocketchat::models::AppsStreamEvent::Removed(
+            "app1".into(),
+        ))),
+    );
+    assert_eq!(
+        out.effects,
+        vec![Effect::AppsChanged {
+            commands: false,
+            admin: true
+        }]
     );
     // Without a session nothing is fetched.
     let out = controller::session(&mut fx.ctx(), SessionHook::Banners);

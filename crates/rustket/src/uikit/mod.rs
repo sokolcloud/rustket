@@ -29,6 +29,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use iced::Element;
 use iced::widget::text_editor;
+use rocketchat::ServerUrl;
 use rocketchat::models::{ActionButton, AppLanguages, Banner, Message as RcMessage};
 use rocketchat::uikit::{Confirm, LayoutBlock, ServerInteraction, Surface};
 use rustket_core::Workspace;
@@ -107,6 +108,15 @@ pub enum UiKitMsg {
         mid: Option<String>,
         message: Option<String>,
     },
+    /// Run an app or built-in slash command (`commands.run`, §7) from a
+    /// composer; `app_id` from `commands.list`.
+    Command {
+        rid: String,
+        tmid: Option<String>,
+        command: String,
+        params: String,
+        app_id: Option<String>,
+    },
     /// A link or mention inside a text object.
     Render(Box<RenderMsg>),
 }
@@ -144,10 +154,14 @@ pub enum Msg {
         users: bool,
         stamp: u64,
     },
+    /// Autocomplete results of element `key` for the query `term`.
     Suggestions {
         key: String,
+        term: String,
         result: Res<Vec<Suggestion>>,
     },
+    /// `commands.run` ended.
+    CommandRan(commands::Ran),
     /// Refetch the action buttons (debounced `actions/changed`).
     RefreshButtons(u64),
     Buttons(Res<Vec<ActionButton>>),
@@ -210,17 +224,26 @@ pub fn message_blocks(msg: &RcMessage, rc: &RenderCtx<'_>) -> Option<Element<'st
     }))
 }
 
-/// Part of a timeline row's cache key for the UIKit state of `msg`: widget
-/// scratch, the ephemeral flag and loaded block images (0 without blocks).
-pub fn row_key(ws: &Workspace, images: &Images, msg: &RcMessage) -> u64 {
+/// Part of a timeline row's cache key for the UIKit state of `msg`: app
+/// buttons and translations (the row's menus list app entries), and for
+/// messages with blocks the widget scratch of that message, the ephemeral
+/// flag and loaded block images.
+pub fn row_key(ws: &Workspace, images: &Images, server: &ServerUrl, msg: &RcMessage) -> u64 {
+    let store = ws.uikit();
     let Some(blocks) = cache::blocks(msg) else {
-        return 0;
+        return store.revision();
     };
     let mut h = DefaultHasher::new();
-    ws.uikit().scratch_revision().hash(&mut h);
+    store.revision().hash(&mut h);
+    let surface = SurfaceKey::Message {
+        rid: msg.rid.clone(),
+        mid: msg.id.clone(),
+        tmid: msg.tmid.clone(),
+    };
+    store.scratch().digest(&surface.prefix()).hash(&mut h);
     ws.is_ephemeral(&msg.rid, &msg.id).hash(&mut h);
     rust_i18n::locale().hash(&mut h);
-    for url in render::image_urls(&blocks) {
+    for url in render::image_urls(server, &blocks) {
         images.contains(&url).hash(&mut h);
     }
     h.finish().max(1)
@@ -248,10 +271,18 @@ pub fn overlay<'a>(
     modal::view(app, local)
 }
 
-/// What the app shows above the room area: the busy pill and the banner.
+/// Widget-tree key of the overlay [`overlay`] shows: the confirmation
+/// dialog or the modal's view id.
+pub fn overlay_key(ws: &Workspace) -> Option<String> {
+    let store = ws.uikit();
+    if store.scratch().confirm.is_some() {
+        return Some(String::from("confirm"));
+    }
+    store.modal().map(|m| format!("modal:{}", m.id()))
+}
+
+/// What the app shows above the room area: the banner (the busy pill floats
+/// over the area instead, `App::uikit_busy_over`).
 pub fn strips<'a>(app: modal::AppCtx<'a>) -> Vec<Element<'a, UiKitMsg>> {
-    modal::busy_pill(app.workspace)
-        .into_iter()
-        .chain(banner::view(app))
-        .collect()
+    banner::view(app).into_iter().collect()
 }

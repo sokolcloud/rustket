@@ -129,8 +129,10 @@ fn answer(d: &mut Driver, sid: &ServerId, origin: Origin, mut si: Value) {
     let result = InteractionResult::Response(InteractionResponse::Interaction(
         ServerInteraction::from_value(si),
     ));
+    let epoch = d.app.servers[sid].generation;
     d.send(Message::UiKit(
         sid.clone(),
+        epoch,
         Msg::Finished { trigger, result },
     ));
 }
@@ -326,8 +328,28 @@ pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId, rid: &str) {
         s.loading.insert(surface.element("btn_primary"), "T".into());
     }
     both(d, out, "u2-message-select", TALL, None);
+    // The date picker's calendar, with an app request in flight (the
+    // floating "Loading" pill).
+    let busy = {
+        let ws = &mut d.app.servers.get_mut(sid).expect("server").workspace;
+        let surface = SurfaceKey::Message {
+            rid: rid.to_owned(),
+            mid: "rk-uikit-blocks".into(),
+            tmid: None,
+        };
+        let s = ws.uikit_mut().scratch_mut();
+        s.loading.clear();
+        s.open = Some(format!("{}#cal", surface.element("date")));
+        ws.uikit_mut().begin(
+            Some("app1"),
+            Origin::new(OriginKind::SlashCommand),
+            Instant::now(),
+        )
+    };
+    both(d, out, "u2b-calendar-busy", TALL, None);
     {
         let ws = &mut d.app.servers.get_mut(sid).expect("server").workspace;
+        ws.uikit_mut().finish_command(&busy, Instant::now());
         let s = ws.uikit_mut().scratch_mut();
         s.open = None;
         s.loading.clear();
@@ -390,16 +412,20 @@ pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId, rid: &str) {
 
     // Composer app menu.
     let key = rustket::uikit::buttons::composer_menu_key(rid, None);
+    let epoch = d.app.servers[sid].generation;
     d.send(Message::UiKit(
         sid.clone(),
+        epoch,
         Msg::Ui {
             rid: Some(rid.to_owned()),
             msg: UiKitMsg::Popover(Some(key)),
         },
     ));
     both(d, out, "u5-composer-apps", rustket_ui_size(), None);
+    let epoch = d.app.servers[sid].generation;
     d.send(Message::UiKit(
         sid.clone(),
+        epoch,
         Msg::Ui {
             rid: None,
             msg: UiKitMsg::Popover(None),
@@ -459,8 +485,10 @@ pub async fn shoot(d: &mut Driver, out: &Path, sid: &ServerId, rid: &str) {
         Origin::new(OriginKind::SlashCommand),
         json!({"type": "banner.close", "appId": "app1", "viewId": "maint-1"}),
     );
+    let epoch = d.app.servers[sid].generation;
     d.send(Message::UiKit(
         sid.clone(),
+        epoch,
         Msg::Ui {
             rid: None,
             msg: UiKitMsg::Close {

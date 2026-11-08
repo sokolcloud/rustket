@@ -794,7 +794,7 @@ impl App {
             Message::CreateRoom(sid, m) => self.on_create_room(sid, m),
             Message::QuickSwitcher(sid, m) => self.on_quick_switcher(sid, m),
             Message::StatusMenu(sid, m) => self.on_status_menu(sid, m),
-            Message::UiKit(sid, m) => self.on_uikit(sid, m),
+            Message::UiKit(sid, epoch, m) => self.on_uikit_in(sid, epoch, m),
             Message::Desktop(m) => self.on_desktop(m),
             Message::OpenQuickSwitcher => self.navigate(component::Nav::QuickSwitcher),
             Message::SidebarResized(w) => {
@@ -1400,6 +1400,7 @@ impl App {
         for r in old {
             if let Some(rv) = s.rooms.remove(&r) {
                 closed.push(rv.close(&mut s.workspace, s.session.as_ref()).discard());
+                crate::uikit::controller::room_closed(&mut s.workspace, &r);
             }
         }
         s.active_room = Some(rid.to_owned());
@@ -1532,8 +1533,7 @@ impl App {
             Some(rv) => rv.close(&mut s.workspace, s.session.as_ref()).discard(),
             None => Task::none(),
         };
-        // App panels of the room go away without `viewClosed` (§5.6).
-        let _ = s.workspace.uikit_mut().close_room_bars(rid);
+        crate::uikit::controller::room_closed(&mut s.workspace, rid);
         if s.active_room.as_deref() == Some(rid) {
             s.active_room = None;
         }

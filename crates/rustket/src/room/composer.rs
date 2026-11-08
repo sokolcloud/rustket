@@ -139,6 +139,15 @@ fn commands_failed(server: &ServerId) {
     }
 }
 
+/// Drops the cached `commands.list` of `server` (apps added or removed
+/// commands, `crate::uikit`).
+pub fn forget_commands(server: &ServerId) {
+    if let Ok(mut c) = COMMANDS.lock() {
+        c.lists.remove(server.as_str());
+        c.failed.remove(server.as_str());
+    }
+}
+
 /// `commands.list` failed a moment ago: do not ask again yet.
 fn commands_recently_failed(server: &ServerId) -> bool {
     COMMANDS.lock().ok().is_some_and(|c| {
@@ -246,7 +255,6 @@ pub enum Message {
     Fetched(FetchFor, Res<Box<rocketchat::models::Message>>),
     Sent(String, Res<Box<rocketchat::models::Message>>),
     Updated(Res<Box<rocketchat::models::Message>>),
-    CommandRan(crate::uikit::commands::Ran),
     /// The composer's app menu (`crate::uikit::buttons`).
     UiKit(Box<crate::uikit::UiKitMsg>),
     Typed(Res<()>),
@@ -712,11 +720,6 @@ impl Composer {
                     e.user_text(),
                 )),
             },
-            Message::CommandRan(r) => {
-                // A failure shows as a local ephemeral message (like the web).
-                crate::uikit::commands::finished(ctx.workspace, &r);
-                Action::none()
-            }
             Message::UiKit(m) => Action::effect(Effect::UiKit(m)),
             Message::Typed(r) => {
                 if let Err(e) = r {
@@ -1273,20 +1276,26 @@ impl Composer {
         if let Some((name, params)) = text::parse_slash(&text)
             && cached_commands(ctx.server_id).is_some_and(|c| c.iter().any(|c| c.command == name))
         {
-            return Action::task(self.run_command(name, params, ctx));
+            return Action::effect(self.run_command(name, params, ctx));
         }
         Action::task(self.send_text(text, ctx))
     }
 
-    /// `commands.run` with a trigger registered in the UIKit store (§7).
-    fn run_command(&self, name: String, params: String, ctx: &mut UpdateCtx<'_>) -> Task<Message> {
+    /// `commands.run`, run by the UIKit controller at app level (§7) so its
+    /// result does not depend on this view staying open.
+    fn run_command(&self, name: String, params: String, ctx: &UpdateCtx<'_>) -> Effect {
         let app_id = cached_commands(ctx.server_id).and_then(|c| {
             c.iter()
                 .find(|c| c.command == name)
                 .and_then(|c| c.app_id.clone())
         });
-        crate::uikit::commands::run(ctx, &self.rid, self.tmid.as_deref(), name, params, app_id)
-            .map(Message::CommandRan)
+        Effect::UiKit(Box::new(crate::uikit::commands::request(
+            &self.rid,
+            self.tmid.as_deref(),
+            name,
+            params,
+            app_id,
+        )))
     }
 
     /// Adds a pending message to the outbox and sends it with `chat.sendMessage`.

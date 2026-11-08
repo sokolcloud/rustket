@@ -64,6 +64,20 @@ pub enum Effect {
     /// A `@user` / `#channel` in a view.
     OpenUser(String),
     OpenRoom(String),
+    /// Installed apps changed (`stream-apps`): `commands` = the slash command
+    /// list is stale, `admin` = an apps admin list should refresh.
+    AppsChanged {
+        commands: bool,
+        admin: bool,
+    },
+}
+
+/// Debounce key of the action-buttons refresh.
+const BUTTONS_TIMER: &str = "#buttons";
+
+/// Debounce key of the autocomplete query of element `key`.
+fn query_timer(key: &str) -> String {
+    format!("{key}#query")
 }
 
 /// Result of an update.
@@ -105,7 +119,21 @@ impl Out {
 pub fn update(ctx: &mut Ctx<'_>, msg: Msg) -> Out {
     let now = Instant::now();
     match msg {
-        Msg::Ui { msg, .. } => ui(ctx, msg),
+        Msg::Ui { msg, .. } => {
+            let message_surface = msg_surface(&msg)
+                .filter(|s| matches!(s, SurfaceKey::Message { .. }))
+                .map(SurfaceKey::prefix);
+            let out = ui(ctx, msg);
+            if let Some(prefix) = message_surface {
+                ctx.ws.uikit_mut().scratch_mut().trim_messages(&prefix);
+            }
+            out
+        }
+        Msg::CommandRan(ran) => {
+            super::commands::finished(ctx.ws, &ran);
+            ctx.ws.uikit_mut().prune(now);
+            Out::none()
+        }
         Msg::Finished { trigger, result } => {
             ctx.ws.uikit_mut().scratch_mut().settle(&trigger);
             let changes = ctx.ws.uikit_mut().finish(&trigger, result, now);
@@ -113,16 +141,22 @@ pub fn update(ctx: &mut Ctx<'_>, msg: Msg) -> Out {
             apply_changes(ctx, changes)
         }
         Msg::Debounced { req, stamp } => {
-            if ctx.ws.uikit().scratch().stamp != stamp {
+            let key = req.surface.element(&req.action_id);
+            if !ctx.ws.uikit_mut().scratch_mut().take_stamp(&key, stamp) {
                 return Out::none();
             }
             emit_action(ctx, req)
         }
         Msg::QueryDue { req, users, stamp } => {
-            if ctx.ws.uikit().scratch().stamp != stamp {
+            let key = req.surface.element(&req.action_id);
+            if !ctx
+                .ws
+                .uikit_mut()
+                .scratch_mut()
+                .take_stamp(&query_timer(&key), stamp)
+            {
                 return Out::none();
             }
-            let key = req.surface.element(&req.action_id);
             let term = ctx
                 .ws
                 .uikit()
@@ -134,27 +168,41 @@ pub fn update(ctx: &mut Ctx<'_>, msg: Msg) -> Out {
             let Some(rest) = ctx.rest.clone() else {
                 return Out::none();
             };
+            let asked = term.clone();
             Out::task(Task::perform(
-                async move { suggestions(rest, users, term).await.map_err(Failure::from) },
+                async move { suggestions(rest, users, asked).await.map_err(Failure::from) },
                 move |result| Msg::Suggestions {
                     key: key.clone(),
+                    term: term.clone(),
                     result,
                 },
             ))
         }
-        Msg::Suggestions { key, result } => {
+        Msg::Suggestions { key, term, result } => {
             let s = ctx.ws.uikit_mut().scratch_mut();
+            // Only the answer for what the field holds now (an older query
+            // may answer later; a cleared field or closed view has no text).
+            if s.texts.get(&key) != Some(&term) {
+                return Out::none();
+            }
             match result {
                 Ok(list) => {
                     s.suggestions.insert(key.clone(), list);
-                    s.open = Some(key);
+                    if s.open.is_none() {
+                        s.open = Some(key);
+                    }
                 }
                 Err(e) => tracing::debug!(error = %e, "autocomplete failed"),
             }
             Out::none()
         }
         Msg::RefreshButtons(stamp) => {
-            if ctx.ws.uikit().scratch().stamp != stamp {
+            if !ctx
+                .ws
+                .uikit_mut()
+                .scratch_mut()
+                .take_stamp(BUTTONS_TIMER, stamp)
+            {
                 return Out::none();
             }
             fetch_buttons(ctx.rest.clone())
@@ -226,10 +274,14 @@ pub fn session(ctx: &mut Ctx<'_>, hook: SessionHook) -> Out {
         SessionHook::Apps(ev) => {
             let f = ctx.ws.uikit_mut().apply_apps_event(&ev);
             let mut out = Out::none();
+            if f.commands || f.admin {
+                out.effects.push(Effect::AppsChanged {
+                    commands: f.commands,
+                    admin: f.admin,
+                });
+            }
             if f.action_buttons {
-                let s = ctx.ws.uikit_mut().scratch_mut();
-                s.stamp += 1;
-                let stamp = s.stamp;
+                let stamp = ctx.ws.uikit_mut().scratch_mut().stamp(BUTTONS_TIMER);
                 out = out.merge(Out::task(Task::perform(
                     sleep(BUTTONS_DEBOUNCE),
                     move |_| Msg::RefreshButtons(stamp),
@@ -437,10 +489,10 @@ fn ui(ctx: &mut Ctx<'_>, msg: UiKitMsg) -> Out {
             let key = req.surface.element(&req.action_id);
             let s = ctx.ws.uikit_mut().scratch_mut();
             s.texts.insert(key.clone(), text.clone());
-            s.stamp += 1;
-            let stamp = s.stamp;
+            let stamp = s.stamp(&query_timer(&key));
             if text.trim().is_empty() {
                 s.suggestions.remove(&key);
+                s.stamps.remove(&query_timer(&key));
                 return Out::none();
             }
             let delay = Duration::from_millis(300);
@@ -486,12 +538,35 @@ fn ui(ctx: &mut Ctx<'_>, msg: UiKitMsg) -> Out {
             );
             send(ctx.rest.clone(), app, i)
         }
+        UiKitMsg::Command {
+            rid,
+            tmid,
+            command,
+            params,
+            app_id,
+        } => Out::task(
+            super::commands::run(ctx.ws, ctx.rest.clone(), rid, tmid, command, params, app_id)
+                .map(Msg::CommandRan),
+        ),
         UiKitMsg::Render(r) => match *r {
             RenderMsg::OpenUrl(u) => Out::effect(Effect::OpenUrl(u)),
             RenderMsg::OpenUser(u) => Out::effect(Effect::OpenUser(u)),
             RenderMsg::OpenRoom(r) => Out::effect(Effect::OpenRoom(r)),
             _ => Out::none(),
         },
+    }
+}
+
+/// The surface a UI message acts on, if it names one.
+fn msg_surface(msg: &UiKitMsg) -> Option<&SurfaceKey> {
+    match msg {
+        UiKitMsg::Change { req, .. }
+        | UiKitMsg::Toggle { req, .. }
+        | UiKitMsg::Text { req, .. }
+        | UiKitMsg::Editor { req, .. }
+        | UiKitMsg::Typing { req, .. }
+        | UiKitMsg::Query { req, .. } => Some(&req.surface),
+        _ => None,
     }
 }
 
@@ -527,9 +602,8 @@ fn text_changed(ctx: &mut Ctx<'_>, req: ActionRequest, dispatch: bool) -> Out {
         // Messages emit on every change, without debounce (§5.2).
         return emit_action(ctx, req);
     }
-    let s = ctx.ws.uikit_mut().scratch_mut();
-    s.stamp += 1;
-    let stamp = s.stamp;
+    let key = req.surface.element(&req.action_id);
+    let stamp = ctx.ws.uikit_mut().scratch_mut().stamp(&key);
     Out::task(Task::perform(sleep(TEXT_DEBOUNCE), move |_| {
         Msg::Debounced {
             req: req.clone(),
@@ -540,14 +614,30 @@ fn text_changed(ctx: &mut Ctx<'_>, req: ActionRequest, dispatch: bool) -> Out {
 
 /// The message of a message surface, from the room or thread timeline.
 pub fn find_message(ws: &Workspace, rid: &str, mid: &str, tmid: Option<&str>) -> Option<RcMessage> {
+    message_ref(ws, rid, mid, tmid).cloned()
+}
+
+fn message_ref<'w>(
+    ws: &'w Workspace,
+    rid: &str,
+    mid: &str,
+    tmid: Option<&str>,
+) -> Option<&'w RcMessage> {
     if let Some(i) = ws.timeline(rid).and_then(|t| t.get(mid)) {
-        return Some(i.message.clone());
+        return Some(&i.message);
     }
     let tl = tmid.and_then(|t| ws.thread(t))?;
     if let Some(i) = tl.get(mid) {
-        return Some(i.message.clone());
+        return Some(&i.message);
     }
-    tl.parent().filter(|p| p.id == mid).cloned()
+    tl.parent().filter(|p| p.id == mid)
+}
+
+/// Whether block actions of message `mid` can be sent: it must be in the
+/// loaded room or thread timeline (lists such as search results or pinned
+/// messages show other messages read-only).
+pub fn knows_message(ws: &Workspace, rid: &str, mid: &str, tmid: Option<&str>) -> bool {
+    message_ref(ws, rid, mid, tmid).is_some()
 }
 
 /// Builds the interaction of `req` through the store (trust rule, trigger,
@@ -695,6 +785,18 @@ fn sync_editors(ws: &Workspace, local: &mut Local) {
                 .editors
                 .entry(surface.element(&a.action_id))
                 .or_insert_with(|| text_editor::Content::with_text(&text));
+        }
+    }
+}
+
+/// The view of room `rid` closed: its app panels go away without
+/// `viewClosed` (§5.6), with their widget scratch.
+pub fn room_closed(ws: &mut Workspace, rid: &str) {
+    for c in ws.uikit_mut().close_room_bars(rid) {
+        if let UiKitChange::BarClosed { view_id, .. } = c {
+            ws.uikit_mut()
+                .scratch_mut()
+                .forget(&SurfaceKey::Bar(view_id).prefix());
         }
     }
 }

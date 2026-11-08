@@ -818,7 +818,7 @@ fn calendar(
     let next = month.checked_add_months(chrono::Months::new(1));
     let head = row![
         nav(prev, Icon::ChevronLeft),
-        text(month.format("%Y-%m").to_string())
+        text(month_title(month))
             .size(TEXT_SMALL)
             .font(FONT_SEMIBOLD)
             .width(Length::Fill)
@@ -826,7 +826,19 @@ fn calendar(
         nav(next, Icon::ChevronRight),
     ]
     .align_y(Alignment::Center);
-    let mut grid = column![].spacing(2);
+    let weekdays = t!("uikit.weekdays");
+    let header: Vec<W> = weekdays
+        .split_whitespace()
+        .map(|d| {
+            text(d.to_owned())
+                .size(TEXT_CAPTION)
+                .style(style::text_hint)
+                .width(30)
+                .align_x(Alignment::Center)
+                .into()
+        })
+        .collect();
+    let mut grid = column![row(header).spacing(2)].spacing(2);
     let offset = month.weekday().num_days_from_monday();
     let mut day = month;
     let mut cells: Vec<W> = (0..offset)
@@ -866,10 +878,25 @@ fn calendar(
         let week: Vec<W> = cells.by_ref().take(7).collect();
         grid = grid.push(row(week).spacing(2));
     }
-    container(column![head, grid].spacing(SPACE_1))
-        .padding(SPACE_2)
-        .style(style::container_popover)
-        .into()
+    // Seven 30 px columns 2 px apart.
+    container(
+        column![head, grid]
+            .spacing(SPACE_1)
+            .width(7.0 * 30.0 + 6.0 * 2.0),
+    )
+    .padding(SPACE_2)
+    .style(style::container_popover)
+    .into()
+}
+
+/// "November 2026" in the UI language.
+fn month_title(month: NaiveDate) -> String {
+    let names = t!("uikit.months");
+    let index = usize::try_from(month.month0()).unwrap_or_default();
+    match names.split_whitespace().nth(index) {
+        Some(name) => format!("{name} {}", month.year()),
+        None => month.format("%Y-%m").to_string(),
+    }
 }
 
 fn time_picker(

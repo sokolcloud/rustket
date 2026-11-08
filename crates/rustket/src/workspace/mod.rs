@@ -127,6 +127,7 @@ impl ServerState {
         let _ = self.close_rooms();
         self.session = None;
         self.workspace = Workspace::new();
+        self.uikit = crate::uikit::Local::default();
         self.sidebar = sidebar::Sidebar::default();
         self.syncing = false;
         self.resync_pending = false;

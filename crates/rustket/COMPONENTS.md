@@ -334,9 +334,17 @@ Message blocks render through `render::message_body_with` (blocks hide the
 markdown body); their interactions come out as `RenderMsg::UiKit` and every
 owner forwards them as `Effect::UiKit` (also panel, header, message menu,
 composer app menu; the status menu uses `component::Effect::UiKit`). The app
-runs them through `uikit::controller` (`Message::UiKit`). Durable state lives
-in the workspace (`UiKitStore`, incl. the widget `Scratch`); modal text editors
-in `ServerState::uikit`. Contextual bars are `panel::Kind::App(view_id)`;
-modals, the confirmation dialog, the busy pill and banners are drawn by the
-app (`uikit::overlay`, `uikit::strips`). `video_conf` blocks are left to the
-video-conference module (`uikit::render` skips them).
+runs them through `uikit::controller` (`Message::UiKit(sid, epoch, ..)`;
+results of an earlier session are dropped). Slash commands from a composer are
+`UiKitMsg::Command` effects, so `commands.run` finishes even when the room
+view closed. Durable state lives in the workspace (`UiKitStore`, incl. the
+widget `Scratch`); modal text editors in `ServerState::uikit`. Contextual bars
+are `panel::Kind::App(view_id)` and close with their room view
+(`controller::room_closed`); modals (keyed by view id), the confirmation
+dialog, the floating busy pill and banners are drawn by the app
+(`uikit::overlay`, `App::uikit_busy_over`, `uikit::strips`). `stream-apps`
+events are consumed by the UIKit dispatcher arm; what other components need
+comes out as `controller::Effect::AppsChanged { commands, admin }` (the glue
+drops the composer's command cache; `admin` is a hook point for an apps admin
+list). `video_conf` blocks are left to the video-conference module
+(`uikit::render` skips them).

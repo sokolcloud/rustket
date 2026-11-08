@@ -170,18 +170,22 @@ pub fn view<'a>(
     let mut footer = row![space().width(Length::Fill)]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
-    footer = footer.push(footer_button(
-        &env,
-        v.close.as_ref(),
-        "uikit.cancel",
-        false,
-        Some(UiKitMsg::Close {
-            surface: surface.clone(),
-            cleared: false,
-        }),
-        false,
-        false,
-    ));
+    // Like the web, the close button only when the view has `close` (the
+    // header X always closes, as cleared).
+    if v.close.is_some() {
+        footer = footer.push(footer_button(
+            &env,
+            v.close.as_ref(),
+            "uikit.cancel",
+            false,
+            Some(UiKitMsg::Close {
+                surface: surface.clone(),
+                cleared: false,
+            }),
+            false,
+            false,
+        ));
+    }
     if v.submit.is_some() {
         footer = footer.push(footer_button(
             &env,
@@ -277,7 +281,7 @@ pub fn confirm_view<'a>(app: AppCtx<'a>, c: &Confirm) -> Element<'a, UiKitMsg> {
 }
 
 /// The "Loading" pill shown while app requests run (§4.6).
-pub fn busy_pill(ws: &Workspace) -> Option<Element<'static, UiKitMsg>> {
+pub fn busy_pill<M: 'static>(ws: &Workspace) -> Option<Element<'static, M>> {
     if ws.uikit().busy() == 0 {
         return None;
     }
@@ -294,8 +298,6 @@ pub fn busy_pill(ws: &Workspace) -> Option<Element<'static, UiKitMsg>> {
             .padding([2, 12])
             .style(style::container_popover),
         )
-        .padding([2, 0])
-        .center_x(Length::Fill)
         .into(),
     )
 }

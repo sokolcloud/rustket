@@ -275,15 +275,21 @@ pub fn md_tree(
     md::blocks_for(root, &md::Cx::new(rc, mid, None))
 }
 
-/// The small markdown subset of attachment texts at `size` (UIKit context
-/// items).
-pub fn mrkdwn_text(
-    text: &str,
+/// An `md` tree at `size` (UIKit context items): a single paragraph keeps
+/// the size, anything else renders like [`md_tree`].
+pub fn md_tree_sized(
+    root: &[rocketchat::models::md::Block],
     mid: &str,
     rc: &RenderCtx<'_>,
     size: f32,
 ) -> Element<'static, RenderMsg> {
-    md::mrkdwn_paragraph(text, &md::Cx::new(rc, mid, None), size, false)
+    let cx = md::Cx::new(rc, mid, None);
+    match root {
+        [rocketchat::models::md::Block::Paragraph { value }] => {
+            md::inline_paragraph(value, &cx, size)
+        }
+        _ => md::blocks_for(root, &cx),
+    }
 }
 
 /// Room id for a `#channel` mention ([`RenderMsg::OpenRoom`]): a joined

@@ -31,7 +31,7 @@ pub fn label(env: &Env<'_>, t: &TextObject, app_id: Option<&str>) -> String {
 pub fn body(env: &Env<'_>, t: &TextObject, app_id: Option<&str>) -> Element<'static, UiKitMsg> {
     let s = string(env, t, app_id);
     if t.is_mrkdwn() {
-        render::md_tree(&mrkdwn::parse(&s), &env.surface.prefix(), &env.rc)
+        render::md_tree(&mrkdwn::parse_cached(&s), &env.surface.prefix(), &env.rc)
             .map(|r| UiKitMsg::Render(Box::new(r)))
     } else {
         text(sanitize_bidi(&s).into_owned()).size(TEXT_BODY).into()
@@ -42,8 +42,13 @@ pub fn body(env: &Env<'_>, t: &TextObject, app_id: Option<&str>) -> Element<'sta
 pub fn small(env: &Env<'_>, t: &TextObject, app_id: Option<&str>) -> Element<'static, UiKitMsg> {
     let s = string(env, t, app_id);
     if t.is_mrkdwn() {
-        render::mrkdwn_text(&s, &env.surface.prefix(), &env.rc, TEXT_CAPTION)
-            .map(|r| UiKitMsg::Render(Box::new(r)))
+        render::md_tree_sized(
+            &mrkdwn::parse_cached(&s),
+            &env.surface.prefix(),
+            &env.rc,
+            TEXT_CAPTION,
+        )
+        .map(|r| UiKitMsg::Render(Box::new(r)))
     } else {
         text(sanitize_bidi(&s).into_owned())
             .size(TEXT_CAPTION)

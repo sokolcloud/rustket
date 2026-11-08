@@ -126,6 +126,15 @@ pub(super) fn blocks_for(root: &[Block], cx: &Cx<'_, '_>) -> El {
     block_list(root, cx, 0)
 }
 
+/// One paragraph of inline nodes at `size`, as wide as its text (UIKit
+/// context items, which share a row).
+pub(super) fn inline_paragraph(value: &[Inline], cx: &Cx<'_, '_>, size: f32) -> El {
+    rich_text(inline_spans(value, cx))
+        .on_link_click(|m: RenderMsg| m)
+        .size(size)
+        .into()
+}
+
 /// Plain text with clickable URLs (messages without `md`).
 pub(super) fn plain_paragraph(text: &str, mid: &str, rc: &RenderCtx<'_>) -> El {
     let cx = Cx::new(rc, mid, None);

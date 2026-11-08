@@ -7,14 +7,14 @@
 use std::time::Instant;
 
 use iced::Task;
-use rocketchat::RcDate;
 use rocketchat::models::{Message as RcMessage, UserRef};
+use rocketchat::{RcDate, RestClient};
 use rust_i18n::t;
 use rustket_core::Workspace;
 use rustket_core::uikit::trust::ROCKET_CAT;
 
+use super::UiKitMsg;
 use crate::error::{Failure, Res};
-use crate::room::UpdateCtx;
 
 /// The end of a `commands.run` call.
 #[derive(Debug, Clone)]
@@ -26,24 +26,42 @@ pub struct Ran {
     pub result: Res<serde_json::Value>,
 }
 
-/// Runs `/command params` in `rid` (thread `tmid`); `app_id` from
-/// `commands.list` (`None` for built-in commands).
-pub fn run(
-    ctx: &mut UpdateCtx<'_>,
+/// The request a composer hands to the controller (`Effect::UiKit`) to run
+/// `/command params` in `rid` (thread `tmid`); `app_id` from `commands.list`
+/// (`None` for built-in commands).
+pub fn request(
     rid: &str,
     tmid: Option<&str>,
     command: String,
     params: String,
     app_id: Option<String>,
+) -> UiKitMsg {
+    UiKitMsg::Command {
+        rid: rid.to_owned(),
+        tmid: tmid.map(str::to_owned),
+        command,
+        params,
+        app_id,
+    }
+}
+
+/// Runs the command with a trigger registered in the store.
+pub fn run(
+    ws: &mut Workspace,
+    rest: Option<RestClient>,
+    rid: String,
+    tmid: Option<String>,
+    command: String,
+    params: String,
+    app_id: Option<String>,
 ) -> Task<Ran> {
-    let trigger = ctx.workspace.uikit_mut().slash_command_trigger(
+    let trigger = ws.uikit_mut().slash_command_trigger(
         app_id.as_deref(),
-        rid,
-        tmid,
+        &rid,
+        tmid.as_deref(),
         Instant::now(),
     );
-    let (rid, tmid) = (rid.to_owned(), tmid.map(str::to_owned));
-    let Some(rest) = ctx.rest() else {
+    let Some(rest) = rest else {
         return Task::done(Ran {
             trigger,
             command,
@@ -86,11 +104,14 @@ pub fn finished(ws: &mut Workspace, ran: &Ran) {
 /// The local `rocket.cat` message for a failed command.
 pub fn failure_message(ran: &Ran) -> RcMessage {
     let command = ran.command.trim_start_matches('/');
+    let msg = t!("uikit.command_failed", command = command).into_owned();
     RcMessage {
         id: rocketchat::ids::random_id(),
         rid: ran.rid.clone(),
         tmid: ran.tmid.clone(),
-        msg: t!("uikit.command_failed", command = command).into_owned(),
+        // Markdown like the web's ephemeral (the command shows as code).
+        md: Some(super::mrkdwn::parse(&msg)),
+        msg,
         ts: Some(RcDate::now()),
         u: UserRef {
             id: ROCKET_CAT.into(),

@@ -220,8 +220,9 @@ pub struct UiKitStore {
     busy: HashSet<String>,
     generations: u64,
     scratch: Scratch,
-    /// Bumped by every [`Self::scratch_mut`] (row caches key on it).
-    scratch_revision: u64,
+    /// Bumped when action buttons or app translations change (message rows
+    /// that show app entries key on it).
+    revision: u64,
 }
 
 impl UiKitStore {
@@ -286,6 +287,7 @@ impl UiKitStore {
     /// Replaces the action buttons (`GET /api/apps/actionButtons`).
     pub fn set_buttons(&mut self, buttons: Vec<ActionButton>) {
         self.buttons = buttons;
+        self.bump();
     }
 
     pub fn translations(&self) -> &AppTranslations {
@@ -293,7 +295,17 @@ impl UiKitStore {
     }
 
     pub fn translations_mut(&mut self) -> &mut AppTranslations {
+        self.bump();
         &mut self.translations
+    }
+
+    /// Changes with the action buttons and app translations.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn bump(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Interactions in flight (the "Loading" pill shows while > 0).
@@ -306,14 +318,8 @@ impl UiKitStore {
         &self.scratch
     }
 
-    /// Mutable [`Scratch`]; counts as a change ([`Self::scratch_revision`]).
     pub fn scratch_mut(&mut self) -> &mut Scratch {
-        self.scratch_revision = self.scratch_revision.wrapping_add(1);
         &mut self.scratch
-    }
-
-    pub fn scratch_revision(&self) -> u64 {
-        self.scratch_revision
     }
 
     fn next_generation(&mut self) -> u64 {
@@ -977,6 +983,7 @@ impl UiKitStore {
             AppsStreamEvent::Removed(id) => {
                 self.translations.remove_app(id);
                 self.buttons.retain(|b| &b.app_id != id);
+                self.bump();
                 AppsFollowup {
                     admin: true,
                     ..Default::default()
@@ -985,6 +992,7 @@ impl UiKitStore {
             AppsStreamEvent::StatusUpdate { app_id, status } => {
                 if !status.is_enabled() {
                     self.buttons.retain(|b| &b.app_id != app_id);
+                    self.bump();
                 }
                 AppsFollowup {
                     admin: true,
@@ -1000,8 +1008,11 @@ impl UiKitStore {
     }
 
     /// Forgets expired triggers (call now and then).
+    /// Requests whose trigger expired no longer count as busy.
     pub fn prune(&mut self, now: Instant) {
         self.triggers.prune(now);
+        let triggers = &self.triggers;
+        self.busy.retain(|t| triggers.get(t).is_some());
     }
 }
 

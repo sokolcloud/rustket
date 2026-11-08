@@ -80,8 +80,9 @@ pub fn room_entries<M>(
 }
 
 /// Message menu (`list`: `message` for the room timeline, `threads` for the
-/// thread view, §6.2). End-to-end encrypted messages get one disabled
-/// "Unavailable" entry instead of the buttons (§6.3).
+/// thread view, §6.2): an "Apps" section and an "AI actions" section (the
+/// web's separate stars menu). End-to-end encrypted messages get one
+/// disabled "Unavailable" entry instead of the buttons (§6.3).
 pub fn message_entries<M: Clone>(
     ws: &Workspace,
     msg: &RcMessage,
@@ -91,45 +92,37 @@ pub fn message_entries<M: Clone>(
 ) -> Vec<MenuEntry<M>> {
     let buttons = ws.uikit().buttons();
     let rid = msg.rid.as_str();
-    let mut found = visible_buttons(ws, buttons, &ButtonQuery::message(rid, list));
-    found.extend(visible_buttons(
-        ws,
-        buttons,
-        &ButtonQuery::message(rid, list).ai(),
-    ));
-    if found.is_empty() {
+    let apps = visible_buttons(ws, buttons, &ButtonQuery::message(rid, list));
+    let ai = visible_buttons(ws, buttons, &ButtonQuery::message(rid, list).ai());
+    if apps.is_empty() && ai.is_empty() {
         return Vec::new();
     }
-    let mut v = vec![
-        MenuEntry::Separator,
-        MenuEntry::Header(t!("uikit.apps").into_owned()),
-    ];
     if msg.is_encrypted() {
-        v.push(
+        return vec![
+            MenuEntry::Separator,
+            MenuEntry::Header(t!("uikit.apps").into_owned()),
             MenuItem::new(t!("uikit.unavailable").into_owned(), noop)
                 .disabled(true)
                 .into(),
-        );
-        return v;
+        ];
     }
-    for b in found {
-        v.push(item(
-            ws,
-            b,
-            wrap(UiKitMsg::Button {
-                button: Box::new(b.clone()),
-                rid: Some(rid.to_owned()),
-                tmid: msg.tmid.clone(),
-                mid: Some(msg.id.clone()),
-                message: None,
-            }),
-        ));
-    }
+    let on = |b: &ActionButton| {
+        wrap(UiKitMsg::Button {
+            button: Box::new(b.clone()),
+            rid: Some(rid.to_owned()),
+            tmid: msg.tmid.clone(),
+            mid: Some(msg.id.clone()),
+            message: None,
+        })
+    };
+    let mut v = section(ws, t!("uikit.apps").into_owned(), &apps, &on);
+    v.extend(section(ws, t!("uikit.ai_actions").into_owned(), &ai, &on));
     v
 }
 
 /// Composer app buttons (`category: ai` is not shown, §6.2); `text` is the
-/// composer text sent as `payload.message`.
+/// composer text sent as `payload.message`, except in end-to-end encrypted
+/// rooms, where the unsent plaintext must not leave the device.
 pub fn composer_entries<M>(
     ws: &Workspace,
     rid: &str,
@@ -137,6 +130,8 @@ pub fn composer_entries<M>(
     text: &str,
     wrap: impl Fn(UiKitMsg) -> M,
 ) -> Vec<MenuEntry<M>> {
+    let encrypted = ws.room(rid).is_some_and(|r| r.is_encrypted());
+    let message = (!encrypted).then(|| text.to_owned());
     visible_buttons(ws, ws.uikit().buttons(), &ButtonQuery::composer(rid))
         .into_iter()
         .map(|b| {
@@ -148,7 +143,7 @@ pub fn composer_entries<M>(
                     rid: Some(rid.to_owned()),
                     tmid: tmid.map(str::to_owned),
                     mid: None,
-                    message: Some(text.to_owned()),
+                    message: message.clone(),
                 }),
             )
         })

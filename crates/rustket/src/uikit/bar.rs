@@ -63,21 +63,23 @@ pub fn view<'a>(view_id: &str, ctx: &ViewCtx<'a>) -> Element<'a, UiKitMsg> {
     ]
     .height(Length::Fill);
     let mut footer = row![].spacing(SPACE_2);
-    footer = footer.push(
-        container(footer_button(
-            &env,
-            v.close.as_ref(),
-            "uikit.cancel",
-            false,
-            Some(UiKitMsg::Close {
-                surface: surface.clone(),
-                cleared: false,
-            }),
-            false,
-            true,
-        ))
-        .width(Length::Fill),
-    );
+    if v.close.is_some() {
+        footer = footer.push(
+            container(footer_button(
+                &env,
+                v.close.as_ref(),
+                "uikit.cancel",
+                false,
+                Some(UiKitMsg::Close {
+                    surface: surface.clone(),
+                    cleared: false,
+                }),
+                false,
+                true,
+            ))
+            .width(Length::Fill),
+        );
+    }
     if v.submit.is_some() {
         footer = footer.push(
             container(footer_button(

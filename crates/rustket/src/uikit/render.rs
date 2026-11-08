@@ -34,6 +34,8 @@ pub const ACTIONS_SHOWN: usize = 5;
 pub const MESSAGE_WIDTH: f32 = 560.0;
 /// Longest side of block images.
 const IMAGE_MAX: f32 = 360.0;
+/// Size of a preview block's thumb (`PreviewThumb`).
+const THUMB_SIZE: (f32, f32) = (344.0, 180.0);
 
 /// Where an element sits (`BlockContext`): decides what a change emits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,7 @@ pub enum Ctx {
 }
 
 /// What the renderer needs to know about the surface.
+#[derive(Clone)]
 pub struct Env<'a> {
     pub surface: SurfaceKey,
     pub kind: Surface,
@@ -79,7 +82,14 @@ impl<'a> Env<'a> {
             state: None,
             errors: None,
             msg: Some(msg),
-            disabled: false,
+            // Outside the loaded timeline (search, pinned, starred lists)
+            // nothing could be sent: read-only.
+            disabled: !super::controller::knows_message(
+                rc.workspace,
+                &msg.rid,
+                &msg.id,
+                msg.tmid.as_deref(),
+            ),
             submits: false,
             lang: super::lang(),
         }
@@ -181,8 +191,8 @@ pub fn blocks<'e>(
         SPACE_4
     };
     let mut col: Column<'e, UiKitMsg> = column![].spacing(gap).width(Length::Fill);
-    for b in blocks {
-        if let Some(e) = block(env, editors, b) {
+    for (i, b) in blocks.iter().enumerate() {
+        if let Some(e) = block(env, editors, i, b) {
             col = col.push(e);
         }
     }
@@ -195,9 +205,26 @@ pub fn blocks<'e>(
 fn block<'e>(
     env: &Env<'_>,
     editors: Option<&'e Editors>,
+    index: usize,
     b: &LayoutBlock,
 ) -> Option<Element<'e, UiKitMsg>> {
-    let app = b.meta().and_then(|m| m.app_id.clone());
+    let app = b
+        .meta()
+        .and_then(|m| m.app_id.clone())
+        .filter(|a| !a.is_empty());
+    // Message blocks name their app per block: its bundle translates every
+    // text of the block, element labels included.
+    let scoped;
+    let env = match &app {
+        Some(a) if env.app_id.is_none() => {
+            scoped = Env {
+                app_id: Some(a.clone()),
+                ..env.clone()
+            };
+            &scoped
+        }
+        _ => env,
+    };
     let app = app.as_deref();
     Some(match b {
         LayoutBlock::Section {
@@ -264,7 +291,10 @@ fn block<'e>(
             let key = format!(
                 "{}#actions{}",
                 env.surface.prefix(),
-                meta.block_id.clone().unwrap_or_default()
+                meta.block_id
+                    .clone()
+                    .filter(|b| !b.is_empty())
+                    .unwrap_or_else(|| format!("#{index}"))
             );
             let expanded = env.kind == Surface::Banner || env.scratch().expanded.contains(&key);
             let shown = if expanded {
@@ -384,13 +414,33 @@ pub fn square_image(env: &Env<'_>, url: &str, alt: &str, size: f32) -> Element<'
     }
 }
 
+/// An image cropped to fill `size` (preview thumbs).
+fn cover_image(env: &Env<'_>, url: &str, size: (f32, f32)) -> Element<'static, UiKitMsg> {
+    let loaded = image_url(env, url).and_then(|u| env.rc.images.get(env.rc.server_id, &u));
+    match loaded {
+        Some(l) => image(l.handle.clone())
+            .width(size.0)
+            .height(size.1)
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(RADIUS_SM)
+            .into(),
+        None => alt_box("", size.0, size.1),
+    }
+}
+
 fn image_url(env: &Env<'_>, url: &str) -> Option<String> {
+    resolve_image_url(env.rc.server, url)
+}
+
+/// The URL an image of a block is loaded from: relative URLs resolve against
+/// the server, others must be http(s).
+pub fn resolve_image_url(server: &rocketchat::ServerUrl, url: &str) -> Option<String> {
     let url = url.trim();
     if url.is_empty() {
         return None;
     }
     if url.starts_with('/') && !url.starts_with("//") {
-        return Some(env.rc.server.absolute(url));
+        return Some(server.absolute(url));
     }
     safe_url(url).filter(|u| u.starts_with("http"))
 }
@@ -416,8 +466,8 @@ fn alt_box(alt: &str, w: f32, h: f32) -> Element<'static, UiKitMsg> {
     .into()
 }
 
-/// Every image URL a block list may show (for row cache keys).
-pub fn image_urls(blocks: &[LayoutBlock]) -> Vec<String> {
+/// Every image URL a block list may show, as loaded (for row cache keys).
+pub fn image_urls(server: &rocketchat::ServerUrl, blocks: &[LayoutBlock]) -> Vec<String> {
     fn el_url(e: &El) -> Option<String> {
         match e {
             El::Image { image_url, .. } => Some(image_url.clone()),
@@ -440,7 +490,9 @@ pub fn image_urls(blocks: &[LayoutBlock]) -> Vec<String> {
             _ => {}
         }
     }
-    out
+    out.iter()
+        .filter_map(|u| resolve_image_url(server, u))
+        .collect()
 }
 
 /// One element in context `ctx` (`None` for elements the slot does not
@@ -466,8 +518,8 @@ fn context_row(
         .filter(|e| e.allowed_in(Slot::Context))
         .map(|e| e.inherited(meta))
         .collect();
-    // Text items flow as one paragraph (images stay in front) unless a plain
-    // item contains characters the markdown subset would interpret.
+    // `mrkdwn` items flow as one paragraph (images stay in front); a
+    // `plain_text` item is never parsed, so then each item stands alone.
     let texts: Vec<&TextObject> = items
         .iter()
         .filter_map(|e| match e {
@@ -475,10 +527,7 @@ fn context_row(
             _ => None,
         })
         .collect();
-    let joinable = texts.len() > 1
-        && texts.iter().all(|t| {
-            t.is_mrkdwn() || !tx::string(env, t, app).contains(['*', '_', '~', '`', '[', '<'])
-        });
+    let joinable = texts.len() > 1 && texts.iter().all(|t| t.is_mrkdwn());
     let mut r = row![].spacing(SPACE_2).align_y(Alignment::Center);
     for e in &items {
         if let El::Image {
@@ -555,14 +604,11 @@ fn preview(env: &Env<'_>, p: &PreviewBlock, app: Option<&str>) -> Element<'stati
     {
         col = col.push(block_image(env, &pv.url, "", IMAGE_MAX));
     }
-    let body: Element<'static, UiKitMsg> = match &p.thumb {
-        Some(th) => row![square_image(env, &th.url, "", 72.0), info]
-            .spacing(SPACE_3)
-            .align_y(Alignment::Center)
-            .into(),
-        None => info.into(),
-    };
-    col = col.push(body);
+    // The web shows the thumb as a 368x192 cover above the text.
+    if let Some(th) = &p.thumb {
+        col = col.push(cover_image(env, &th.url, THUMB_SIZE));
+    }
+    col = col.push(info);
     container(col)
         .padding(SPACE_3)
         .max_width(368)
@@ -731,9 +777,18 @@ fn info_card<'e>(
             },
         ));
     }
-    container(col)
-        .max_width(345)
-        .clip(true)
-        .style(card_style(false))
-        .into()
+    // Rows sit inside the 1 px border so their backgrounds do not cover it.
+    container(
+        container(col)
+            .clip(true)
+            .style(|_: &Theme| container::Style {
+                border: border::rounded(RADIUS_MD - 1.0),
+                ..container::Style::default()
+            }),
+    )
+    .padding(1)
+    .max_width(345)
+    .clip(true)
+    .style(card_style(false))
+    .into()
 }
