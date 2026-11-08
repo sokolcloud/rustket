@@ -6,10 +6,10 @@ mod badge;
 mod button;
 mod ellipsis;
 mod feedback;
-mod guard;
 mod header;
 mod hover_box;
 mod input;
+mod keyed_list;
 mod layer;
 mod menu;
 mod message;
@@ -32,10 +32,10 @@ pub use button::{
 };
 pub use ellipsis::{Ellipsis, ellipsis, sanitize_bidi};
 pub use feedback::{BannerKind, banner, status_strip};
-pub use guard::guard;
 pub use header::{header_bar, header_gap};
 pub use hover_box::{HoverBox, hover_box};
 pub use input::{TextField, text_field};
+pub use keyed_list::{KeyedColumn, keyed_list, keyed_list_keys};
 pub use menu::{MENU_WIDTH, MenuEntry, MenuItem, context_menu, menu_panel, popover_menu};
 pub use message::{
     GUTTER, MESSAGE_AVATAR, MessageRowProps, discussion_summary, message_row, message_toolbar,

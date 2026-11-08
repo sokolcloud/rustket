@@ -10,9 +10,7 @@ use std::time::Duration;
 
 use chrono::{Local, Utc};
 use iced::widget::scrollable::Viewport;
-use iced::widget::{
-    button, checkbox, column, container, keyed_column, row, scrollable, sensor, space, text,
-};
+use iced::widget::{button, checkbox, column, container, row, scrollable, sensor, space, text};
 use iced::{Alignment, Element, Length, Padding, Subscription, Task};
 use rocketchat::models::{Message as RcMessage, Paginated};
 use rust_i18n::t;
@@ -22,7 +20,7 @@ use rustket_core::workspace::Changes;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
-use rustket_ui::widget::{divider, guard, icon_button_with, spinner};
+use rustket_ui::widget::{divider, icon_button_with, keyed_list, spinner};
 
 use super::common;
 use crate::error::Res;
@@ -685,7 +683,7 @@ impl Thread {
             thread_unread: false,
             selected: selected == Some(m.id.as_str()),
         };
-        let mut col = keyed_column::<u64, Msg, _, _>([])
+        let mut col = keyed_list::<u64, Msg, _, _>()
             .width(Length::Fill)
             .padding(Padding::from([SPACE_2, 0.0]));
         let parent_row = list::PlannedRow {
@@ -696,9 +694,7 @@ impl Thread {
         };
         col = col.push(
             list::id_key(&parent.message.id),
-            guard(
-                list::row(env, &common_, &parent_row, flags(&parent.message, false)).map(Msg::Item),
-            ),
+            list::row(env, &common_, &parent_row, flags(&parent.message, false)).map(Msg::Item),
         );
         let count = parent.message.tcount.unwrap_or(0).max(
             tl.iter()
@@ -709,12 +705,10 @@ impl Thread {
         );
         col = col.push(
             list::TOP_KEY,
-            guard(
-                sensor(self.replies_head(tl, count))
-                    .key((tl.len(), self.follow.window, tl.pagination.loading_before))
-                    .anticipate(list::TOP_THRESHOLD)
-                    .on_show(|_| Msg::ReachedTop),
-            ),
+            sensor(self.replies_head(tl, count))
+                .key((tl.len(), self.follow.window, tl.pagination.loading_before))
+                .anticipate(list::TOP_THRESHOLD)
+                .on_show(|_| Msg::ReachedTop),
         );
         let mut plan = list::plan(
             tl,
@@ -744,7 +738,7 @@ impl Thread {
             } else {
                 el
             };
-            col = col.push(list::id_key(&m.id), guard(el));
+            col = col.push(list::id_key(&m.id), el);
         }
         let list = scrollable(col)
             .id(self.scroll_id.clone())

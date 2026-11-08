@@ -22,9 +22,7 @@ use std::time::Duration;
 
 use chrono::Local;
 use iced::widget::scrollable::{RelativeOffset, Viewport};
-use iced::widget::{
-    button, column, container, keyed_column, row as hrow, scrollable, sensor, space, text,
-};
+use iced::widget::{button, column, container, row as hrow, scrollable, sensor, space, text};
 use iced::{Alignment, Element, Length, Padding, Subscription, Task};
 use rocketchat::RcDate;
 use rust_i18n::t;
@@ -32,7 +30,7 @@ use rustket_core::workspace::Changes;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_2, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
-use rustket_ui::widget::{BannerKind, empty_state, guard, loading_placeholder, spinner};
+use rustket_ui::widget::{BannerKind, empty_state, keyed_list, loading_placeholder, spinner};
 
 use super::render::system;
 use super::{Action, Effect, UpdateCtx, ViewCtx};
@@ -347,7 +345,7 @@ impl Timeline {
 
         let tunread = ws.subscription(&self.rid).and_then(|s| s.tunread.as_ref());
         let common = list::Common::new(ctx, &self.rid);
-        let mut col = keyed_column::<u64, Message, _, _>([])
+        let mut col = keyed_list::<u64, Message, _, _>()
             .width(Length::Fill)
             .padding(Padding::from([SPACE_2, 0.0]));
         // Near the top (also when nothing scrolls yet): build more rows or
@@ -359,12 +357,10 @@ impl Timeline {
         };
         col = col.push(
             list::TOP_KEY,
-            guard(
-                sensor(top)
-                    .key((tl.len(), self.follow.window, tl.pagination.loading_before))
-                    .anticipate(list::TOP_THRESHOLD)
-                    .on_show(|_| Message::ReachedTop),
-            ),
+            sensor(top)
+                .key((tl.len(), self.follow.window, tl.pagination.loading_before))
+                .anticipate(list::TOP_THRESHOLD)
+                .on_show(|_| Message::ReachedTop),
         );
         let selected = self.selected();
         for r in &plan.rows {
@@ -381,7 +377,7 @@ impl Timeline {
             } else {
                 el
             };
-            col = col.push(list::id_key(&m.id), guard(el.map(Message::Item)));
+            col = col.push(list::id_key(&m.id), el.map(Message::Item));
         }
         let new_below = plan.new_below;
         let list = scrollable(col)

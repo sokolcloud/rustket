@@ -654,3 +654,98 @@ fn switching_threads_and_selection_rebuild_the_view_without_panicking() {
     tree.diff(other.view(&ctx).as_widget());
     tree.diff(t.view(&ctx).as_widget());
 }
+
+fn view_ctx(env: &Env) -> ViewCtx<'_> {
+    ViewCtx {
+        server_id: &env.sid,
+        server: &env.server,
+        rid: "R1",
+        workspace: &env.ws,
+        images: &env.images,
+        prefs: &env.prefs,
+        connected: true,
+        panel: None,
+        now: std::time::Instant::now(),
+    }
+}
+
+/// The trees of the keyed message list somewhere in `tree`, by row key (the
+/// address of each row's widget state).
+fn row_states(tree: &iced::advanced::widget::Tree) -> Option<Vec<(u64, usize)>> {
+    use iced::advanced::widget::tree::State;
+    if let Some(keys) = rustket_ui::widget::keyed_list_keys::<u64>(tree) {
+        let rows = keys.iter().zip(&tree.children).map(|(k, t)| {
+            let addr = match &t.state {
+                State::Some(s) => (&raw const **s).cast::<()>() as usize,
+                State::None => 0,
+            };
+            (*k, addr)
+        });
+        return Some(rows.collect());
+    }
+    tree.children.iter().find_map(row_states)
+}
+
+fn tags_match(tree: &iced::advanced::widget::Tree, fresh: &iced::advanced::widget::Tree) -> bool {
+    tree.tag == fresh.tag
+        && tree.children.len() == fresh.children.len()
+        && tree
+            .children
+            .iter()
+            .zip(&fresh.children)
+            .all(|(a, b)| tags_match(a, b))
+}
+
+/// Diffs `view` over `tree` and checks the result is what a fresh tree of
+/// `view` would be (no row diffed against another widget's state) and that
+/// every row that was already there kept its own tree.
+fn diff_keeps_rows<M>(tree: &mut iced::advanced::widget::Tree, view: &Element<'_, M>) {
+    use iced::advanced::widget::Tree;
+    let before = row_states(tree).unwrap();
+    tree.diff(view.as_widget());
+    assert!(tags_match(tree, &Tree::new(view.as_widget())));
+    let after = row_states(tree).unwrap();
+    assert!(after.len() > before.len(), "{before:?} -> {after:?}");
+    for (key, addr) in &before {
+        let kept = after.iter().find(|(k, _)| k == key).map(|(_, a)| a);
+        assert_eq!(kept, Some(addr), "row {key:x}: {before:?} -> {after:?}");
+    }
+}
+
+/// A new message used to make iced's keyed column diff the new rows against
+/// their neighbours' trees: the panic of a `lazy` row meeting the sensor's
+/// state, and (without the panic) widget state such as an open context menu
+/// moving to another message.
+#[test]
+fn new_room_message_keeps_every_row_tree() {
+    use iced::advanced::widget::Tree;
+    let mut env = Env::new(None);
+    env.ws.apply_message(message("a", "bob", T0, None));
+    env.ws.apply_message(message("b", "bob", T0 + 1, None));
+    let tl = crate::room::timeline::Timeline::new("R1");
+    let mut tree = Tree::new(tl.view(&view_ctx(&env)).as_widget());
+    env.ws.apply_message(message("c", "alice", T0 + 2, None));
+    diff_keeps_rows(&mut tree, &tl.view(&view_ctx(&env)));
+    env.ws.apply_message(message("d", "carol", T0 + 3, None));
+    diff_keeps_rows(&mut tree, &tl.view(&view_ctx(&env)));
+}
+
+#[test]
+fn new_thread_reply_keeps_every_row_tree() {
+    use iced::advanced::widget::Tree;
+    let mut env = Env::new(None);
+    let mut p = message("P", "bob", T0, None);
+    p.tcount = Some(0);
+    env.ws.apply_message(p);
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let ticket = t.ticket.unwrap();
+    let _ = t.update(Msg::Page(ticket, Ok(page(vec![], 0, 0))), &mut env.ctx());
+    let mut tree = Tree::new(t.view(&view_ctx(&env)).as_widget());
+    // The first reply, then another one.
+    for (i, id) in [(1, "r1"), (2, "r2")] {
+        env.ws
+            .apply_message(message(id, "alice", T0 + i, Some("P")));
+        diff_keeps_rows(&mut tree, &t.view(&view_ctx(&env)));
+    }
+}
