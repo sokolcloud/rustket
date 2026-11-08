@@ -604,3 +604,53 @@ fn expanded_state_carries_over_to_the_next_thread() {
     p.open(Kind::Thread("Q".into()));
     assert!(p.expanded());
 }
+
+/// User report: opening another thread while one was shown made the keyed
+/// column's search (only one changed run, first key changed) diff the new
+/// parent's `lazy` row against the top sensor's tree: "Downcast widget state".
+#[test]
+fn switching_threads_and_selection_rebuild_the_view_without_panicking() {
+    use iced::advanced::widget::Tree;
+
+    fn loaded(env: &mut Env, tmid: &str, replies: &[&str]) -> Thread {
+        let mut p = message(tmid, "bob", T0, None);
+        p.tcount = Some(replies.len() as u64);
+        env.ws.apply_message(p);
+        let mut t = Thread::new("R1", tmid);
+        let _ = t.activate(&mut env.ctx());
+        let ticket = t.ticket.unwrap();
+        let items = (0i64..)
+            .zip(replies)
+            .map(|(i, id)| message(id, "alice", T0 + 10 - i, Some(tmid)))
+            .collect();
+        let total = replies.len() as u64;
+        let _ = t.update(Msg::Page(ticket, Ok(page(items, 0, total))), &mut env.ctx());
+        t
+    }
+
+    let mut env = Env::new(None);
+    let mut t = loaded(&mut env, "P", &["r3", "r2", "r1"]);
+    let other = loaded(&mut env, "Q", &["q2", "q1"]);
+    let ctx = ViewCtx {
+        server_id: &env.sid,
+        server: &env.server,
+        rid: "R1",
+        workspace: &env.ws,
+        images: &env.images,
+        prefs: &env.prefs,
+        connected: true,
+        panel: None,
+        now: std::time::Instant::now(),
+    };
+    let mut tree = Tree::new(t.view(&ctx).as_widget());
+    for sel in [Some("r2"), None, Some("P"), Some("r3"), Some("r1"), None] {
+        t.selected = sel.map(|m| (m.to_string(), 1));
+        let view = t.view(&ctx);
+        tree.diff(view.as_widget());
+        let again = t.view(&ctx);
+        tree.diff(again.as_widget());
+    }
+    // Another thread in the same panel (first key changes, fewer rows).
+    tree.diff(other.view(&ctx).as_widget());
+    tree.diff(t.view(&ctx).as_widget());
+}

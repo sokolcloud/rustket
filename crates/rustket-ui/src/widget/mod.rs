@@ -6,6 +6,7 @@ mod badge;
 mod button;
 mod ellipsis;
 mod feedback;
+mod guard;
 mod header;
 mod hover_box;
 mod input;
@@ -31,6 +32,7 @@ pub use button::{
 };
 pub use ellipsis::{Ellipsis, ellipsis, sanitize_bidi};
 pub use feedback::{BannerKind, banner, status_strip};
+pub use guard::guard;
 pub use header::{header_bar, header_gap};
 pub use hover_box::{HoverBox, hover_box};
 pub use input::{TextField, text_field};

@@ -32,7 +32,7 @@ use rustket_core::workspace::Changes;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_2, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
-use rustket_ui::widget::{BannerKind, empty_state, loading_placeholder, spinner};
+use rustket_ui::widget::{BannerKind, empty_state, guard, loading_placeholder, spinner};
 
 use super::render::system;
 use super::{Action, Effect, UpdateCtx, ViewCtx};
@@ -359,10 +359,12 @@ impl Timeline {
         };
         col = col.push(
             list::TOP_KEY,
-            sensor(top)
-                .key((tl.len(), self.follow.window, tl.pagination.loading_before))
-                .anticipate(list::TOP_THRESHOLD)
-                .on_show(|_| Message::ReachedTop),
+            guard(
+                sensor(top)
+                    .key((tl.len(), self.follow.window, tl.pagination.loading_before))
+                    .anticipate(list::TOP_THRESHOLD)
+                    .on_show(|_| Message::ReachedTop),
+            ),
         );
         let selected = self.selected();
         for r in &plan.rows {
@@ -379,7 +381,7 @@ impl Timeline {
             } else {
                 el
             };
-            col = col.push(list::id_key(&m.id), el.map(Message::Item));
+            col = col.push(list::id_key(&m.id), guard(el.map(Message::Item)));
         }
         let new_below = plan.new_below;
         let list = scrollable(col)

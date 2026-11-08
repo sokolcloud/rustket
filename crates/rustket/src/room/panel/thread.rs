@@ -22,7 +22,7 @@ use rustket_core::workspace::Changes;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
-use rustket_ui::widget::{divider, icon_button_with, spinner};
+use rustket_ui::widget::{divider, guard, icon_button_with, spinner};
 
 use super::common;
 use crate::error::Res;
@@ -696,7 +696,9 @@ impl Thread {
         };
         col = col.push(
             list::id_key(&parent.message.id),
-            list::row(env, &common_, &parent_row, flags(&parent.message, false)).map(Msg::Item),
+            guard(
+                list::row(env, &common_, &parent_row, flags(&parent.message, false)).map(Msg::Item),
+            ),
         );
         let count = parent.message.tcount.unwrap_or(0).max(
             tl.iter()
@@ -707,10 +709,12 @@ impl Thread {
         );
         col = col.push(
             list::TOP_KEY,
-            sensor(self.replies_head(tl, count))
-                .key((tl.len(), self.follow.window, tl.pagination.loading_before))
-                .anticipate(list::TOP_THRESHOLD)
-                .on_show(|_| Msg::ReachedTop),
+            guard(
+                sensor(self.replies_head(tl, count))
+                    .key((tl.len(), self.follow.window, tl.pagination.loading_before))
+                    .anticipate(list::TOP_THRESHOLD)
+                    .on_show(|_| Msg::ReachedTop),
+            ),
         );
         let mut plan = list::plan(
             tl,
@@ -740,7 +744,7 @@ impl Thread {
             } else {
                 el
             };
-            col = col.push(list::id_key(&m.id), el);
+            col = col.push(list::id_key(&m.id), guard(el));
         }
         let list = scrollable(col)
             .id(self.scroll_id.clone())
