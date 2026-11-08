@@ -527,10 +527,22 @@ room_panel.link_days:
 room_panel.link_no_limit:
   en: "No limit"
   ru: "Без ограничений"
-room_panel.link_expires_or_uses:
+room_panel.link_expires_or_uses_one:
+  en: "Expires %{time} or after %{count} more use"
+  ru: "Истекает %{time} или после ещё %{count} использования"
+room_panel.link_expires_or_uses_few:
   en: "Expires %{time} or after %{count} more uses"
   ru: "Истекает %{time} или после ещё %{count} использований"
-room_panel.link_uses_left:
+room_panel.link_expires_or_uses_many:
+  en: "Expires %{time} or after %{count} more uses"
+  ru: "Истекает %{time} или после ещё %{count} использований"
+room_panel.link_uses_left_one:
+  en: "Expires after %{count} more use"
+  ru: "Истекает после ещё %{count} использования"
+room_panel.link_uses_left_few:
+  en: "Expires after %{count} more uses"
+  ru: "Истекает после ещё %{count} использований"
+room_panel.link_uses_left_many:
   en: "Expires after %{count} more uses"
   ru: "Истекает после ещё %{count} использований"
 room_panel.link_never_expires:

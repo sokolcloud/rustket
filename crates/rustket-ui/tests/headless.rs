@@ -489,6 +489,78 @@ fn popover_does_not_click_through() {
     assert!(msgs.contains(&M::Dismiss), "{msgs:?}");
 }
 
+/// Arrows move a highlight over the enabled items (skipping headers,
+/// separators and disabled items, wrapping), Enter selects it.
+#[test]
+fn popover_menu_works_from_the_keyboard() {
+    use keyboard::key::Named;
+    let entries = vec![
+        w::MenuEntry::Header("Group".into()),
+        w::MenuItem::new("One", M::Close(1)).into(),
+        w::MenuItem::new("Disabled", M::Close(2))
+            .disabled(true)
+            .into(),
+        w::MenuEntry::Separator,
+        w::MenuItem::new("Three", M::Close(3)).into(),
+    ];
+    let mut r = renderer();
+    let view = |entries: &[w::MenuEntry<M>]| -> Element<'_, M> {
+        column![w::popover_menu(
+            button(text("T")).width(30).height(30).on_press(M::Trig),
+            entries,
+            true,
+            M::Dismiss,
+            w::Placement::BelowStart,
+        )]
+        .into()
+    };
+    let mut ui = UserInterface::build(view(&entries), SIZE, Cache::default(), &mut r);
+    let away = Point::new(700.0, 500.0);
+    let (msgs, _) = step(&mut ui, &mut r, &[key(Named::Enter, false)], away);
+    assert!(msgs.is_empty(), "nothing highlighted yet: {msgs:?}");
+    let (msgs, _) = step(&mut ui, &mut r, &[key(Named::ArrowDown, false)], away);
+    assert!(msgs.is_empty());
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[key(Named::ArrowDown, false), key(Named::Enter, false)],
+        away,
+    );
+    assert_eq!(msgs, vec![M::Close(3)], "the disabled item is skipped");
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[key(Named::ArrowDown, false), key(Named::Enter, false)],
+        away,
+    );
+    assert_eq!(msgs, vec![M::Close(1)], "wraps around");
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[key(Named::ArrowUp, false), key(Named::Enter, false)],
+        away,
+    );
+    assert_eq!(msgs, vec![M::Close(3)]);
+}
+
+/// Menus grow with long (e.g. Russian) labels instead of cutting them.
+#[test]
+fn menu_width_fits_long_labels() {
+    let short: Vec<w::MenuEntry<M>> = vec![w::MenuItem::new("Copy", M::Item).into()];
+    assert_eq!(w::menu_width(&short), w::MENU_WIDTH);
+    let long: Vec<w::MenuEntry<M>> = vec![
+        w::MenuItem::new("Copy", M::Item).into(),
+        w::MenuItem::new("Преобразовать в команду", M::Item).into(),
+    ];
+    let width = w::menu_width(&long);
+    assert!(
+        width > w::MENU_WIDTH && width <= w::MENU_MAX_WIDTH,
+        "{width}"
+    );
+    let huge: Vec<w::MenuEntry<M>> = vec![w::MenuItem::new("x".repeat(200), M::Item).into()];
+    assert_eq!(w::menu_width(&huge), w::MENU_MAX_WIDTH);
+}
+
 #[test]
 fn split_handle_drag_does_not_scroll_sidebar() {
     let mut r = renderer();

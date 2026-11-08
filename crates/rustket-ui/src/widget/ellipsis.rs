@@ -145,6 +145,13 @@ fn shape(text: &str, size: f32, font: Font) -> Paragraph {
     paragraph
 }
 
+/// Width of `text` on one line (normalized like the label, at most
+/// [`MAX_GRAPHEMES`] graphemes), e.g. to size a popup to its content.
+pub(crate) fn natural_width(text: &str, size: f32, font: Font) -> f32 {
+    let (text, _) = normalize(text);
+    shape(&text, size, font).min_width()
+}
+
 /// Logical layout of shaped text: grapheme start offsets, cumulative advance of
 /// the first `n` graphemes (from the shaped glyph clusters, so it is independent
 /// of visual order), and whether visual order equals logical order.

@@ -146,3 +146,61 @@ pub fn assert_first_kept<M>(
         );
     }
 }
+
+/// Lays `view` out at 1280x800, focuses `focused` (when given), runs the
+/// widget operations of `task` on it (`focus`, `focus_next`…) and returns the
+/// ids of the focused widgets afterwards.
+pub fn focus_after<M: Send + 'static>(
+    view: Element<'_, M>,
+    focused: Option<&'static str>,
+    task: iced::Task<M>,
+) -> Vec<Option<iced::advanced::widget::Id>> {
+    use iced::advanced::widget::{Id, Operation};
+    use iced::futures::{FutureExt as _, StreamExt as _};
+    use iced::{Pixels, Rectangle, Size};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+
+    struct Ids(Vec<Option<Id>>);
+    impl Operation for Ids {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn focusable(&mut self, id: Option<&Id>, _: Rectangle, state: &mut dyn Focusable) {
+            if state.is_focused() {
+                self.0.push(id.cloned());
+            }
+        }
+    }
+
+    let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+        rustket_ui::theme::DEFAULT_FONT,
+        Pixels(rustket_ui::theme::TEXT_BODY),
+    ));
+    let mut ui = UserInterface::build(
+        view,
+        Size::new(1280.0, 800.0),
+        Cache::default(),
+        &mut renderer,
+    );
+    if let Some(id) = focused {
+        let mut op = iced::advanced::widget::operation::focusable::focus::<()>(Id::new(id));
+        ui.operate(&renderer, &mut op);
+    }
+    if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+        while let Some(Some(action)) = stream.next().now_or_never() {
+            if let iced_runtime::Action::Widget(op) = action {
+                // Like the runtime: run chained stages (`focus_next` counts first).
+                let mut current = Some(op);
+                while let Some(mut op) = current.take() {
+                    ui.operate(&renderer, op.as_mut());
+                    if let iced::advanced::widget::operation::Outcome::Chain(next) = op.finish() {
+                        current = Some(next);
+                    }
+                }
+            }
+        }
+    }
+    let mut ids = Ids(Vec::new());
+    ui.operate(&renderer, &mut ids);
+    ids.0
+}

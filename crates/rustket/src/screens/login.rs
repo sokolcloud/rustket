@@ -173,12 +173,19 @@ pub async fn probe(
     }
 }
 
+/// Widget ids of the sign-in form and the 2FA code field.
+pub const USER_ID: &str = "login-user";
+pub const PASSWORD_ID: &str = "login-password";
+pub const CODE_ID: &str = "login-2fa";
+
 #[derive(Clone)]
 pub enum Message {
     MetaLoaded(Res<(ServerInfo, LoginMeta)>),
     RetryMeta,
     User(String),
     Password(String),
+    /// Enter in the user field: sign in, or move to an empty password field.
+    SubmitUser,
     Submit,
     LoginDone(Res<LoginResult>),
     Code(String),
@@ -209,6 +216,7 @@ impl std::fmt::Debug for Message {
             Self::RetryMeta => "RetryMeta",
             Self::User(u) => return write!(f, "User({u:?})"),
             Self::Password(_) => "Password(<redacted>)",
+            Self::SubmitUser => "SubmitUser",
             Self::Submit => "Submit",
             Self::LoginDone(r) => return write!(f, "LoginDone(ok={})", r.is_ok()),
             Self::Code(_) => "Code(<redacted>)",
@@ -475,6 +483,10 @@ impl Login {
             }
             Message::User(s) => self.user = s,
             Message::Password(s) => self.password = s,
+            Message::SubmitUser if self.password.is_empty() && !self.user.trim().is_empty() => {
+                return (iced::widget::operation::focus(PASSWORD_ID), Out::None);
+            }
+            Message::SubmitUser => return self.update(Message::Submit),
             Message::Submit => {
                 if self.busy || self.user.trim().is_empty() || self.password.is_empty() {
                     return none;
@@ -513,17 +525,20 @@ impl Login {
                                 error: None,
                                 resent: false,
                             });
+                            return (iced::widget::operation::focus(CODE_ID), Out::None);
                         }
                         RcError::TwoFactorInvalid(_) if self.two_factor.is_some() => {
                             if let Some(tf) = self.two_factor.as_mut() {
                                 tf.busy = false;
                                 tf.error = Some(f.user_text());
                             }
+                            return (iced::widget::operation::focus(CODE_ID), Out::None);
                         }
                         _ => {
                             if let Some(tf) = self.two_factor.as_mut() {
                                 tf.busy = false;
                                 tf.error = Some(f.user_text());
+                                return (iced::widget::operation::focus(CODE_ID), Out::None);
                             } else if let Some(p) = self.pending.as_mut() {
                                 p.poll = None;
                                 p.error = Some(f.user_text());
@@ -576,6 +591,8 @@ impl Login {
                         Ok(()) => tf.resent = true,
                         Err(e) => tf.error = Some(e.user_text()),
                     }
+                    // The resend button took the focus from the code field.
+                    return (iced::widget::operation::focus(CODE_ID), Out::None);
                 }
             }
             Message::CancelCode => {
@@ -793,13 +810,13 @@ impl Login {
                 .push(
                     text_field(user_label, &self.user, Message::User)
                         .placeholder(user_ph)
-                        .id("login-user")
-                        .on_submit(Message::Submit),
+                        .id(USER_ID)
+                        .on_submit(Message::SubmitUser),
                 )
                 .push(
                     text_field(t!("login.password"), &self.password, Message::Password)
                         .password(true)
-                        .id("login-password")
+                        .id(PASSWORD_ID)
                         .on_submit(Message::Submit),
                 )
                 .push(
@@ -961,7 +978,7 @@ impl Login {
                 } else {
                     "123456".to_owned()
                 })
-                .id("login-2fa")
+                .id(CODE_ID)
                 .error(tf.error.clone())
                 .on_submit(Message::SubmitCode),
         );
@@ -1179,6 +1196,71 @@ mod tests {
         )))));
         assert!(l.error.is_some());
         assert_kept(&mut tree, &l.view(), text_input_tag(), "error shown");
+    }
+
+    fn two_factor_challenge() -> Message {
+        let ch = rocketchat::TwoFactorChallenge::from_details(Some(
+            &serde_json::json!({"method": "email", "emailOrUsername": "carol"}),
+        ));
+        Message::LoginDone(Err(Failure::from(RcError::TwoFactorRequired(ch))))
+    }
+
+    /// The 2FA dialog focuses its code field (the modal swallows keys that
+    /// reach no input), also after a wrong code or a resend.
+    #[test]
+    fn two_factor_dialog_focuses_the_code_field() {
+        use crate::tree_probe::focus_after;
+        let code = Some(iced::advanced::widget::Id::new(CODE_ID));
+        let mut l = login_with(vec![]);
+        l.user = "carol".into();
+        let (task, _) = l.update(two_factor_challenge());
+        assert_eq!(
+            focus_after(l.overlay().unwrap(), None, task),
+            std::slice::from_ref(&code)
+        );
+        let ch = rocketchat::TwoFactorChallenge::from_details(None);
+        let (task, _) = l.update(Message::LoginDone(Err(Failure::from(
+            RcError::TwoFactorInvalid(ch),
+        ))));
+        assert_eq!(
+            focus_after(l.overlay().unwrap(), None, task),
+            std::slice::from_ref(&code)
+        );
+        let (task, _) = l.update(Message::CodeResent(Ok(())));
+        assert_eq!(focus_after(l.overlay().unwrap(), None, task), [code]);
+    }
+
+    /// Enter in the user field moves to an empty password field; with a
+    /// password it signs in.
+    #[test]
+    fn enter_in_user_field_moves_to_password() {
+        use crate::tree_probe::focus_after;
+        let mut l = login_with(vec![]);
+        l.user = "alice".into();
+        let (task, _) = l.update(Message::SubmitUser);
+        assert_eq!(
+            focus_after(l.view(), Some(USER_ID), task),
+            [Some(iced::advanced::widget::Id::new(PASSWORD_ID))]
+        );
+        assert!(!l.busy);
+        l.password = "pw".into();
+        let _ = l.update(Message::SubmitUser);
+        assert!(l.busy, "Enter with a password signs in");
+    }
+
+    /// The app answers an unhandled Tab with `focus_next`: user -> password.
+    #[test]
+    fn tab_moves_from_user_to_password() {
+        use crate::tree_probe::focus_after;
+        let l = login_with(vec![]);
+        assert_eq!(
+            focus_after(
+                l.view(),
+                Some(USER_ID),
+                iced::widget::operation::focus_next()
+            ),
+            [Some(iced::advanced::widget::Id::new(PASSWORD_ID))]
+        );
     }
 
     #[test]

@@ -108,9 +108,28 @@ fn quick_icon(a: QuickAction) -> (Icon, &'static str) {
     }
 }
 
+/// One omnichannel header action (inline button or header menu item).
+#[derive(Debug, Clone)]
+pub struct HeaderAction {
+    pub icon: Icon,
+    pub label: String,
+    /// `None`: disabled.
+    pub request: Option<Request>,
+    pub active: bool,
+}
+
 /// The header's omnichannel buttons: quick actions (§7.2), then the contact
 /// and canned-responses panels. Empty for other rooms.
 pub fn header_buttons<'a>(ctx: &ViewCtx<'a>) -> Vec<Element<'a, Request>> {
+    header_actions(ctx)
+        .into_iter()
+        .map(|a| icon_button_with(a.icon, a.request, a.label, a.active, 32.0))
+        .collect()
+}
+
+/// [`header_buttons`] as data, so the header can move the ones that do not
+/// fit into its menu.
+pub fn header_actions(ctx: &ViewCtx<'_>) -> Vec<HeaderAction> {
     let ws = ctx.workspace;
     let Some((room, sub)) = live(ws, ctx.rid) else {
         return Vec::new();
@@ -121,23 +140,21 @@ pub fn header_buttons<'a>(ctx: &ViewCtx<'a>) -> Vec<Element<'a, Request>> {
     for a in quick_actions(ws, &omni, room, sub, &month) {
         let (ic, key) = quick_icon(a);
         let enabled = !matches!(a, QuickAction::TranscriptPdf { enabled: false });
-        out.push(icon_button_with(
-            ic,
-            enabled.then_some(Request::Quick(a)),
-            t!(key).into_owned(),
-            false,
-            32.0,
-        ));
+        out.push(HeaderAction {
+            icon: ic,
+            label: t!(key).into_owned(),
+            request: enabled.then_some(Request::Quick(a)),
+            active: false,
+        });
     }
     let mut panel_button = |ic: Icon, key: &str, kind: PanelKind| {
         let active = ctx.panel == Some(&panel::Kind::Omnichannel(kind.clone()));
-        out.push(icon_button_with(
-            ic,
-            Some(Request::Panel(kind)),
-            t!(key).into_owned(),
+        out.push(HeaderAction {
+            icon: ic,
+            label: t!(key).into_owned(),
+            request: Some(Request::Panel(kind)),
             active,
-            32.0,
-        ));
+        });
     };
     if room.contact_id.is_some() && has_permission(ws, perm::VIEW_LIVECHAT_CONTACT, None) {
         panel_button(

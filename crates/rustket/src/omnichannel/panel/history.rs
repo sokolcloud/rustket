@@ -23,6 +23,15 @@ use crate::room::{Action, Effect, UpdateCtx, ViewCtx, panel};
 
 const PAGE: u64 = 25;
 
+/// "1 message" / "5 messages".
+fn messages_count(n: u64) -> String {
+    let key = format!(
+        "omnichannel.messages_count_{}",
+        crate::room::render::plural(n)
+    );
+    t!(key, count = n).into_owned()
+}
+
 #[derive(Debug, Clone)]
 pub enum Msg {
     Chats(u64, Res<Paginated<Room>>),
@@ -187,7 +196,7 @@ impl HistoryPanel {
                 .size(TEXT_CAPTION)
                 .style(style::text_secondary),
             text(agent).size(TEXT_CAPTION).style(style::text_secondary),
-            text(t!("omnichannel.messages_count", count = r.msgs.unwrap_or(0)).into_owned())
+            text(messages_count(r.msgs.unwrap_or(0)))
                 .size(TEXT_CAPTION)
                 .style(style::text_secondary),
         ]

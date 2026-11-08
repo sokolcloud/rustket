@@ -6,6 +6,9 @@
 //! RUSTKET_TEST_SERVER=http://localhost:3000 cargo run -p rustket --example snapshot -- <out-dir>
 //! ```
 //!
+//! `LC_ALL=ru_RU.UTF-8` renders the Russian UI, `RUSTKET_SNAPSHOT_WIDTH=1024` a
+//! narrow window.
+//!
 //! Creates throwaway users (one with e-mail 2FA) and two throwaway channels,
 //! posts a few messages and a DM, then renders: add-server, login (with the
 //! Keycloak button), 2FA dialog, pending browser login, token-link
@@ -36,6 +39,15 @@ mod snapshot_panel;
 use snapshot_panel::panel_shots;
 
 const SIZE: Size = Size::new(1280.0, 800.0);
+
+/// `RUSTKET_SNAPSHOT_WIDTH` (e.g. 1024 for narrow-window checks) or 1280.
+fn shot_size() -> Size {
+    let width = std::env::var("RUSTKET_SNAPSHOT_WIDTH")
+        .ok()
+        .and_then(|w| w.parse().ok())
+        .unwrap_or(SIZE.width);
+    Size::new(width, SIZE.height)
+}
 
 struct Driver {
     app: App,
@@ -141,7 +153,7 @@ impl Driver {
     }
 
     fn shoot(&self, dir: &Path, name: &str) {
-        self.shoot_at(dir, name, SIZE);
+        self.shoot_at(dir, name, shot_size());
     }
 
     /// Like `shoot` with another window size (e.g. a whole settings page).

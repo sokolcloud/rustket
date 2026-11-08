@@ -376,7 +376,11 @@ pub fn typing_text(l: &TypingLabel) -> String {
             t!("typing.and", first = rest.join(", "), last = last).into_owned()
         }
         (list, others) => {
-            t!("typing.and_others", first = list.join(", "), count = others).into_owned()
+            let key = format!(
+                "typing.and_others_{}",
+                crate::room::render::plural(others as u64)
+            );
+            t!(key, first = list.join(", "), count = others).into_owned()
         }
     };
     let key = l.activity.i18n_key();

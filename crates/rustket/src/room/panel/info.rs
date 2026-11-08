@@ -58,6 +58,7 @@ fn texts(ws: &Workspace, rid: &str) -> Vec<(&'static str, RcMessage)> {
                     id: format!("room-info-{key}"),
                     rid: rid.to_owned(),
                     msg: v.to_owned(),
+                    md: Some(crate::e2e::markdown::parse(v)),
                     ..Default::default()
                 },
             )

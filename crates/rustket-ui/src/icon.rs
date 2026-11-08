@@ -95,6 +95,7 @@ pub const APP_ICONS: &[Icon] = &[
     Icon::Eye,
     Icon::EyeOff,
     Icon::Info,
+    Icon::Megaphone,
     Icon::TriangleAlert,
     Icon::RefreshCw,
     Icon::House,

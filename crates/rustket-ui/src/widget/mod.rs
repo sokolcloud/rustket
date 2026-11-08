@@ -36,7 +36,10 @@ pub use header::{header_bar, header_gap};
 pub use hover_box::{HoverBox, hover_box};
 pub use input::{TextField, text_field};
 pub use keyed_list::{KeyedColumn, keyed_list, keyed_list_keys};
-pub use menu::{MENU_WIDTH, MenuEntry, MenuItem, context_menu, menu_panel, popover_menu};
+pub use menu::{
+    MENU_MAX_WIDTH, MENU_WIDTH, MenuEntry, MenuItem, context_menu, menu_panel, menu_width,
+    popover_menu,
+};
 pub use message::{
     GUTTER, MESSAGE_AVATAR, MessageRowProps, discussion_summary, message_row, message_toolbar,
     system_message_row, thread_summary,

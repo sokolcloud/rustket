@@ -40,8 +40,8 @@ use rustket_ui::theme::{
     TEXT_SMALL, TEXT_TITLE,
 };
 use rustket_ui::widget::{
-    ChipKind, chip, danger_button, dialog, divider, empty_state, icon_button, modal_keyed,
-    primary_button, secondary_button,
+    ChipKind, chip, danger_button, dialog, divider, ellipsis, empty_state, icon_button,
+    modal_keyed, primary_button, secondary_button,
 };
 
 use crate::component::{Action, Ctx, Effect, ViewCtx};
@@ -720,10 +720,10 @@ impl Admin {
             for v in chunk {
                 let mut head = row![
                     icon::sized(section_icon(v.section), 18.0),
-                    text(section_title(v.section))
+                    // One long word (Russian) must not run under the chip.
+                    ellipsis(section_title(v.section))
                         .size(TEXT_BODY)
                         .font(FONT_SEMIBOLD)
-                        .width(Length::Fill)
                 ]
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center);

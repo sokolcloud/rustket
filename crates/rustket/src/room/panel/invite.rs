@@ -108,13 +108,22 @@ pub fn link_caption(l: &InviteLink, expires: impl Fn(rocketchat::RcDate) -> Stri
     match (l.expires, l.uses_left()) {
         (Some(e), Some(n)) => {
             t!(
-                "room_panel.link_expires_or_uses",
+                format!(
+                    "room_panel.link_expires_or_uses_{}",
+                    crate::room::render::plural(n)
+                ),
                 time = expires(e),
                 count = n
             )
         }
         (Some(e), None) => t!("room_panel.link_expires", time = expires(e)),
-        (None, Some(n)) => t!("room_panel.link_uses_left", count = n),
+        (None, Some(n)) => t!(
+            format!(
+                "room_panel.link_uses_left_{}",
+                crate::room::render::plural(n)
+            ),
+            count = n
+        ),
         (None, None) => t!("room_panel.link_never_expires"),
     }
     .into_owned()

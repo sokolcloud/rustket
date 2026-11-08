@@ -764,7 +764,8 @@ impl Channels {
             );
         }
         let top = column![
-            tools,
+            // Long (Russian) labels wrap onto a second line.
+            tools.wrap().vertical_spacing(SPACE_2),
             common::search_field(
                 &self.query,
                 t!("teams.search_rooms").into_owned(),
