@@ -17,6 +17,7 @@ in parallel, so ownership matters.
 | omnichannel agent | `src/omnichannel/` (controller, sidebar groups, room callouts/quick actions/dialogs, panels, contact center; see `docs/omnichannel.md` §22.3a) | `omnichannel.yml` |
 | uikit agent | `src/uikit/` (block renderer, mrkdwn parser, modal, contextual bar, banners, app buttons, slash-command triggers), `src/app/uikit.rs` (glue) | `uikit.yml` |
 | e2e agent | `src/e2e/`, `src/screens/account/e2e.rs` | `e2e.yml` |
+| title bar agent | `src/workspace/titlebar.rs` (custom title bar: workspaces, gear, window controls, drag/maximize/resize logic; workspace clicks go out as `rail::Message`), `rustket-ui` `widget/window_chrome.rs`; `UiPrefs::system_title_bar` switches back to the left rail live (`App::sync_decorations`) | `titlebar.yml` |
 | shell (shared) | `src/app.rs`, `src/app/*.rs`, `src/message.rs`, `src/room/mod.rs`, `src/component.rs`, `src/session.rs`, `src/workspace/{mod,sidebar,rail}.rs`, `src/screens/{login,add_server,page}.rs` | `app.yml`, `sidebar.yml`, … |
 
 Rules:

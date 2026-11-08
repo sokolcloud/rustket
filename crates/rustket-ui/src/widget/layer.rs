@@ -4,6 +4,10 @@
 //! renderer layer) and receive events first, so a modal drawn this way covers and
 //! blocks everything, including content in scrollables and other overlays of the
 //! base.
+//!
+//! A modal covers the viewport its parent hands to `overlay()`: the whole
+//! window, or the area below the custom title bar of `window_frame`. Pointer
+//! input outside that area is left to the base.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::overlay;
@@ -254,6 +258,7 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, iced::Renderer> for Layered
             tree: &mut layer_tree[0],
             content: &mut self.layer,
             kind: &self.kind,
+            region: *viewport,
         })))
     }
 }
@@ -263,9 +268,24 @@ struct LayerOverlay<'a, 'b, Message> {
     tree: &'b mut Tree,
     content: &'b mut Element<'a, Message>,
     kind: &'b Kind<Message>,
+    /// What a modal covers (absolute): the viewport given to `overlay()`.
+    region: Rectangle,
 }
 
 impl<Message: Clone> LayerOverlay<'_, '_, Message> {
+    /// The area a modal covers within `window`.
+    fn modal_region(&self, window: Rectangle) -> Rectangle {
+        self.region.intersection(&window).unwrap_or(window)
+    }
+
+    /// Whether the pointer is off a modal's area (over the custom title bar).
+    fn outside_modal(&self, window: Rectangle, cursor: mouse::Cursor) -> bool {
+        matches!(self.kind, Kind::Modal { .. })
+            && cursor
+                .position()
+                .is_some_and(|p| !self.modal_region(window).contains(p))
+    }
+
     fn content_layout<'l>(layout: Layout<'l>) -> Option<Layout<'l>> {
         layout.children().next()
     }
@@ -295,7 +315,11 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, iced::Renderer>
         let padding = match self.kind {
             Kind::Modal { padding, .. } | Kind::Corner { padding } => *padding,
         };
-        let limits = layout::Limits::new(Size::ZERO, bounds).shrink(Padding::new(padding));
+        let area = match self.kind {
+            Kind::Modal { .. } => self.modal_region(Rectangle::with_size(bounds)),
+            Kind::Corner { .. } => Rectangle::with_size(bounds),
+        };
+        let limits = layout::Limits::new(Size::ZERO, area.size()).shrink(Padding::new(padding));
         let node = self
             .content
             .as_widget_mut()
@@ -303,8 +327,8 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, iced::Renderer>
         let size = node.size();
         let origin = match self.kind {
             Kind::Modal { .. } => Point::new(
-                ((bounds.width - size.width) / 2.0).max(0.0),
-                ((bounds.height - size.height) / 2.0).max(0.0),
+                area.x + ((area.width - size.width) / 2.0).max(0.0),
+                area.y + ((area.height - size.height) / 2.0).max(0.0),
             ),
             Kind::Corner { padding } => Point::new(
                 (bounds.width - size.width - padding).max(0.0),
@@ -342,7 +366,7 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, iced::Renderer>
             if let Kind::Modal { backdrop, .. } = self.kind {
                 renderer.fill_quad(
                     renderer::Quad {
-                        bounds: window,
+                        bounds: self.modal_region(window),
                         ..renderer::Quad::default()
                     },
                     backdrop(theme),
@@ -391,6 +415,17 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, iced::Renderer>
             return;
         };
         let content_bounds = content_layout.bounds();
+        let outside = self.outside_modal(layout.bounds(), cursor);
+        if outside
+            && matches!(
+                event,
+                Event::Mouse(mouse::Event::ButtonPressed(_))
+                    | Event::Touch(touch::Event::FingerPressed { .. })
+            )
+        {
+            // A press on the title bar: neither the dialog nor a dismissal.
+            return;
+        }
         if let Kind::Modal { on_dismiss, .. } = self.kind {
             match event {
                 // A focused input would just unfocus on Escape: dismiss right away.
@@ -460,7 +495,7 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, iced::Renderer>
                         }
                         shell.capture_event();
                     }
-                    Event::Mouse(_) | Event::Touch(_) => shell.capture_event(),
+                    Event::Mouse(_) | Event::Touch(_) if !outside => shell.capture_event(),
                     _ => {}
                 }
             }
@@ -505,6 +540,9 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, iced::Renderer>
         let Some(content_layout) = Self::content_layout(layout) else {
             return mouse::Interaction::None;
         };
+        if self.outside_modal(layout.bounds(), cursor) {
+            return mouse::Interaction::None;
+        }
         let content = self.content.as_widget().mouse_interaction(
             self.tree,
             content_layout,

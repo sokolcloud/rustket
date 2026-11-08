@@ -457,6 +457,9 @@ async fn main() {
     let work = {
         let (server, ledger) = (server.clone(), ledger.clone());
         tokio::spawn(async move {
+            if titlebar::titlebar_shots(&out).await {
+                return;
+            }
             if admin_shots::admin_shots(&server, &out).await {
                 return;
             }
@@ -912,6 +915,8 @@ mod omni;
 mod teams;
 #[path = "snapshot/timeline_fixture.rs"]
 mod timeline_fixture;
+#[path = "snapshot/titlebar.rs"]
+mod titlebar;
 #[path = "snapshot/uikit.rs"]
 mod uikit;
 /// Quick switcher, directory, create dialogs and account tabs (light + dark).

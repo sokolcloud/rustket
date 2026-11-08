@@ -45,6 +45,7 @@ pub enum Message {
     SetMinimizeToTray(bool),
     SetStartMinimized(bool),
     SetHardwareAcceleration(bool),
+    SetSystemTitleBar(bool),
     SetAutostart(bool),
     /// Whether the autostart entry exists (`None`: unknown).
     AutostartLoaded(Option<bool>),
@@ -148,6 +149,7 @@ impl Settings {
             Message::SetMinimizeToTray(v) => Self::pref(ctx, |p| p.minimize_to_tray = v),
             Message::SetStartMinimized(v) => Self::pref(ctx, |p| p.start_minimized = v),
             Message::SetHardwareAcceleration(v) => Self::pref(ctx, |p| p.hardware_acceleration = v),
+            Message::SetSystemTitleBar(v) => Self::pref(ctx, |p| p.system_title_bar = v),
             Message::SetAutostart(on) => {
                 let Some(home) = self.autostart_home.clone() else {
                     return Action::none();
@@ -325,6 +327,12 @@ impl Settings {
                     )),
                     ui.hardware_acceleration,
                     Some(Message::SetHardwareAcceleration),
+                ),
+                switch(
+                    t!("titlebar.setting").into_owned(),
+                    Some(t!("titlebar.setting_help").into_owned()),
+                    ui.system_title_bar,
+                    Some(Message::SetSystemTitleBar),
                 ),
             ],
         ));
@@ -647,6 +655,8 @@ mod tests {
             (Message::SetHardwareAcceleration(true), |c| {
                 c.hardware_acceleration
             }),
+            (Message::SetSystemTitleBar(true), |c| c.system_title_bar),
+            (Message::SetSystemTitleBar(false), |c| !c.system_title_bar),
         ] {
             let a = run(&mut s, &mut cfg, msg.clone());
             assert!(check(&cfg.ui), "{msg:?}");

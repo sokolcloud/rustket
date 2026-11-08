@@ -42,6 +42,15 @@ pub fn badge(unread: (u64, u64)) -> Option<(u32, BadgeKind)> {
     }
 }
 
+/// Tooltip text of a workspace item (rail or title bar).
+pub fn label(name: String, signed_out: bool) -> String {
+    if signed_out {
+        t!("rail.signed_out", name = name).into_owned()
+    } else {
+        name
+    }
+}
+
 /// A small "signed out" emblem on the bottom-right corner of the face, or
 /// an empty placeholder when `shown` is false.
 fn signed_out_marker(item: Element<'_, Message>, shown: bool) -> Element<'_, Message> {
@@ -74,11 +83,7 @@ fn signed_out_marker(item: Element<'_, Message>, shown: bool) -> Element<'_, Mes
 
 pub fn view<'a>(entries: Vec<RailEntry>) -> Element<'a, Message> {
     let items = entries.into_iter().map(|e| {
-        let name = if e.signed_out {
-            t!("rail.signed_out", name = e.name).into_owned()
-        } else {
-            e.name
-        };
+        let name = label(e.name, e.signed_out);
         let item = workspace_rail_item(
             RailIcon::Avatar(e.avatar),
             name,
