@@ -236,10 +236,23 @@ impl RestClient {
             "rooms.media/{}",
             crate::server_url::encode_segment(rid)
         ));
-        // No total/read timeout (the response starts only after the whole body is
-        // sent); a watchdog aborts on stalled progress or a missing response.
+        let v = self.send_upload(&url, form, None, state, start).await?;
+        field(v, "file")
+    }
+
+    /// Sends a multipart upload. No total/read timeout (the response starts only after
+    /// the whole body is sent); a watchdog aborts on stalled progress (tracked by
+    /// `state`, see [`counting_body`]) or a missing response.
+    async fn send_upload(
+        &self,
+        url: &str,
+        form: Form,
+        two_factor: Option<&crate::auth::TwoFactorCode>,
+        state: Arc<UploadState>,
+        start: Instant,
+    ) -> Result<Value> {
         let rb = self
-            .authed(self.upload_http(), Method::POST, &url, None)
+            .authed(self.upload_http(), Method::POST, url, two_factor)
             .multipart(form);
         let cfg = *self.config();
         let watchdog = async move {
@@ -263,11 +276,43 @@ impl RestClient {
                 }
             }
         };
-        let v: Value = tokio::select! {
-            r = self.send(rb) => r?,
-            e = watchdog => return Err(e),
-        };
-        field(v, "file")
+        tokio::select! {
+            r = self.send(rb) => r,
+            e = watchdog => Err(e),
+        }
+    }
+
+    /// `POST /api/v1/{path}` as multipart: text `fields` plus an optional file part
+    /// named `file_field` (admin uploads: emoji, sounds, assets, avatars).
+    pub(crate) async fn upload_form(
+        &self,
+        path: &str,
+        fields: Vec<(&'static str, String)>,
+        file: Option<(&'static str, super::admin::AdminUpload)>,
+        two_factor: Option<&crate::auth::TwoFactorCode>,
+    ) -> Result<Value> {
+        let start = Instant::now();
+        let state = Arc::new(UploadState::default());
+        let mut form = Form::new();
+        for (k, v) in fields {
+            form = form.text(k, v);
+        }
+        if let Some((name, up)) = file {
+            let (body, len) = counting_body(up.source, up.progress, state.clone(), start);
+            let part = Part::stream_with_length(body, len)
+                .file_name(up.filename)
+                .mime_str(&up.mime)
+                .map_err(|e| Error::Protocol(format!("invalid MIME type {}: {e}", up.mime)))?;
+            form = form.part(name, part);
+        } else {
+            // Nothing to stream: mark the body as sent for the watchdog.
+            let ms = u64::try_from(start.elapsed().as_millis())
+                .unwrap_or(0)
+                .max(1);
+            state.done_ms.store(ms, Ordering::Relaxed);
+        }
+        let url = self.server().api(path);
+        self.send_upload(&url, form, two_factor, state, start).await
     }
 
     /// Step 2: publish the stored file as a message.

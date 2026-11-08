@@ -1034,7 +1034,7 @@ Value JSON type, widget, and the server's check in `saveSettingsBulk`
 | `language` | string (`""` = Default) | dropdown: "Default" + languages (14.12) | `String` |
 | `color` | string | `editor == "color"` → colour picker + hex; `"expression"` → text; hint `Variable name: ` + `_id` with the first `theme-color-` replaced by `@` (`_id.replace(/theme-color-/, '@')`; ids without that prefix — all 4 live ones — are shown unchanged, no `@`). The web never passes `allowedTypes`, so the editor switch is effectively fixed. Two live colour settings (`CAS_button_color`, `CAS_button_label_color`) have no `editor` and the web renders **no input** for them — Rustket: hex picker when the value is `#rrggbb`, else text. Save sends `{_id, value, editor}` | `String` (+ `editor` saved) |
 | `font` | string | text input | `String` |
-| `code` | string | monospace multiline editor (`text_editor`); `code == "application/json"` → must be `""` or valid JSON, else error `Invalid_JSON` and Save disabled (`client/lib/utils/getCodeSettingError.ts`) | `String`, JSON validity for `application/json` |
+| `code` | string | monospace multiline editor (`text_editor`); `code == "application/json"` → must be `""` or valid JSON, else error `Invalid_JSON` (Rustket: its own key `admin.settings.error.invalid_json`, like the other client-side checks, since `error-invalid-setting-value` is not in the server's `en.json`) and Save disabled (`client/lib/utils/getCodeSettingError.ts`) | `String`, JSON validity for `application/json` |
 | `action` | method name string, or `{method, path}` | button `t(actionText)`, disabled while the section has unsaved changes (hint `Save_to_enable_this_action`); never saved (14.8) | – |
 | `asset` | `{url?, defaultUrl?}` | preview + "Select file"/"Delete", immediate upload (14.9); no reset button | – |
 | `roomPick` | `[{_id, name?}]` or `""` | multi room picker; the web uses `GET rooms.autocomplete.channelAndPrivate?selector={"name":"<text>"}` → `{items:[{_id,fname,name,t}]}` (verified) and saves `[{_id}]`. Third check: that endpoint only searches rooms the **caller is subscribed to** (max 10, no discussions; `findChannelAndPrivateAutocomplete`) — live, `gen` found nothing for `admin` while `rooms.autocomplete.adminRooms?selector={"name":"gen"}` returned `general`. Rustket may use `rooms.autocomplete.adminRooms` (needs `view-room-administration`) to pick any room; resolve stored ids to names via `rooms.adminRooms.getRoom` | `Object` or `""` |
@@ -1098,7 +1098,8 @@ value moved underneath ("changed on the server") so the user decides.
    (`twoFactorOptions: {disableRememberMe: true}`). Success → `{}`; toast `Settings_updated`.
 5. Errors:
    - `error-action-not-allowed` "Editing settings is not allowed" with
-     `details.settingIds` (no `edit-privileged-setting` and no `change-setting-<id>`; also
+     `details.settingIds` (no `edit-privileged-setting` and not both `manage-selected-settings`
+     and `change-setting-<id>`, `saveSettingsBulk.ts`; also
      `Custom_Script_*` in cloud trials).
    - `error-setting-validation-failed` (cross-setting rules in
      `apps/meteor/server/lib/settingValidationRules.ts`, e.g. password min/max length; the rules
@@ -1120,13 +1121,19 @@ value moved underneath ("changed on the server") so the user decides.
    - All type, permission and validation checks run for every item before the first write
      (`saveSettingsBulk`: `Promise.all` of checks, then `validateSettingRules`, then the updates),
      so a rejected save changes nothing; the writes themselves are not atomic. An unknown `_id`
-     with a string value passes the checks and "succeeds" without writing anything (source).
+     with a string value passes the checks and "succeeds" without writing anything (verified by
+     the admin library's live test: `{}` with the password code, `GET settings/:_id` still
+     fails afterwards; a wrong password hash answered `totp-invalid`). Even that no-op is not
+     free: `updateAuditedByUser` records a `settings.changed` audit event for every accepted
+     item, existing or not, so the live test now probes only the 2FA-required and wrong-code
+     paths, which stop before any write.
    - Route-level: `POST settings` has no permission gate of its own (any logged-in user reaches
      the 2FA prompt first; the per-setting check above follows — third check: `alice` got
      `totp-required` for a bulk save). Body schema errors come before 2FA (2.1).
 6. Side effect: saving `Organization_Name` also sets `Site_Name` when it still had its default or
    equalled the old organization name.
-7. UNVERIFIED: no successful bulk save was made (would change global settings); only the 2FA-every-time behaviour was
+7. UNVERIFIED: no successful bulk save of an existing setting was made (would change global
+   settings); only the 2FA-every-time behaviour, `totp-invalid` and the unknown-id no-op were
    probed (2.3).
 
 Single-setting endpoints (not used by the web editor): `GET /api/v1/settings/:_id` →
@@ -1136,7 +1143,7 @@ bulk endpoint it does no JSON type check of `value` (only bounds and validation 
 use it for editing.
 
 Read-only mode: a user with `view-privileged-setting` but neither `edit-privileged-setting` nor
-the setting's `change-setting-<id>` sees the editor but every widget disabled and no save bar.
+`manage-selected-settings` plus the setting's `change-setting-<id>` sees the editor but every widget disabled and no save bar.
 
 ### 14.8 Action settings
 
@@ -1465,7 +1472,7 @@ from `licenses.info` read-only.
 ```
 src/rest/admin/
   mod.rs          // re-exports (Apps calls build URLs with ServerUrl::api_root("apps/…"))
-  stats.rs        // statistics(refresh), statistics_list, instances, licenses_info, licenses_max_active_users
+  stats.rs        // statistics(refresh), statistics_list, instances, admin_licenses_info, licenses_max_active_users
   users.rs        // users_list_by_status(&UsersFilter, Page), user_info, user_create, user_update(tf),
                   // set_active_status, delete_user, reset_totp(user_id, tf), reset_e2e_key(user_id, tf),
                   // send_welcome_email, set_user_avatar, reset_user_avatar, smtp_check, send_invitation_email
@@ -1507,6 +1514,34 @@ All 2FA-capable calls take `two_factor: Option<&TwoFactorCode>`; add `RestClient
 `/api/apps/…` reuse the existing `ServerUrl::api_root("apps/…")` with `RestClient::request` +
 `send` (2.1) instead of a new URL helper. `reset_totp`/`reset_e2e_key` take a mandatory `&UserId` (4.4).
 
+As implemented (admin library round): the REST functions live in
+`crates/rocketchat/src/rest/admin/*.rs` and are prefixed where a generic name could collide
+with other areas — `admin_server_info`, `admin_users_list(&UsersFilter, &Page)`,
+`admin_user_info`, `admin_user_create`, `admin_user_update(id, &UserUpdate, confirm_relinquish,
+tf)`, `admin_set_active_status`, `admin_user_delete`, `admin_reset_totp(id, tf)`,
+`admin_reset_e2e_key(id, tf)` (empty id rejected client-side), `admin_send_welcome_email`,
+`admin_set_user_avatar`, `admin_rooms(filter, &[AdminRoomType], &Page)`, `admin_room`,
+`admin_rooms_autocomplete`, `admin_save_room_settings`, `admin_change_archivation_state`,
+`admin_delete_team`, `admin_banners_list`; unprefixed: `statistics`, `statistics_list`,
+`instances_get`, `admin_licenses_info`, `licenses_max_active_users`, `cloud_registration_status`,
+`smtp_check`, invites (`list_invites`, `remove_invite`, `find_or_create_invite`,
+`validate_invite_token`), `emoji_custom_{all,create,update,delete}`,
+`custom_sound{s_list,_get,_create,_update,_delete}`, `custom_user_status_{page,create,update,delete}`,
+`integration{s_list,_get,_create,_update,_remove,_history,_clear_history,_replay}`,
+`oauth_app{s_list,_get,_create,_update,_delete}`, `mailer_send`,
+`permissions_list_all_full` (with setting-permission fields), `permissions_{add,remove}_role`,
+`permissions_update`, `roles_sync`, `role_{create,update,delete}`, `roles_get_users_in_role`,
+`roles_{add,remove}_user`, `private_settings`, `private_settings_since`, `save_settings`,
+`setting_value`, `setting_execute`, `setting_action_{method,endpoint}`, `settings_lookup`,
+`assets_{set,unset}`, `settings_{add,remove}_custom_oauth`, `settings_refresh_oauth_services`,
+`saml_parse_metadata`, `server_translations`, `email_inbox_{list,get,save,delete,search,send_test}`,
+`ldap_{test_connection,test_search,sync_now}`, `moderation_*`, `engagement_dashboard`,
+`sessions_{list_all,info_admin,logout}`, `audit_settings`. Models are in
+`rocketchat::models::admin`. Apps (`/api/apps/*`) are left to the UiKit/apps layer. New
+`RestClient` helpers: `get_with`, `put_with`, `delete_with` and the crate-private multipart
+`upload_form` (shares the upload watchdog with `upload_media`). Settings search in
+`GroupIndex::search` is a case-insensitive substring match, not a regex (no regex dependency).
+
 ### 22.2 `crates/rustket-core` (state)
 
 ```
@@ -1516,12 +1551,16 @@ src/admin/
   mongo_filter.rs  // evaluator for enableQuery/displayQuery (14.4), unit-tested against live queries
   settings_editor.rs
                    // SettingsStore { defs: BTreeMap<id, SettingDef> } + apply_delta/apply_stream_event
-                   //   (stream event = partial merge + "delta fetch needed" flag, 2.5/14.1)
+                   //   (stream event = partial merge + "delta fetch needed" flag, 2.5/14.1;
+                   //   delta_request() -> DeltaRequest { since, generation }, apply_delta(req, delta)
+                   //   keeps the flag when events arrived while the fetch was in flight)
                    // GroupIndex: groups(), group_page(group) -> Vec<Tab { id, sections: Vec<Section { name, setting_ids }> }>
                    // EditSession { group, edits: HashMap<id, (Value, Option<editor>)> }:
                    //   effective(id), is_changed(id), is_disabled(id), is_visible(id), can_reset(id),
                    //   reset(id), reset_section(..), cancel(), validate() -> Vec<(id, ErrorKey)>,
-                   //   change_set() -> Vec<SettingChange>, alerts() -> Vec<id>, remote_conflicts()
+                   //   change_set() -> Vec<SettingChange>, alerts() -> Vec<id>, remote_conflicts(),
+                   //   apply_saved(changes) (rebases edits made while a save was in flight)
+                   //   ErrorKey = Rustket i18n keys admin.settings.error.* (en+ru, added with the UI)
   server_i18n.rs   // ServerI18n { custom: Map, lang: Map, en: Map }; t(key) -> Option<&str>;
                    // label_for(def), hint_for(def), alert_for(def); per-server cache by version+lang
   timespan.rs      // highest_unit(ms), to_ms(unit, n) (14.5)

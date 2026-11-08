@@ -1,0 +1,654 @@
+{
+ "_id": "6aef9d34ff2338a3f2a2ea03",
+ "wizard": {
+  "organizationType": "",
+  "industry": "",
+  "size": "",
+  "country": "",
+  "language": "",
+  "serverType": "",
+  "registerServer": false
+ },
+ "uniqueId": "redacted",
+ "installedAt": "redacted",
+ "deploymentFingerprintHash": "redacted",
+ "deploymentFingerprintVerified": true,
+ "version": "8.9.1",
+ "tag": null,
+ "branch": null,
+ "totalUsers": 12,
+ "activeUsers": 11,
+ "activeGuests": 0,
+ "nonActiveUsers": 0,
+ "appUsers": 0,
+ "onlineUsers": 1,
+ "awayUsers": 0,
+ "busyUsers": 0,
+ "totalConnectedUsers": 1,
+ "offlineUsers": 11,
+ "totalRooms": 15,
+ "userLanguages": {
+  "none": 12
+ },
+ "totalChannels": 10,
+ "totalPrivateGroups": 3,
+ "totalDirect": 2,
+ "totalLivechat": 0,
+ "totalDiscussions": 2,
+ "totalThreads": 3,
+ "totalLivechatVisitors": 0,
+ "totalLivechatAgents": 0,
+ "totalLivechatManagers": 0,
+ "livechatEnabled": true,
+ "isDepartmentRemovalEnabled": false,
+ "omnichannelSources": [],
+ "totalLivechatRoomsWithDepartment": 0,
+ "departments": 0,
+ "totalTriggers": 0,
+ "totalCustomFields": 0,
+ "archivedDepartments": 0,
+ "totalLivechatPublicCustomFields": 0,
+ "livechatAutomaticForwardingUnansweredChats": true,
+ "routingAlgorithm": "Auto_Selection",
+ "onHoldEnabled": null,
+ "lastChattedAgentPreferred": null,
+ "assignNewConversationsToContactManager": null,
+ "visitorAbandonment": null,
+ "BusinessHours": {
+  "total": 1,
+  "strategy": ""
+ },
+ "emailInboxes": 0,
+ "chatsOnHold": 0,
+ "omnichannelContactsBySource": {
+  "contactsCount": 0,
+  "conversationsCount": 0,
+  "sources": []
+ },
+ "uniqueContactsOfYesterday": {
+  "contactsCount": 0,
+  "conversationsCount": 0,
+  "sources": []
+ },
+ "totalChannelMessages": 819,
+ "uniqueContactsOfLastMonth": {
+  "contactsCount": 0,
+  "conversationsCount": 0,
+  "sources": []
+ },
+ "totalPrivateGroupMessages": 11,
+ "totalDiscussionsMessages": 1,
+ "uniqueContactsOfLastWeek": {
+  "contactsCount": 0,
+  "conversationsCount": 0,
+  "sources": []
+ },
+ "totalDirectMessages": 0,
+ "totalLivechatMessages": 0,
+ "totalMessages": 831,
+ "lastLogin": "Sat Nov 07 2026 21:50:44 GMT+0000 (Coordinated Universal Time)",
+ "lastMessageSentAt": "2026-11-07T21:50:43.339Z",
+ "lastSeenSubscription": "Sat Nov 07 2026 21:48:45 GMT+0000 (Coordinated Universal Time)",
+ "os": {
+  "type": "Linux",
+  "platform": "linux",
+  "arch": "x64",
+  "release": "7.0.0-42-generic",
+  "uptime": 67350.24,
+  "loadavg": [
+   18.84,
+   14.31,
+   11.6
+  ],
+  "totalmem": 64064245760,
+  "freemem": 25919827968,
+  "cpus": [
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 19158530,
+     "nice": 68080,
+     "sys": 3362530,
+     "idle": 43800340,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 16577190,
+     "nice": 359260,
+     "sys": 4383350,
+     "idle": 44810930,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 13259760,
+     "nice": 127060,
+     "sys": 2139720,
+     "idle": 50831270,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3907,
+    "times": {
+     "user": 13698370,
+     "nice": 139670,
+     "sys": 2365470,
+     "idle": 50088950,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 14001040,
+     "nice": 150070,
+     "sys": 2551950,
+     "idle": 49540530,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 16505320,
+     "nice": 379300,
+     "sys": 4293530,
+     "idle": 45082860,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3909,
+    "times": {
+     "user": 14693100,
+     "nice": 165910,
+     "sys": 2809720,
+     "idle": 48513030,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 13809590,
+     "nice": 136950,
+     "sys": 2301770,
+     "idle": 50071320,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3904,
+    "times": {
+     "user": 9088100,
+     "nice": 148720,
+     "sys": 2915750,
+     "idle": 54229690,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 12007360,
+     "nice": 236960,
+     "sys": 6347010,
+     "idle": 47798590,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 8930770,
+     "nice": 130620,
+     "sys": 2568640,
+     "idle": 54753850,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 9551430,
+     "nice": 147580,
+     "sys": 2825800,
+     "idle": 53810410,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 9938070,
+     "nice": 149610,
+     "sys": 2998490,
+     "idle": 53346150,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3907,
+    "times": {
+     "user": 11661410,
+     "nice": 223990,
+     "sys": 5358910,
+     "idle": 49181880,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3907,
+    "times": {
+     "user": 10547340,
+     "nice": 157520,
+     "sys": 3393740,
+     "idle": 52300110,
+     "irq": 0
+    }
+   },
+   {
+    "model": "AMD Ryzen 9 8945HS w/ Radeon 780M Graphics",
+    "speed": 3908,
+    "times": {
+     "user": 9306070,
+     "nice": 153330,
+     "sys": 2757270,
+     "idle": 54078620,
+     "irq": 0
+    }
+   }
+  ]
+ },
+ "process": {
+  "nodeVersion": "v24.22.1",
+  "pid": 1,
+  "uptime": 20522.436071019
+ },
+ "deploy": {
+  "method": "docker",
+  "platform": "selfinstall"
+ },
+ "fips": false,
+ "readReceiptsEnabled": false,
+ "readReceiptsDetailed": false,
+ "enterpriseReady": true,
+ "fileStoreType": "GridFS",
+ "uploadsTotal": 3,
+ "migration": {
+  "_id": "control",
+  "_updatedAt": "2026-11-07T16:08:51.136Z",
+  "locked": false,
+  "version": 335,
+  "buildAt": "2026-11-06T02:31:50.922Z",
+  "lockedAt": "2026-11-07T16:08:51.132Z"
+ },
+ "uploadsTotalSize": 97,
+ "instanceCount": 1,
+ "msEnabled": false,
+ "oplogEnabled": false,
+ "mongoVersion": "7.0.45",
+ "mongoStorageEngine": "wiredTiger",
+ "apps": {
+  "engineVersion": "1.67.0",
+  "totalInstalled": 0,
+  "totalActive": 0,
+  "totalFailed": 0,
+  "totalPrivateApps": 0,
+  "totalPrivateAppsEnabled": 0
+ },
+ "uniqueUsersOfYesterday": {
+  "year": 2026,
+  "month": 11,
+  "day": 6,
+  "data": []
+ },
+ "uniqueOSOfYesterday": {
+  "year": 2026,
+  "month": 11,
+  "day": 6,
+  "data": []
+ },
+ "uniqueDevicesOfLastMonth": {
+  "year": 2026,
+  "month": 11,
+  "day": 6,
+  "data": []
+ },
+ "uniqueOSOfLastWeek": {
+  "year": 2026,
+  "month": 11,
+  "day": 6,
+  "data": []
+ },
+ "uniqueDevicesOfLastWeek": {
+  "year": 2026,
+  "month": 11,
+  "day": 6,
+  "data": []
+ },
+ "uniqueOSOfLastMonth": {
+  "year": 2026,
+  "month": 11,
+  "day": 6,
+  "data": []
+ },
+ "uniqueUsersOfLastMonth": {
+  "year": 2026,
+  "month": 11,
+  "day": 6,
+  "data": []
+ },
+ "uniqueUsersOfLastWeek": {
+  "year": 2026,
+  "month": 11,
+  "day": 6,
+  "data": []
+ },
+ "uniqueDevicesOfYesterday": {
+  "year": 2026,
+  "month": 11,
+  "day": 6,
+  "data": []
+ },
+ "services": {
+  "ldap": {
+   "users": 0,
+   "enabled": false,
+   "loginFallback": false,
+   "encryption": "plain",
+   "mergeUsers": false,
+   "syncRoles": null,
+   "syncRolesAutoRemove": null,
+   "syncData": null,
+   "syncChannels": null,
+   "syncAvatar": true,
+   "groupFilter": false,
+   "backgroundSync": {
+    "enabled": null,
+    "interval": null,
+    "newUsers": null,
+    "existingUsers": null
+   },
+   "ee": {
+    "syncActiveState": null,
+    "syncTeams": null,
+    "syncRoles": null
+   }
+  },
+  "saml": {
+   "enabled": false,
+   "users": 0,
+   "signatureValidationType": "All",
+   "generateUsername": false,
+   "updateSubscriptionsOnLogin": false,
+   "syncRoles": null,
+   "userDataCustomFieldMap": false
+  },
+  "cas": {
+   "enabled": false,
+   "users": 0,
+   "allowUserCreation": true,
+   "alwaysSyncUserData": true
+  },
+  "oauth": {
+   "apple": {
+    "enabled": false,
+    "users": 0
+   },
+   "dolphin": {
+    "enabled": false,
+    "users": 0
+   },
+   "drupal": {
+    "enabled": false,
+    "users": 0
+   },
+   "facebook": {
+    "enabled": false,
+    "users": 0
+   },
+   "github": {
+    "enabled": false,
+    "users": 0
+   },
+   "githubEnterprise": {
+    "enabled": false,
+    "users": 0
+   },
+   "gitlab": {
+    "enabled": false,
+    "users": 0
+   },
+   "google": {
+    "enabled": false,
+    "users": 0
+   },
+   "linkedin": {
+    "enabled": false,
+    "users": 0
+   },
+   "meteor": {
+    "enabled": false,
+    "users": 0
+   },
+   "nextcloud": {
+    "enabled": false,
+    "users": 0
+   },
+   "twitter": {
+    "enabled": false,
+    "users": 0
+   },
+   "wordpress": {
+    "enabled": false,
+    "users": 0
+   },
+   "custom": {
+    "0": {
+     "enabled": true,
+     "mergeRoles": null,
+     "users": 0,
+     "mapChannels": null,
+     "rolesToSync": false
+    }
+   }
+  }
+ },
+ "importer": {
+  "totalCSVImportedUsers": 0,
+  "totalHipchatEnterpriseImportedUsers": 0,
+  "totalSlackImportedUsers": 0,
+  "totalSlackUsersImportedUsers": 0
+ },
+ "videoConf": {
+  "videoConference": {
+   "started": 0,
+   "ended": 0
+  },
+  "direct": {
+   "calling": 0,
+   "started": 0,
+   "ended": 0
+  },
+  "livechat": {
+   "started": 0,
+   "ended": 0
+  },
+  "settings": {
+   "provider": "",
+   "dms": null,
+   "channels": null,
+   "groups": null,
+   "teams": null
+  }
+ },
+ "contactVerification": {
+  "totalContacts": 0,
+  "totalUnknownContacts": 0,
+  "totalMergedContacts": 0,
+  "totalConflicts": 0,
+  "totalResolvedConflicts": 0,
+  "totalBlockedContacts": 0,
+  "totalPartiallyBlockedContacts": 0,
+  "totalFullyBlockedContacts": 0,
+  "totalVerifiedContacts": 0,
+  "avgChannelsPerContact": 0,
+  "totalContactsWithoutChannels": 0,
+  "totalImportedContacts": 0,
+  "totalUpsellViews": 0,
+  "totalUpsellClicks": 0
+ },
+ "dashboardCount": 0,
+ "messageAuditApply": 0,
+ "messageAuditLoad": 0,
+ "joinJitsiButton": 0,
+ "slashCommandsJitsi": 0,
+ "settings": {
+  "accounts": {
+   "account2fa": true
+  },
+  "e2ee": {
+   "e2e": false,
+   "e2eDefaultDirectRoom": false,
+   "e2eDefaultPrivateRoom": false
+  },
+  "email": {
+   "smtp": {
+    "smtpHost": "127.0.0.1",
+    "smtpPort": "1025",
+    "fromEmail": "rocketchat@rustket.local"
+   }
+  },
+  "fileUpload": {
+   "fileUploadEnable": true
+  },
+  "general": {
+   "apps": {
+    "frameworkDevMode": null,
+    "frameworkEnable": null
+   },
+   "nps": {
+    "surveyEnabled": true
+   },
+   "update": {
+    "updateChecker": true
+   }
+  },
+  "liveStreamAndBroadcasting": {
+   "liveStream": null,
+   "broadcasting": null
+  },
+  "message": {
+   "allowEditing": true,
+   "allowDeleting": true,
+   "allowUnrecognizedSlashCommand": false,
+   "allowBadWordsFilter": false,
+   "readReceiptEnabled": false,
+   "readReceiptStoreUsers": false
+  },
+  "push": {
+   "pushEnable": true
+  },
+  "search": {
+   "defaultProvider": {
+    "globalSearchEnabled": false
+   }
+  },
+  "threads": {
+   "threadsEnabled": true
+  },
+  "webRTC": {
+   "webRTCEnableChannel": null,
+   "webRTCEnablePrivate": null,
+   "webRTCEnableDirect": null
+  }
+ },
+ "pushQueue": 0,
+ "totalBroadcastRooms": 0,
+ "totalTriggeredEmails": 135,
+ "integrations": {
+  "totalIntegrations": 0,
+  "totalIncoming": 0,
+  "totalIncomingActive": 0,
+  "totalOutgoing": 0,
+  "totalOutgoingActive": 0,
+  "totalWithScriptEnabled": 0
+ },
+ "enterprise": {
+  "modules": [],
+  "tags": [],
+  "seatRequests": 0
+ },
+ "totalRoomsWithStarred": 2,
+ "teams": {
+  "totalTeams": 2,
+  "totalRoomsInsideTeams": 1,
+  "totalDefaultRoomsInsideTeams": 0
+ },
+ "totalRoomsWithPinned": 2,
+ "totalUserTOTP": 0,
+ "totalUserEmail2fa": 1,
+ "totalPinned": 2,
+ "totalStarred": 2,
+ "totalLinkInvitation": 0,
+ "totalLinkInvitationUses": 0,
+ "totalEmailInvitation": 0,
+ "totalE2ERooms": 0,
+ "logoChange": false,
+ "showHomeButton": true,
+ "totalEncryptedMessages": 0,
+ "totalManuallyAddedUsers": 0,
+ "totalSubscriptionRoles": 3,
+ "totalUserRoles": 9,
+ "totalCustomRoles": 0,
+ "totalWebRTCCalls": null,
+ "uncaughtExceptionsCount": 0,
+ "push": 3,
+ "pushSecured": false,
+ "homeTitleChanged": false,
+ "homeBodyChanged": false,
+ "customCSSChanged": false,
+ "onLogoutCustomScriptChanged": false,
+ "loggedOutCustomScriptChanged": false,
+ "loggedInCustomScriptChanged": false,
+ "dailyPeakConnections": 0,
+ "maxMonthlyPeakConnections": 0,
+ "matrixFederation": {
+  "enabled": false,
+  "maximumSizeOfPublicRoomsUsers": false,
+  "biggestRoom": null,
+  "smallestRoom": null,
+  "amountOfExternalUsers": 0,
+  "amountOfFederatedRooms": 0,
+  "externalConnectedServers": {
+   "quantity": 0,
+   "servers": []
+  }
+ },
+ "allowUnsafeQueryAndFieldsApiParamsEnabled": false,
+ "createdAt": "2026-11-07T21:50:44.550Z",
+ "_updatedAt": "2026-11-07T21:50:44.551Z",
+ "success": true
+}

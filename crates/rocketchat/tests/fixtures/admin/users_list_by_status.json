@@ -1,0 +1,98 @@
+{
+ "users": [
+  {
+   "_id": "6aef49d4f7fd7082521174fb",
+   "name": "Admin",
+   "username": "admin",
+   "status": "offline",
+   "active": true,
+   "type": "user",
+   "emails": [
+    {
+     "address": "admin@example.invalid",
+     "verified": false
+    }
+   ],
+   "roles": [
+    "admin"
+   ],
+   "lastLogin": "2026-11-07T23:34:19.537Z"
+  },
+  {
+   "_id": "Er3h8XYKahaopbSA7",
+   "username": "alice",
+   "emails": [
+    {
+     "address": "alice@example.invalid",
+     "verified": true
+    }
+   ],
+   "name": "Alice",
+   "type": "user",
+   "roles": [
+    "user"
+   ],
+   "status": "offline",
+   "active": true,
+   "lastLogin": "2026-11-07T23:18:36.854Z"
+  },
+  {
+   "_id": "SLiu9igvh94B9T9Xu",
+   "username": "bob",
+   "emails": [
+    {
+     "address": "bob@example.invalid",
+     "verified": true
+    }
+   ],
+   "name": "Bob",
+   "type": "user",
+   "roles": [
+    "user"
+   ],
+   "status": "offline",
+   "active": true,
+   "lastLogin": "2026-11-07T23:01:01.119Z"
+  },
+  {
+   "_id": "qJWw3ByDhRtx8mN4p",
+   "username": "carol",
+   "emails": [
+    {
+     "address": "carol@example.invalid",
+     "verified": true
+    }
+   ],
+   "name": "Carol",
+   "type": "user",
+   "roles": [
+    "user"
+   ],
+   "status": "offline",
+   "active": true,
+   "lastLogin": "2026-11-07T16:30:32.620Z"
+  },
+  {
+   "_id": "rhXxf269pxwcYxzm8",
+   "type": "user",
+   "roles": [
+    "user"
+   ],
+   "status": "offline",
+   "active": true,
+   "name": "Keycloak User",
+   "emails": [
+    {
+     "address": "kcuser@example.invalid",
+     "verified": true
+    }
+   ],
+   "username": "kcuser",
+   "lastLogin": "2026-11-07T19:56:41.906Z"
+  }
+ ],
+ "count": 5,
+ "offset": 0,
+ "total": 7,
+ "success": true
+}

@@ -1,0 +1,35 @@
+{
+ "license": {
+  "activeModules": [],
+  "externalModules": [],
+  "preventedActions": {
+   "activeUsers": false,
+   "guestUsers": false,
+   "roomsPerGuest": false,
+   "privateApps": true,
+   "marketplaceApps": false,
+   "monthlyActiveContacts": false
+  },
+  "limits": {
+   "activeUsers": {
+    "max": -1
+   },
+   "guestUsers": {
+    "max": -1
+   },
+   "privateApps": {
+    "max": 0
+   },
+   "marketplaceApps": {
+    "max": 5
+   },
+   "monthlyActiveContacts": {
+    "max": -1
+   }
+  },
+  "tags": [],
+  "trial": false,
+  "hasValidLicense": false
+ },
+ "success": true
+}

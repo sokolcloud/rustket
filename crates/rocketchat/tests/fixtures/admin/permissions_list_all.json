@@ -1,0 +1,1974 @@
+{
+"update": [
+{
+"_id": "access-permissions",
+"_updatedAt": "2026-11-07T15:54:54.877Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "access-marketplace",
+"_updatedAt": "2026-11-07T15:54:54.880Z",
+"roles": [
+"admin",
+"user"
+]
+},
+{
+"_id": "access-setting-permissions",
+"_updatedAt": "2026-11-07T15:54:54.885Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "add-oauth-service",
+"_updatedAt": "2026-11-07T15:54:54.888Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "add-user-to-joined-room",
+"_updatedAt": "2026-11-07T15:54:54.891Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "add-user-to-any-c-room",
+"_updatedAt": "2026-11-07T15:54:54.894Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "add-user-to-any-p-room",
+"_updatedAt": "2026-11-07T15:54:54.897Z",
+"roles": []
+},
+{
+"_id": "kick-user-from-any-c-room",
+"_updatedAt": "2026-11-07T15:54:54.900Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "kick-user-from-any-p-room",
+"_updatedAt": "2026-11-07T15:54:54.903Z",
+"roles": []
+},
+{
+"_id": "api-bypass-rate-limit",
+"_updatedAt": "2026-11-07T15:54:54.907Z",
+"roles": [
+"admin",
+"bot",
+"app"
+]
+},
+{
+"_id": "archive-room",
+"_updatedAt": "2026-11-07T15:54:54.910Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "assign-admin-role",
+"_updatedAt": "2026-11-07T15:54:54.913Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "assign-roles",
+"_updatedAt": "2026-11-07T15:54:54.917Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "ban-user",
+"_updatedAt": "2026-11-07T15:54:54.920Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "bulk-register-user",
+"_updatedAt": "2026-11-07T15:54:54.923Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "change-livechat-room-visitor",
+"_updatedAt": "2026-11-07T15:54:54.926Z",
+"roles": [
+"admin",
+"livechat-manager",
+"livechat-agent"
+]
+},
+{
+"_id": "create-c",
+"_updatedAt": "2026-11-07T15:54:54.929Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"bot",
+"app"
+]
+},
+{
+"_id": "create-d",
+"_updatedAt": "2026-11-07T15:54:54.933Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"bot",
+"app"
+]
+},
+{
+"_id": "create-d-other-users",
+"_updatedAt": "2026-11-07T15:54:54.936Z",
+"roles": [
+"admin",
+"bot",
+"app"
+]
+},
+{
+"_id": "create-p",
+"_updatedAt": "2026-11-07T15:54:54.939Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"bot",
+"app"
+]
+},
+{
+"_id": "create-personal-access-tokens",
+"_updatedAt": "2026-11-07T15:54:54.944Z",
+"roles": [
+"admin",
+"user"
+]
+},
+{
+"_id": "create-user",
+"_updatedAt": "2026-11-07T15:54:54.946Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "clean-channel-history",
+"_updatedAt": "2026-11-07T15:54:54.949Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "delete-c",
+"_updatedAt": "2026-11-07T15:54:54.952Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "delete-d",
+"_updatedAt": "2026-11-07T15:54:54.955Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "delete-message",
+"_updatedAt": "2026-11-07T15:54:54.959Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "delete-own-message",
+"_updatedAt": "2026-11-07T15:54:54.963Z",
+"roles": [
+"admin",
+"user",
+"federated-external"
+]
+},
+{
+"_id": "delete-p",
+"_updatedAt": "2026-11-07T15:54:54.966Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "delete-user",
+"_updatedAt": "2026-11-07T15:54:54.970Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "edit-message",
+"_updatedAt": "2026-11-07T15:54:54.973Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "edit-other-user-active-status",
+"_updatedAt": "2026-11-07T15:54:54.977Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "edit-other-user-info",
+"_updatedAt": "2026-11-07T15:54:54.980Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "edit-other-user-password",
+"_updatedAt": "2026-11-07T15:54:54.983Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "edit-other-user-avatar",
+"_updatedAt": "2026-11-07T15:54:54.986Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "edit-other-user-e2ee",
+"_updatedAt": "2026-11-07T15:54:54.990Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "edit-other-user-totp",
+"_updatedAt": "2026-11-07T15:54:54.993Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "edit-privileged-setting",
+"_updatedAt": "2026-11-07T15:54:54.997Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "edit-room",
+"_updatedAt": "2026-11-07T15:54:54.999Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "edit-room-avatar",
+"_updatedAt": "2026-11-07T15:54:55.002Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "edit-room-retention-policy",
+"_updatedAt": "2026-11-07T15:54:55.007Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "force-delete-message",
+"_updatedAt": "2026-11-07T15:54:55.011Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "join-without-join-code",
+"_updatedAt": "2026-11-07T15:54:55.014Z",
+"roles": [
+"admin",
+"bot",
+"app"
+]
+},
+{
+"_id": "leave-c",
+"_updatedAt": "2026-11-07T15:54:55.018Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"bot",
+"anonymous",
+"app"
+]
+},
+{
+"_id": "leave-p",
+"_updatedAt": "2026-11-07T15:54:55.021Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"bot",
+"anonymous",
+"app"
+]
+},
+{
+"_id": "logout-other-user",
+"_updatedAt": "2026-11-07T15:54:55.024Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-assets",
+"_updatedAt": "2026-11-07T15:54:55.027Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-email-inbox",
+"_updatedAt": "2026-11-07T15:54:55.030Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-emoji",
+"_updatedAt": "2026-11-07T15:54:55.033Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-user-status",
+"_updatedAt": "2026-11-07T15:54:55.036Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-outgoing-integrations",
+"_updatedAt": "2026-11-07T15:54:55.039Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-incoming-integrations",
+"_updatedAt": "2026-11-07T15:54:55.044Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-own-outgoing-integrations",
+"_updatedAt": "2026-11-07T15:54:55.047Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-own-incoming-integrations",
+"_updatedAt": "2026-11-07T15:54:55.050Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-oauth-apps",
+"_updatedAt": "2026-11-07T15:54:55.053Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-selected-settings",
+"_updatedAt": "2026-11-07T15:54:55.056Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "mention-all",
+"_updatedAt": "2026-11-07T15:54:55.059Z",
+"roles": [
+"admin",
+"owner",
+"moderator",
+"user",
+"federated-external"
+]
+},
+{
+"_id": "mention-here",
+"_updatedAt": "2026-11-07T15:54:55.062Z",
+"roles": [
+"admin",
+"owner",
+"moderator",
+"user",
+"federated-external"
+]
+},
+{
+"_id": "mute-user",
+"_updatedAt": "2026-11-07T15:54:55.065Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "remove-user",
+"_updatedAt": "2026-11-07T15:54:55.070Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "run-import",
+"_updatedAt": "2026-11-07T15:54:55.073Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "run-migration",
+"_updatedAt": "2026-11-07T15:54:55.076Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "set-moderator",
+"_updatedAt": "2026-11-07T15:54:55.079Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "set-owner",
+"_updatedAt": "2026-11-07T15:54:55.082Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "send-many-messages",
+"_updatedAt": "2026-11-07T15:54:55.085Z",
+"roles": [
+"admin",
+"bot",
+"app"
+]
+},
+{
+"_id": "set-leader",
+"_updatedAt": "2026-11-07T15:54:55.088Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "start-discussion",
+"_updatedAt": "2026-11-07T15:54:55.091Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"guest",
+"app"
+]
+},
+{
+"_id": "start-discussion-other-user",
+"_updatedAt": "2026-11-07T15:54:55.094Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"owner",
+"app"
+]
+},
+{
+"_id": "unarchive-room",
+"_updatedAt": "2026-11-07T15:54:55.098Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-c-room",
+"_updatedAt": "2026-11-07T15:54:55.100Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"bot",
+"app",
+"anonymous"
+]
+},
+{
+"_id": "user-generate-access-token",
+"_updatedAt": "2026-11-07T15:54:55.103Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-d-room",
+"_updatedAt": "2026-11-07T15:54:55.106Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"bot",
+"app",
+"guest"
+]
+},
+{
+"_id": "view-device-management",
+"_updatedAt": "2026-11-07T15:54:55.109Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-engagement-dashboard",
+"_updatedAt": "2026-11-07T15:54:55.112Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-full-other-user-info",
+"_updatedAt": "2026-11-07T15:54:55.115Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-joined-room",
+"_updatedAt": "2026-11-07T15:54:55.119Z",
+"roles": [
+"guest",
+"bot",
+"app",
+"anonymous"
+]
+},
+{
+"_id": "view-join-code",
+"_updatedAt": "2026-11-07T15:54:55.123Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-logs",
+"_updatedAt": "2026-11-07T15:54:55.126Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-other-user-channels",
+"_updatedAt": "2026-11-07T15:54:55.129Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-p-room",
+"_updatedAt": "2026-11-07T15:54:55.132Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"anonymous",
+"guest"
+]
+},
+{
+"_id": "view-privileged-setting",
+"_updatedAt": "2026-11-07T15:54:55.135Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-room-administration",
+"_updatedAt": "2026-11-07T15:54:55.139Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-statistics",
+"_updatedAt": "2026-11-07T15:54:55.142Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-user-administration",
+"_updatedAt": "2026-11-07T15:54:55.145Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "preview-c-room",
+"_updatedAt": "2026-11-07T15:54:55.149Z",
+"roles": [
+"admin",
+"user",
+"federated-external",
+"anonymous"
+]
+},
+{
+"_id": "view-outside-room",
+"_updatedAt": "2026-11-07T15:54:55.151Z",
+"roles": [
+"admin",
+"owner",
+"moderator",
+"user",
+"federated-external"
+]
+},
+{
+"_id": "view-broadcast-member-list",
+"_updatedAt": "2026-11-07T15:54:55.154Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "call-management",
+"_updatedAt": "2026-11-07T15:54:55.157Z",
+"roles": [
+"admin",
+"owner",
+"moderator",
+"user"
+]
+},
+{
+"_id": "create-invite-links",
+"_updatedAt": "2026-11-07T15:54:55.160Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "view-l-room",
+"_updatedAt": "2026-11-07T15:54:55.164Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "create-livechat-contact",
+"_updatedAt": "2026-11-07T15:54:55.168Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "update-livechat-contact",
+"_updatedAt": "2026-11-07T15:54:55.171Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "view-livechat-contact",
+"_updatedAt": "2026-11-07T15:54:55.175Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "delete-livechat-contact",
+"_updatedAt": "2026-11-07T15:54:55.177Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "view-livechat-contact-history",
+"_updatedAt": "2026-11-07T15:54:55.181Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "view-livechat-manager",
+"_updatedAt": "2026-11-07T15:54:55.184Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "view-omnichannel-contact-center",
+"_updatedAt": "2026-11-07T15:54:55.188Z",
+"roles": [
+"livechat-manager",
+"livechat-agent",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "edit-omnichannel-contact",
+"_updatedAt": "2026-11-07T15:54:55.191Z",
+"roles": [
+"livechat-manager",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "view-livechat-rooms",
+"_updatedAt": "2026-11-07T15:54:55.194Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "close-livechat-room",
+"_updatedAt": "2026-11-07T15:54:55.197Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "close-others-livechat-room",
+"_updatedAt": "2026-11-07T15:54:55.200Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "on-hold-livechat-room",
+"_updatedAt": "2026-11-07T15:54:55.204Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "on-hold-others-livechat-room",
+"_updatedAt": "2026-11-07T15:54:55.207Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "save-others-livechat-room-info",
+"_updatedAt": "2026-11-07T15:54:55.210Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "remove-closed-livechat-rooms",
+"_updatedAt": "2026-11-07T15:54:55.213Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "view-livechat-analytics",
+"_updatedAt": "2026-11-07T15:54:55.216Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "view-livechat-queue",
+"_updatedAt": "2026-11-07T15:54:55.219Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "transfer-livechat-guest",
+"_updatedAt": "2026-11-07T15:54:55.222Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "manage-livechat-managers",
+"_updatedAt": "2026-11-07T15:54:55.225Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "manage-livechat-agents",
+"_updatedAt": "2026-11-07T15:54:55.228Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "manage-livechat-departments",
+"_updatedAt": "2026-11-07T15:54:55.231Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "view-livechat-departments",
+"_updatedAt": "2026-11-07T15:54:55.235Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "add-livechat-department-agents",
+"_updatedAt": "2026-11-07T15:54:55.238Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "view-livechat-real-time-monitoring",
+"_updatedAt": "2026-11-07T15:54:55.241Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "view-livechat-triggers",
+"_updatedAt": "2026-11-07T15:54:55.244Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "view-livechat-customfields",
+"_updatedAt": "2026-11-07T15:54:55.248Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "view-livechat-installation",
+"_updatedAt": "2026-11-07T15:54:55.252Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "view-livechat-appearance",
+"_updatedAt": "2026-11-07T15:54:55.255Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "view-livechat-webhooks",
+"_updatedAt": "2026-11-07T15:54:55.259Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "view-livechat-business-hours",
+"_updatedAt": "2026-11-07T15:54:55.262Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "view-livechat-room-closed-same-department",
+"_updatedAt": "2026-11-07T15:54:55.267Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "view-livechat-room-closed-by-another-agent",
+"_updatedAt": "2026-11-07T15:54:55.270Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"admin"
+]
+},
+{
+"_id": "view-livechat-room-customfields",
+"_updatedAt": "2026-11-07T15:54:55.274Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "edit-livechat-room-customfields",
+"_updatedAt": "2026-11-07T15:54:55.278Z",
+"roles": [
+"livechat-manager",
+"livechat-monitor",
+"livechat-agent",
+"admin"
+]
+},
+{
+"_id": "send-omnichannel-chat-transcript",
+"_updatedAt": "2026-11-07T15:54:55.282Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "mail-messages",
+"_updatedAt": "2026-11-07T15:54:55.287Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "toggle-room-e2e-encryption",
+"_updatedAt": "2026-11-07T15:54:55.290Z",
+"roles": [
+"owner",
+"admin"
+]
+},
+{
+"_id": "message-impersonate",
+"_updatedAt": "2026-11-07T15:54:55.294Z",
+"roles": [
+"bot",
+"app"
+]
+},
+{
+"_id": "create-team",
+"_updatedAt": "2026-11-07T15:54:55.298Z",
+"roles": [
+"admin",
+"user"
+]
+},
+{
+"_id": "delete-team",
+"_updatedAt": "2026-11-07T15:54:55.302Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "convert-team",
+"_updatedAt": "2026-11-07T15:54:55.305Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "edit-team",
+"_updatedAt": "2026-11-07T15:54:55.308Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "add-team-member",
+"_updatedAt": "2026-11-07T15:54:55.312Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "edit-team-member",
+"_updatedAt": "2026-11-07T15:54:55.316Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "move-room-to-team",
+"_updatedAt": "2026-11-07T15:54:55.319Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "create-team-channel",
+"_updatedAt": "2026-11-07T15:54:55.322Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "create-team-group",
+"_updatedAt": "2026-11-07T15:54:55.325Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "delete-team-channel",
+"_updatedAt": "2026-11-07T15:54:55.328Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "delete-team-group",
+"_updatedAt": "2026-11-07T15:54:55.331Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "edit-team-channel",
+"_updatedAt": "2026-11-07T15:54:55.335Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "remove-team-channel",
+"_updatedAt": "2026-11-07T15:54:55.339Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "view-all-team-channels",
+"_updatedAt": "2026-11-07T15:54:55.343Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "view-all-teams",
+"_updatedAt": "2026-11-07T15:54:55.347Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "remove-closed-livechat-room",
+"_updatedAt": "2026-11-07T15:54:55.350Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "remove-livechat-department",
+"_updatedAt": "2026-11-07T15:54:55.353Z",
+"roles": [
+"livechat-manager",
+"admin"
+]
+},
+{
+"_id": "allow-internal-voice-calls",
+"_updatedAt": "2026-11-07T15:54:55.356Z",
+"roles": [
+"admin",
+"user"
+]
+},
+{
+"_id": "allow-external-voice-calls",
+"_updatedAt": "2026-11-07T15:54:55.360Z",
+"roles": [
+"admin",
+"user"
+]
+},
+{
+"_id": "manage-apps",
+"_updatedAt": "2026-11-07T15:54:55.364Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "post-readonly",
+"_updatedAt": "2026-11-07T15:54:55.368Z",
+"roles": [
+"admin",
+"owner",
+"moderator"
+]
+},
+{
+"_id": "set-readonly",
+"_updatedAt": "2026-11-07T15:54:55.372Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "set-react-when-readonly",
+"_updatedAt": "2026-11-07T15:54:55.375Z",
+"roles": [
+"admin",
+"owner"
+]
+},
+{
+"_id": "manage-cloud",
+"_updatedAt": "2026-11-07T15:54:55.378Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-sounds",
+"_updatedAt": "2026-11-07T15:54:55.381Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "access-mailer",
+"_updatedAt": "2026-11-07T15:54:55.385Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "pin-message",
+"_updatedAt": "2026-11-07T15:54:55.388Z",
+"roles": [
+"owner",
+"moderator",
+"admin"
+]
+},
+{
+"_id": "mobile-upload-file",
+"_updatedAt": "2026-11-07T15:54:55.393Z",
+"roles": [
+"user",
+"federated-external",
+"admin"
+]
+},
+{
+"_id": "send-mail",
+"_updatedAt": "2026-11-07T15:54:55.397Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-federation-data",
+"_updatedAt": "2026-11-07T15:54:55.400Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "access-federation",
+"_updatedAt": "2026-11-07T15:54:55.404Z",
+"roles": [
+"admin",
+"user",
+"federated-external"
+]
+},
+{
+"_id": "add-all-to-room",
+"_updatedAt": "2026-11-07T15:54:55.407Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "get-server-info",
+"_updatedAt": "2026-11-07T15:54:55.410Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "register-on-cloud",
+"_updatedAt": "2026-11-07T15:54:55.414Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "test-admin-options",
+"_updatedAt": "2026-11-07T15:54:55.418Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "test-push-notifications",
+"_updatedAt": "2026-11-07T15:54:55.421Z",
+"roles": [
+"admin",
+"user"
+]
+},
+{
+"_id": "sync-auth-services-users",
+"_updatedAt": "2026-11-07T15:54:55.425Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "restart-server",
+"_updatedAt": "2026-11-07T15:54:55.428Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "remove-slackbridge-links",
+"_updatedAt": "2026-11-07T15:54:55.432Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "view-import-operations",
+"_updatedAt": "2026-11-07T15:54:55.435Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "clear-oembed-cache",
+"_updatedAt": "2026-11-07T15:54:55.438Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "videoconf-ring-users",
+"_updatedAt": "2026-11-07T15:54:55.441Z",
+"roles": [
+"admin",
+"owner",
+"moderator",
+"user"
+]
+},
+{
+"_id": "view-moderation-console",
+"_updatedAt": "2026-11-07T15:54:55.444Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "manage-moderation-actions",
+"_updatedAt": "2026-11-07T15:54:55.448Z",
+"roles": [
+"admin"
+]
+},
+{
+"_id": "bypass-time-limit-edit-and-delete",
+"_updatedAt": "2026-11-07T15:54:55.451Z",
+"roles": [
+"bot",
+"app"
+]
+},
+{
+"_id": "export-messages-as-pdf",
+"_updatedAt": "2026-11-07T15:54:55.456Z",
+"roles": [
+"admin",
+"user"
+]
+},
+{
+"_id": "change-setting-LDAP_Enable",
+"_updatedAt": "2026-11-07T15:54:55.896Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Enable",
+"sorter": -1
+},
+{
+"_id": "change-setting-LDAP_Server_Type",
+"_updatedAt": "2026-11-07T15:54:56.088Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Server_Type",
+"sorter": 0
+},
+{
+"_id": "change-setting-LDAP_Host",
+"_updatedAt": "2026-11-07T15:54:56.177Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Host",
+"sorter": 1
+},
+{
+"_id": "change-setting-LDAP_Port",
+"_updatedAt": "2026-11-07T15:54:56.283Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Port",
+"sorter": 2
+},
+{
+"_id": "change-setting-LDAP_Reconnect",
+"_updatedAt": "2026-11-07T15:54:56.345Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Reconnect",
+"sorter": 3
+},
+{
+"_id": "change-setting-LDAP_Login_Fallback",
+"_updatedAt": "2026-11-07T15:54:56.435Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Login_Fallback",
+"sorter": 4
+},
+{
+"_id": "change-setting-LDAP_Authentication",
+"_updatedAt": "2026-11-07T15:54:56.519Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_Connection_Authentication",
+"sectionPermissionId": "change-setting-LDAP_Connection_Authentication",
+"settingId": "LDAP_Authentication",
+"sorter": 5000
+},
+{
+"_id": "change-setting-LDAP_Authentication_UserDN",
+"_updatedAt": "2026-11-07T15:54:56.581Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_Connection_Authentication",
+"sectionPermissionId": "change-setting-LDAP_Connection_Authentication",
+"settingId": "LDAP_Authentication_UserDN",
+"sorter": 5001
+},
+{
+"_id": "change-setting-LDAP_Authentication_Password",
+"_updatedAt": "2026-11-07T15:54:56.665Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_Connection_Authentication",
+"sectionPermissionId": "change-setting-LDAP_Connection_Authentication",
+"settingId": "LDAP_Authentication_Password",
+"sorter": 5002
+},
+{
+"_id": "change-setting-LDAP_Encryption",
+"_updatedAt": "2026-11-07T15:54:56.760Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_Connection_Encryption",
+"sectionPermissionId": "change-setting-LDAP_Connection_Encryption",
+"settingId": "LDAP_Encryption",
+"sorter": 5000
+},
+{
+"_id": "change-setting-LDAP_CA_Cert",
+"_updatedAt": "2026-11-07T15:54:56.833Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_Connection_Encryption",
+"sectionPermissionId": "change-setting-LDAP_Connection_Encryption",
+"settingId": "LDAP_CA_Cert",
+"sorter": 5001
+},
+{
+"_id": "change-setting-LDAP_Reject_Unauthorized",
+"_updatedAt": "2026-11-07T15:54:56.899Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_Connection_Encryption",
+"sectionPermissionId": "change-setting-LDAP_Connection_Encryption",
+"settingId": "LDAP_Reject_Unauthorized",
+"sorter": 5002
+},
+{
+"_id": "change-setting-LDAP_Timeout",
+"_updatedAt": "2026-11-07T15:54:56.943Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_Connection_Timeouts",
+"sectionPermissionId": "change-setting-LDAP_Connection_Timeouts",
+"settingId": "LDAP_Timeout",
+"sorter": 5000
+},
+{
+"_id": "change-setting-LDAP_Connect_Timeout",
+"_updatedAt": "2026-11-07T15:54:56.985Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_Connection_Timeouts",
+"sectionPermissionId": "change-setting-LDAP_Connection_Timeouts",
+"settingId": "LDAP_Connect_Timeout",
+"sorter": 5001
+},
+{
+"_id": "change-setting-LDAP_Idle_Timeout",
+"_updatedAt": "2026-11-07T15:54:57.044Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_Connection_Timeouts",
+"sectionPermissionId": "change-setting-LDAP_Connection_Timeouts",
+"settingId": "LDAP_Idle_Timeout",
+"sorter": 5002
+},
+{
+"_id": "change-setting-LDAP_Find_User_After_Login",
+"_updatedAt": "2026-11-07T15:54:57.100Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Find_User_After_Login",
+"sorter": 5
+},
+{
+"_id": "change-setting-LDAP_BaseDN",
+"_updatedAt": "2026-11-07T15:54:57.143Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_Filter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_Filter",
+"settingId": "LDAP_BaseDN",
+"sorter": 6000
+},
+{
+"_id": "change-setting-LDAP_User_Search_Filter",
+"_updatedAt": "2026-11-07T15:54:57.177Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_Filter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_Filter",
+"settingId": "LDAP_User_Search_Filter",
+"sorter": 6001
+},
+{
+"_id": "change-setting-LDAP_User_Search_Scope",
+"_updatedAt": "2026-11-07T15:54:57.214Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_Filter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_Filter",
+"settingId": "LDAP_User_Search_Scope",
+"sorter": 6002
+},
+{
+"_id": "change-setting-LDAP_AD_User_Search_Field",
+"_updatedAt": "2026-11-07T15:54:57.238Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_Filter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_Filter",
+"settingId": "LDAP_AD_User_Search_Field",
+"sorter": 6003
+},
+{
+"_id": "change-setting-LDAP_User_Search_Field",
+"_updatedAt": "2026-11-07T15:54:57.269Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_Filter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_Filter",
+"settingId": "LDAP_User_Search_Field",
+"sorter": 6004
+},
+{
+"_id": "change-setting-LDAP_Search_Page_Size",
+"_updatedAt": "2026-11-07T15:54:57.314Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_Filter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_Filter",
+"settingId": "LDAP_Search_Page_Size",
+"sorter": 6005
+},
+{
+"_id": "change-setting-LDAP_Search_Size_Limit",
+"_updatedAt": "2026-11-07T15:54:57.343Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_Filter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_Filter",
+"settingId": "LDAP_Search_Size_Limit",
+"sorter": 6006
+},
+{
+"_id": "change-setting-LDAP_Group_Filter_Enable",
+"_updatedAt": "2026-11-07T15:54:57.385Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_GroupFilter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_GroupFilter",
+"settingId": "LDAP_Group_Filter_Enable",
+"sorter": 6000
+},
+{
+"_id": "change-setting-LDAP_Group_Filter_ObjectClass",
+"_updatedAt": "2026-11-07T15:54:57.422Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_GroupFilter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_GroupFilter",
+"settingId": "LDAP_Group_Filter_ObjectClass",
+"sorter": 6001
+},
+{
+"_id": "change-setting-LDAP_Group_Filter_Group_Id_Attribute",
+"_updatedAt": "2026-11-07T15:54:57.447Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_GroupFilter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_GroupFilter",
+"settingId": "LDAP_Group_Filter_Group_Id_Attribute",
+"sorter": 6002
+},
+{
+"_id": "change-setting-LDAP_Group_Filter_Group_Member_Attribute",
+"_updatedAt": "2026-11-07T15:54:57.491Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_GroupFilter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_GroupFilter",
+"settingId": "LDAP_Group_Filter_Group_Member_Attribute",
+"sorter": 6003
+},
+{
+"_id": "change-setting-LDAP_Group_Filter_Group_Member_Format",
+"_updatedAt": "2026-11-07T15:54:57.507Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_GroupFilter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_GroupFilter",
+"settingId": "LDAP_Group_Filter_Group_Member_Format",
+"sorter": 6004
+},
+{
+"_id": "change-setting-LDAP_Group_Filter_Group_Name",
+"_updatedAt": "2026-11-07T15:54:57.548Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_UserSearch_GroupFilter",
+"sectionPermissionId": "change-setting-LDAP_UserSearch_GroupFilter",
+"settingId": "LDAP_Group_Filter_Group_Name",
+"sorter": 6005
+},
+{
+"_id": "change-setting-LDAP_Unique_Identifier_Field",
+"_updatedAt": "2026-11-07T15:54:57.580Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Unique_Identifier_Field",
+"sorter": 6
+},
+{
+"_id": "change-setting-LDAP_Merge_Existing_Users",
+"_updatedAt": "2026-11-07T15:54:57.599Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Merge_Existing_Users",
+"sorter": 7
+},
+{
+"_id": "change-setting-LDAP_Update_Data_On_Login",
+"_updatedAt": "2026-11-07T15:54:57.633Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Update_Data_On_Login",
+"sorter": 8
+},
+{
+"_id": "change-setting-LDAP_Update_Data_On_OAuth_Login",
+"_updatedAt": "2026-11-07T15:54:57.660Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Update_Data_On_OAuth_Login",
+"sorter": 9
+},
+{
+"_id": "change-setting-LDAP_Default_Domain",
+"_updatedAt": "2026-11-07T15:54:57.679Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"settingId": "LDAP_Default_Domain",
+"sorter": 10
+},
+{
+"_id": "change-setting-LDAP_AD_Username_Field",
+"_updatedAt": "2026-11-07T15:54:57.706Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_AD_Username_Field",
+"sorter": 11000
+},
+{
+"_id": "change-setting-LDAP_Username_Field",
+"_updatedAt": "2026-11-07T15:54:57.735Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_Username_Field",
+"sorter": 11001
+},
+{
+"_id": "change-setting-LDAP_AD_Email_Field",
+"_updatedAt": "2026-11-07T15:54:57.755Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_AD_Email_Field",
+"sorter": 11002
+},
+{
+"_id": "change-setting-LDAP_Email_Field",
+"_updatedAt": "2026-11-07T15:54:57.790Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_Email_Field",
+"sorter": 11003
+},
+{
+"_id": "change-setting-LDAP_AD_Name_Field",
+"_updatedAt": "2026-11-07T15:54:57.809Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_AD_Name_Field",
+"sorter": 11004
+},
+{
+"_id": "change-setting-LDAP_Name_Field",
+"_updatedAt": "2026-11-07T15:54:57.844Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_Name_Field",
+"sorter": 11005
+},
+{
+"_id": "change-setting-LDAP_Extension_Field",
+"_updatedAt": "2026-11-07T15:54:57.873Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_Extension_Field",
+"sorter": 11006
+},
+{
+"_id": "change-setting-LDAP_FederationHomeServer_Field",
+"_updatedAt": "2026-11-07T15:54:57.899Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_FederationHomeServer_Field",
+"sorter": 11007
+},
+{
+"_id": "change-setting-LDAP_DataSync_UseVariables",
+"_updatedAt": "2026-11-07T15:54:57.930Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_DataSync_UseVariables",
+"sorter": 11008
+},
+{
+"_id": "change-setting-LDAP_DataSync_VariableMap",
+"_updatedAt": "2026-11-07T15:54:57.956Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_DataMap",
+"sectionPermissionId": "change-setting-LDAP_DataSync_DataMap",
+"settingId": "LDAP_DataSync_VariableMap",
+"sorter": 11009
+},
+{
+"_id": "change-setting-LDAP_Sync_User_Avatar",
+"_updatedAt": "2026-11-07T15:54:57.983Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_Avatar",
+"sectionPermissionId": "change-setting-LDAP_DataSync_Avatar",
+"settingId": "LDAP_Sync_User_Avatar",
+"sorter": 11000
+},
+{
+"_id": "change-setting-LDAP_Avatar_Field",
+"_updatedAt": "2026-11-07T15:54:57.995Z",
+"group": "LDAP",
+"groupPermissionId": "change-setting-LDAP",
+"level": "settings",
+"roles": [],
+"section": "LDAP_DataSync_Avatar",
+"sectionPermissionId": "change-setting-LDAP_DataSync_Avatar",
+"settingId": "LDAP_Avatar_Field",
+"sorter": 11001
+},
+{
+"_id": "auto-translate",
+"_updatedAt": "2026-11-07T15:55:00.465Z",
+"roles": [
+"admin"
+]
+}
+],
+"remove": [],
+"success": true
+}
