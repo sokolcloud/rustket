@@ -204,7 +204,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidePanel<'_, Message> 
         // Like `stack`: the panel first; the room column does not see the
         // cursor where the panel covers it.
         let is_over = cursor.is_over(layout.bounds());
-        for (i, ((child, state), layout)) in self
+        for (i, ((child, state), child_layout)) in self
             .children
             .iter_mut()
             .rev()
@@ -213,7 +213,14 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidePanel<'_, Message> 
             .enumerate()
         {
             child.as_widget_mut().update(
-                state, event, layout, cursor, renderer, clipboard, shell, viewport,
+                state,
+                event,
+                child_layout,
+                cursor,
+                renderer,
+                clipboard,
+                shell,
+                viewport,
             );
             if shell.is_event_captured() {
                 // A press inside the panel is still a press outside the room
@@ -244,9 +251,13 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for SidePanel<'_, Message> 
                 return;
             }
             if i == 0 && is_over && !cursor.is_levitating() {
-                let interaction = child
-                    .as_widget()
-                    .mouse_interaction(state, layout, cursor, viewport, renderer);
+                let interaction = child.as_widget().mouse_interaction(
+                    state,
+                    child_layout,
+                    cursor,
+                    viewport,
+                    renderer,
+                );
                 if interaction != mouse::Interaction::None {
                     cursor = cursor.levitate();
                 }

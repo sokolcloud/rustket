@@ -1,7 +1,7 @@
 //! Keyboard focus around the right panel.
 #![allow(clippy::unwrap_used)]
 use iced::advanced::widget::{Id, Operation, operation};
-use iced::widget::{column, text_input};
+use iced::widget::{column, container, text_input};
 use iced::{Element, Event, Point, Rectangle, Size, mouse};
 use iced_runtime::user_interface::{Cache, UserInterface};
 use rustket_ui::widget::side_panel;
@@ -102,6 +102,31 @@ fn a_click_in_the_panel_unfocuses_the_room_column() {
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
     ];
     let _ = ui.update(&events, at, &mut r, &mut NoClip, &mut out);
+    let mut f = Focused(Vec::new());
+    ui.operate(&r, &mut f);
+    assert_eq!(f.0, [Id::new("side")]);
+}
+
+/// The room column gets its own layout when it is told about a click the
+/// panel captured: nested containers unwrap their child layout and used to
+/// panic with the panel's.
+#[test]
+fn a_click_in_the_panel_gives_the_room_column_its_own_layout() {
+    let mut r = renderer();
+    let view = side_panel(
+        container(container(
+            text_input("", "").id("main").on_input(|_| M::Input),
+        )),
+        column![text_input("", "").id("side").on_input(|_| M::Input)],
+        Some(300.0),
+    );
+    let mut ui = UserInterface::build(view, Size::new(800.0, 400.0), Cache::default(), &mut r);
+    assert_eq!(focus(&mut ui, &r, "main"), [Id::new("main")]);
+    let at = mouse::Cursor::Available(Point::new(600.0, 10.0));
+    let events = [Event::Mouse(mouse::Event::ButtonPressed(
+        mouse::Button::Left,
+    ))];
+    let _ = ui.update(&events, at, &mut r, &mut NoClip, &mut Vec::new());
     let mut f = Focused(Vec::new());
     ui.operate(&r, &mut f);
     assert_eq!(f.0, [Id::new("side")]);
