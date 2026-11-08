@@ -127,8 +127,8 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
         v.push(Act::MarkUnread);
     }
     // The web client's "Start a discussion" (prefills the parent room and
-    // the message).
-    if perm::can_start_discussion_from(ws, m) {
+    // the message); not offered on thread replies, as in the web.
+    if m.tmid.is_none() && perm::can_start_discussion_from(ws, m) {
         v.push(Act::StartDiscussion);
     }
     if ws.settings().threads_enabled() && !omnichannel {
@@ -420,6 +420,21 @@ mod tests {
         assert!(!acts.contains(&Act::MarkUnread));
         assert!(!acts.contains(&Act::Report));
         assert!(!acts.contains(&Act::Follow));
+    }
+
+    #[test]
+    fn start_discussion_not_on_thread_replies() {
+        use serde_json::json;
+        let w = ws(
+            &[("start-discussion", &["user"])],
+            &[("Discussion_enabled", json!(true))],
+            RoomType::Channel,
+        );
+        let own = msg("a", "me");
+        assert!(available(&w, &own, now()).contains(&Act::StartDiscussion));
+        let mut reply = own.clone();
+        reply.tmid = Some("p".into());
+        assert!(!available(&w, &reply, now()).contains(&Act::StartDiscussion));
     }
 
     #[test]

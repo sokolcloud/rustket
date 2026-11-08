@@ -1076,6 +1076,15 @@ fn set_unread(app: &mut App, sid: &ServerId, rid: &str, unread: u64, at: i64) {
     let _ = app.update(e);
 }
 
+/// Applies "marked unread on another device" to the workspace only and
+/// returns whether the open room would be marked read again.
+fn unread_elsewhere_wants_read(app: &mut App, sid: &ServerId, at: i64) -> bool {
+    let s = app.servers.get_mut(sid).unwrap();
+    s.workspace
+        .apply_subscription(rustket_core::Change::Updated, sub("r1", "A", 1, at));
+    s.rooms["r1"].wants_auto_read(&s.workspace)
+}
+
 /// "Mark unread" leaves the room (like the web client) and nothing marks it
 /// read again; the automatic read mark only follows new messages.
 #[tokio::test]
@@ -1094,10 +1103,11 @@ async fn mark_unread_sticks() {
     let s = &app.servers[&sid];
     assert!(!s.rooms["r1"].wants_auto_read(&s.workspace));
     let _ = app.update(read_done(&app));
-    // Marked unread elsewhere (no new message): not undone.
+    // Marked unread elsewhere (no new message): not undone. The predicate is
+    // checked before the app sees the change (afterwards a read mark it ran
+    // would hide the problem).
+    assert!(!unread_elsewhere_wants_read(&mut app, &sid, T0 + 12));
     set_unread(&mut app, &sid, "r1", 3, T0 + 12);
-    let s = &app.servers[&sid];
-    assert!(!s.rooms["r1"].wants_auto_read(&s.workspace));
     // A newer message while the window is in the background: marked read
     // once it is focused again.
     let _ = app.update(Message::WindowFocused(false));
@@ -1311,4 +1321,216 @@ async fn recent_status_texts_are_saved() {
     app.flush_config();
     let back = AppConfig::load(dir.path()).unwrap();
     assert_eq!(back.recent_status_texts, ["On a call"]);
+}
+
+/// The room was opened while read and its history arrived afterwards (no
+/// new message): an unread mark made on another device is kept.
+#[tokio::test]
+async fn unread_elsewhere_after_quiet_history_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::MarkedRead(Ok(())),
+    ));
+    let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+    let (cursor, ticket) = ws.begin_load_older_ticket("r1").unwrap();
+    let page = vec![rc_msg("h1", "r1", T0 - 50, "B")];
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::HistoryPage(cursor, ticket, Ok(page)),
+    ));
+    assert!(
+        app.servers[&sid]
+            .workspace
+            .timeline("r1")
+            .unwrap()
+            .get("h1")
+            .is_some()
+    );
+    assert!(!unread_elsewhere_wants_read(&mut app, &sid, T0 + 12));
+}
+
+/// Own messages never count as unread: marked unread elsewhere after an own
+/// message is kept; the server's `ls` of a read room is a baseline too.
+#[tokio::test]
+async fn unread_elsewhere_after_own_message_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let read_done =
+        |app: &App| room_msg(app, &sid, "r1", rustket::room::Message::MarkedRead(Ok(())));
+    let _ = app.update(read_done(&app));
+    deliver(&mut app, &sid, rc_msg("b1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 11); // auto-read
+    let _ = app.update(read_done(&app));
+    set_unread(&mut app, &sid, "r1", 0, T0 + 12);
+    deliver(&mut app, &sid, rc_msg("own1", "r1", T0 + 20, "A"));
+    assert!(!unread_elsewhere_wants_read(&mut app, &sid, T0 + 30));
+
+    // A message from someone else read on another device (`ls` after it).
+    set_unread(&mut app, &sid, "r1", 0, T0 + 31);
+    deliver(&mut app, &sid, rc_msg("b2", "r1", T0 + 40, "B"));
+    let mut read = sub("r1", "A", 0, T0 + 41);
+    read.ls = Some(ts(T0 + 41));
+    let e = ev(
+        &app,
+        &sid,
+        SessionEvent::SubscriptionChanged {
+            kind: ChangeKind::Updated,
+            sub: Box::new(read),
+        },
+    );
+    let _ = app.update(e);
+    assert!(!unread_elsewhere_wants_read(&mut app, &sid, T0 + 50));
+    // A newer message from someone else still enables the auto-read (in
+    // the background: nothing marks it read yet).
+    let _ = app.update(Message::WindowFocused(false));
+    deliver(&mut app, &sid, rc_msg("b3", "r1", T0 + 60, "B"));
+    assert!(unread_elsewhere_wants_read(&mut app, &sid, T0 + 61));
+}
+
+/// A reply in a followed thread only sets `alert` (it is not in the room
+/// timeline): the open, focused room clears it.
+#[tokio::test]
+async fn thread_reply_alert_is_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let read_done =
+        |app: &App| room_msg(app, &sid, "r1", rustket::room::Message::MarkedRead(Ok(())));
+    let _ = app.update(read_done(&app));
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 11);
+    let _ = app.update(read_done(&app));
+    set_unread(&mut app, &sid, "r1", 0, T0 + 12);
+    let mut reply = rc_msg("t1", "r1", T0 + 20, "B");
+    reply.tmid = Some("p1".into());
+    deliver(&mut app, &sid, reply);
+    let mut alerted = sub("r1", "A", 0, T0 + 21);
+    alerted.alert = true;
+    let s = app.servers.get_mut(&sid).unwrap();
+    s.workspace
+        .apply_subscription(rustket_core::Change::Updated, alerted);
+    assert!(s.rooms["r1"].wants_auto_read(&s.workspace));
+}
+
+/// preview-c-room denied: the lock state loads nothing; after joining the
+/// history is requested.
+#[tokio::test]
+async fn join_after_blocked_preview_loads_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    {
+        let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+        ws.apply_permission(
+            rustket_core::Change::Updated,
+            rocketchat::models::Permission {
+                id: "preview-c-room".into(),
+                roles: vec!["admin".into()],
+                updated_at: None,
+            },
+        );
+        let mut me = user("A", "alice");
+        me.roles = Some(vec!["user".into()]);
+        ws.apply_me(me);
+        ws.apply_room(rustket_core::Change::Updated, room("p1", T0));
+    }
+    let _ = app.open_room(&sid, "p1");
+    {
+        let s = &app.servers[&sid];
+        assert!(rustket::room::preview_blocked(&s.workspace, "p1"));
+        let p = &s.workspace.timeline("p1").unwrap().pagination;
+        assert!(p.error.is_none() && !p.loaded && !p.loading_before);
+    }
+    set_unread(&mut app, &sid, "p1", 0, T0 + 5);
+    let s = &app.servers[&sid];
+    assert!(!rustket::room::preview_blocked(&s.workspace, "p1"));
+    // Without a session the request fails at once ("not connected").
+    let p = &s.workspace.timeline("p1").unwrap().pagination;
+    assert!(p.error.is_some() || p.loading_before || p.loaded);
+}
+
+/// "Create discussion" and "Start a discussion" inside a discussion use the
+/// discussion's parent (the server rejects nested discussions).
+#[tokio::test]
+async fn create_discussion_inside_a_discussion_uses_parent() {
+    use rustket::dialogs::create_room::{Kind, Request};
+    use rustket::room::header::Message as Hm;
+    use rustket::room::timeline::{Act, Message as Tm};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    {
+        let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+        for id in ["start-discussion", "start-discussion-other-user"] {
+            ws.apply_permission(
+                rustket_core::Change::Updated,
+                rocketchat::models::Permission {
+                    id: id.into(),
+                    roles: vec!["user".into()],
+                    updated_at: None,
+                },
+            );
+        }
+        ws.apply_setting(
+            rustket_core::Change::Updated,
+            rocketchat::models::Setting {
+                id: "Discussion_enabled".into(),
+                value: serde_json::json!(true),
+                ..Default::default()
+            },
+        );
+        let mut me = user("A", "alice");
+        me.roles = Some(vec!["user".into()]);
+        ws.apply_me(me);
+        let mut d = room("d1", T0);
+        d.prid = Some("r1".into());
+        ws.apply_room(rustket_core::Change::Updated, d);
+        let mut s = sub("d1", "A", 0, T0);
+        s.prid = Some("r1".into());
+        ws.apply_subscription(rustket_core::Change::Inserted, s);
+    }
+    let _ = app.open_room(&sid, "d1");
+    let dialog = |app: &App| match app.modals.last() {
+        Some(Modal::CreateRoom(_, c)) => {
+            let (name, kind) = (
+                c.parent.clone().unwrap().1,
+                c.effective_kind(&app.servers[&sid].workspace),
+            );
+            match c.request(Kind::Discussion) {
+                Request::Discussion { prid, pmid, .. } => (prid, pmid, name, kind, c.name.clone()),
+                _ => unreachable!(),
+            }
+        }
+        _ => panic!("create dialog expected"),
+    };
+    let m = room_msg(
+        &app,
+        &sid,
+        "d1",
+        rustket::room::Message::Header(Hm::CreateDiscussion),
+    );
+    let _ = app.update(m);
+    let (prid, pmid, parent_name, kind, _) = dialog(&app);
+    assert_eq!((prid.as_str(), pmid), ("r1", None));
+    assert_eq!(parent_name, "r1");
+    assert_eq!(kind, Some(Kind::Discussion));
+    let _ = app.update(Message::CreateRoom(
+        sid.clone(),
+        rustket::dialogs::create_room::Message::Close,
+    ));
+    deliver(&mut app, &sid, rc_msg("m1", "d1", T0 + 10, "B"));
+    let m = room_msg(
+        &app,
+        &sid,
+        "d1",
+        rustket::room::Message::Timeline(Tm::Act("m1".into(), Act::StartDiscussion)),
+    );
+    let _ = app.update(m);
+    let (prid, pmid, _, _, name) = dialog(&app);
+    assert_eq!((prid.as_str(), pmid.as_deref()), ("r1", Some("m1")));
+    // The name is prefilled from the message, as in the web client.
+    assert_eq!(name, "text m1");
 }

@@ -152,6 +152,44 @@ pub async fn glue_shots(
         rustket::dialogs::create_room::Message::Close,
     ));
 
+    // "Start a discussion" from a message: locked parent, excerpt, name
+    // prefilled from the message.
+    let mid = d.app.servers[sid]
+        .workspace
+        .timeline(rid)
+        .and_then(|t| {
+            t.iter()
+                .rev()
+                .find(|i| {
+                    !i.is_pending()
+                        && i.message.tmid.is_none()
+                        && !i.message.is_system()
+                        && !i.message.msg.is_empty()
+                })
+                .map(|i| i.message.id.clone())
+        })
+        .expect("a message in the dev channel");
+    let m = room_msg(
+        d,
+        sid,
+        rid,
+        room::Message::Timeline(room::timeline::Message::Act(
+            mid.clone(),
+            room::timeline::Act::StartDiscussion,
+        )),
+    );
+    d.send(m);
+    assert!(
+        matches!(d.app.modals.last(), Some(Modal::CreateRoom(_, c))
+            if c.pmid.as_ref().is_some_and(|p| p.0 == mid) && !c.name.is_empty()),
+        "discussion-from-message dialog expected"
+    );
+    both(d, out, "g2b-discussion-from-message");
+    d.send(Message::CreateRoom(
+        sid.clone(),
+        rustket::dialogs::create_room::Message::Close,
+    ));
+
     // Preview of a channel the user has not joined.
     let suffix = format!("{:x}", chrono::Utc::now().timestamp_millis() as u32);
     let name = format!("rk-snap-preview-{suffix}");

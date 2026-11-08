@@ -124,11 +124,15 @@ pub fn preview_blocked(ws: &Workspace, rid: &str) -> bool {
         && !rustket_core::permissions::has_permission(ws, "preview-c-room", None)
 }
 
-/// `ts` (ms) of the newest message of the room timeline.
-fn newest_ts(ws: &Workspace, rid: &str) -> Option<i64> {
+/// `ts` (ms) of the newest message from someone else in the room timeline
+/// (own and pending messages never make a room unread; like the web's read
+/// state manager).
+fn newest_from_others(ws: &Workspace, rid: &str) -> Option<i64> {
+    let me = ws.user_id();
     ws.timeline(rid)?
         .iter()
         .rev()
+        .filter(|i| !i.is_pending() && me != Some(i.message.u.id.as_str()))
         .find_map(|i| i.message.ts)
         .map(|d| d.timestamp_millis())
 }
@@ -163,10 +167,10 @@ pub enum Effect {
     Compose(ComposeIntent),
     /// An emoji was used (picker): record it in the persisted recent list.
     RecentEmoji(String),
-    /// Mark the room unread from message `mid` (`None`: the whole room). The
-    /// app leaves the room first, like the web client, so the auto-read of
-    /// the open room cannot undo it.
-    MarkUnread(Option<String>),
+    /// Mark the room unread from message `mid`. The app leaves the room
+    /// first, like the web client, so the auto-read of the open room cannot
+    /// undo it.
+    MarkUnread(String),
     /// Open the "create discussion" dialog with this room as the parent,
     /// optionally started from message `pmid`.
     StartDiscussion {
@@ -275,7 +279,8 @@ pub struct RoomView {
     pub composer: composer::Composer,
     pub panel: panel::Panel,
     marking_read: bool,
-    /// Newest message (`ts` ms) when the room was last marked read: the
+    /// Newest message from others (`ts` ms) the user has seen as read (last
+    /// read mark, or history loaded after the read mark of `open`): the
     /// automatic read mark only runs for messages newer than that, so an
     /// unread mark made elsewhere is not undone.
     marked_upto: Option<i64>,
@@ -349,14 +354,19 @@ impl RoomView {
         ws.subscription(&self.rid).is_none()
     }
 
-    /// Whether the automatic read mark (focused room, new messages) should
-    /// run: the room is unread and a message newer than the last read mark
-    /// arrived.
+    /// Whether the automatic read mark (focused room) should run: the room
+    /// is unread and a message from someone else newer than the last read
+    /// mark arrived, or only the alert is set (replies in a followed thread,
+    /// which are not in the room timeline). An unread mark made elsewhere
+    /// (unread > 0, no newer message) is kept.
     pub fn wants_auto_read(&self, ws: &Workspace) -> bool {
-        let unread = ws
-            .subscription(&self.rid)
-            .is_some_and(|sub| sub.unread > 0 || sub.alert);
-        unread && newest_ts(ws, &self.rid) > self.marked_upto
+        let Some(sub) = ws.subscription(&self.rid) else {
+            return false;
+        };
+        if sub.unread == 0 {
+            return sub.alert;
+        }
+        newest_from_others(ws, &self.rid) > self.marked_upto
     }
 
     pub fn has_watch(&self) -> bool {
@@ -431,7 +441,9 @@ impl RoomView {
             return Task::none();
         }
         self.marking_read = true;
-        self.marked_upto = self.marked_upto.max(newest_ts(ctx.workspace, &self.rid));
+        self.marked_upto = self
+            .marked_upto
+            .max(newest_from_others(ctx.workspace, &self.rid));
         let rid = self.rid.clone();
         ctx.rest_task(
             move |rest| async move { rest.subscriptions_read(&rid).await },
@@ -468,6 +480,12 @@ impl RoomView {
                 // A page for an earlier timeline (reset, reopened) is dropped.
                 ctx.workspace
                     .finish_load_older_ticket(&self.rid, ticket, cursor, result);
+                // `open` marked the room read: the loaded history counts as seen.
+                if !self.is_preview(ctx.workspace) {
+                    self.marked_upto = self
+                        .marked_upto
+                        .max(newest_from_others(ctx.workspace, &self.rid));
+                }
                 // A page of hidden thread replies only: fetch the next one.
                 let empty_page = ctx.workspace.timeline(&self.rid).is_some_and(|t| {
                     t.pagination.last_page_added == 0 && t.pagination.has_more_before
@@ -529,6 +547,25 @@ impl RoomView {
 
     /// Called after workspace changes were applied (realtime events, syncs).
     pub fn on_changes(&mut self, changes: &Changes, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        // The server says the room is read: everything up to `ls` was seen.
+        if changes.rooms.contains(&self.rid)
+            && let Some(sub) = ctx.workspace.subscription(&self.rid)
+            && sub.unread == 0
+            && !sub.alert
+            && let Some(ls) = &sub.ls
+        {
+            self.marked_upto = self.marked_upto.max(Some(ls.timestamp_millis()));
+        }
+        // Joined after a preview the server refused to show: load the history.
+        let history = if changes.rooms.contains(&self.rid)
+            && !preview_blocked(ctx.workspace, &self.rid)
+            && ctx.workspace.timeline(&self.rid).is_some_and(|t| {
+                !t.pagination.loaded && !t.pagination.loading_before && t.pagination.error.is_none()
+            }) {
+            self.load_older(ctx).task
+        } else {
+            Task::none()
+        };
         let actions = [
             self.header.on_changes(changes, ctx).map(Message::Header),
             self.timeline
@@ -540,7 +577,7 @@ impl RoomView {
             self.panel.on_changes(changes, ctx).map(Message::Panel),
         ];
         let mut merged = Action::none();
-        let mut tasks = Vec::new();
+        let mut tasks = vec![history];
         for a in actions {
             tasks.push(a.task);
             merged.effects.extend(a.effects);

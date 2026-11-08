@@ -241,8 +241,6 @@ pub enum Message {
     Sent(String, Res<Box<rocketchat::models::Message>>),
     Updated(Res<Box<rocketchat::models::Message>>),
     CommandRan(Res<serde_json::Value>),
-    Retry(String),
-    Discard(String),
     Typed(Res<()>),
     TypingTick,
     DraftTick(u64),
@@ -705,8 +703,6 @@ impl Composer {
                     e.user_text(),
                 )),
             },
-            Message::Retry(id) => self.retry(&id, ctx),
-            Message::Discard(id) => self.discard(&id, ctx),
             Message::Typed(r) => {
                 if let Err(e) = r {
                     tracing::debug!(error = %e, "user-activity failed");

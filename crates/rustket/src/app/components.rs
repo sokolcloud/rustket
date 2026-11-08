@@ -23,22 +23,30 @@ pub(super) enum Source {
 }
 
 /// The create dialog for a discussion of `rid` (from message `pmid`), or
-/// `None` when the room is unknown.
+/// `None` when the room is unknown. Inside a discussion the parent is the
+/// discussion's own parent (`room.prid || room._id`, as in the web client):
+/// the server rejects nested discussions.
 pub(super) fn discussion_dialog(
     ws: &rustket_core::Workspace,
     rid: &str,
     pmid: Option<&str>,
     real_names: Option<bool>,
 ) -> Option<create_room::CreateRoom> {
-    let e = ws.room(rid)?;
+    ws.room(rid)?;
+    let parent = rustket_core::permissions::discussion_parent(ws, rid);
     let use_real = ws.use_real_names(real_names);
-    let name = rustket_core::room_list::display_name(ws, e, use_real);
-    let dialog = create_room::CreateRoom::discussion_in(rid, &name);
+    let name = ws
+        .room(&parent)
+        .map(|e| rustket_core::room_list::display_name(ws, e, use_real))
+        .unwrap_or_else(|| parent.clone());
+    let dialog = create_room::CreateRoom::discussion_in(&parent, &name);
     Some(match pmid {
         Some(mid) => {
             let excerpt = ws
                 .timeline(rid)
                 .and_then(|t| t.get(mid))
+                // A thread root opened in the thread panel only.
+                .or_else(|| ws.thread(mid).and_then(|t| t.get(mid)))
                 .map(|i| crate::room::render::plain_text(&i.message))
                 .unwrap_or_default();
             let excerpt: String = excerpt.chars().take(200).collect();

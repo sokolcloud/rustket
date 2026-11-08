@@ -552,7 +552,7 @@ impl Timeline {
             Act::Quote => Action::effect(Effect::Compose(ComposeIntent::Quote(mid))),
             Act::Edit => Action::effect(Effect::Compose(ComposeIntent::Edit(mid))),
             // Leaves the room first (the app), like the web client.
-            Act::MarkUnread => Action::effect(Effect::MarkUnread(Some(mid))),
+            Act::MarkUnread => Action::effect(Effect::MarkUnread(mid)),
             Act::StartDiscussion => Action::effect(Effect::StartDiscussion { pmid: Some(mid) }),
             Act::CopyText => Action::task(iced::clipboard::write(render::plain_text(&m)))
                 .with(Self::toast_ok(t!("room_timeline.copied").into_owned())),

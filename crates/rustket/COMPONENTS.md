@@ -182,7 +182,7 @@ Return them in `Action { task, effects }` (`Action::none()`,
 | `OpenUrl(url)` | App | external browser; only absolute `http`, `https`, `mailto` URLs (others are refused) |
 | `RecentEmoji(key)` | App | an emoji was used (picker): pushed to `AppConfig::recent_emoji` and saved |
 | `CloseRoom` | App | close this room's view (e.g. after hiding the room); the room stays in the workspace |
-| `MarkUnread(Option<mid>)` | App | leaves the room (like the web client), then `subscriptions.unread`; toasts the result |
+| `MarkUnread(mid)` | App | leaves the room (like the web client), then `subscriptions.unread`; toasts the result |
 | `StartDiscussion { pmid }` | App | the create dialog for a discussion of this room (`CreateRoom::discussion_in`, `from_message`) |
 
 What `RoomView` already does: `workspace.open_room` on open, keeps the
@@ -246,11 +246,18 @@ composer has no failed list of its own).
   and forgets a previewed room (`Workspace::forget_preview`). `RoomView::hide`
   stops typing when another server becomes active.
 - The automatic read mark of the focused room (`RoomView::wants_auto_read`)
-  runs only for messages newer than the last read mark, so an unread mark
-  made elsewhere is not undone.
+  runs only for messages from others newer than what was seen (last read
+  mark, history loaded after the open's read mark, the server's `ls` of a
+  read room), or when only `alert` is set (followed-thread replies), so an
+  unread mark made elsewhere is not undone. Own and pending messages never
+  count.
+- `ServerState::close_rooms` closes the room views and returns their
+  stop-typing task; `ServerState::reset` (unchanged signature) drops them
+  silently.
 - A room without a subscription is a preview (`RoomView::is_preview`): no read
   mark, the composer shows the Join bar; without `preview-c-room` the history
-  is not requested and an explanation is shown instead.
+  is not requested and an explanation is shown instead; once joined, the
+  history is loaded (`RoomView::on_changes`).
 - The header gets the open panel (`Header::set_panel`): menu entries open or
   keep their panel; the header buttons toggle.
 

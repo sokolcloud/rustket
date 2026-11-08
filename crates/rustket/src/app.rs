@@ -1109,7 +1109,7 @@ impl App {
             return Task::none();
         };
         // A fresh login: no session of the old one is left to tell.
-        let _ = s.reset();
+        s.reset();
         s.login = None;
         s.restoring = false;
         s.credentials = Some(r.credentials());
@@ -1162,7 +1162,7 @@ impl App {
     fn logged_out(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
         if let Some(s) = self.servers.get_mut(sid) {
             // The token was rejected: nothing can be sent with it any more.
-            let _ = s.reset();
+            s.reset();
         }
         let delete = self.delete_token(sid);
         let purge = self.purge_images(sid);
@@ -1186,9 +1186,15 @@ impl App {
         let (url, tls) = (s.url.clone(), s.tls.clone());
         let kind = self.config.server(sid).and_then(|e| e.token_kind);
         let revoke = everywhere || kind == Some(TokenKind::Login);
-        // Stop-typing calls of the open rooms go out before the logout.
+        // Stop-typing calls of the open rooms; not chained before the
+        // logout, which must not wait for a DDP call while the socket is down
+        // (the server drops the activity with the connection anyway).
         let typing = match self.servers.get_mut(sid) {
-            Some(s) => s.reset().discard(),
+            Some(s) => {
+                let t = s.close_rooms().discard();
+                s.reset();
+                t
+            }
             None => Task::none(),
         };
         let call = match (revoke, handle, credentials) {
@@ -1228,12 +1234,7 @@ impl App {
         };
         let delete = self.delete_token(sid);
         let purge = self.purge_images(sid);
-        Task::batch([
-            typing.chain(call),
-            delete,
-            purge,
-            self.show_login(sid, None),
-        ])
+        Task::batch([typing, call, delete, purge, self.show_login(sid, None)])
     }
 
     fn remove_server(&mut self, sid: &ServerId) -> Task<Message> {
@@ -1502,7 +1503,7 @@ impl App {
     /// "Mark unread": leaves the room first (like the web client), so the
     /// automatic read mark of the open room cannot undo it, then calls
     /// `subscriptions.unread`.
-    fn mark_unread(&mut self, sid: &ServerId, rid: &str, mid: Option<String>) -> Task<Message> {
+    fn mark_unread(&mut self, sid: &ServerId, rid: &str, mid: String) -> Task<Message> {
         let close = self.close_room_view(sid, rid);
         let Some(rest) = self
             .servers
@@ -1515,7 +1516,7 @@ impl App {
         let (sid, rid) = (sid.clone(), rid.to_owned());
         let call = Task::perform(
             async move {
-                rest.subscriptions_unread(&rid, mid.as_deref())
+                rest.subscriptions_unread(&rid, Some(&mid))
                     .await
                     .map_err(Failure::from)
             },

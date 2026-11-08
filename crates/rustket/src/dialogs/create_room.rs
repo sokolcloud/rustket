@@ -184,15 +184,33 @@ impl CreateRoom {
         }
     }
 
-    /// A discussion started from message `pmid` (`excerpt` is shown).
+    /// A discussion started from message `pmid` (`excerpt` is shown and,
+    /// as in the web client, its first 140 characters prefill the name).
     pub fn from_message(mut self, pmid: &str, excerpt: &str) -> Self {
         self.pmid = Some((pmid.to_owned(), excerpt.to_owned()));
+        if self.name.is_empty() {
+            self.name = excerpt
+                .chars()
+                .take(140)
+                .collect::<String>()
+                .trim()
+                .to_owned();
+        }
         self
     }
 
     /// The kind actually used: the requested one if allowed, else the first
     /// allowed tab.
     pub fn effective_kind(&self, ws: &Workspace) -> Option<Kind> {
+        // Opened from a room: a discussion in that room or nothing (the
+        // permission may be granted through room roles only).
+        if self.from_room {
+            let ok = match &self.parent {
+                Some((rid, _)) => can_discuss_in(ws, rid),
+                None => allowed(ws, Kind::Discussion),
+            };
+            return ok.then_some(Kind::Discussion);
+        }
         if allowed(ws, self.kind) {
             return Some(self.kind);
         }
@@ -435,6 +453,10 @@ impl CreateRoom {
                 Action::none()
             }
             Message::ClearParent => {
+                // The parent is locked when opened from a room.
+                if self.from_room {
+                    return Action::none();
+                }
                 self.parent = None;
                 Action::none()
             }
@@ -752,19 +774,21 @@ impl CreateRoom {
     fn parent_picker<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
         if let Some((rid, name)) = &self.parent {
             let ok = can_discuss_in(ctx.workspace, rid);
-            let mut col = column![
-                text(t!("create_room.parent")).size(TEXT_BODY - 1.0),
-                row![
-                    icon::sized(parent_icon(ctx.workspace, rid), 14.0).style(style::text_secondary),
-                    text(name.as_str()).size(TEXT_BODY).width(Length::Fill),
+            let mut line = row![
+                icon::sized(parent_icon(ctx.workspace, rid), 14.0).style(style::text_secondary),
+                text(name.as_str()).size(TEXT_BODY).width(Length::Fill),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center);
+            if !self.from_room {
+                line = line.push(
                     button(icon::sized(Icon::X, 14.0))
                         .style(style::button_icon)
                         .on_press(Message::ClearParent),
-                ]
-                .spacing(SPACE_2)
-                .align_y(Alignment::Center)
-            ]
-            .spacing(SPACE_1);
+                );
+            }
+            let mut col = column![text(t!("create_room.parent")).size(TEXT_BODY - 1.0), line]
+                .spacing(SPACE_1);
             if !ok {
                 col = col.push(
                     text(t!("create_room.parent_not_allowed"))
@@ -1058,6 +1082,68 @@ mod tests {
         assert!(c.team_private);
         c.name = "rk-team".into();
         assert!(matches!(c.request(Kind::Team), Request::Team(v) if v["type"] == 1));
+    }
+
+    #[test]
+    fn from_room_is_a_discussion_or_nothing() {
+        use rocketchat::models::{Room, Subscription};
+        // start-discussion only through the room's owner role.
+        let mut w = ws(&["create-c"]);
+        w.apply_permission(
+            Change::Inserted,
+            Permission {
+                id: "start-discussion".into(),
+                roles: vec!["owner".into()],
+                updated_at: None,
+            },
+        );
+        w.apply_room(
+            Change::Inserted,
+            Room {
+                id: "R".into(),
+                t: RoomType::Channel,
+                ..Default::default()
+            },
+        );
+        w.apply_subscription(
+            Change::Inserted,
+            Subscription {
+                id: "sR".into(),
+                rid: "R".into(),
+                roles: Some(vec!["owner".into()]),
+                ..Default::default()
+            },
+        );
+        let mut c = CreateRoom::discussion_in("R", "room");
+        assert_eq!(c.effective_kind(&w), Some(Kind::Discussion));
+        assert_eq!(
+            CreateRoom::new(Kind::Discussion).effective_kind(&w),
+            Some(Kind::Channel)
+        );
+        // Without the room role: no fallback to a channel.
+        w.apply_subscription(
+            Change::Updated,
+            Subscription {
+                id: "sR".into(),
+                rid: "R".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(c.effective_kind(&w), None);
+        assert!(!c.ready(&w));
+        // The parent is locked.
+        with_ctx(&mut w, |ctx| {
+            let _ = c.update(Message::ClearParent, ctx);
+        });
+        assert_eq!(c.parent.as_ref().map(|p| p.0.as_str()), Some("R"));
+    }
+
+    #[test]
+    fn from_message_prefills_the_name() {
+        let long = "x".repeat(300);
+        let c = CreateRoom::discussion_in("R", "room").from_message("m", &long);
+        assert_eq!(c.name.chars().count(), 140);
+        assert_eq!(c.pmid.as_ref().map(|p| p.0.as_str()), Some("m"));
     }
 
     #[test]

@@ -112,28 +112,6 @@ mod tests {
         out
     }
 
-    /// The English and Russian key sets are identical (every key of every
-    /// locale file has both translations; nothing else is defined).
-    #[test]
-    fn en_and_ru_key_sets_match() {
-        let entries = locale_entries();
-        let en: std::collections::BTreeSet<&String> = entries
-            .iter()
-            .filter(|(_, (en, _))| !en.is_empty())
-            .map(|(k, _)| k)
-            .collect();
-        let ru: std::collections::BTreeSet<&String> = entries
-            .iter()
-            .filter(|(_, (_, ru))| !ru.is_empty())
-            .map(|(k, _)| k)
-            .collect();
-        let only_en: Vec<_> = en.difference(&ru).collect();
-        let only_ru: Vec<_> = ru.difference(&en).collect();
-        assert!(only_en.is_empty(), "keys without ru: {only_en:?}");
-        assert!(only_ru.is_empty(), "keys without en: {only_ru:?}");
-        assert_eq!(en.len(), entries.len());
-    }
-
     /// Review #30: every key has a non-empty en and ru text, and every literal
     /// `t!("…")` key used in the sources is defined.
     #[test]
