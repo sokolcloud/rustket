@@ -83,11 +83,9 @@ pub fn status(command: Option<&str>, exe: Option<&Path>) -> (Option<String>, boo
 /// The current handler and whether it is `exe` (blocking).
 #[cfg(windows)]
 pub fn query(exe: Option<&Path>) -> (Option<String>, bool) {
-    use winreg::RegKey;
-    use winreg::enums::HKEY_CLASSES_ROOT;
-    let command = RegKey::predef(HKEY_CLASSES_ROOT)
-        .open_subkey(format!(r"rocketchat\{COMMAND_KEY}"))
-        .and_then(|k| k.get_value::<String, _>(""))
+    let command = windows_registry::CLASSES_ROOT
+        .open(format!(r"rocketchat\{COMMAND_KEY}"))
+        .and_then(|k| k.get_string(""))
         .ok();
     status(command.as_deref(), exe)
 }
@@ -95,18 +93,14 @@ pub fn query(exe: Option<&Path>) -> (Option<String>, bool) {
 /// Writes the per-user keys for `exe`.
 #[cfg(windows)]
 pub fn register(exe: &Path) -> Result<(), super::RegisterError> {
-    use winreg::RegKey;
-    use winreg::enums::HKEY_CURRENT_USER;
-    let write = || -> std::io::Result<()> {
-        let (root, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(KEY)?;
-        root.set_value("", &PROTOCOL_NAME)?;
-        root.set_value(URL_PROTOCOL, &"")?;
-        let (icon, _) = root.create_subkey(ICON_KEY)?;
-        icon.set_value("", &icon_value(exe))?;
-        let (command, _) = root.create_subkey(COMMAND_KEY)?;
-        command.set_value("", &command_value(exe))
+    let write = || -> windows_registry::Result<()> {
+        let root = windows_registry::CURRENT_USER.create(KEY)?;
+        root.set_string("", PROTOCOL_NAME)?;
+        root.set_string(URL_PROTOCOL, "")?;
+        root.create(ICON_KEY)?.set_string("", icon_value(exe))?;
+        root.create(COMMAND_KEY)?.set_string("", command_value(exe))
     };
-    write().map_err(super::RegisterError::Registry)
+    write().map_err(|e| super::RegisterError::Registry(std::io::Error::other(e.to_string())))
 }
 
 #[cfg(test)]
