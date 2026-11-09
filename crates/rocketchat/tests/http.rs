@@ -215,15 +215,58 @@ async fn method_call_http_errors() {
         .await;
     assert!(r.is_err(), "{r:?}");
 
-    let (pa, _) = serve(|_| {
-        Some(json_ok(
-            r#"{"success":true,"message":"{\"msg\":\"result\",\"id\":\"1\",\"result\":false}"}"#,
-        ))
+    // Pre-8.9 server: no `rooms.history` route, so `loadHistory` is used.
+    let (pa, _) = serve(|req| {
+        Some(if req.contains("rooms.history") {
+            http_response("404 Not Found", &[("Content-Type", "text/plain")], "404 Not Found")
+        } else {
+            json_ok(
+                r#"{"success":true,"message":"{\"msg\":\"result\",\"id\":\"1\",\"result\":false}"}"#,
+            )
+        })
     })
     .await;
     let c = client(&format!("http://127.0.0.1:{pa}"));
     let e = c.load_history("nope", None, 10, None).await.unwrap_err();
     assert_eq!(e.api_error_code(), Some("error-not-allowed"));
+}
+
+#[tokio::test]
+async fn load_history_uses_rooms_history() {
+    let (pa, log) = serve(|req| {
+        Some(if req.contains("roomId=gone") {
+            http_response(
+                "404 Not Found",
+                &[("Content-Type", "application/json")],
+                r#"{"success":false,"error":"Resource not found"}"#,
+            )
+        } else {
+            json_ok(
+                r#"{"messages":[{"_id":"m1","rid":"r1","msg":"hi","ts":"2026-11-08T11:01:23.320Z","u":{"_id":"u1","username":"a"}}],"cursor":{"next":null,"previous":null},"unreadNotLoaded":0,"success":true}"#,
+            )
+        })
+    })
+    .await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    let before = rocketchat::RcDate::from_millis(1_794_135_683_320);
+    let h = c.load_history("r1", before, 5, None).await.unwrap();
+    assert_eq!(h.messages.len(), 1);
+    assert_eq!(h.messages[0].id, "m1");
+    let reqs = log.lock().unwrap().join("\n");
+    assert!(
+        reqs.contains("GET /api/v1/rooms.history?roomId=r1&count=5"),
+        "{reqs}"
+    );
+    assert!(reqs.contains("previous=1794135683321"), "{reqs}");
+    assert!(!reqs.contains("method.call"), "{reqs}");
+
+    // A missing room is an API error, not a reason to fall back.
+    let e = c.load_history("gone", None, 5, None).await.unwrap_err();
+    assert!(
+        matches!(e, rocketchat::Error::Api { status: 404, .. }),
+        "{e:?}"
+    );
+    assert!(!log.lock().unwrap().join("\n").contains("method.call"));
 }
 
 #[tokio::test]
@@ -394,21 +437,44 @@ async fn stalled_upload_times_out() {
     assert!(start.elapsed() < Duration::from_secs(10));
 }
 
-/// Fake `loadHistory`: messages `(id, ts_ms)`, `end` exclusive, newest first.
-fn history_server(msgs: Vec<(String, i64)>) -> impl Fn(&str) -> Option<String> {
+/// Fake history: messages `(id, ts_ms)`, `end` exclusive, newest first. Serves
+/// `rooms.history`, or only the `loadHistory` method when `legacy`.
+fn history_server(msgs: Vec<(String, i64)>, legacy: bool) -> impl Fn(&str) -> Option<String> {
     move |req| {
+        let page = |end: i64, limit: usize| -> Vec<Value> {
+            let mut page: Vec<&(String, i64)> = msgs.iter().filter(|(_, ts)| *ts < end).collect();
+            page.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            page.into_iter()
+                .take(limit)
+                .map(|(id, ts)| json!({"_id": id, "rid": "R", "msg": id, "ts": {"$date": ts}, "u": {"_id": "x"}}))
+                .collect()
+        };
+        if let Some(rest) = req.strip_prefix("GET /api/v1/rooms.history?") {
+            if legacy {
+                return Some(http_response("404 Not Found", &[], "404 Not Found"));
+            }
+            let query = rest.split_whitespace().next().unwrap();
+            let param = |k: &str| {
+                query
+                    .split('&')
+                    .find_map(|kv| kv.strip_prefix(k)?.strip_prefix('='))
+                    .map(|v| v.parse::<i64>().unwrap())
+            };
+            let out = page(
+                param("previous").unwrap_or(i64::MAX),
+                param("count").unwrap() as usize,
+            );
+            return Some(json_ok(
+                &json!({"messages": out, "success": true}).to_string(),
+            ));
+        }
         let body = body_json(req);
         let frame: Value = serde_json::from_str(body["message"].as_str().unwrap()).unwrap();
         let p = &frame["params"];
-        let end = p[1]["$date"].as_i64().unwrap_or(i64::MAX);
-        let limit = p[2].as_u64().unwrap() as usize;
-        let mut page: Vec<&(String, i64)> = msgs.iter().filter(|(_, ts)| *ts < end).collect();
-        page.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let out: Vec<Value> = page
-            .into_iter()
-            .take(limit)
-            .map(|(id, ts)| json!({"_id": id, "rid": "R", "msg": id, "ts": {"$date": ts}, "u": {"_id": "x"}}))
-            .collect();
+        let out = page(
+            p[1]["$date"].as_i64().unwrap_or(i64::MAX),
+            p[2].as_u64().unwrap() as usize,
+        );
         let inner = json!({"msg": "result", "id": frame["id"], "result": {"messages": out}});
         Some(json_ok(
             &json!({"message": inner.to_string(), "success": true}).to_string(),
@@ -438,24 +504,28 @@ async fn history_cursor_handles_same_millisecond_runs() {
     msgs.extend((0..60).map(|i| (format!("same{i:03}"), 5_000)));
     msgs.extend((0..5).map(|i| (format!("old{i}"), 1_000 + i)));
     let total = msgs.len();
-    let (pa, _) = serve(history_server(msgs)).await;
-    let c = client(&format!("http://127.0.0.1:{pa}"));
-    let ids = collect_all(&c, 20).await;
-    let unique: std::collections::HashSet<_> = ids.iter().collect();
-    assert_eq!(unique.len(), ids.len(), "no duplicates");
-    assert_eq!(ids.len(), total, "nothing skipped");
-    assert_eq!(ids.last().unwrap(), "old0");
+    for legacy in [false, true] {
+        let (pa, _) = serve(history_server(msgs.clone(), legacy)).await;
+        let c = client(&format!("http://127.0.0.1:{pa}"));
+        let ids = collect_all(&c, 20).await;
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "no duplicates");
+        assert_eq!(ids.len(), total, "nothing skipped");
+        assert_eq!(ids.last().unwrap(), "old0");
+    }
 }
 
 #[tokio::test]
 async fn history_cursor_steps_past_huge_same_millisecond_runs() {
     let mut msgs: Vec<(String, i64)> = (0..600).map(|i| (format!("same{i:03}"), 5_000)).collect();
     msgs.extend((0..3).map(|i| (format!("old{i}"), 1_000 + i)));
-    let (pa, _) = serve(history_server(msgs)).await;
-    let c = client(&format!("http://127.0.0.1:{pa}"));
-    let ids = collect_all(&c, 20).await;
-    assert!(ids.iter().any(|i| i == "old0"), "reached older messages");
-    assert!(ids.len() >= 403, "{}", ids.len());
+    for legacy in [false, true] {
+        let (pa, _) = serve(history_server(msgs.clone(), legacy)).await;
+        let c = client(&format!("http://127.0.0.1:{pa}"));
+        let ids = collect_all(&c, 20).await;
+        assert!(ids.iter().any(|i| i == "old0"), "reached older messages");
+        assert!(ids.len() >= 403, "{}", ids.len());
+    }
 }
 
 #[tokio::test]

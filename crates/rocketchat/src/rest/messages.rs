@@ -36,8 +36,7 @@ impl Default for HistoryOptions {
 }
 
 impl RestClient {
-    /// Room history, newest first, via the `loadHistory` method (works for every room
-    /// type and returns full messages including `md`, plus unread info).
+    /// Room history, newest first, with unread info. Works for every room type.
     /// `before` is inclusive: dedup the boundary message(s) by `_id`.
     pub async fn load_history(
         &self,
@@ -58,12 +57,25 @@ impl RestClient {
         .await
     }
 
+    /// Uses `GET rooms.history` (8.9+); servers without it get the `loadHistory`
+    /// method, which 9.0 removed.
     pub async fn load_history_with(&self, rid: &str, opts: &HistoryOptions) -> Result<History> {
-        // `end` is exclusive on the server; +1 ms makes `before` inclusive so
+        // Both bounds are exclusive on the server; +1 ms makes `before` inclusive so
         // messages sharing the boundary timestamp are not skipped.
         let end = opts
             .before
             .and_then(|d| RcDate::from_millis(d.timestamp_millis() + 1));
+        let q = Query::new()
+            .push("roomId", rid)
+            .push("count", opts.limit.max(1))
+            .push("showThreadMessages", opts.show_thread_messages)
+            .opt("previous", end.map(|d| d.timestamp_millis()))
+            .opt("lastSeen", opts.last_seen.map(|d| d.to_iso()));
+        match self.get::<History>("rooms.history", &q).await {
+            // A missing route is a plain-text 404; a missing room is a JSON API error.
+            Err(crate::Error::Status { status: 404, .. }) => {}
+            r => return r,
+        }
         let params = json!([
             rid,
             end.map(|d| d.ddp()),
