@@ -1,21 +1,12 @@
-//! Notification sounds through an external player (`pw-play`, `paplay` or
+//! Freedesktop sounds: an external player (`pw-play`, `paplay` or
 //! `canberra-gtk-play`, whichever is on `PATH`) and a sound theme file
-//! (freedesktop, KDE's ocean, Yaru). Used when the notification server does
-//! not play the notification's sound hint itself. The player and file are
-//! looked up once on a background thread at startup; playing never blocks:
-//! the player runs detached and is reaped (or killed after a timeout) on a
-//! blocking thread.
+//! (freedesktop, KDE's ocean, Yaru).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
 
-/// Freedesktop sound id of an incoming instant message.
-pub const MESSAGE_SOUND: &str = "message-new-instant";
-/// A player taking longer than this is killed.
-const PLAY_TIMEOUT: Duration = Duration::from_secs(15);
+use super::{MESSAGE_SOUND, find_in_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerKind {
@@ -25,6 +16,7 @@ pub enum PlayerKind {
 }
 
 impl PlayerKind {
+    #[cfg(test)]
     pub const ALL: [PlayerKind; 3] = [Self::PwPlay, Self::Paplay, Self::Canberra];
 
     pub fn program(self) -> &'static str {
@@ -42,18 +34,8 @@ pub struct Player {
     pub path: PathBuf,
 }
 
-/// The first executable `name` in the `PATH`-style list `path`.
-pub fn find_in_path(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(path)
-        .filter(|d| d.is_absolute())
-        .map(|d| d.join(name))
-        .find(|p| {
-            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
-}
-
 /// The first available player.
+#[cfg(test)]
 pub fn find_player(path: &std::ffi::OsStr) -> Option<Player> {
     PlayerKind::ALL
         .iter()
@@ -134,119 +116,42 @@ pub fn command(player: &Player, id: &str, file: Option<&Path>) -> Option<Command
     Some(c)
 }
 
-type Resolved = Option<(Player, Option<PathBuf>)>;
+pub type Resolved = Option<(Player, Option<PathBuf>)>;
 
-/// Plays sounds; disabled (a no-op) in tests and snapshots.
-#[derive(Debug, Default)]
-pub struct Sound {
-    enabled: bool,
-    /// Filled by the background lookup.
-    resolved: Arc<OnceLock<Resolved>>,
+/// Looks the player and message sound file up (blocking).
+pub fn lookup() -> Resolved {
+    let file = theme_file(
+        &data_dirs(
+            std::env::var_os("XDG_DATA_HOME"),
+            std::env::var_os("XDG_DATA_DIRS"),
+        ),
+        MESSAGE_SOUND,
+    );
+    std::env::var_os("PATH").and_then(|p| resolve(&p, file))
 }
 
-impl Sound {
-    /// Starts looking the player and sound file up in the background.
-    pub fn system() -> Self {
-        let resolved = Arc::new(OnceLock::new());
-        let slot = resolved.clone();
-        let spawned = std::thread::Builder::new()
-            .name("sound-lookup".into())
-            .spawn(move || {
-                let file = theme_file(
-                    &data_dirs(
-                        std::env::var_os("XDG_DATA_HOME"),
-                        std::env::var_os("XDG_DATA_DIRS"),
-                    ),
-                    MESSAGE_SOUND,
-                );
-                let r = std::env::var_os("PATH").and_then(|p| resolve(&p, file));
-                let _ = slot.set(r);
-            });
-        if let Err(e) = spawned {
-            tracing::debug!(error = %e, "cannot look the sound player up");
+/// The command playing theme sound `id` (the message sound when `None` or
+/// when the theme lacks it). Blocking.
+pub fn play_command(resolved: &Resolved, id: Option<&'static str>) -> Option<Command> {
+    let Some((player, file)) = resolved else {
+        tracing::debug!("no sound player or sound file found");
+        return None;
+    };
+    let themed = id.and_then(|id| {
+        let f = theme_file(
+            &data_dirs(
+                std::env::var_os("XDG_DATA_HOME"),
+                std::env::var_os("XDG_DATA_DIRS"),
+            ),
+            id,
+        );
+        match (f, player.kind) {
+            (Some(f), _) => command(player, id, Some(&f)),
+            (None, PlayerKind::Canberra) => command(player, id, None),
+            (None, _) => None,
         }
-        Self {
-            enabled: true,
-            resolved,
-        }
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Plays the message sound (the server's custom sound names map to the
-    /// theme's instant-message sound). Must be called inside the tokio runtime.
-    pub fn play(&self, name: Option<&str>) {
-        let _ = name;
-        self.play_id(None);
-    }
-
-    /// Plays the freedesktop theme sound `id` (e.g. `phone-incoming-call`),
-    /// falling back to the message sound when the theme lacks it.
-    pub fn play_theme(&self, id: &'static str) {
-        self.play_id(Some(id));
-    }
-
-    fn play_id(&self, id: Option<&'static str>) {
-        if !self.enabled {
-            return;
-        }
-        let Some(resolved) = self.resolved.get() else {
-            tracing::debug!("sound player lookup not finished");
-            return;
-        };
-        let Some((player, file)) = resolved else {
-            tracing::debug!("no sound player or sound file found");
-            return;
-        };
-        let (player, file) = (player.clone(), file.clone());
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        handle.spawn_blocking(move || {
-            let themed = id.and_then(|id| {
-                let f = theme_file(
-                    &data_dirs(
-                        std::env::var_os("XDG_DATA_HOME"),
-                        std::env::var_os("XDG_DATA_DIRS"),
-                    ),
-                    id,
-                );
-                match (f, player.kind) {
-                    (Some(f), _) => command(&player, id, Some(&f)),
-                    (None, PlayerKind::Canberra) => command(&player, id, None),
-                    (None, _) => None,
-                }
-            });
-            let Some(mut cmd) = themed.or_else(|| command(&player, MESSAGE_SOUND, file.as_deref()))
-            else {
-                tracing::debug!("no sound theme file found");
-                return;
-            };
-            let mut child = match cmd.spawn() {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::debug!(error = %e, "cannot start the sound player");
-                    return;
-                }
-            };
-            let started = Instant::now();
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => return,
-                    Ok(None) if started.elapsed() < PLAY_TIMEOUT => {
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                    _ => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return;
-                    }
-                }
-            }
-        });
-    }
+    });
+    themed.or_else(|| command(player, MESSAGE_SOUND, file.as_deref()))
 }
 
 #[cfg(test)]
@@ -332,13 +237,5 @@ mod tests {
         exe(a.path(), "canberra-gtk-play");
         let (p, file) = resolve(&path, None).unwrap();
         assert_eq!((p.kind, file), (PlayerKind::Canberra, None));
-    }
-
-    #[test]
-    fn disabled_sound_is_a_no_op() {
-        let s = Sound::default();
-        assert!(!s.is_enabled());
-        s.play(None);
-        assert!(s.resolved.get().is_none());
     }
 }

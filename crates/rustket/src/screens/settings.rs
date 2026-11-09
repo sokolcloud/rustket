@@ -2,8 +2,6 @@
 //! notifications, window behaviour, integration, storage, about. Owner:
 //! desktop agent. Strings: `locales/settings.yml` (`settings.*`).
 
-use std::path::PathBuf;
-
 use iced::widget::{button, column, container, row, text, toggler};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use rust_i18n::t;
@@ -17,7 +15,8 @@ use rustket_ui::theme::{
 use rustket_ui::widget::{BannerKind, banner, divider, focus_ring, secondary_button};
 
 use crate::component::{Action, Effect};
-use crate::desktop::{TraySupport, autostart};
+use crate::desktop::TraySupport;
+use crate::desktop::autostart::{self, Autostart};
 use crate::renderer::Renderer;
 use crate::ui_state::UiState;
 
@@ -83,8 +82,8 @@ pub struct SettingsView<'a> {
 
 #[derive(Debug)]
 pub struct Settings {
-    /// `$XDG_CONFIG_HOME` holding `autostart/` (a temporary dir in tests).
-    autostart_home: Option<PathBuf>,
+    /// Where the launch-at-login entry lives (a temporary dir in tests).
+    autostart_at: Option<Autostart>,
     /// Launch at login (`None` until read).
     pub autostart: Option<bool>,
     pub autostart_busy: bool,
@@ -107,12 +106,12 @@ pub fn zoom_step(current: f32, dir: i8) -> f32 {
 
 impl Settings {
     pub fn new() -> Self {
-        Self::with_autostart_home(autostart::config_home())
+        Self::with_autostart(Autostart::system())
     }
 
-    pub fn with_autostart_home(home: Option<PathBuf>) -> Self {
+    pub fn with_autostart(at: Option<Autostart>) -> Self {
         Self {
-            autostart_home: home,
+            autostart_at: at,
             autostart: None,
             autostart_busy: false,
         }
@@ -120,12 +119,12 @@ impl Settings {
 
     /// Reads the launch-at-login state (run when the screen opens).
     pub fn load(&self) -> Task<Message> {
-        let Some(home) = self.autostart_home.clone() else {
+        let Some(at) = self.autostart_at.clone() else {
             return Task::done(Message::AutostartLoaded(None));
         };
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || autostart::is_enabled(&home))
+                tokio::task::spawn_blocking(move || at.is_enabled())
                     .await
                     .ok()
             },
@@ -161,7 +160,7 @@ impl Settings {
             Message::SetHardwareAcceleration(v) => Self::pref(ctx, |p| p.hardware_acceleration = v),
             Message::SetSystemTitleBar(v) => Self::pref(ctx, |p| p.system_title_bar = v),
             Message::SetAutostart(on) => {
-                let Some(home) = self.autostart_home.clone() else {
+                let Some(at) = self.autostart_at.clone() else {
                     return Action::none();
                 };
                 if self.autostart_busy {
@@ -172,7 +171,7 @@ impl Settings {
                     async move {
                         tokio::task::spawn_blocking(move || {
                             let exe = autostart::executable().map_err(|e| e.to_string())?;
-                            autostart::set_enabled(&home, on, &exe).map_err(|e| e.to_string())
+                            at.set_enabled(on, &exe).map_err(|e| e.to_string())
                         })
                         .await
                         .unwrap_or_else(|e| Err(e.to_string()))
@@ -408,13 +407,13 @@ impl Settings {
                 t!("settings.autostart").into_owned(),
                 None,
                 on,
-                (!self.autostart_busy && self.autostart_home.is_some())
+                (!self.autostart_busy && self.autostart_at.is_some())
                     .then_some(Message::SetAutostart),
             ),
             // Still loading, or no config directory at all.
             None => switch(
                 t!("settings.autostart").into_owned(),
-                Some(if self.autostart_home.is_none() {
+                Some(if self.autostart_at.is_none() {
                     t!("settings.autostart_unknown").into_owned()
                 } else {
                     t!("settings.autostart_loading").into_owned()
@@ -704,7 +703,7 @@ mod tests {
 
     #[test]
     fn prefs_change_and_are_saved() {
-        let mut s = Settings::with_autostart_home(None);
+        let mut s = Settings::with_autostart(None);
         let mut cfg = AppConfig::default();
         for (msg, check) in [
             (
@@ -771,7 +770,7 @@ mod tests {
         assert!((zoom_step(3.0, 1) - 3.0).abs() < 1e-4);
         assert!((zoom_step(0.5, -1) - 0.5).abs() < 1e-4);
         assert!((zoom_step(1.37, 0) - 1.0).abs() < 1e-4);
-        let mut s = Settings::with_autostart_home(None);
+        let mut s = Settings::with_autostart(None);
         let mut cfg = AppConfig::default();
         run(&mut s, &mut cfg, Message::Zoom(1));
         run(&mut s, &mut cfg, Message::Zoom(1));
@@ -782,7 +781,7 @@ mod tests {
     fn language_is_saved_and_applied() {
         // Only English here: other tests in this binary assert English text
         // and the rust-i18n locale is process-wide.
-        let mut s = Settings::with_autostart_home(None);
+        let mut s = Settings::with_autostart(None);
         let mut cfg = AppConfig::default();
         cfg.ui.language = Language::Ru;
         let a = run(&mut s, &mut cfg, Message::SetLanguage(Language::En));
@@ -793,7 +792,7 @@ mod tests {
 
     #[test]
     fn effects_for_actions() {
-        let mut s = Settings::with_autostart_home(None);
+        let mut s = Settings::with_autostart(None);
         let mut cfg = AppConfig::default();
         let a = run(&mut s, &mut cfg, Message::TestNotification);
         assert!(matches!(a.effects.as_slice(), [Effect::TestNotification]));
@@ -811,7 +810,10 @@ mod tests {
     #[test]
     fn autostart_toggles_in_a_temporary_config_home() {
         let d = tempfile::tempdir().unwrap();
-        let mut s = Settings::with_autostart_home(Some(d.path().to_owned()));
+        let at = Autostart::LaunchAgent {
+            home: d.path().to_owned(),
+        };
+        let mut s = Settings::with_autostart(Some(at.clone()));
         let mut cfg = AppConfig::default();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -835,10 +837,10 @@ mod tests {
         assert!(s.autostart_busy);
         drive(&mut s, &mut cfg, a.task);
         assert_eq!(s.autostart, Some(true));
-        assert!(autostart::is_enabled(d.path()));
+        assert!(at.is_enabled());
         let a = run(&mut s, &mut cfg, Message::SetAutostart(false));
         drive(&mut s, &mut cfg, a.task);
         assert_eq!(s.autostart, Some(false));
-        assert!(!autostart::path(d.path()).exists());
+        assert!(!at.path().unwrap().exists());
     }
 }

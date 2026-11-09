@@ -8,6 +8,7 @@
 //! polling): tests and snapshots use it. The binary uses [`Desktop::system`].
 
 pub mod autostart;
+#[cfg(all(unix, not(target_os = "macos")))]
 mod dbus;
 pub mod icon;
 pub mod idle;
@@ -18,7 +19,6 @@ pub mod tray;
 pub mod window;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use iced::{Subscription, Task};
@@ -83,8 +83,11 @@ pub(crate) fn user_pref<'a>(ws: &'a Workspace, key: &str) -> Option<&'a serde_js
 
 /// Whether winit will use Wayland (it prefers Wayland whenever a Wayland
 /// display is set), where windows can be neither hidden nor queried for
-/// being minimized.
+/// being minimized. Never on Windows and macOS.
 pub fn wayland_session() -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        return false;
+    }
     ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"]
         .iter()
         .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
@@ -132,9 +135,9 @@ impl Desktop {
     /// The real desktop: notification server, tray, idle polling, sounds.
     pub fn system(prefs: &UiPrefs) -> Self {
         Self {
-            notifications: notifications::Notifications::with_backend(Arc::new(
-                notifications::ZbusNotifier,
-            )),
+            notifications: notifications::Notifications::with_backend(
+                notifications::system_backend(),
+            ),
             tray: tray::Tray::system(),
             idle: idle::Idle::system(),
             sound: sound::Sound::system(),

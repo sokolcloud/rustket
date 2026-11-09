@@ -85,13 +85,13 @@ impl App {
         let sid = self.active.clone();
         match (nav, sid) {
             (Nav::Settings, _) => {
-                // The real autostart directory only with real desktop integration.
-                let home = self
+                // The real autostart location only with real desktop integration.
+                let at = self
                     .desktop
                     .is_enabled()
-                    .then(crate::desktop::autostart::config_home)
+                    .then(crate::desktop::autostart::Autostart::system)
                     .flatten();
-                let screen = settings::Settings::with_autostart_home(home);
+                let screen = settings::Settings::with_autostart(at);
                 let load = screen.load().map(Message::Settings);
                 self.screen = Screen::Settings(Box::new(screen));
                 Task::batch([load, crate::cache::size_task(self)])

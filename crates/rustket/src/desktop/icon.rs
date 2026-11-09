@@ -90,6 +90,7 @@ pub fn window_icon() -> Option<iced::window::Icon> {
     iced::window::icon::from_rgba(px, w, h).ok()
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
 /// RGBA → ARGB32 in network byte order (StatusNotifierItem pixmaps).
 pub fn rgba_to_argb(rgba: &[u8]) -> Vec<u8> {
     let (pixels, _) = rgba.as_chunks::<4>();
@@ -99,6 +100,7 @@ pub fn rgba_to_argb(rgba: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
 /// Tray pixmaps (several sizes; the host picks the best one).
 pub fn tray_pixmaps(unread: bool) -> Vec<ksni::Icon> {
     [22u32, 32, 48, 64]
@@ -128,9 +130,11 @@ mod tests {
         }
         assert!(png(17, false).is_none());
         assert!(window_icon().is_some());
+        #[cfg(all(unix, not(target_os = "macos")))]
         assert_eq!(tray_pixmaps(true).len(), 4);
     }
 
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn argb_order() {
         assert_eq!(
