@@ -137,6 +137,9 @@ settings.handler_off:
 settings.handler_register:
   en: "Register…"
   ru: "Зарегистрировать…"
+settings.handler_bundle:
+  en: "The Rustket app declares these links to macOS. If another Rocket.Chat app is installed, macOS may open them there instead."
+  ru: "Приложение Rustket объявляет эти ссылки в macOS. Если установлено другое приложение Rocket.Chat, macOS может открывать их в нём."
 settings.storage:
   en: "Storage"
   ru: "Хранилище"

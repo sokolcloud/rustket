@@ -434,6 +434,22 @@ fn active_login(app: &App) -> Option<&login::Login> {
     app.servers.get(sid)?.login.as_ref()
 }
 
+/// Resolves on SIGTERM or SIGHUP with the signal's name; never on Windows.
+async fn terminated() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        let mut hup = signal(SignalKind::hangup()).expect("SIGHUP handler");
+        tokio::select! {
+            _ = term.recv() => "terminated",
+            _ = hup.recv() => "hangup",
+        }
+    }
+    #[cfg(not(unix))]
+    std::future::pending().await
+}
+
 #[tokio::main]
 async fn main() {
     let server_str =
@@ -472,9 +488,6 @@ async fn main() {
     };
     let abort = work.abort_handle();
     // Setup or run failing, finishing, or Ctrl-C: always clean up.
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
-    let mut hup = signal(SignalKind::hangup()).expect("SIGHUP handler");
     // Setup or run failing, finishing, Ctrl-C, SIGTERM (e.g. an outer
     // `timeout`) or SIGHUP: always clean up.
     let result = tokio::select! {
@@ -484,13 +497,8 @@ async fn main() {
             abort.abort();
             None
         }
-        _ = term.recv() => {
-            eprintln!("terminated; cleaning up");
-            abort.abort();
-            None
-        }
-        _ = hup.recv() => {
-            eprintln!("hangup; cleaning up");
+        why = terminated() => {
+            eprintln!("{why}; cleaning up");
             abort.abort();
             None
         }

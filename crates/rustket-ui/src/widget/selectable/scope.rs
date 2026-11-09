@@ -631,9 +631,13 @@ impl<'a, Message: 'a> Widget<Message, Theme, iced::Renderer> for Scope<'a, Messa
         let label = self.copy_label.clone();
         let panel = self.menu.get_or_insert_with(|| {
             menu_panel(&[MenuEntry::Item(
-                MenuItem::new(label, MenuMsg::Copy)
-                    .icon(Icon::Copy)
-                    .hint("Ctrl+C"),
+                MenuItem::new(label, MenuMsg::Copy).icon(Icon::Copy).hint(
+                    if cfg!(target_os = "macos") {
+                        "⌘C"
+                    } else {
+                        "Ctrl+C"
+                    },
+                ),
             )])
         });
         let (state, children) = (&mut tree.state, &mut tree.children);

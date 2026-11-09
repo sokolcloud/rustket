@@ -457,35 +457,47 @@ impl Settings {
             ],
         ));
 
+        // macOS: the app bundle declares the scheme; nothing to register.
+        let links = if crate::url_handler::MANAGED_BY_BUNDLE {
+            column![
+                text(t!("settings.links")).size(TEXT_BODY),
+                text(t!("settings.handler_bundle"))
+                    .size(TEXT_CAPTION)
+                    .style(style::text_secondary),
+            ]
+            .spacing(SPACE_1)
+            .width(Length::Fill)
+            .into()
+        } else {
+            row![
+                column![
+                    text(t!("settings.links")).size(TEXT_BODY),
+                    text(if v.handler_registered {
+                        t!("settings.handler_on")
+                    } else {
+                        t!("settings.handler_off")
+                    })
+                    .size(TEXT_CAPTION)
+                    .style(if v.handler_registered {
+                        style::text_success
+                    } else {
+                        style::text_secondary
+                    }),
+                ]
+                .spacing(SPACE_1)
+                .width(Length::Fill),
+                secondary_button(
+                    t!("settings.handler_register"),
+                    Some(Message::RegisterHandler)
+                ),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center)
+            .into()
+        };
         body = body.push(section(
             t!("settings.integration").into_owned(),
-            vec![
-                row![
-                    column![
-                        text(t!("settings.links")).size(TEXT_BODY),
-                        text(if v.handler_registered {
-                            t!("settings.handler_on")
-                        } else {
-                            t!("settings.handler_off")
-                        })
-                        .size(TEXT_CAPTION)
-                        .style(if v.handler_registered {
-                            style::text_success
-                        } else {
-                            style::text_secondary
-                        }),
-                    ]
-                    .spacing(SPACE_1)
-                    .width(Length::Fill),
-                    secondary_button(
-                        t!("settings.handler_register"),
-                        Some(Message::RegisterHandler)
-                    ),
-                ]
-                .spacing(SPACE_3)
-                .align_y(Alignment::Center)
-                .into(),
-            ],
+            vec![links],
         ));
 
         let with_cache_row = |rows| {

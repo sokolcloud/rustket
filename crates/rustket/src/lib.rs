@@ -11,6 +11,10 @@ rust_i18n::i18n!("locales", fallback = "en");
 /// desktop file, icon and AppStream id use the same name (`packaging/linux`).
 pub const APP_ID: &str = "rustket";
 
+/// The macOS `CFBundleIdentifier` and the Windows AppUserModelID; the app
+/// bundle (`Info.plist`) and the Windows installer use the same id.
+pub const BUNDLE_ID: &str = "io.github.sokolcloud.rustket";
+
 pub mod app;
 pub mod cache;
 pub mod cli;
@@ -25,8 +29,11 @@ pub mod focus;
 pub mod format;
 pub mod i18n;
 pub mod images;
+#[cfg(target_os = "macos")]
+pub mod macos_events;
 pub mod message;
 pub mod omnichannel;
+pub mod os_events;
 pub mod renderer;
 pub mod room;
 pub mod screens;

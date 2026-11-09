@@ -176,7 +176,7 @@ impl Harness {
     }
 
     fn ctrl(&mut self, c: &'static str) -> Status {
-        self.key(keyboard::Key::Character(c.into()), Modifiers::CTRL)
+        self.key(keyboard::Key::Character(c.into()), Modifiers::COMMAND)
     }
 
     /// Bounds and selection of every block, in order.
@@ -748,7 +748,7 @@ fn shortcuts_yield_to_an_input_focused_by_keyboard() {
         let mut op = iced::advanced::widget::operation::focusable::focus(Id::new("field"));
         ui.operate(&h.renderer, &mut op);
     });
-    h.modifiers(Modifiers::CTRL);
+    h.modifiers(Modifiers::COMMAND);
     assert_eq!(h.ctrl("a"), Status::Captured, "the input selects its text");
     let sel = h.selections()[0].clone();
     assert_eq!(h.ctrl("c"), Status::Captured);

@@ -35,7 +35,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -618,13 +617,20 @@ pub fn is_server_avatar(server: &ServerUrl, url: &str) -> bool {
     url.starts_with(&server.join("avatar/"))
 }
 
-/// Creates `dir` (and parents) private to the user.
+/// Creates `dir` (and parents) private to the user. On Windows the ACL of the
+/// per-user profile directory is the protection; nothing is changed.
 pub fn private_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -635,11 +641,11 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut f = options.open(&tmp)?;
     f.write_all(bytes)?;
     drop(f);
     std::fs::rename(tmp, path)
@@ -1383,8 +1389,10 @@ mod tests {
         std::fs::write(p, bytes).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn cache_permissions() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("images").join("s").join("x.png");
         write_cache_entry(&f, b"x").unwrap();

@@ -42,7 +42,7 @@ use crate::screens::login::{self, Login};
 use crate::session::{self, Followup, ServerEvent};
 use crate::single_instance::{self, ListenerSlot};
 use crate::ui_state::UiState;
-use crate::url_handler::{self, XdgEnv};
+use crate::url_handler;
 use crate::workspace::sidebar;
 use crate::workspace::{ServerState, rail};
 
@@ -2602,15 +2602,9 @@ impl App {
                 }
                 Task::perform(
                     async {
-                        tokio::task::spawn_blocking(|| {
-                            let env = XdgEnv::from_env().ok_or("no data directory")?;
-                            let (exe, _) = handler_executable()?;
-                            url_handler::register(&env, &exe)
-                                .map(|p| p.display().to_string())
-                                .map_err(|e| e.to_string())
-                        })
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()))
+                        tokio::task::spawn_blocking(url_handler::register_current)
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
                     },
                     Message::HandlerRegistered,
                 )
@@ -2684,6 +2678,12 @@ impl App {
         if let Some(slot) = &self.listener {
             subs.push(single_instance::subscription(slot.clone()).map(Message::DeepLinks));
         }
+        // Links and Dock clicks arrive as Apple Events (`macos_events`).
+        #[cfg(target_os = "macos")]
+        subs.push(crate::os_events::subscription().map(|e| match e {
+            crate::os_events::OsEvent::Url(url) => Message::DeepLinks(vec![url]),
+            crate::os_events::OsEvent::Reopen => Message::DeepLinks(Vec::new()),
+        }));
         if self.config.ui.theme == ThemePref::System {
             subs.push(iced::system::theme_changes().map(Message::SystemTheme));
         }
@@ -2818,15 +2818,6 @@ impl App {
     }
 }
 
-/// The executable `rocketchat://` links would start (blocking).
-fn handler_executable() -> Result<(PathBuf, Vec<String>), String> {
-    let current = std::env::current_exe().map_err(|e| e.to_string())?;
-    let appimage = std::env::var_os("APPIMAGE");
-    let appdir = std::env::var_os("APPDIR");
-    url_handler::handler_executable(&current, appimage.as_deref(), appdir.as_deref())
-        .map_err(|e| e.to_string())
-}
-
 /// Reads the window's maximize state into the custom title bar.
 fn query_maximized() -> Task<Message> {
     use crate::workspace::titlebar::Message as Tm;
@@ -2838,14 +2829,8 @@ fn query_handler_task() -> Task<Message> {
     Task::perform(
         async {
             tokio::task::spawn_blocking(|| {
-                let exe = handler_executable();
-                let Some(env) = XdgEnv::from_env() else {
-                    return (None, false, exe.map(|(_, w)| w));
-                };
-                let current = url_handler::current_handler(&env);
-                let path = exe.as_ref().ok().map(|(p, _)| p.as_path());
-                let registered = url_handler::registered_for(&env, current.as_deref(), path);
-                (current, registered, exe.map(|(_, w)| w))
+                let q = url_handler::query();
+                (q.current, q.registered, q.check)
             })
             .await
             .unwrap_or_else(|e| (None, false, Err(e.to_string())))
