@@ -3218,7 +3218,7 @@ dependencies = [
 
 [[package]]
 name = "meteor-ddp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "hex",
@@ -4934,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "rocketchat"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -5126,7 +5126,7 @@ dependencies = [
 
 [[package]]
 name = "rustket"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "chrono",
@@ -5174,7 +5174,7 @@ dependencies = [
 
 [[package]]
 name = "rustket-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "directories",
@@ -5194,7 +5194,7 @@ dependencies = [
 
 [[package]]
 name = "rustket-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "iced",
  "iced_aw",
