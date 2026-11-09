@@ -96,7 +96,12 @@ fn forward(path: &Path, urls: &[String]) -> io::Result<()> {
     let mut stream = UnixStream::connect(path)?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     stream.write_all(&encode_payload(urls))?;
-    stream.shutdown(std::net::Shutdown::Write)
+    stream.shutdown(std::net::Shutdown::Write)?;
+    // Stay connected until the primary has read us and closes: macOS cannot
+    // read the peer credentials (getpeereid) of a client that already left.
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let _ = stream.read(&mut [0u8; 1]);
+    Ok(())
 }
 
 /// Becomes the primary instance or forwards `urls` (one per line) to it.
