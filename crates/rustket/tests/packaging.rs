@@ -128,6 +128,100 @@ fn cargo_deb_metadata_in_sync() {
     }
 }
 
+fn bytes(rel: &str) -> Vec<u8> {
+    std::fs::read(root().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+}
+
+/// rustket.ico (exe resource, installer) and rustket.icns (app bundle), both
+/// written by examples/gen_icons.rs.
+#[test]
+fn windows_and_macos_icons() {
+    let ico = bytes("crates/rustket/assets/icons/rustket.ico");
+    assert_eq!(ico[..4], [0, 0, 1, 0]);
+    let count = u16::from_le_bytes([ico[4], ico[5]]) as usize;
+    let sizes: Vec<u32> = (0..count)
+        .map(|i| match ico[6 + 16 * i] {
+            0 => 256,
+            n => u32::from(n),
+        })
+        .collect();
+    assert_eq!(sizes, [16, 24, 32, 48, 64, 128, 256]);
+
+    let icns = bytes("crates/rustket/assets/icons/rustket.icns");
+    assert_eq!(&icns[..4], b"icns");
+    let len = |at: usize| u32::from_be_bytes(icns[at..at + 4].try_into().unwrap()) as usize;
+    assert_eq!(len(4), icns.len());
+    let mut kinds = Vec::new();
+    let mut at = 8;
+    while at < icns.len() {
+        kinds.push(String::from_utf8_lossy(&icns[at..at + 4]).into_owned());
+        assert_eq!(&icns[at + 8..at + 12], b"\x89PNG", "PNG element");
+        at += len(at + 4);
+    }
+    assert_eq!(at, icns.len());
+    for kind in [
+        "ic07", "ic08", "ic09", "ic10", "ic11", "ic12", "ic13", "ic14",
+    ] {
+        assert!(kinds.iter().any(|k| k == kind), "missing {kind}");
+    }
+
+    assert!(read("crates/rustket/build.rs").contains("\"assets/icons/rustket.ico\""));
+    assert!(read("packaging/windows/rustket.iss").contains("assets\\icons\\rustket.ico"));
+    assert!(read("packaging/macos/build.sh").contains("$ICONS/rustket.icns"));
+}
+
+/// Identifiers shared by the app and the Windows/macOS packages.
+#[test]
+fn windows_and_macos_identifiers() {
+    let id = "io.github.sokolcloud.rustket";
+    let scheme = rustket::url_handler::MIME
+        .strip_prefix("x-scheme-handler/")
+        .unwrap();
+    let iss = read("packaging/windows/rustket.iss");
+    assert!(iss.contains(&format!("#define AppUserModelID \"{id}\"")));
+    assert!(iss.contains(&format!("#define Scheme \"{scheme}\"")));
+    for value in [
+        r#"ValueName: ""; ValueData: "URL:Rocket.Chat Protocol""#,
+        r#"ValueName: "URL Protocol"; ValueData: """#,
+        r#"ValueData: """{app}\rustket.exe"",0""#,
+        r#"ValueData: """{app}\rustket.exe"" ""%1""""#,
+    ] {
+        assert!(iss.contains(value), "missing {value}");
+    }
+    let mac = read("packaging/macos/build.sh");
+    assert!(mac.contains(&format!("<string>{id}</string>")));
+    assert!(mac.contains(&format!("<string>{scheme}</string>")));
+    assert!(mac.contains("export MACOSX_DEPLOYMENT_TARGET=11.0"));
+}
+
+/// The rpm requires the same dlopen'ed libraries as the deb (by soname).
+#[test]
+fn rpm_spec_mirrors_deb_depends() {
+    let spec = read("packaging/rpm/rustket.spec");
+    let requires: Vec<&str> = spec
+        .lines()
+        .filter_map(|l| l.strip_prefix("Requires:"))
+        .map(str::trim)
+        .collect();
+    let deb = read("packaging/deb/depends");
+    assert_eq!(requires.len(), deb.trim().split(", ").count());
+    for lib in [
+        "libxkbcommon.so.0",
+        "libxkbcommon-x11.so.0",
+        "libX11.so.6",
+        "libX11-xcb.so.1",
+        "libXcursor.so.1",
+        "libXi.so.6",
+    ] {
+        assert!(
+            requires.contains(&format!("{lib}()(64bit)").as_str()),
+            "missing {lib}"
+        );
+    }
+    assert!(spec.contains("Recommends:     libdbus-1.so.3()(64bit)"));
+    assert!(spec.contains("%global debug_package %{nil}"));
+}
+
 #[test]
 #[ignore = "builds the dist profile and the .deb (minutes); run with --ignored"]
 fn package_script() {

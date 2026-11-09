@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Assembles packaging/out/Rustket.AppDir from the `dist` build and, when
-# `appimagetool` is on PATH, packs it into packaging/out/Rustket-<arch>.AppImage.
+# `appimagetool` is on PATH, packs it into packaging/out/Rustket-<version>-<arch>.AppImage.
 #
 #   packaging/appimage/build.sh
 #   SKIP_BUILD=1 packaging/appimage/build.sh   # reuse an existing target/dist/rustket
@@ -16,7 +16,7 @@ build_binary
 VERSION="$(binary_version)"
 ARCH="$(uname -m)"
 APPDIR="$OUT/Rustket.AppDir"
-IMAGE="$OUT/Rustket-$ARCH.AppImage"
+IMAGE="$OUT/Rustket-$VERSION-$ARCH.AppImage"
 
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR"
