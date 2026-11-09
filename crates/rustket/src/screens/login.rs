@@ -918,7 +918,7 @@ impl Login {
                 secondary_button(t!("login.open_again"), Some(Message::OpenAgain))
                     .icon(Icon::ExternalLink)
                     .width(Length::Fill),
-                ghost_button(t!("login.cancel"), Some(Message::CancelPending)).width(Length::Fill),
+                ghost_button(t!("login.cancel"), Some(Message::CancelPending)),
             ]
             .spacing(SPACE_2),
         );
