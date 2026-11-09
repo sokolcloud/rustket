@@ -65,7 +65,7 @@ Two downloads for x64 and ARM64 (Windows 10 or 11):
 - `Rustket-0.1.0-x64-setup.exe` / `Rustket-0.1.0-arm64-setup.exe`: installer.
   It installs for the current user without administrator rights (the first page
   offers an all-users install), adds a Start menu shortcut, optionally a
-  desktop icon, and registers `rocketchat://` links. Uninstall from Settings →
+  desktop icon, and registers `rocketchat://` links (a checked option, since it takes them over from the official Rocket.Chat app). Uninstall from Settings →
   Apps.
 - `rustket-0.1.0-windows-x64.zip` / `rustket-0.1.0-windows-arm64.zip`: portable.
   Extract anywhere and run `rustket.exe`; use the "Open rocketchat:// links with

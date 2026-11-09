@@ -1,4 +1,4 @@
-; Inno Setup 6.3+ script for Rustket. Built by packaging/windows/build.ps1,
+﻿; Inno Setup 6.3+ script for Rustket. Built by packaging/windows/build.ps1,
 ; which passes:
 ;   /DAppVersion=0.1.0 /DAppNumericVersion=0.1.0.0 /DAppArch=x64|arm64
 ;   /DSourceDir=<dir with rustket.exe, LICENSE.txt, THIRD-PARTY-NOTICES.txt>
@@ -73,8 +73,13 @@ ChangesAssociations=yes
 Name: "en"; MessagesFile: "compiler:Default.isl"
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
+[CustomMessages]
+en.UrlHandler=Open rocketchat:// links with Rustket (sign-in through the browser; replaces the official Rocket.Chat app as their handler)
+ru.UrlHandler=Открывать ссылки rocketchat:// в Rustket (вход через браузер; вместо официального приложения Rocket.Chat)
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "urlhandler"; Description: "{cm:UrlHandler}"
 
 [Files]
 Source: "{#SourceDir}\rustket.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -86,12 +91,13 @@ Name: "{autoprograms}\Rustket"; Filename: "{app}\rustket.exe"; AppUserModelID: "
 Name: "{autodesktop}\Rustket"; Filename: "{app}\rustket.exe"; AppUserModelID: "{#AppUserModelID}"; Tasks: desktopicon
 
 [Registry]
-; Byte-identical to what the app writes for itself. Removed by [Code] on
-; uninstall only while it still points at this installation.
-Root: HKA; Subkey: "Software\Classes\{#Scheme}"; ValueType: string; ValueName: ""; ValueData: "URL:Rocket.Chat Protocol"
-Root: HKA; Subkey: "Software\Classes\{#Scheme}"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
-Root: HKA; Subkey: "Software\Classes\{#Scheme}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\rustket.exe"",0"
-Root: HKA; Subkey: "Software\Classes\{#Scheme}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\rustket.exe"" ""%1"""
+; Byte-identical to what the app writes for itself (optional: it takes the
+; scheme over from the official client). Removed by [Code] on uninstall only
+; while it still points at this installation.
+Root: HKA; Subkey: "Software\Classes\{#Scheme}"; ValueType: string; ValueName: ""; ValueData: "URL:Rocket.Chat Protocol"; Tasks: urlhandler
+Root: HKA; Subkey: "Software\Classes\{#Scheme}"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Tasks: urlhandler
+Root: HKA; Subkey: "Software\Classes\{#Scheme}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\rustket.exe"",0"; Tasks: urlhandler
+Root: HKA; Subkey: "Software\Classes\{#Scheme}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\rustket.exe"" ""%1"""; Tasks: urlhandler
 
 [Run]
 Filename: "{app}\rustket.exe"; Description: "{cm:LaunchProgram,Rustket}"; Flags: nowait postinstall skipifsilent
