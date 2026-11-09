@@ -239,12 +239,16 @@ fn up_edits_last_only_when_empty_and_escape_cancels() {
 
 #[test]
 fn ctrl_v_checks_for_files_and_images_before_pasting_text() {
-    let b = press(Key::Character("v".into()), Modifiers::CTRL, Keys::default());
+    let b = press(
+        Key::Character("v".into()),
+        Modifiers::COMMAND,
+        Keys::default(),
+    );
     assert!(matches!(b, Some(Binding::Custom(Message::PasteCheck))));
     assert_eq!(
         custom(press(
             Key::Character("b".into()),
-            Modifiers::CTRL,
+            Modifiers::COMMAND,
             Keys::default()
         ))
         .as_deref(),

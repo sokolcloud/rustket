@@ -1,3 +1,6 @@
+// Release builds on Windows open no console window.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use rustket::app::{App, Flags};
 use rustket::renderer;
 use rustket::single_instance::{self, Instance, ListenerSlot};
@@ -61,6 +64,19 @@ fn software_reexec() -> Option<std::io::Error> {
     }
 }
 
+/// Linux: the application id (`WM_CLASS`, Wayland `app_id`).
+fn platform_specific() -> iced::window::settings::PlatformSpecific {
+    #[cfg(target_os = "linux")]
+    {
+        iced::window::settings::PlatformSpecific {
+            application_id: rustket::APP_ID.into(),
+            ..Default::default()
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    iced::window::settings::PlatformSpecific::default()
+}
+
 fn main() -> iced::Result {
     // `--help`/`--version` print and exit before any GUI or re-exec work.
     rust_i18n::set_locale(rustket::i18n::from_env(|k| std::env::var(k).ok()));
@@ -88,14 +104,15 @@ fn main() -> iced::Result {
         .skip(1)
         .filter(|a| !a.starts_with('-'))
         .collect();
-    let path = single_instance::socket_path();
-    let mut lock = None;
-    let listener = match &path {
+    let endpoint = single_instance::endpoint();
+    // Kept until `main` returns; on unix dropping it removes the socket, then
+    // releases the instance lock.
+    let (listener, _guard) = match &endpoint {
         None => {
-            tracing::warn!("no private directory for the single-instance socket");
-            None
+            tracing::warn!("no usable single-instance endpoint");
+            (None, None)
         }
-        Some(path) => match single_instance::acquire(path, &urls) {
+        Some(endpoint) => match single_instance::acquire(endpoint, &urls) {
             Ok(Instance::Forwarded) => {
                 tracing::info!(
                     "forwarded {} argument(s) to the running instance",
@@ -103,18 +120,16 @@ fn main() -> iced::Result {
                 );
                 return Ok(());
             }
-            Ok(Instance::Primary(l, file)) => {
-                lock = Some(file);
-                Some(ListenerSlot::new(l))
-            }
+            Ok(Instance::Primary(l, g)) => (Some(ListenerSlot::new(l)), Some(g)),
             Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "single-instance socket unavailable");
-                None
+                tracing::warn!(?endpoint, error = %e, "single-instance endpoint unavailable");
+                (None, None)
             }
         },
     };
 
-    let primary = listener.is_some();
+    #[cfg(target_os = "macos")]
+    rustket::macos_events::install();
     let config_dir = rustket_core::config::AppConfig::default_dir().ok();
     let decorations = rustket::workspace::titlebar::saved_system_title_bar(config_dir.as_deref());
     let flags = Flags {
@@ -126,7 +141,7 @@ fn main() -> iced::Result {
         offline_cache: rustket::cache::default_base(),
         ..Flags::default()
     };
-    let result = iced::application(move || App::new(flags.clone()), App::update, App::view)
+    iced::application(move || App::new(flags.clone()), App::update, App::view)
         .settings(rustket_ui::settings())
         .title(App::title)
         .theme(App::theme)
@@ -136,22 +151,13 @@ fn main() -> iced::Result {
             icon: rustket::desktop::icon::window_icon(),
             decorations,
             min_size: Some(rustket::workspace::titlebar::MIN_WINDOW_SIZE),
-            platform_specific: iced::window::settings::PlatformSpecific {
-                application_id: rustket::APP_ID.into(),
-                ..Default::default()
-            },
+            platform_specific: platform_specific(),
             ..Default::default()
         })
         .window_size((1280.0, 820.0))
         // Closing goes through `Message::CloseRequested` (flushes the config).
         .exit_on_close_request(false)
-        .run();
-    // Only the lock holder removes the socket, before releasing the lock.
-    if primary && let Some(path) = path {
-        let _ = std::fs::remove_file(&path);
-    }
-    drop(lock);
-    result
+        .run()
 }
 
 #[cfg(test)]

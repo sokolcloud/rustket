@@ -20,6 +20,9 @@ handler.register:
 handler.registered:
   en: "Rustket now opens rocketchat:// links"
   ru: "Теперь ссылки rocketchat:// открываются в Rustket"
+handler.bundle:
+  en: "On macOS the app bundle handles rocketchat:// links; there is nothing to register."
+  ru: "В macOS ссылки rocketchat:// обрабатывает пакет приложения; регистрировать нечего."
 handler.shared_group:
   en: "%{path} can be changed by other members of its group."
   ru: "%{path} могут изменять другие участники его группы."

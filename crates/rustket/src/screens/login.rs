@@ -936,7 +936,7 @@ impl Login {
                 )
                 .width(Length::Fill),
             );
-            if !self.handler_registered {
+            if !self.handler_registered && !crate::url_handler::MANAGED_BY_BUNDLE {
                 rest = rest.push(banner(
                     BannerKind::Info,
                     t!("login.handler_hint"),

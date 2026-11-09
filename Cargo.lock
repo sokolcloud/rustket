@@ -3700,6 +3700,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583300ad934cba24ff5292aee751ecc070f7ca6b39a574cc21b7b5e588e06a0b"
+dependencies = [
+ "dispatch2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-security",
+]
+
+[[package]]
 name = "objc2-core-text"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3754,6 +3766,7 @@ dependencies = [
  "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
+ "objc2-core-services",
 ]
 
 [[package]]
@@ -3814,6 +3827,17 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "objc2-security"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "709fe137109bd1e8b5a99390f77a7d8b2961dafc1a1c5db8f2e60329ad6d895a"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
 ]
 
 [[package]]
@@ -5014,11 +5038,15 @@ dependencies = [
  "iced_tiny_skia",
  "image",
  "ksni",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
  "open",
  "png 0.18.1",
+ "rand 0.10.3",
  "rfd",
  "rocketchat",
  "rust-i18n",
+ "rustix 1.1.6",
  "rustket-core",
  "rustket-ui",
  "serde",
@@ -5034,6 +5062,7 @@ dependencies = [
  "unicode-properties",
  "url",
  "webbrowser",
+ "winreg",
  "x11rb",
  "zbus",
 ]
@@ -7223,6 +7252,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winreg"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

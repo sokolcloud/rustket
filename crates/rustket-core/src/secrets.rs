@@ -180,6 +180,25 @@ fn entry(key: &str) -> Result<keyring::Entry> {
     keyring::Entry::new(SERVICE, key).map_err(kr_err)
 }
 
+/// Windows Credential Manager holds at most 2560 bytes per credential and the
+/// password API stores UTF-16, which an E2E private key (JWK) exceeds: values
+/// are stored as UTF-8 bytes there.
+fn kr_set(entry: &keyring::Entry, value: &str) -> keyring::Result<()> {
+    #[cfg(windows)]
+    return entry.set_secret(value.as_bytes());
+    #[cfg(not(windows))]
+    entry.set_password(value)
+}
+
+fn kr_get(entry: &keyring::Entry) -> keyring::Result<String> {
+    #[cfg(windows)]
+    return entry.get_secret().and_then(|bytes| {
+        String::from_utf8(bytes).map_err(|e| keyring::Error::BadEncoding(e.into_bytes()))
+    });
+    #[cfg(not(windows))]
+    entry.get_password()
+}
+
 /// OS keyring through the `keyring` 4 crate (`v1` API), with a time limit per call.
 #[derive(Debug, Clone)]
 pub struct KeyringStore {
@@ -210,8 +229,8 @@ impl KeyringStore {
             }
             let probe = entry(&format!("{SERVICE}:probe"))?;
             let value = rocketchat::ids::random_id();
-            probe.set_password(&value).map_err(kr_err)?;
-            let read = probe.get_password().map_err(kr_err);
+            kr_set(&probe, &value).map_err(kr_err)?;
+            let read = kr_get(&probe).map_err(kr_err);
             let _ = probe.delete_credential();
             if read? != value {
                 return Err(SecretError::Keyring(
@@ -226,7 +245,7 @@ impl KeyringStore {
 impl SecretStore for KeyringStore {
     fn get(&self, key: &str) -> Result<Option<String>> {
         let key = key.to_owned();
-        on_worker(self.timeout, move || match entry(&key)?.get_password() {
+        on_worker(self.timeout, move || match kr_get(&entry(&key)?) {
             Ok(v) => Ok(Some(v)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(kr_err(e)),
@@ -236,7 +255,7 @@ impl SecretStore for KeyringStore {
     fn set(&self, key: &str, value: &str) -> Result<()> {
         let (key, value) = (key.to_owned(), value.to_owned());
         on_worker(self.timeout, move || {
-            entry(&key)?.set_password(&value).map_err(kr_err)
+            kr_set(&entry(&key)?, &value).map_err(kr_err)
         })
     }
 
