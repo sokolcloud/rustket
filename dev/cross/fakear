@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stand-in archiver (ar / lib.exe style) for `cargo check` on foreign targets.
+out=""
+for a in "$@"; do
+  case "$a" in
+    -out:*|-OUT:*|/out:*|/OUT:*) out="${a#*:}" ;;
+    *.a|*.lib) [ -z "$out" ] && out="$a" ;;
+  esac
+done
+[ -n "$out" ] && : > "$out"
+exit 0

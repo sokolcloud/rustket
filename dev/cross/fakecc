@@ -1,0 +1,19 @@
+#!/bin/sh
+# Stand-in C compiler for `cargo check` on foreign targets: creates the requested
+# output files empty. Nothing is linked by `cargo check`, so this is enough for
+# build scripts that compile C (sqlite, aws-lc, ring) to succeed.
+out=""
+prev=""
+for a in "$@"; do
+  case "$prev" in -o) out="$a" ;; esac
+  case "$a" in
+    -E) exit 0 ;;
+    --version|-v|-dumpversion) echo "fakecc 1.0"; exit 0 ;;
+    -Fo*) out="${a#-Fo}" ;;
+    /Fo*) out="${a#/Fo}" ;;
+    -o?*) out="${a#-o}" ;;
+  esac
+  prev="$a"
+done
+[ -n "$out" ] && : > "$out"
+exit 0
