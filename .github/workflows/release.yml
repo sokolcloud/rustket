@@ -2,7 +2,8 @@ name: Release
 
 # Tags v<version> build every package and publish a GitHub release. Pushing
 # the `release-dry-run` branch (or a manual run) builds the same packages as
-# workflow artifacts without releasing.
+# workflow artifacts without releasing. Each package is uploaded unarchived
+# (`archive: false`), so it downloads as the .deb/.rpm/.exe/.dmg itself.
 on:
   push:
     tags: ['v*']
@@ -88,10 +89,23 @@ jobs:
           mkdir dist
           cp packaging/out/*.deb packaging/out/*.rpm packaging/out/*.AppImage dist/
           ls -l dist
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Upload the deb
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: packages-linux
-          path: dist/*
+          path: dist/*.deb
+          archive: false
+          if-no-files-found: error
+      - name: Upload the rpm
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: dist/*.rpm
+          archive: false
+          if-no-files-found: error
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: dist/*.AppImage
+          archive: false
           if-no-files-found: error
 
   windows:
@@ -131,10 +145,17 @@ jobs:
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item packaging/out/*.exe, packaging/out/*.zip dist/
           Get-ChildItem dist
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: packages-windows-${{ matrix.arch }}
-          path: dist/*
+          path: dist/*.exe
+          archive: false
+          if-no-files-found: error
+      - name: Upload the portable zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: dist/*.zip
+          archive: false
           if-no-files-found: error
 
   macos:
@@ -156,10 +177,11 @@ jobs:
           mkdir dist
           cp packaging/out/*.dmg dist/
           ls -l dist
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Upload the dmg
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: packages-macos
-          path: dist/*
+          path: dist/*.dmg
+          archive: false
           if-no-files-found: error
 
   publish:
@@ -187,7 +209,7 @@ jobs:
           echo "version=$version" >>"$GITHUB_OUTPUT"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: packages-*
+          # Every artifact of this run is one package file.
           path: dist
           merge-multiple: true
       - name: Checksums
