@@ -31,7 +31,17 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --workspace 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Annotate test failures
+        if: failure()
+        shell: bash
+        run: |
+          py=python3; command -v python3 >/dev/null || py=python
+          [ ! -f "$RUNNER_TEMP/test.log" ] || "$py" -I .github/scripts/test-annotations.py "$RUNNER_TEMP/test.log"
 
   windows:
     name: Windows ${{ matrix.arch }}
@@ -59,7 +69,17 @@ jobs:
         run: ./packaging/windows/ci-toolchain.ps1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --workspace 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Annotate test failures
+        if: failure()
+        shell: bash
+        run: |
+          py=python3; command -v python3 >/dev/null || py=python
+          [ ! -f "$RUNNER_TEMP/test.log" ] || "$py" -I .github/scripts/test-annotations.py "$RUNNER_TEMP/test.log"
 
   macos:
     name: macOS arm64
@@ -76,4 +96,14 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # The release's x86_64 slice is cross-compiled; type-check it too.
       - run: cargo clippy --locked --workspace --all-targets --target x86_64-apple-darwin -- -D warnings
-      - run: cargo test --locked --workspace
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --workspace 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Annotate test failures
+        if: failure()
+        shell: bash
+        run: |
+          py=python3; command -v python3 >/dev/null || py=python
+          [ ! -f "$RUNNER_TEMP/test.log" ] || "$py" -I .github/scripts/test-annotations.py "$RUNNER_TEMP/test.log"
