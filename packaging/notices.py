@@ -9,8 +9,16 @@ non-crate assets (fonts, icon font, data tables) come from packaging/licenses
 and the font directory.
 
     python3 -I packaging/notices.py > THIRD-PARTY-NOTICES
+    python -I packaging/notices.py x86_64-pc-windows-msvc -o THIRD-PARTY-NOTICES.txt
+
+The optional arguments are the target triples of the binary (default: the
+host; a universal macOS binary passes both), so Windows and macOS packages
+list the crates compiled for them. The output is
+UTF-8 with LF line ends on every platform; `-o` avoids shell redirection,
+which re-encodes text in Windows PowerShell.
 """
 
+import argparse
 import hashlib
 import json
 import os
@@ -48,14 +56,15 @@ SOFTWARE."""
 
 def cargo(*args):
     return subprocess.run(
-        ["cargo", *args], cwd=ROOT, check=True, capture_output=True, text=True
+        ["cargo", *args], cwd=ROOT, check=True, capture_output=True,
+        text=True, encoding="utf-8",
     ).stdout
 
 
-def linked_crates():
+def linked_crates(target):
     out = cargo(
         "tree", "--locked", "-p", "rustket", "-e", "normal",
-        "--prefix", "none", "--format", "{p}",
+        "--prefix", "none", "--format", "{p}", *target,
     )
     crates = set()
     for line in out.splitlines():
@@ -78,8 +87,14 @@ def license_files(manifest_path):
 
 
 def main():
-    wanted = linked_crates()
-    meta = json.loads(cargo("metadata", "--locked", "--format-version", "1"))
+    parser = argparse.ArgumentParser(description="Third-party notices of the rustket binary.")
+    parser.add_argument("targets", nargs="*", help="target triples (default: the host)")
+    parser.add_argument("-o", "--output", help="write to this file instead of stdout")
+    args = parser.parse_args()
+    target = [a for t in args.targets for a in ("--target", t)]
+    platform = [a for t in args.targets for a in ("--filter-platform", t)]
+    wanted = linked_crates(target)
+    meta = json.loads(cargo("metadata", "--locked", "--format-version", "1", *platform))
     texts = {}  # sha256 -> (text, [crate labels])
     order = []
     missing = []
@@ -102,7 +117,12 @@ def main():
                 order.append(key)
             texts[key][1].append(f"{label} ({os.path.basename(path)})")
 
-    w = sys.stdout.write
+    if args.output:
+        out = open(args.output, "w", encoding="utf-8", newline="\n")
+    else:
+        out = sys.stdout
+        out.reconfigure(encoding="utf-8", newline="\n")
+    w = out.write
     w("Third-party software in Rustket\n")
     w("===============================\n\n")
     w("The rustket binary is statically linked with the Rust crates listed below and\n")
@@ -135,6 +155,8 @@ def main():
                 with open(path, encoding="utf-8") as f:
                     text = f.read().strip()
                 w(f"\n{'-' * 78}\n{spdx} (for the crates above that use it)\n{'-' * 78}\n\n{text}\n")
+    if out is not sys.stdout:
+        out.close()
 
 
 if __name__ == "__main__":

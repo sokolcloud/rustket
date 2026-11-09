@@ -1,5 +1,7 @@
 //! Renders the app icons (`assets/icons/*.png`) with tiny-skia: a blue chat
-//! bubble with a white spark, and an "unread" variant with a red dot.
+//! bubble with a white spark, and an "unread" variant with a red dot. Also
+//! writes `rustket.ico` (Windows executable and installer) and `rustket.icns`
+//! (macOS bundle) from the same renderer.
 //!
 //! ```sh
 //! cargo run -p rustket --example gen_icons -- crates/rustket/assets/icons
@@ -13,6 +15,18 @@ use tiny_skia::{
 };
 
 const SIZES: &[u32] = &[16, 22, 24, 32, 48, 64, 128, 256, 512];
+const ICO_SIZES: &[u32] = &[16, 24, 32, 48, 64, 128, 256];
+/// PNG-backed icns element types with their pixel size (`@2x` types included).
+const ICNS_TYPES: &[(&[u8; 4], u32)] = &[
+    (b"ic11", 32),
+    (b"ic12", 64),
+    (b"ic07", 128),
+    (b"ic13", 256),
+    (b"ic08", 256),
+    (b"ic14", 512),
+    (b"ic09", 512),
+    (b"ic10", 1024),
+];
 
 fn paint(shader: Shader<'static>) -> Paint<'static> {
     Paint {
@@ -102,6 +116,91 @@ fn render(size: u32, unread: bool) -> Pixmap {
     pm
 }
 
+fn png(size: u32) -> Vec<u8> {
+    render(size, false).encode_png().expect("encode png")
+}
+
+/// ICO with 32-bit BMP entries below 256 px (read by every Windows API) and a
+/// PNG entry at 256 px, the usual layout of Windows application icons.
+fn ico() -> Vec<u8> {
+    let images: Vec<(u32, Vec<u8>)> = ICO_SIZES
+        .iter()
+        .map(|&size| {
+            let data = if size >= 256 {
+                png(size)
+            } else {
+                bmp(&render(size, false))
+            };
+            (size, data)
+        })
+        .collect();
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0, 0, 1, 0]);
+    out.extend_from_slice(&(images.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * images.len() as u32;
+    for (size, data) in &images {
+        let dim = if *size >= 256 { 0 } else { *size as u8 };
+        out.extend_from_slice(&[dim, dim, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += data.len() as u32;
+    }
+    for (_, data) in &images {
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+/// A BITMAPINFOHEADER image for an ICO entry: bottom-up BGRA rows followed by
+/// the AND mask (set where the pixel is fully transparent).
+fn bmp(pm: &Pixmap) -> Vec<u8> {
+    let (w, h) = (pm.width(), pm.height());
+    let mask_stride = w.div_ceil(32) * 4;
+    let mut out = Vec::new();
+    for v in [40, w, h * 2] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    for v in [0, w * h * 4 + mask_stride * h, 0, 0, 0, 0] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    let pixels = pm.pixels();
+    for y in (0..h).rev() {
+        for x in 0..w {
+            let c = pixels[(y * w + x) as usize].demultiply();
+            out.extend_from_slice(&[c.blue(), c.green(), c.red(), c.alpha()]);
+        }
+    }
+    for y in (0..h).rev() {
+        let mut row = vec![0u8; mask_stride as usize];
+        for x in 0..w {
+            if pixels[(y * w + x) as usize].alpha() == 0 {
+                row[(x / 8) as usize] |= 0x80 >> (x % 8);
+            }
+        }
+        out.extend_from_slice(&row);
+    }
+    out
+}
+
+/// ICNS made of PNG elements (macOS 10.7+).
+fn icns() -> Vec<u8> {
+    let mut body = Vec::new();
+    for (kind, size) in ICNS_TYPES {
+        let data = png(*size);
+        body.extend_from_slice(*kind);
+        body.extend_from_slice(&(data.len() as u32 + 8).to_be_bytes());
+        body.extend_from_slice(&data);
+    }
+    let mut out = b"icns".to_vec();
+    out.extend_from_slice(&(body.len() as u32 + 8).to_be_bytes());
+    out.extend_from_slice(&body);
+    out
+}
+
 fn main() {
     let out: PathBuf = std::env::args()
         .nth(1)
@@ -114,5 +213,10 @@ fn main() {
             render(size, unread).save_png(&path).expect("save png");
             println!("wrote {}", path.display());
         }
+    }
+    for (name, data) in [("rustket.ico", ico()), ("rustket.icns", icns())] {
+        let path = out.join(name);
+        std::fs::write(&path, data).expect("write icon");
+        println!("wrote {}", path.display());
     }
 }

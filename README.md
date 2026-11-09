@@ -10,6 +10,10 @@ Tested against Rocket.Chat 8.9. Linux is the primary platform.
 
 ## Install
 
+Packages for every release are on the
+[releases page](https://github.com/sokolcloud/rustket/releases), with a
+`SHA256SUMS` file. The Windows and macOS builds are not code-signed yet.
+
 ### Debian / Ubuntu (.deb)
 
 ```sh
@@ -25,11 +29,24 @@ dependencies/recommendations. File dialogs need an XDG desktop portal or
 `zenity`; notification sounds need `pw-play`, `paplay` or `canberra-gtk-play`.
 Third-party licenses: `/usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz`.
 
+### Fedora / openSUSE (.rpm)
+
+```sh
+sudo dnf install ./rustket-0.1.0-1.x86_64.rpm       # Fedora
+sudo zypper install ./rustket-0.1.0-1.x86_64.rpm    # openSUSE
+```
+
+Same layout and runtime dependencies as the .deb (libraries are required by
+soname, so both distributions resolve them); the license file is in
+`/usr/share/licenses/rustket/`, the third-party notices in
+`/usr/share/doc/rustket/THIRD-PARTY-NOTICES`. The packages are built on Ubuntu
+22.04 and need glibc 2.35 or newer.
+
 ### AppImage
 
 ```sh
-chmod +x Rustket-x86_64.AppImage
-./Rustket-x86_64.AppImage
+chmod +x Rustket-0.1.0-x86_64.AppImage
+./Rustket-0.1.0-x86_64.AppImage
 ```
 
 To make `rocketchat://` links open the AppImage, use the "Open rocketchat:// links
@@ -38,8 +55,41 @@ it at a stable path). Third-party licenses are in
 `usr/share/doc/rustket/THIRD-PARTY-NOTICES` inside the image.
 
 The AppImage uses the glibc of the system it runs on and needs at least the
-version it was built against (2.38 for a build on Ubuntu 24.04 or newer); build
-it on the oldest distribution you want to support.
+version it was built against: 2.35 for the release builds (Ubuntu 22.04). When
+building it yourself, build on the oldest distribution you want to support.
+
+### Windows
+
+Two downloads for x64 and ARM64 (Windows 10 or 11):
+
+- `Rustket-0.1.0-x64-setup.exe` / `Rustket-0.1.0-arm64-setup.exe`: installer.
+  It installs for the current user without administrator rights (the first page
+  offers an all-users install), adds a Start menu shortcut, optionally a
+  desktop icon, and registers `rocketchat://` links. Uninstall from Settings →
+  Apps.
+- `rustket-0.1.0-windows-x64.zip` / `rustket-0.1.0-windows-arm64.zip`: portable.
+  Extract anywhere and run `rustket.exe`; use the "Open rocketchat:// links with
+  Rustket" action in the app to register the links for that copy.
+
+The builds are unsigned, so SmartScreen may warn "Windows protected your PC":
+click **More info → Run anyway**. Third-party licenses:
+`THIRD-PARTY-NOTICES.txt` next to `rustket.exe`.
+
+### macOS
+
+`Rustket-0.1.0-macos-universal.dmg` runs natively on Apple Silicon and Intel
+Macs with macOS 11 or newer. Open it and drag Rustket to Applications.
+
+The app is not notarized, so Gatekeeper blocks the first start. Either
+right-click (Control-click) Rustket in Applications and choose **Open**, then
+**Open** again; or try to open it once, then use **System Settings → Privacy &
+Security → Open Anyway**. Alternatively remove the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Rustket.app
+```
+
+Third-party licenses are in `Rustket.app/Contents/Resources/THIRD-PARTY-NOTICES`.
 
 ### Build from source
 
@@ -57,11 +107,18 @@ from the distribution:
 ```sh
 packaging/deb/build.sh         # packaging/out/rustket_<version>-1_<arch>.deb (dpkg-deb)
 LINT=1 packaging/deb/build.sh  # ... and run lintian
+packaging/rpm/build.sh         # packaging/out/rustket-<version>-1.<arch>.rpm (rpmbuild)
 packaging/appimage/build.sh    # packaging/out/Rustket.AppDir, and the .AppImage
                                # when appimagetool is on PATH
-packaging/test.sh              # builds both and checks the package contents
+packaging/test.sh              # builds the .deb and AppDir and checks their contents
 python3 -I packaging/notices.py >THIRD-PARTY-NOTICES   # license notices only
+packaging/macos/build.sh       # macOS: universal Rustket.app and .dmg
+pwsh packaging/windows/build.ps1 -Arch x64   # Windows: setup.exe (Inno Setup 6.3+) and .zip
 ```
+
+Releases are built by `.github/workflows/release.yml` on a `v<version>` tag
+(pushing the `release-dry-run` branch builds the same packages without
+publishing).
 
 `SKIP_BUILD=1` reuses an existing `target/dist/rustket`. The scripts need
 `python3` for the third-party notices. cargo-deb users can run
