@@ -212,9 +212,23 @@ jobs:
           # Every artifact of this run is one package file.
           path: dist
           merge-multiple: true
-      - name: Checksums
-        working-directory: dist
+      - name: Collect and checksum
         run: |
+          set -euo pipefail
+          # Unarchived artifacts can land in per-artifact directories: flatten.
+          mkdir release
+          if [ -d dist ]; then find dist -type f -exec mv -t release {} +; fi
+          cd release
+          missing=""
+          for want in '*_amd64.deb' '*.x86_64.rpm' '*-x86_64.AppImage' '*-x64-setup.exe' \
+              '*-arm64-setup.exe' '*-windows-x64.zip' '*-windows-arm64.zip' '*-macos-universal.dmg'; do
+            compgen -G "$want" >/dev/null || missing="$missing $want"
+          done
+          if [ -n "$missing" ]; then
+            tree="$(cd .. && { find dist release 2>/dev/null || true; } | head -50 | tr '\n' ' ')"
+            echo "::error::missing packages:$missing; files: $tree"
+            exit 1
+          fi
           sha256sum -- * >SHA256SUMS
           cat SHA256SUMS
       - name: Create the release
@@ -228,4 +242,4 @@ jobs:
           prerelease=()
           case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
           gh release create "$TAG" --verify-tag --title "Rustket $VERSION" --generate-notes \
-            "${prerelease[@]}" dist/*
+            "${prerelease[@]}" release/*
