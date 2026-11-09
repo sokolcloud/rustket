@@ -51,7 +51,7 @@ jobs:
           set -euo pipefail
           fetch() { # url sha256 dest
             [ -n "$2" ] || { echo "::error::expected sha256 for $1 is not set"; exit 1; }
-            curl -fsSL --retry 3 -o "$3" "$1"
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$3" "$1"
             echo "$2  $3" | sha256sum --check --strict
           }
           fetch "$APPIMAGETOOL_URL" "$APPIMAGETOOL_SHA256" "$RUNNER_TEMP/appimagetool"
