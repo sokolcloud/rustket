@@ -43,7 +43,22 @@ impl Clipboard for NoClip {
 
 const SIZE: Size = Size::new(800.0, 600.0);
 
+/// Registers the bundled fonts once, as the app does at startup: text
+/// measurements must not depend on the runner's system fonts.
+fn load_fonts() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let mut fonts = iced::advanced::graphics::text::font_system()
+            .write()
+            .expect("font system");
+        for f in rustket_ui::fonts() {
+            fonts.load_font(f);
+        }
+    });
+}
+
 fn renderer() -> iced::Renderer {
+    load_fonts();
     iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
         rustket_ui::theme::DEFAULT_FONT,
         iced::Pixels(14.0),
@@ -581,6 +596,7 @@ fn popover_menu_works_from_the_keyboard() {
 /// Menus grow with long (e.g. Russian) labels instead of cutting them.
 #[test]
 fn menu_width_fits_long_labels() {
+    load_fonts();
     let short: Vec<w::MenuEntry<M>> = vec![w::MenuItem::new("Copy", M::Item).into()];
     assert_eq!(w::menu_width(&short), w::MENU_WIDTH);
     let long: Vec<w::MenuEntry<M>> = vec![

@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked --workspace 2>&1 | tee "$RUNNER_TEMP/test.log"
+          cargo test --locked --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test.log"
       - name: Annotate test failures
         if: failure()
         shell: bash
@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked --workspace 2>&1 | tee "$RUNNER_TEMP/test.log"
+          cargo test --locked --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test.log"
       - name: Annotate test failures
         if: failure()
         shell: bash
@@ -100,7 +100,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked --workspace 2>&1 | tee "$RUNNER_TEMP/test.log"
+          cargo test --locked --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test.log"
       - name: Annotate test failures
         if: failure()
         shell: bash
