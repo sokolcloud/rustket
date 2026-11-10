@@ -1026,6 +1026,7 @@ impl App {
                 Task::batch(tasks)
             }
             Message::TokenUser(sid, creds, r) => self.on_token_user(sid, creds, r),
+            Message::SamlLinkLogin(sid, token, r) => self.on_saml_link_login(sid, token, r),
             Message::TokenStored(sid, r) => {
                 if let Err(e) = r {
                     tracing::warn!(server = %sid, error = %e, "token not stored");
@@ -2252,6 +2253,34 @@ impl App {
                 server_id,
                 credential_token,
             } => self.complete_login(&server_id, LoginRequest::Saml { credential_token }),
+            Decision::ConfirmSaml {
+                server_id,
+                credential_token,
+            } => {
+                let Some(s) = self.servers.get_mut(&server_id) else {
+                    return Task::none();
+                };
+                let Some(l) = s.login.as_mut() else {
+                    return Task::none();
+                };
+                // The pending login accepts this one link only.
+                l.claim_saml(&credential_token);
+                let (url, tls) = (s.url.clone(), s.tls.clone());
+                let token = credential_token.clone();
+                Task::perform(
+                    async move {
+                        let rest = RestClient::new(url, &tls)?;
+                        rest.login_saml(&token, None).await
+                    },
+                    move |r| {
+                        Message::SamlLinkLogin(
+                            server_id.clone(),
+                            credential_token.clone(),
+                            r.map_err(Failure::from),
+                        )
+                    },
+                )
+            }
             Decision::ConfirmToken {
                 server_id,
                 user_id,
@@ -2487,6 +2516,53 @@ impl App {
             .complete_with(req)
             .map(move |m| Message::Login(sid.clone(), m));
         Task::batch([a, t])
+    }
+
+    /// The login with a server-generated SAML token finished: confirm the
+    /// account like a Token link. A 2FA challenge goes through the regular
+    /// login flow (only the account owner can answer it).
+    fn on_saml_link_login(
+        &mut self,
+        sid: ServerId,
+        credential_token: String,
+        r: crate::error::Res<LoginResult>,
+    ) -> Task<Message> {
+        let live = self
+            .servers
+            .get(&sid)
+            .and_then(|s| s.login.as_ref())
+            .is_some_and(|l| l.saml_claim_matches(&credential_token, Instant::now()));
+        if !live {
+            tracing::info!("SAML login finished without a matching pending login");
+            return Task::none();
+        }
+        match r {
+            Ok(res) => {
+                let creds = Credentials::new(res.user_id.clone(), res.auth_token.clone());
+                if let Some(l) = self.servers.get_mut(&sid).and_then(|s| s.login.as_mut()) {
+                    l.claim_token(&creds);
+                }
+                match res.me {
+                    Some(me) => self.on_token_user(sid, creds, Ok(me)),
+                    None => self.apply_decision(
+                        Decision::ConfirmToken {
+                            server_id: sid,
+                            user_id: creds.user_id.clone(),
+                            token: creds.auth_token.clone(),
+                        },
+                        "",
+                    ),
+                }
+            }
+            Err(e) if matches!(e.error(), rocketchat::Error::TwoFactorRequired(_)) => {
+                self.complete_login(&sid, LoginRequest::Saml { credential_token })
+            }
+            Err(e) => self.toast(
+                BannerKind::Error,
+                t!("deeplink.token_rejected"),
+                e.user_text(),
+            ),
+        }
     }
 
     /// The `me` lookup of a Token link finished: ask for confirmation, but only

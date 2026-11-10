@@ -4,6 +4,9 @@
 //! only acted upon when they match a login this app started:
 //! - OAuth / SAML links must match a pending login of the same kind for the
 //!   exact server (`DeepLink::matches`) and its `credentialToken`;
+//! - Rocket.Chat 8.9.1+ hands SAML logins over with a token the server
+//!   generated, not ours: such a link is accepted once per pending SAML login,
+//!   and the account must be confirmed like a Token link;
 //! - Token links (modern OAuth, "sign in with browser") carry no nonce: they are
 //!   accepted only while a browser/modern login for that server is pending, and
 //!   even then the user has to confirm the account first (login CSRF);
@@ -65,6 +68,8 @@ pub struct PendingLogin {
     /// The Token link accepted for this login (one per login; the same link
     /// again is a repeat, a different one an attack).
     pub token_claim: Option<Credentials>,
+    /// The SAML link with a server-generated token accepted for this login.
+    pub saml_claim: Option<String>,
 }
 
 impl std::fmt::Debug for PendingLogin {
@@ -86,6 +91,7 @@ impl PendingLogin {
             kind,
             started: Instant::now(),
             token_claim: None,
+            saml_claim: None,
         }
     }
 
@@ -103,6 +109,12 @@ pub enum Decision {
         credential_secret: String,
     },
     LoginSaml {
+        server_id: ServerId,
+        credential_token: String,
+    },
+    /// Log in with a server-generated SAML token, then ask the user to
+    /// confirm the account (as for [`Decision::ConfirmToken`]).
+    ConfirmSaml {
         server_id: ServerId,
         credential_token: String,
     },
@@ -147,6 +159,9 @@ impl std::fmt::Debug for Decision {
         match self {
             Self::LoginOAuth { server_id, .. } => write!(f, "LoginOAuth({server_id}, <redacted>)"),
             Self::LoginSaml { server_id, .. } => write!(f, "LoginSaml({server_id}, <redacted>)"),
+            Self::ConfirmSaml { server_id, .. } => {
+                write!(f, "ConfirmSaml({server_id}, <redacted>)")
+            }
             Self::ConfirmToken {
                 server_id, user_id, ..
             } => write!(f, "ConfirmToken({server_id}, {user_id}, <redacted>)"),
@@ -196,16 +211,30 @@ pub fn decide(
             }),
         DeepLink::Auth(AuthDeepLink::Saml {
             credential_token, ..
-        }) => live()
-            .find(|p| {
+        }) => {
+            let saml = || live().filter(|p| matches!(p.kind, PendingKind::Saml { .. }));
+            if let Some(p) = saml().find(|p| {
                 matches!(&p.kind, PendingKind::Saml { credential_token: t } if t == credential_token)
-            })
-            .map_or(Decision::Ignore("no matching pending SAML login"), |p| {
-                Decision::LoginSaml {
+            }) {
+                return Decision::LoginSaml {
                     server_id: p.server_id.clone(),
                     credential_token: credential_token.clone(),
-                }
-            }),
+                };
+            }
+            match saml().next() {
+                None => Decision::Ignore("no matching pending SAML login"),
+                Some(p) => match (&p.saml_claim, &p.token_claim) {
+                    (Some(t), _) if t == credential_token => Decision::Ignore("same SAML link again"),
+                    (Some(_), _) | (None, Some(_)) => Decision::DuplicateToken {
+                        server_id: p.server_id.clone(),
+                    },
+                    (None, None) => Decision::ConfirmSaml {
+                        server_id: p.server_id.clone(),
+                        credential_token: credential_token.clone(),
+                    },
+                },
+            }
+        }
         DeepLink::Auth(AuthDeepLink::Token { user_id, token, .. }) => {
             match live().find(|p| p.kind.expects_token()) {
                 None => Decision::Ignore("no pending browser login"),
@@ -406,6 +435,42 @@ mod tests {
                 credential_token: "T2".into()
             }
         );
+    }
+
+    #[test]
+    fn saml_with_server_token_needs_confirmation_once() {
+        let l = link("rocketchat://auth?host=http://localhost:3000&type=saml&credentialToken=SRV");
+        let now = Instant::now();
+        assert!(matches!(
+            decide(&l, &[], &servers(), now),
+            Decision::Ignore(_)
+        ));
+        let mut p = pending(PendingKind::Saml {
+            credential_token: "MINE".into(),
+        });
+        let confirm = Decision::ConfirmSaml {
+            server_id: ServerId("s1".into()),
+            credential_token: "SRV".into(),
+        };
+        assert_eq!(decide(&l, &[p.clone()], &servers(), now), confirm);
+        p.saml_claim = Some("SRV".into());
+        assert!(matches!(
+            decide(&l, &[p.clone()], &servers(), now),
+            Decision::Ignore(_)
+        ));
+        let other =
+            link("rocketchat://auth?host=http://localhost:3000&type=saml&credentialToken=OTHER");
+        assert_eq!(
+            decide(&other, &[p], &servers(), now),
+            Decision::DuplicateToken {
+                server_id: ServerId("s1".into())
+            }
+        );
+        // Not for another kind of pending login.
+        assert!(matches!(
+            decide(&l, &[pending(PendingKind::Browser)], &servers(), now),
+            Decision::Ignore(_)
+        ));
     }
 
     #[test]
@@ -667,10 +732,14 @@ mod tests {
                 "rocketchat://auth?host=http://localhost:3000&type=saml&credentialToken=EVIL",
             )
             .unwrap();
-            assert!(matches!(
+            // A token the server generated (8.9.1+): never a silent login.
+            assert_eq!(
                 decide(&l, &p, &servers(), now),
-                Decision::Ignore(_)
-            ));
+                Decision::ConfirmSaml {
+                    server_id: ServerId("a".into()),
+                    credential_token: "EVIL".into()
+                }
+            );
             let e =
                 parse_deep_link("rocketchat://auth?host=https://chat.example.com&error=x").unwrap();
             assert!(matches!(
