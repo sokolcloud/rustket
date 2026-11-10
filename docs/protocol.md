@@ -76,6 +76,13 @@ Verified against the dev server (Rocket.Chat 8.9.1) with curl and the live tests
   `<div id="config">{"credentialToken":…,"credentialSecret":…,"redirectUrl":"rocketchat:&#x2F;&#x2F;auth?host=http:&#x2F;&#x2F;localhost:3000&#x2F;&type=oauth&credentialToken=…&credentialSecret=…"}</div>`
   and JS navigates there. `/` is HTML-escaped, and `host` has a **trailing slash**.
 - The public setting `Accounts_OAuth_Use_Modern_Flow` defaults to `false`.
+- Rocket.Chat 9.0 removed the legacy Meteor OAuth flow and that setting (PR #42369): Apple,
+  GitHub, GitLab, Google, Nextcloud and custom OAuth always go through Passport
+  (`/oauth/{service}?loginClient=desktop`, state/PKCE in the server session). A legacy authorize
+  URL ends on the server's `/login` → `/home`, never on `rocketchat://`. With 2FA the server
+  redirects to `/2fa/{method}/{challengeId}?loginClient=desktop`; the web app asks for the code
+  and then deep-links a Token link (`?host&token&userId`). The client uses the modern flow for
+  every server ≥ 9.0.
 
 ## Settings
 
