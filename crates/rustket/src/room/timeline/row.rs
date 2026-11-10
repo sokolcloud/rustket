@@ -372,6 +372,61 @@ fn thread_part(env: &Env<'_>, m: &RcMessage, unread: bool) -> Option<El> {
     ))
 }
 
+/// Longest thread-parent excerpt shown above a reply that was also sent to the room.
+const THREAD_EXCERPT_CHARS: usize = 120;
+
+/// One-line excerpt of the thread parent of `m` when `m` is a thread reply shown
+/// in the room (`tshow`). `Some("")`: the parent is not loaded or has no text.
+pub(crate) fn thread_parent_excerpt(env: &Env<'_>, m: &RcMessage) -> Option<String> {
+    if *env.source != Source::Room {
+        return None;
+    }
+    let tmid = m.tmid.as_deref()?;
+    let parent = env
+        .ws
+        .timeline(env.rid)
+        .and_then(|t| t.get(tmid))
+        .map(|i| &i.message)
+        .or_else(|| env.ws.thread(tmid).and_then(|t| t.parent()));
+    let Some(p) = parent else {
+        return Some(String::new());
+    };
+    if p.is_encrypted() {
+        return Some(String::new());
+    }
+    let mut s = crate::format::md_one_line(&render::plain_text(p), env.prefs.clock_24h);
+    if let Some((cut, _)) = s.char_indices().nth(THREAD_EXCERPT_CHARS) {
+        s.truncate(cut);
+        s.push('…');
+    }
+    Some(sanitize_bidi(&s).into_owned())
+}
+
+/// "Replied in thread: <parent>" above a thread reply shown in the room; opens
+/// the thread.
+fn thread_context(tmid: &str, excerpt: String) -> El {
+    let label = if excerpt.is_empty() {
+        t!("room_timeline.in_thread").into_owned()
+    } else {
+        t!("room_timeline.in_thread_of", text = excerpt).into_owned()
+    };
+    button(
+        row![
+            icon::sized(Icon::MessageCircle, 14.0).style(style::text_hint),
+            rustket_ui::widget::ellipsis(label)
+                .width(iced::Length::Shrink)
+                .size(TEXT_CAPTION)
+                .style(|theme: &iced::Theme| style::text_hint(theme).color),
+        ]
+        .spacing(SPACE_1)
+        .align_y(Alignment::Center),
+    )
+    .padding(0)
+    .style(style::button_bare)
+    .on_press(Message::OpenThread(tmid.to_owned()))
+    .into()
+}
+
 fn discussion_part(env: &Env<'_>, m: &RcMessage) -> Option<El> {
     let drid = m.drid.clone()?;
     let count = m.dcount.unwrap_or(0);
@@ -498,6 +553,12 @@ pub(crate) fn build(
         ignored_body(&m.id)
     } else {
         render::message_body_with(m, &rc).map(Message::render)
+    };
+    let body: El = match (m.tmid.as_deref(), thread_parent_excerpt(env, m)) {
+        (Some(tmid), Some(excerpt)) => column![thread_context(tmid, excerpt), body]
+            .spacing(2)
+            .into(),
+        _ => body,
     };
     let mut p = MessageRowProps::new(
         author_avatar(env, m, &name),

@@ -121,9 +121,10 @@ pub async fn fetch_meta(rest: &RestClient) -> rocketchat::Result<(ServerInfo, Lo
         ldap: get("LDAP_Enable")
             .and_then(|s| s.as_bool())
             .unwrap_or(false),
-        modern_oauth: get("Accounts_OAuth_Use_Modern_Flow")
-            .and_then(|s| s.as_bool())
-            .unwrap_or(false),
+        modern_oauth: modern_oauth(
+            &info,
+            get("Accounts_OAuth_Use_Modern_Flow").and_then(|s| s.as_bool()),
+        ),
         cas_login_url: cas_enabled
             .then(|| {
                 get("CAS_login_url")
@@ -139,6 +140,13 @@ pub async fn fetch_meta(rest: &RestClient) -> rocketchat::Result<(ServerInfo, Lo
         services: services.into_iter().filter(|s| s.is_visible()).collect(),
     };
     Ok((info, meta))
+}
+
+/// Whether OAuth buttons use the server-side flow (`/oauth/{service}?loginClient=desktop`).
+/// Rocket.Chat 9.0 removed the legacy Meteor flow together with
+/// `Accounts_OAuth_Use_Modern_Flow`; older servers follow the setting.
+fn modern_oauth(info: &ServerInfo, setting: Option<bool>) -> bool {
+    info.version_tuple().is_some_and(|(major, ..)| major >= 9) || setting == Some(true)
 }
 
 /// Checks a server for the add-server screen.
@@ -1127,6 +1135,20 @@ mod tests {
         assert_eq!(parse_color("#000"), Some(Color::BLACK));
         assert_eq!(parse_color("1d74f5"), None);
         assert_eq!(parse_color("#12"), None);
+    }
+
+    #[test]
+    fn modern_oauth_on_9_0_regardless_of_setting() {
+        let info = |v: &str| ServerInfo {
+            version: Some(v.into()),
+            ..Default::default()
+        };
+        assert!(modern_oauth(&info("9.0"), None));
+        assert!(modern_oauth(&info("9.0.0-rc.8"), Some(false)));
+        assert!(!modern_oauth(&info("8.9.1"), None));
+        assert!(!modern_oauth(&info("8.9.1"), Some(false)));
+        assert!(modern_oauth(&info("8.9.1"), Some(true)));
+        assert!(!modern_oauth(&ServerInfo::default(), None));
     }
 
     /// Review #14: no panic on multibyte input.

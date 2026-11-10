@@ -236,3 +236,9 @@ room_timeline.act_start_discussion:
 room_timeline.message_ignored:
   en: "This message was ignored"
   ru: "Это сообщение было проигнорировано"
+room_timeline.in_thread:
+  en: "Replied in a thread"
+  ru: "Ответ в треде"
+room_timeline.in_thread_of:
+  en: "Replied in a thread: %{text}"
+  ru: "Ответ в треде: %{text}"
