@@ -241,6 +241,8 @@ struct RowKey {
     today: i32,
     /// Collapsed: the author is ignored and the row was not revealed.
     ignored: bool,
+    /// Thread-parent excerpt of a `tshow` reply (`row::thread_parent_excerpt`).
+    thread_parent: u64,
 }
 
 impl Hash for RowKey {
@@ -260,6 +262,7 @@ impl Hash for RowKey {
         self.minute.hash(h);
         self.today.hash(h);
         self.ignored.hash(h);
+        self.thread_parent.hash(h);
     }
 }
 
@@ -313,6 +316,11 @@ pub(crate) fn row<'a>(
         minute: if own { common.minute } else { 0 },
         today: if r.new_day { common.today } else { 0 },
         ignored: is_ignored(env.ws, env.rid, m) && !env.render.is_toggled(&m.id, IGNORED_REVEAL),
+        thread_parent: row::thread_parent_excerpt(&env, m).map_or(0, |s| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            s.hash(&mut h);
+            h.finish() | 1
+        }),
     };
     let unread_before = r.unread_before;
     let now = common.now;
