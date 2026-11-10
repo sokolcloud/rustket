@@ -18,10 +18,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 open = "5.4.5"
 rand = "0.10.3"
 rfd = "0.18.0"
-rocketchat = { version = "0.2.0", path = "../rocketchat" }
+rocketchat = { version = "0.2.1", path = "../rocketchat" }
 rust-i18n = "4"
-rustket-core = { version = "0.2.0", path = "../rustket-core" }
-rustket-ui = { version = "0.2.0", path = "../rustket-ui" }
+rustket-core = { version = "0.2.1", path = "../rustket-core" }
+rustket-ui = { version = "0.2.1", path = "../rustket-ui" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11"
