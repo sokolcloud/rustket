@@ -98,22 +98,32 @@ fn join_words(parts: [Option<String>; 2]) -> String {
 }
 
 impl DeviceSession {
-    /// "Chrome 120 · Linux", or the session id when nothing is known.
+    /// "Chrome 120 · Linux". The server keeps no name for clients it does not
+    /// know (Rustket included): this client's own session shows as
+    /// "Rustket <version>", other unnamed ones as "Unknown app".
     pub fn title(&self) -> String {
         let d = self.device.as_ref();
-        let client = join_words([
+        let mut client = join_words([
             d.and_then(|d| d.name.clone()),
             d.and_then(|d| d.version.clone()),
         ]);
+        if d.and_then(|d| d.name.as_deref())
+            .is_none_or(|n| n.trim().is_empty())
+        {
+            client = if self.current {
+                concat!("Rustket ", env!("CARGO_PKG_VERSION")).to_owned()
+            } else {
+                t!("account.session_unknown_app").into_owned()
+            };
+        }
         let os = d
             .and_then(|d| d.os.as_ref())
             .map(|o| join_words([o.name.clone(), o.version.clone()]))
             .unwrap_or_default();
-        match (client.is_empty(), os.is_empty()) {
-            (false, false) => format!("{client} · {os}"),
-            (false, true) => client,
-            (true, false) => os,
-            (true, true) => self.session_id.clone(),
+        if os.is_empty() {
+            client
+        } else {
+            format!("{client} · {os}")
         }
     }
 }
@@ -1044,7 +1054,25 @@ mod tests {
         let list: Vec<DeviceSession> = serde_json::from_value(v["sessions"].clone()).unwrap();
         assert_eq!(list[0].title(), "Chrome 120 · Linux");
         assert!(list[0].current && list[0].login_at.is_some());
-        assert_eq!(list[1].title(), "b");
+        assert_eq!(list[1].title(), "Unknown app");
+        let rustket = |current| DeviceSession {
+            session_id: "c".into(),
+            device: Some(SessionDevice {
+                kind: Some("other".into()),
+                os: Some(SessionOs {
+                    name: Some("Linux".into()),
+                    version: None,
+                }),
+                ..Default::default()
+            }),
+            current,
+            ..Default::default()
+        };
+        assert_eq!(
+            rustket(true).title(),
+            concat!("Rustket ", env!("CARGO_PKG_VERSION"), " · Linux")
+        );
+        assert_eq!(rustket(false).title(), "Unknown app · Linux");
     }
 
     #[test]

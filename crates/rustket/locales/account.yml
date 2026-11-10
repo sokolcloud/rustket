@@ -536,6 +536,9 @@ account.session_login_at:
 account.session_current:
   en: "This device"
   ru: "Это устройство"
+account.session_unknown_app:
+  en: "Unknown app"
+  ru: "Неизвестное приложение"
 account.session_logout:
   en: "Log out"
   ru: "Выйти"

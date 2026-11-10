@@ -310,3 +310,12 @@ test cannot trigger without changing global server state).
 - Logging: tungstenite logs every WebSocket frame at TRACE, including the `login` frame with the
   resume token and its result. **Never enable `tungstenite=trace` in production**; the app appends
   `rocketchat::LOG_FILTER_PINS` to any user filter (default: `rocketchat::RECOMMENDED_LOG_FILTER`).
+
+## Session device info
+
+- The server fills `rocketchat_sessions.device` from the `User-Agent` of the **DDP** login (REST
+  logins leave it out) with `ua-parser-js` 1.0.x plus two custom parsers: `RC Mobile; …` (mobile
+  app) and any UA containing ` Electron/` (name is always `Rocket.Chat`). Any other app gets an
+  empty `name`/`version`; only the OS is kept, e.g. `Rustket/0.2.0 (X11; Linux x86_64)` →
+  `os.name: "Linux"`, `(Windows NT 10.0; Win64; x64)` → `Windows 10`, `(Macintosh; Mac OS X)` →
+  `Mac OS`. The security screen therefore names its own session itself.
