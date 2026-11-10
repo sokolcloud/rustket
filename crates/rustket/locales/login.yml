@@ -116,3 +116,9 @@ login.tfa_verify:
 login.link_error:
   en: "The browser reported a sign-in error: %{error}"
   ru: "Браузер сообщил об ошибке входа: %{error}"
+login.saml_browser_hint:
+  en: "Signed in, but the browser stayed on the site? This server does not pass SAML sign-ins to apps: continue with the browser session instead."
+  ru: "Вход выполнен, но браузер остался на сайте? Этот сервер не передаёт SAML-вход приложениям: продолжите с сеансом браузера."
+login.saml_browser_continue:
+  en: "Continue from browser"
+  ru: "Продолжить из браузера"

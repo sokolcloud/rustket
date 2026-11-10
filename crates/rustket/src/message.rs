@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use rocketchat::Credentials;
 use rocketchat::models::User;
+use rocketchat::rest::LoginResult;
 use rustket_core::ServerId;
 use rustket_core::secrets::{SecretBackend, SecretStore};
 use rustket_core::sync::{DeltaData, InitialData, RoomSync};
@@ -144,6 +145,8 @@ pub enum Message {
     ImageLoaded(ServerId, u64, String, FetchResult),
     DeepLinks(Vec<String>),
     TokenUser(ServerId, Credentials, Res<User>),
+    /// Login with a server-generated SAML token (`Decision::ConfirmSaml`).
+    SamlLinkLogin(ServerId, String, Res<LoginResult>),
     TokenStored(ServerId, Result<(), String>),
     RetryConnection(ServerId),
     LoggedOut(ServerId, Result<(), String>),

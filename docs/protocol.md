@@ -319,3 +319,19 @@ test cannot trigger without changing global server state).
   empty `name`/`version`; only the OS is kept, e.g. `Rustket/0.2.0 (X11; Linux x86_64)` →
   `os.name: "Linux"`, `(Windows NT 10.0; Win64; x64)` → `Windows 10`, `(Macintosh; Mac OS X)` →
   `Mac OS`. The security screen therefore names its own session itself.
+
+## SAML hand-off to the app (8.9.1+)
+
+- Since the 8.9.1 security hotfix the ACS (`/_saml/validate/{provider}`) stores the login under a
+  **new** `Random.id()` credential token and redirects the browser to
+  `/saml/{token}?saml_idp_credentialToken={token}`; the token the app passed to
+  `/_saml/authorize/{provider}/{token}` is never usable, so polling `{saml: true, credentialToken}`
+  only works on older servers.
+- The web app hands the new token to the app (`rocketchat://auth?type=saml&host&credentialToken`)
+  only when `loginClient=desktop` survives: always on 9.0, on 8.9.x only with
+  `Accounts_OAuth_Use_Modern_Flow`. Otherwise the web app signs itself in with the token
+  (`/saml/{token}` → `/home`); the browser session can then be passed on through
+  `/home?loginClient=desktop` (Token link).
+- The app accepts one such server-token SAML link per pending SAML login, logs in with it and asks
+  for confirmation of the account like a Token link (login CSRF); a 2FA challenge goes through the
+  normal login flow.

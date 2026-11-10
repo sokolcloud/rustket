@@ -390,6 +390,20 @@ impl Login {
         }
     }
 
+    /// Marks the pending login as having received its one SAML link with a
+    /// server-generated token.
+    pub fn claim_saml(&mut self, credential_token: &str) {
+        if let Some(p) = self.pending.as_mut() {
+            p.login.saml_claim = Some(credential_token.to_owned());
+        }
+    }
+
+    pub fn saml_claim_matches(&self, credential_token: &str, now: Instant) -> bool {
+        self.pending.as_ref().is_some_and(|p| {
+            !p.login.is_expired(now) && p.login.saml_claim.as_deref() == Some(credential_token)
+        })
+    }
+
     /// Marks the pending login as having received its one Token link.
     pub fn claim_token(&mut self, credentials: &Credentials) {
         if let Some(p) = self.pending.as_mut() {
@@ -930,6 +944,20 @@ impl Login {
             ]
             .spacing(SPACE_2),
         );
+        // Without the modern flow, Rocket.Chat 8.9.1+ signs the browser in
+        // with a SAML token it generated and never hands it to the app; the
+        // browser session can still be passed on through "sign in with browser".
+        let saml_handoff = self.meta.as_ref().is_some_and(|m| m.modern_oauth);
+        if matches!(p.login.kind, PendingKind::Saml { .. }) && !saml_handoff {
+            rest = rest.push(banner(
+                BannerKind::Info,
+                t!("login.saml_browser_hint"),
+                Some((
+                    t!("login.saml_browser_continue").into_owned(),
+                    Message::BrowserLogin,
+                )),
+            ));
+        }
         if !polling {
             rest = rest.push(rule::horizontal(1)).push(
                 text_field(t!("login.paste_label"), &p.paste, Message::Paste)
