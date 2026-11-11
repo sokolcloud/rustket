@@ -12,18 +12,21 @@ use rocketchat::ServerUrl;
 use rocketchat::models::UserStatus;
 use rust_i18n::t;
 use rustket_core::config::{Density, UiPrefs};
+use rustket_core::config::{SidebarSort, ThreadsMode};
 use rustket_core::room_list::{
     self, Avatar, BadgeVariant, Preview, PreviewKind, RoomKind, RoomListItem, RoomListOptions,
-    Section, SectionKind,
+    Section, SectionKind, ThreadListItem,
 };
+use rustket_core::sidebar_layout::{Layout, LayoutEdit, SectionId};
 use rustket_core::typing::TypingLabel;
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY};
 use rustket_ui::widget::{
-    Presence, RoomListItemProps, empty_state, icon_button, keyed_list, room_list_item,
-    section_header,
+    BadgeKind, MenuEntry, MenuItem, Presence, RoomListItemProps, TooltipPosition, context_menu,
+    empty_state, icon_button, keyed_list, reorder_area, room_list_item, section_header_with,
+    spinner, tooltip,
 };
 
 use crate::format::{count_u32, short_time};
@@ -38,7 +41,7 @@ pub const LIST_ID: &str = "sidebar-list";
 pub enum Message {
     Filter(String),
     ClearFilter,
-    Toggle(SectionKind),
+    Toggle(SectionId),
     Open(String),
     /// The status menu in the header (`workspace/status_menu.rs`).
     Status(super::status_menu::Message),
@@ -48,18 +51,102 @@ pub enum Message {
     Omni(crate::omnichannel::sidebar::Msg),
     /// The room list scrolled or was resized.
     Scrolled(scrollable::Viewport),
+    /// A row of the Threads section.
+    OpenThread {
+        rid: String,
+        tmid: String,
+    },
+    /// An item of a thread row's context menu.
+    ThreadAct {
+        rid: String,
+        tmid: String,
+        act: ThreadAct,
+    },
+    /// An item of a section header's context menu.
+    Header(HeaderAct),
+    /// A header was dragged before another one (`None`: to the end); keys
+    /// from [`section_key`].
+    Reorder {
+        dragged: u64,
+        before: Option<u64>,
+    },
+    /// A header drag is at the list's edge: scroll by this much.
+    AutoScroll(f32),
+}
+
+/// Context menu actions of a section header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderAct {
+    /// Built when the menu is built (Move anchors are the neighbours it
+    /// showed, not the ones at click time).
+    Layout(LayoutEdit),
+    /// Load the Threads section again.
+    Refresh,
+    /// Settings, with the deletion of this group to confirm.
+    Ungroup(String),
+    /// Settings, scrolled to the Sidebar card.
+    OpenSettings,
+}
+
+/// Context menu actions of a thread row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadAct {
+    OpenRoom,
+    MarkRead,
+    /// For rows whose parent is unavailable (`chat.readThread` needs it).
+    MarkRoomRead,
+    Keep,
+    Unkeep,
+    Unfollow,
+}
+
+/// Server calls made for a thread row (see [`Out::ThreadCall`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadCall {
+    /// `chat.readThread`.
+    MarkRead,
+    /// `subscriptions.read` with `readThreads`.
+    MarkRoomRead,
+    /// `chat.unfollowMessage`.
+    Unfollow,
 }
 
 #[derive(Debug, Clone)]
 pub enum Out {
     None,
     OpenRoom(String),
-    /// Collapsed state of a section changed (`SectionKind::i18n_key`).
+    /// Collapsed state of a section changed (`SectionId::collapse_key`).
     ToggleSection(String),
     Status(super::status_menu::Message),
     Directory,
     Create,
     Omni(crate::omnichannel::sidebar::Msg),
+    /// Open the room with the thread in its panel.
+    OpenThread {
+        rid: String,
+        tmid: String,
+    },
+    /// Keep the thread in the sidebar, or stop keeping it (server config).
+    KeepThread {
+        rid: String,
+        tmid: String,
+        keep: bool,
+    },
+    ThreadCall {
+        rid: String,
+        tmid: String,
+        call: ThreadCall,
+    },
+    /// Edit the sidebar layout (`sidebar_layout::apply`) and save.
+    Layout(LayoutEdit),
+    RefreshThreads,
+    /// Open the Sidebar settings (`ungroup`: with that group's deletion to
+    /// confirm).
+    OpenSettings {
+        ungroup: Option<String>,
+    },
+    /// Scroll the room list ([`LIST_ID`]) by this much.
+    ScrollBy(f32),
 }
 
 #[derive(Clone, Copy)]
@@ -71,6 +158,8 @@ pub struct SidebarCtx<'a> {
     pub prefs: &'a UiPrefs,
     pub collapsed: &'a BTreeSet<String>,
     pub active_room: Option<&'a str>,
+    /// The thread open in the active room's panel.
+    pub active_thread: Option<&'a str>,
     pub now: Instant,
 }
 
@@ -89,6 +178,14 @@ pub struct Sidebar {
     viewport: Option<(f32, f32, f32)>,
     /// The open room, kept in the Unread section after it was read.
     kept_unread: Option<String>,
+    /// The open room, kept only in the unread block of unread-first sections
+    /// (it had a counter or dot without counting as unread).
+    kept_unread_first: Option<String>,
+    /// `(rid, tmid)` of the open thread, kept in the Threads section after it
+    /// was read until another thread or room opens.
+    kept_thread: Option<(String, String)>,
+    /// Following crawl progress `(done, rooms)` shown in the Threads header.
+    thread_progress: Option<(usize, usize)>,
 }
 
 /// Height of a section header slot (the header is centred in it; its own
@@ -122,6 +219,8 @@ struct SectionsKey {
     settings: u64,
     drafts_me: u64,
     presence: u64,
+    /// Thread index revision; 0 while the Threads section is off.
+    threads: u64,
     opts: RoomListOptions,
 }
 
@@ -135,6 +234,14 @@ struct BodyKey<'k> {
     filter: &'k str,
     collapsed: &'k BTreeSet<String>,
     active: Option<&'k str>,
+    active_thread: Option<&'k str>,
+    /// Thread rows offer "Keep in sidebar".
+    kept_enabled: bool,
+    thread_progress: Option<(usize, usize)>,
+    /// Sort overrides ("Use default" in the header menus); the resolved
+    /// layout is part of the sections' inputs.
+    section_prefs:
+        &'k std::collections::BTreeMap<String, rustket_core::sidebar_layout::SectionPrefs>,
     density: u8,
     clock_24h: bool,
     /// This server's image revision (not bumped by failures or by other
@@ -170,6 +277,11 @@ fn hash_of(v: impl Hash) -> u64 {
     h.finish()
 }
 
+/// Stable key of a section's header (list key and drag handle).
+fn section_key(id: &SectionId) -> u64 {
+    hash_of(("section", id.collapse_key()))
+}
+
 /// Hash of everything a row shows: the row's widgets are rebuilt (and its
 /// texts reshaped) only when it changes.
 fn row_key(rid: &str, p: &RoomListItemProps<Message>) -> u64 {
@@ -189,9 +301,19 @@ fn row_key(rid: &str, p: &RoomListItemProps<Message>) -> u64 {
     (p.thread_unread, p.is_muted, p.is_selected, p.typing).hash(&mut h);
     p.presence.hash(&mut h);
     p.icon.as_ref().map(std::mem::discriminant).hash(&mut h);
+    p.badge_dot.hash(&mut h);
     p.typing_label.hash(&mut h);
     std::mem::discriminant(&p.density).hash(&mut h);
     h.finish()
+}
+
+/// Header title: the group name, else the built-in's translated name.
+fn section_title(s: &Section) -> String {
+    match (&s.title, s.kind()) {
+        (Some(t), _) => t.clone(),
+        (None, Some(k)) => t!(k.i18n_key()).into_owned(),
+        (None, None) => String::new(),
+    }
 }
 
 pub fn presence(s: UserStatus) -> Presence {
@@ -215,7 +337,7 @@ impl Sidebar {
                 self.filter.clear();
                 Out::None
             }
-            Message::Toggle(kind) => Out::ToggleSection(kind.i18n_key().to_owned()),
+            Message::Toggle(id) => Out::ToggleSection(id.collapse_key().into_owned()),
             Message::Open(rid) => Out::OpenRoom(rid),
             Message::Status(super::status_menu::Message::Omni(
                 crate::omnichannel::status::Msg::ContactCenter,
@@ -233,29 +355,171 @@ impl Sidebar {
                 ));
                 Out::None
             }
+            Message::OpenThread { rid, tmid } => Out::OpenThread { rid, tmid },
+            Message::Reorder { dragged, before } => self.reorder(dragged, before),
+            Message::AutoScroll(dy) => Out::ScrollBy(dy),
+            Message::Header(act) => match act {
+                HeaderAct::Layout(e) => Out::Layout(e),
+                HeaderAct::Refresh => Out::RefreshThreads,
+                HeaderAct::Ungroup(id) => Out::OpenSettings { ungroup: Some(id) },
+                HeaderAct::OpenSettings => Out::OpenSettings { ungroup: None },
+            },
+            Message::ThreadAct { rid, tmid, act } => match act {
+                ThreadAct::OpenRoom => Out::OpenRoom(rid),
+                ThreadAct::MarkRead => Out::ThreadCall {
+                    rid,
+                    tmid,
+                    call: ThreadCall::MarkRead,
+                },
+                ThreadAct::MarkRoomRead => Out::ThreadCall {
+                    rid,
+                    tmid,
+                    call: ThreadCall::MarkRoomRead,
+                },
+                ThreadAct::Unfollow => Out::ThreadCall {
+                    rid,
+                    tmid,
+                    call: ThreadCall::Unfollow,
+                },
+                ThreadAct::Keep | ThreadAct::Unkeep => Out::KeepThread {
+                    rid,
+                    tmid,
+                    keep: act == ThreadAct::Keep,
+                },
+            },
         }
     }
 
-    /// A room opened from the Unread section stays there until another room
-    /// is opened, so reading it does not move its row away. Call before
-    /// [`Self::refresh`].
-    pub fn track_active(&mut self, ws: &Workspace, active: Option<&str>, prefs: &UiPrefs) {
-        let Some(rid) = active.filter(|_| prefs.unread_on_top) else {
+    /// Resolves a drop against the current sections: a section that is gone
+    /// by now cancels it.
+    fn reorder(&self, dragged: u64, before: Option<u64>) -> Out {
+        if !self.filter.trim().is_empty() {
+            return Out::None;
+        }
+        let ids: Vec<&SectionId> = self
+            .sections
+            .iter()
+            .filter(|s| !s.is(SectionKind::Omnichannel))
+            .map(|s| &s.id)
+            .collect();
+        let find = |key: u64| ids.iter().copied().find(|id| section_key(id) == key);
+        let Some(id) = find(dragged) else {
+            return Out::None;
+        };
+        let (anchor, after) = match before {
+            Some(key) => match find(key) {
+                Some(a) => (a, false),
+                None => return Out::None,
+            },
+            None => match ids.last() {
+                Some(a) => (*a, true),
+                None => return Out::None,
+            },
+        };
+        if anchor == id {
+            return Out::None;
+        }
+        Out::Layout(LayoutEdit::MoveTo {
+            id: id.clone(),
+            anchor: anchor.clone(),
+            after,
+        })
+    }
+
+    /// Following crawl progress for the Threads header (`None`: not loading).
+    pub fn set_thread_progress(&mut self, progress: Option<(usize, usize)>) {
+        self.thread_progress = progress;
+    }
+
+    /// A room opened while unread is kept as unread until another room is
+    /// opened: it stays in the Unread section, and in the unread block of a
+    /// section that lists unread rooms first, so reading it does not move its
+    /// row away. The same holds for the open thread in the Threads section.
+    /// Call before [`Self::refresh`].
+    pub fn track_active(
+        &mut self,
+        ws: &Workspace,
+        active: Option<&str>,
+        active_thread: Option<&str>,
+        prefs: &UiPrefs,
+    ) {
+        self.track_thread(ws, active, active_thread, prefs.sidebar_threads);
+        let layout = rustket_core::sidebar_layout::Layout::from_prefs(prefs);
+        let needed = prefs.unread_on_top
+            || layout
+                .unread_first
+                .iter()
+                .any(|id| id != &SectionId::Builtin(SectionKind::Threads));
+        let Some(rid) = active.filter(|_| needed) else {
             self.kept_unread = None;
+            self.kept_unread_first = None;
             return;
         };
-        if self.kept_unread.as_deref() == Some(rid) {
+        if self.kept_unread.as_deref() == Some(rid)
+            || self.kept_unread_first.as_deref() == Some(rid)
+        {
             return;
         }
         // The sections are from before the room was opened (and maybe already
         // marked read).
-        let listed = self
-            .sections
-            .iter()
-            .filter(|s| s.kind == SectionKind::Unread)
-            .any(|s| s.items.iter().any(|i| i.rid == rid));
-        let unread = listed || ws.room(rid).is_some_and(room_list::room_is_unread);
+        let listed = |pred: &dyn Fn(&Section, &RoomListItem) -> bool| {
+            self.sections
+                .iter()
+                .any(|s| s.items.iter().any(|i| i.rid == rid && pred(s, i)))
+        };
+        let unread = listed(&|s, _| s.is(SectionKind::Unread))
+            || ws.room(rid).is_some_and(room_list::room_is_unread);
+        // A counter or dot without counting as unread (e.g. a mention in a room
+        // with hidden unread status) keeps the row in an unread-first block
+        // only, never moves it to the Unread section.
+        let badged = !unread
+            && listed(&|s, i| layout.is_unread_first(&s.id) && (i.badge.count > 0 || i.badge.dot));
         self.kept_unread = unread.then(|| rid.to_owned());
+        self.kept_unread_first = badged.then(|| rid.to_owned());
+    }
+
+    /// An open thread listed unread in the Threads section (or unread) stays listed,
+    /// and in its unread block, until another thread or room opens; closing
+    /// the panel while the room stays open keeps it.
+    fn track_thread(
+        &mut self,
+        ws: &Workspace,
+        room: Option<&str>,
+        thread: Option<&str>,
+        mode: rustket_core::config::ThreadsMode,
+    ) {
+        let Some(rid) = room.filter(|_| mode != rustket_core::config::ThreadsMode::Off) else {
+            self.kept_thread = None;
+            return;
+        };
+        let Some(tmid) = thread else {
+            if self.kept_thread.as_ref().is_some_and(|(r, _)| r != rid) {
+                self.kept_thread = None;
+            }
+            return;
+        };
+        if self
+            .kept_thread
+            .as_ref()
+            .is_some_and(|(r, t)| r == rid && t == tmid)
+        {
+            return;
+        }
+        // The sections are from before the thread was opened (and maybe
+        // already marked read).
+        // Only an unread row: a read one stays where it is (it is listed
+        // anyway, followed or kept), and kept it would sort into the unread
+        // block.
+        let listed = self.sections.iter().any(|s| {
+            s.threads
+                .iter()
+                .any(|t| t.tmid == tmid && t.unread.is_some())
+        });
+        let unread = ws
+            .room(rid)
+            .and_then(|e| e.sub.as_ref())
+            .is_some_and(|s| room_list::thread_unread(s, tmid).is_some());
+        self.kept_thread = (listed || unread).then(|| (rid.to_owned(), tmid.to_owned()));
     }
 
     /// Recomputes the sections when the workspace or the filter changed and asks
@@ -272,6 +536,8 @@ impl Sidebar {
         use rustket_core::Dirty;
         let mut opts = RoomListOptions::from_prefs(prefs, ws);
         opts.kept_unread.clone_from(&self.kept_unread);
+        opts.kept_unread_first.clone_from(&self.kept_unread_first);
+        opts.kept_thread.clone_from(&self.kept_thread);
         let presence = ws.revision(Dirty::PRESENCE);
         let key = SectionsKey {
             filter: self.filter.clone(),
@@ -282,6 +548,11 @@ impl Sidebar {
                 0
             } else {
                 presence
+            },
+            threads: if opts.layout.threads == rustket_core::config::ThreadsMode::Off {
+                0
+            } else {
+                ws.revision(Dirty::THREAD_INDEX)
             },
             opts,
         };
@@ -418,6 +689,10 @@ impl Sidebar {
                 filter: &self.filter,
                 collapsed: ctx.collapsed,
                 active: ctx.active_room,
+                active_thread: ctx.active_thread,
+                kept_enabled: ws.thread_index().kept_enabled(),
+                thread_progress: self.thread_progress,
+                section_prefs: &ctx.prefs.sidebar_section_prefs,
                 density: ctx.prefs.density as u8,
                 clock_24h: ctx.prefs.clock_24h,
                 images: ctx.images.server_revision(ctx.server_id),
@@ -481,10 +756,11 @@ impl Sidebar {
         let mut total = 0.0f32;
         for (s, is_collapsed) in self.listed_with(collapsed) {
             total += HEADER_H;
-            let n = if is_collapsed { 0 } else { s.items.len() };
+            let n = if is_collapsed { 0 } else { s.len() };
             if found.is_none() {
                 y += HEADER_H;
-                match s.items[..n].iter().position(|i| i.rid == rid) {
+                // Room rows come first; thread rows never match.
+                match s.items.iter().take(n).position(|i| i.rid == rid) {
                     Some(k) => found = Some(y + k as f32 * row_h),
                     None => y += n as f32 * row_h,
                 }
@@ -544,8 +820,13 @@ impl Sidebar {
         let filtering = !self.filter.trim().is_empty();
         self.sections
             .iter()
-            .filter(|s| s.kind != SectionKind::Omnichannel)
-            .map(move |s| (s, !filtering && collapsed.contains(s.kind.i18n_key())))
+            .filter(|s| !s.is(SectionKind::Omnichannel))
+            .map(move |s| {
+                (
+                    s,
+                    !filtering && collapsed.contains(s.id.collapse_key().as_ref()),
+                )
+            })
     }
 
     /// Slot range `[start, end)` of the list (a slot is a section header or a
@@ -555,7 +836,7 @@ impl Sidebar {
         let row_h = row_height(ctx.prefs.density);
         let (mut slots, mut total) = (0usize, 0.0f32);
         for (s, collapsed) in self.listed(ctx) {
-            let n = if collapsed { 0 } else { s.items.len() };
+            let n = if collapsed { 0 } else { s.len() };
             slots += 1 + n;
             total += HEADER_H + n as f32 * row_h;
         }
@@ -575,7 +856,7 @@ impl Sidebar {
             }
             y += HEADER_H;
             slot += 1;
-            let n = if collapsed { 0 } else { s.items.len() };
+            let n = if collapsed { 0 } else { s.len() };
             if n > 0 {
                 let k0 = (((lo - y) / row_h).floor().max(0.0) as usize).min(n);
                 let k1 = (((hi - y) / row_h).ceil().max(0.0) as usize).min(n);
@@ -607,34 +888,68 @@ impl Sidebar {
         let (mut before, mut after) = (0.0f32, 0.0f32);
         let mut built: Vec<(u64, Element<'static, Message>)> = Vec::new();
         let mut slot = 0usize;
-        for (section, collapsed) in self.listed(ctx) {
+        let from_prefs;
+        let layout = match &self.computed_for {
+            Some(k) => &k.opts.layout,
+            None => {
+                from_prefs = Layout::from_prefs(ctx.prefs);
+                &from_prefs
+            }
+        };
+        let ids: Vec<&SectionId> = self.listed(ctx).map(|(s, _)| &s.id).collect();
+        let filtering = !self.filter.trim().is_empty();
+        // Drag handles of every header, built or not (same slot math).
+        let mut handles = Vec::new();
+        let mut y = 0.0f32;
+        for (i, (section, collapsed)) in self.listed(ctx).enumerate() {
+            if !filtering {
+                handles.push((section_key(&section.id), y, HEADER_H));
+            }
+            y += HEADER_H
+                + if collapsed {
+                    0.0
+                } else {
+                    section.len() as f32 * row_h
+                };
             if slot < start {
                 before += HEADER_H;
             } else if slot >= end {
                 after += HEADER_H;
             } else {
-                let header = section_header(
-                    t!(section.kind.i18n_key()).into_owned(),
+                let status = section
+                    .is(SectionKind::Threads)
+                    .then_some(self.thread_progress)
+                    .flatten()
+                    .map(progress_status);
+                let header = section_header_with(
+                    section_title(section),
                     collapsed,
-                    Some(section.items.len() as u32),
-                    Message::Toggle(section.kind),
+                    Some(section.len() as u32),
+                    status,
+                    Message::Toggle(section.id.clone()),
                 );
+                let menu = self.header_menu_at(section, i, &ids, collapsed, layout, ctx.prefs);
                 built.push((
-                    hash_of(("section", section.kind.i18n_key())),
-                    container(header).center_y(HEADER_H).into(),
+                    section_key(&section.id),
+                    context_menu(container(header).center_y(HEADER_H), menu),
                 ));
             }
             slot += 1;
             if collapsed {
                 continue;
             }
-            let n = section.items.len();
+            let n = section.len();
             let lo = start.clamp(slot, slot + n) - slot;
             let hi = end.clamp(slot, slot + n) - slot;
             before += lo as f32 * row_h;
             after += (n - hi) as f32 * row_h;
-            for item in &section.items[lo..hi] {
+            // Room rows, then thread rows (a section has one or the other).
+            let rooms = section.items.len();
+            for item in &section.items[lo.min(rooms)..hi.min(rooms)] {
                 built.push((hash_of(&item.rid), self.row(item, ctx)));
+            }
+            for t in &section.threads[lo.max(rooms) - rooms..hi.max(rooms) - rooms] {
+                built.push((hash_of(("thread", &t.tmid)), thread_row(t, ctx)));
             }
             slot += n;
         }
@@ -646,8 +961,34 @@ impl Sidebar {
         for (key, el) in built {
             list = list.push(key, el);
         }
-        list.push(hash_of("below"), iced::widget::space().height(after))
-            .into()
+        let list = list.push(hash_of("below"), iced::widget::space().height(after));
+        reorder_area(list, handles, |dragged, before| Message::Reorder {
+            dragged,
+            before,
+        })
+        .on_auto_scroll(Message::AutoScroll)
+        .into()
+    }
+
+    /// Context menu of `section`, the `i`-th of the listed sections `ids`.
+    fn header_menu_at(
+        &self,
+        section: &Section,
+        i: usize,
+        ids: &[&SectionId],
+        collapsed: bool,
+        layout: &Layout,
+        prefs: &UiPrefs,
+    ) -> Vec<MenuEntry<Message>> {
+        header_menu(&HeaderMenu {
+            section,
+            prev: i.checked_sub(1).and_then(|j| ids.get(j).copied()),
+            next: ids.get(i + 1).copied(),
+            collapsed,
+            filtering: !self.filter.trim().is_empty(),
+            layout,
+            prefs,
+        })
     }
 
     fn row(&self, item: &RoomListItem, ctx: &SidebarCtx<'_>) -> Element<'static, Message> {
@@ -709,6 +1050,341 @@ impl Sidebar {
         }
         p
     }
+}
+
+/// "Loading followed threads… n/m" as a spinner and "n/m", the full text in
+/// a tooltip.
+fn progress_status((done, total): (usize, usize)) -> Element<'static, Message> {
+    let full = t!(
+        "sidebar.threads_loading_progress",
+        done = done,
+        total = total
+    )
+    .into_owned();
+    let content = row![
+        spinner(10.0),
+        iced::widget::text(format!("{done}/{total}"))
+            .size(rustket_ui::theme::TEXT_MICRO + 1.0)
+            .style(style::text_hint),
+    ]
+    .spacing(SPACE_1)
+    .align_y(Alignment::Center);
+    tooltip(content, full, TooltipPosition::Bottom)
+}
+
+/// A row of the Threads section: the parent's text (its author's avatar),
+/// the room and replies, the last reply's time; a dot while unread. Opens
+/// the thread; the context menu reads it, keeps it or unfollows it.
+fn thread_row(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> Element<'static, Message> {
+    let p = thread_row_props(t, ctx);
+    let kept_enabled = ctx.workspace.thread_index().kept_enabled();
+    let key = hash_of((
+        "thread",
+        row_key(&t.tmid, &p),
+        (
+            t.kept,
+            t.unread.is_some(),
+            t.following,
+            std::mem::discriminant(&t.title),
+        ),
+        kept_enabled,
+        rust_i18n::locale().to_string(),
+    ));
+    let entries = thread_menu(t, kept_enabled);
+    lazy(key, move |_| {
+        count_build(0, 1);
+        context_menu(room_list_item(p.clone()), entries.clone())
+    })
+    .into()
+}
+
+fn thread_title_text(t: &ThreadListItem) -> String {
+    match (t.title.text(), t.title.i18n_key()) {
+        (Some(s), _) => s.to_owned(),
+        (None, Some(k)) => t!(k).into_owned(),
+        (None, None) => String::new(),
+    }
+}
+
+fn thread_row_props(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> RoomListItemProps<Message> {
+    let name = t.author.as_deref().unwrap_or(&t.room_name);
+    let src = ctx
+        .images
+        .avatar(ctx.server_id, ctx.server, &t.avatar, name);
+    let title = thread_title_text(t);
+    let condensed = ctx.prefs.density == Density::Condensed;
+    // Condensed rows have no subtitle: the room goes into the title.
+    let title = if condensed {
+        t!("sidebar.thread_in_room", room = t.room_name, title = title).into_owned()
+    } else {
+        title
+    };
+    let mut p = RoomListItemProps::new(
+        src,
+        title,
+        Message::OpenThread {
+            rid: t.rid.clone(),
+            tmid: t.tmid.clone(),
+        },
+    );
+    p.density = if condensed {
+        rustket_ui::widget::Density::Condensed
+    } else {
+        rustket_ui::widget::Density::Extended
+    };
+    p.subtitle = Some(if t.tcount > 0 {
+        let replies = t!("sidebar.thread_replies", count = t.tcount).into_owned();
+        t!(
+            "sidebar.thread_subtitle",
+            room = t.room_name,
+            replies = replies
+        )
+        .into_owned()
+    } else {
+        t.room_name.clone()
+    });
+    p.time = t
+        .tlm
+        .map(|ts| short_time(ts, chrono::Local::now(), ctx.prefs.clock_24h));
+    p.icon = Some(Icon::MessageCircle);
+    p.badge_dot = t.unread.map(|v| match v {
+        BadgeVariant::Mention => BadgeKind::Mention,
+        BadgeVariant::GroupMention => BadgeKind::GroupMention,
+        _ => BadgeKind::Thread,
+    });
+    p.is_selected = ctx.active_thread == Some(t.tmid.as_str());
+    if let Some(label) = ctx.workspace.typing_label(&t.rid, Some(&t.tmid), ctx.now) {
+        p.typing = true;
+        p.typing_label = typing_text(&label);
+    }
+    p
+}
+
+fn thread_menu(t: &ThreadListItem, kept_enabled: bool) -> Vec<MenuEntry<Message>> {
+    let act = |act: ThreadAct| Message::ThreadAct {
+        rid: t.rid.clone(),
+        tmid: t.tmid.clone(),
+        act,
+    };
+    let loaded = t.is_loaded() && t.title != room_list::ThreadTitle::Removed;
+    let mut entries: Vec<MenuEntry<Message>> = vec![
+        MenuItem::new(t!("sidebar.thread_open_room"), act(ThreadAct::OpenRoom))
+            .icon(room_icon(t.room_kind))
+            .into(),
+    ];
+    if t.unread.is_some() {
+        // `chat.readThread` fails for a parent that is not found: only
+        // reading the whole room (with its threads) clears the row.
+        let (label, a) = if t.title == room_list::ThreadTitle::Unavailable {
+            (t!("sidebar.thread_mark_room_read"), ThreadAct::MarkRoomRead)
+        } else {
+            (t!("sidebar.thread_mark_read"), ThreadAct::MarkRead)
+        };
+        entries.push(MenuItem::new(label, act(a)).icon(Icon::CheckCheck).into());
+    }
+    if t.kept {
+        entries.push(
+            MenuItem::new(t!("sidebar.unkeep_thread"), act(ThreadAct::Unkeep))
+                .icon(Icon::BookmarkX)
+                .into(),
+        );
+    } else if kept_enabled && loaded {
+        entries.push(
+            MenuItem::new(t!("sidebar.keep_thread"), act(ThreadAct::Keep))
+                .icon(Icon::Bookmark)
+                .into(),
+        );
+    }
+    if loaded && t.following {
+        entries.push(
+            MenuItem::new(t!("room_timeline.act_unfollow"), act(ThreadAct::Unfollow))
+                .icon(Icon::BellOff)
+                .into(),
+        );
+    }
+    entries
+}
+
+/// What a section header's context menu is built from.
+struct HeaderMenu<'a> {
+    section: &'a Section,
+    /// The visible sections above and below (anchors of Move up/down).
+    prev: Option<&'a SectionId>,
+    next: Option<&'a SectionId>,
+    collapsed: bool,
+    /// Sections are search results: no moving, no collapsing.
+    filtering: bool,
+    layout: &'a Layout,
+    prefs: &'a UiPrefs,
+}
+
+pub(crate) fn sort_label(sort: SidebarSort, threads: bool) -> String {
+    let label = match (sort, threads) {
+        (SidebarSort::Activity, false) => t!("sidebar.sort_newest"),
+        (SidebarSort::ActivityAsc, false) => t!("sidebar.sort_oldest"),
+        (SidebarSort::Alphabetical, false) => t!("sidebar.sort_alpha"),
+        (SidebarSort::Activity, true) => t!("sidebar.sort_reply_newest"),
+        (SidebarSort::ActivityAsc, true) => t!("sidebar.sort_reply_oldest"),
+        (SidebarSort::Alphabetical, true) => t!("sidebar.sort_by_room"),
+    };
+    label.into_owned()
+}
+
+/// Move up/down, sort, unread first; the Threads mode, Refresh and Hide;
+/// Hide for Unread, Ungroup for groups; collapse and the settings.
+fn header_menu(m: &HeaderMenu<'_>) -> Vec<MenuEntry<Message>> {
+    let id = &m.section.id;
+    let edit = |e: LayoutEdit| Message::Header(HeaderAct::Layout(e));
+    let threads = m.section.is(SectionKind::Threads);
+    let unread = m.section.is(SectionKind::Unread);
+    let move_to = |anchor: Option<&SectionId>, after: bool| {
+        let item = edit(LayoutEdit::MoveTo {
+            id: id.clone(),
+            anchor: anchor.unwrap_or(id).clone(),
+            after,
+        });
+        (item, anchor.is_none() || m.filtering)
+    };
+    let (up, up_off) = move_to(m.prev, false);
+    let (down, down_off) = move_to(m.next, true);
+    let mut entries: Vec<MenuEntry<Message>> = vec![
+        MenuItem::new(t!("sidebar.menu_move_up"), up)
+            .icon(Icon::ArrowUp)
+            .disabled(up_off)
+            .into(),
+        MenuItem::new(t!("sidebar.menu_move_down"), down)
+            .icon(Icon::ArrowDown)
+            .disabled(down_off)
+            .into(),
+        MenuEntry::Separator,
+        MenuEntry::Header(t!("sidebar.menu_sort").into_owned()),
+    ];
+    let current = m.layout.sort_of(id);
+    for sort in [
+        SidebarSort::Activity,
+        SidebarSort::ActivityAsc,
+        SidebarSort::Alphabetical,
+    ] {
+        entries.push(
+            MenuItem::new(
+                sort_label(sort, threads),
+                edit(LayoutEdit::SetSort {
+                    id: id.clone(),
+                    sort: Some(sort),
+                }),
+            )
+            .checked(sort == current)
+            .into(),
+        );
+    }
+    let overridden = m
+        .prefs
+        .sidebar_section_prefs
+        .get(&id.as_config_str())
+        .is_some_and(|p| p.sort.is_some());
+    if overridden {
+        let default = sort_label(m.layout.default_sort, threads);
+        entries.push(
+            MenuItem::new(
+                t!("sidebar.sort_default", sort = default),
+                edit(LayoutEdit::SetSort {
+                    id: id.clone(),
+                    sort: None,
+                }),
+            )
+            .checked(false)
+            .into(),
+        );
+    }
+    if !unread {
+        let on = !m.layout.is_unread_first(id);
+        // Back to `None` when that is the default (on for Threads only).
+        entries.push(
+            MenuItem::new(
+                t!("sidebar.menu_unread_first"),
+                edit(LayoutEdit::SetUnreadFirst {
+                    id: id.clone(),
+                    on: (on != threads).then_some(on),
+                }),
+            )
+            .checked(!on)
+            .into(),
+        );
+    }
+    entries.push(MenuEntry::Separator);
+    if threads {
+        entries.push(MenuEntry::Header(t!("sidebar.menu_show").into_owned()));
+        for (mode, label) in [
+            (ThreadsMode::Unread, t!("sidebar.threads_unread")),
+            (ThreadsMode::UnreadKept, t!("sidebar.threads_unread_kept")),
+            (ThreadsMode::Following, t!("sidebar.threads_following")),
+        ] {
+            entries.push(
+                MenuItem::new(label, edit(LayoutEdit::SetThreadsMode(mode)))
+                    .checked(m.layout.threads == mode)
+                    .into(),
+            );
+        }
+        entries.extend([
+            MenuItem::new(
+                t!("sidebar.menu_refresh"),
+                Message::Header(HeaderAct::Refresh),
+            )
+            .icon(Icon::RefreshCw)
+            .into(),
+            MenuItem::new(
+                t!("sidebar.menu_hide_threads"),
+                edit(LayoutEdit::SetThreadsMode(ThreadsMode::Off)),
+            )
+            .icon(Icon::EyeOff)
+            .into(),
+            MenuEntry::Separator,
+        ]);
+    } else if unread {
+        entries.extend([
+            MenuItem::new(
+                t!("sidebar.menu_hide_unread"),
+                edit(LayoutEdit::SetUnreadOnTop(false)),
+            )
+            .icon(Icon::EyeOff)
+            .into(),
+            MenuEntry::Separator,
+        ]);
+    } else if let Some(gid) = id.group_id() {
+        entries.extend([
+            MenuItem::new(
+                t!("sidebar.menu_ungroup"),
+                Message::Header(HeaderAct::Ungroup(gid.to_owned())),
+            )
+            .icon(Icon::Ungroup)
+            .danger(true)
+            .into(),
+            MenuEntry::Separator,
+        ]);
+    }
+    // Left-click collapses too; the long Threads menu leaves it out. While
+    // filtering every section shows expanded, so the label would lie.
+    if !threads && !m.filtering {
+        let (label, icon) = if m.collapsed {
+            (t!("sidebar.menu_expand"), Icon::ChevronsUpDown)
+        } else {
+            (t!("sidebar.menu_collapse"), Icon::ChevronsDownUp)
+        };
+        entries.push(
+            MenuItem::new(label, Message::Toggle(id.clone()))
+                .icon(icon)
+                .into(),
+        );
+    }
+    entries.push(
+        MenuItem::new(
+            t!("sidebar.menu_settings"),
+            Message::Header(HeaderAct::OpenSettings),
+        )
+        .icon(Icon::SlidersHorizontal)
+        .into(),
+    );
+    entries
 }
 
 pub fn room_icon(kind: RoomKind) -> Icon {
@@ -881,6 +1557,7 @@ mod tests {
                     prefs: &self.prefs,
                     collapsed: &self.collapsed,
                     active_room: None,
+                    active_thread: None,
                     now: Instant::now(),
                 };
                 self.sidebar.view(&ctx, iced::widget::space().into())
@@ -952,7 +1629,7 @@ mod tests {
                 .sidebar
                 .sections
                 .iter()
-                .find(|s| s.kind == SectionKind::Channels)
+                .find(|s| s.is(SectionKind::Channels))
                 .unwrap();
             assert_eq!(channels.items[0].rid, last);
             let keys = rustket_ui::widget::keyed_list_keys::<u64>(first_keyed(&tree).unwrap());
@@ -983,6 +1660,45 @@ mod tests {
             assert_eq!(fx.sidebar.room_count(), ROOMS + 1);
         }
 
+        /// Threads mode Off: thread index changes do not recompute the list;
+        /// with the mode on, they do.
+        #[test]
+        fn thread_index_changes_recompute_only_with_threads_on() {
+            use rocketchat::models::Message as RcMessage;
+            use rustket_core::Dirty;
+            use rustket_core::config::ThreadsMode;
+            let mut fx = Fx::with_rooms(3);
+            let rev = fx.refresh();
+            let before = fx.ws.revision(Dirty::THREAD_INDEX);
+            fx.ws.set_thread_config(ThreadsMode::Off, [("r0000", "t")]);
+            fx.ws.set_thread_config(ThreadsMode::Off, [("r0001", "t")]);
+            assert_ne!(fx.ws.revision(Dirty::THREAD_INDEX), before);
+            assert_eq!(fx.refresh(), rev, "not recomputed while Off");
+
+            fx.prefs.sidebar_threads = ThreadsMode::Unread;
+            fx.ws.set_thread_config(ThreadsMode::Unread, []);
+            let mut s = sub("r0000", "r0000", RoomType::Channel);
+            s.tunread = Some(vec!["t".into()]);
+            fx.ws.apply_subscription(Change::Updated, s);
+            let rev = fx.refresh();
+            assert_eq!(fx.refresh(), rev);
+            let parent = RcMessage {
+                id: "t".into(),
+                rid: "r0000".into(),
+                tcount: Some(1),
+                tlm: RcDate::from_millis(1_700_000_000_000),
+                ..Default::default()
+            };
+            fx.ws.apply_thread_parents(vec![parent]);
+            assert_ne!(fx.refresh(), rev, "recomputed with the mode on");
+            assert!(
+                fx.sidebar
+                    .sections
+                    .iter()
+                    .any(|s| s.is(SectionKind::Threads))
+            );
+        }
+
         /// A room opened from the Unread section stays there once read, until
         /// another room is opened; opening a read room does not pull it in.
         #[test]
@@ -991,12 +1707,12 @@ mod tests {
                 fx.sidebar
                     .sections
                     .iter()
-                    .filter(|s| s.kind == SectionKind::Unread)
+                    .filter(|s| s.is(SectionKind::Unread))
                     .flat_map(|s| s.items.iter().map(|i| i.rid.clone()))
                     .collect()
             }
             fn open(fx: &mut Fx, rid: Option<&str>) {
-                fx.sidebar.track_active(&fx.ws, rid, &fx.prefs);
+                fx.sidebar.track_active(&fx.ws, rid, None, &fx.prefs);
                 fx.refresh();
             }
             let mut fx = Fx::with_rooms(3);
@@ -1073,6 +1789,7 @@ mod tests {
                 prefs: &fx.prefs,
                 collapsed: &fx.collapsed,
                 active_room: None,
+                active_thread: None,
                 now: Instant::now(),
             });
             assert!(start > 200 && end <= ROOMS + 3, "{start}..{end}");
@@ -1095,6 +1812,7 @@ mod tests {
                 prefs: &fx.prefs,
                 collapsed: &fx.collapsed,
                 active_room: None,
+                active_thread: None,
                 now: Instant::now(),
             };
             assert_eq!(fx.sidebar.window(&ctx), (0, 2));
@@ -1194,8 +1912,517 @@ mod tests {
             let to = fx.sidebar.reveal_offset("r0250", d, &none).unwrap();
             assert!((to - (100.0 + row_top + row_h - 600.0)).abs() < 0.5, "{to}");
             // A room in a collapsed section has no row.
-            let channels: BTreeSet<String> = [SectionKind::Channels.i18n_key().to_owned()].into();
+            let channels: BTreeSet<String> = [SectionId::from(SectionKind::Channels)
+                .collapse_key()
+                .into_owned()]
+            .into();
             assert_eq!(fx.sidebar.reveal_offset("r0250", d, &channels), None);
+        }
+
+        /// A group gets its name as the title and collapses by its own key;
+        /// built-ins keep their old collapse keys.
+        #[test]
+        fn group_sections_collapse_by_group_key() {
+            use rustket_core::sidebar_layout::{GroupType, LayoutEdit, apply};
+            let mut fx = Fx::with_rooms(3);
+            apply(
+                &mut fx.prefs,
+                LayoutEdit::AddGroup {
+                    name: "People".into(),
+                    types: vec![GroupType::DirectMessages],
+                },
+            );
+            let gid = fx.prefs.sidebar_groups[0].id.clone();
+            fx.refresh();
+            let group = &fx.sidebar.sections[1];
+            assert_eq!(group.id, SectionId::group(&gid));
+            assert_eq!(section_title(group), "People");
+            assert!(matches!(
+                fx.sidebar.update(Message::Toggle(group.id.clone())),
+                Out::ToggleSection(k) if k == format!("sidebar.group.{gid}")
+            ));
+            assert!(matches!(
+                fx.sidebar.update(Message::Toggle(SectionKind::Channels.into())),
+                Out::ToggleSection(k) if k == "sidebar.channels"
+            ));
+            fx.collapsed.insert(format!("sidebar.group.{gid}"));
+            let listed: Vec<(String, bool)> = fx
+                .sidebar
+                .listed_with(&fx.collapsed)
+                .map(|(s, c)| (s.id.as_config_str(), c))
+                .collect();
+            assert_eq!(
+                listed,
+                [
+                    ("channels".to_owned(), false),
+                    (format!("group:{gid}"), true)
+                ]
+            );
+            let order = crate::omnichannel::sidebar::step_order(
+                &fx.sid,
+                &fx.ws,
+                &fx.sidebar.sections,
+                &fx.collapsed,
+            );
+            assert!(order.iter().all(|i| i.rid != "dm"));
+        }
+
+        /// With "unread first" (and no Unread section) the opened unread room
+        /// keeps its place in the unread block until another room opens.
+        #[test]
+        fn the_open_room_stays_in_the_unread_block() {
+            use rustket_core::sidebar_layout::{LayoutEdit, apply};
+            fn channels(fx: &Fx) -> Vec<String> {
+                fx.sidebar
+                    .sections
+                    .iter()
+                    .filter(|s| s.is(SectionKind::Channels))
+                    .flat_map(|s| s.items.iter().map(|i| i.rid.clone()))
+                    .collect()
+            }
+            fn open(fx: &mut Fx, rid: Option<&str>) {
+                fx.sidebar.track_active(&fx.ws, rid, None, &fx.prefs);
+                fx.refresh();
+            }
+            let mut fx = Fx::with_rooms(3);
+            apply(
+                &mut fx.prefs,
+                LayoutEdit::SetUnreadFirst {
+                    id: SectionKind::Channels.into(),
+                    on: Some(true),
+                },
+            );
+            let mut s = sub("r0002", "r0002", RoomType::Channel);
+            s.unread = 2;
+            fx.ws.apply_subscription(Change::Updated, s.clone());
+            fx.refresh();
+            assert_eq!(channels(&fx), ["r0002", "r0000", "r0001"]);
+
+            s.unread = 0;
+            fx.ws.apply_subscription(Change::Updated, s);
+            open(&mut fx, Some("r0002"));
+            assert_eq!(channels(&fx), ["r0002", "r0000", "r0001"]);
+            open(&mut fx, Some("r0001"));
+            assert_eq!(channels(&fx), ["r0000", "r0001", "r0002"]);
+        }
+
+        /// A room with hidden unread status and a mention has a counter but
+        /// is not unread: opening it never moves it to the Unread section;
+        /// with "unread first" it keeps its place in the unread block.
+        #[test]
+        fn a_hidden_unread_room_is_not_moved_to_unread_when_opened() {
+            use rustket_core::sidebar_layout::{LayoutEdit, apply};
+            fn rids(fx: &Fx, kind: SectionKind) -> Vec<String> {
+                fx.sidebar
+                    .sections
+                    .iter()
+                    .filter(|s| s.is(kind))
+                    .flat_map(|s| s.items.iter().map(|i| i.rid.clone()))
+                    .collect()
+            }
+            fn open(fx: &mut Fx, rid: Option<&str>) {
+                fx.sidebar.track_active(&fx.ws, rid, None, &fx.prefs);
+                fx.refresh();
+            }
+            let mut fx = Fx::with_rooms(3);
+            fx.prefs.unread_on_top = true;
+            let mut s = sub("r0002", "r0002", RoomType::Channel);
+            s.unread = 1;
+            s.user_mentions = 1;
+            s.hide_unread_status = Some(true);
+            fx.ws.apply_subscription(Change::Updated, s.clone());
+            fx.refresh();
+            assert!(rids(&fx, SectionKind::Unread).is_empty());
+            let badge = &fx.sidebar.sections[0].items[2].badge;
+            assert_eq!(badge.count, 1, "a counter, but not unread");
+            open(&mut fx, Some("r0002"));
+            assert!(rids(&fx, SectionKind::Unread).is_empty());
+            assert_eq!(
+                rids(&fx, SectionKind::Channels),
+                ["r0000", "r0001", "r0002"]
+            );
+
+            open(&mut fx, None);
+            apply(
+                &mut fx.prefs,
+                LayoutEdit::SetUnreadFirst {
+                    id: SectionKind::Channels.into(),
+                    on: Some(true),
+                },
+            );
+            fx.refresh();
+            assert_eq!(
+                rids(&fx, SectionKind::Channels),
+                ["r0002", "r0000", "r0001"]
+            );
+            s.unread = 0;
+            s.user_mentions = 0;
+            fx.ws.apply_subscription(Change::Updated, s);
+            open(&mut fx, Some("r0002"));
+            assert!(rids(&fx, SectionKind::Unread).is_empty());
+            assert_eq!(
+                rids(&fx, SectionKind::Channels),
+                ["r0002", "r0000", "r0001"]
+            );
+            open(&mut fx, Some("r0000"));
+            assert_eq!(
+                rids(&fx, SectionKind::Channels),
+                ["r0000", "r0001", "r0002"]
+            );
+        }
+
+        /// Threads mode Unread with `n` unread threads `t000…` in r0000
+        /// (parents known except for the `missing` last ones).
+        fn with_threads(fx: &mut Fx, n: usize, missing: usize) {
+            use rustket_core::config::ThreadsMode;
+            fx.prefs.sidebar_threads = ThreadsMode::Unread;
+            fx.ws.set_thread_config(ThreadsMode::Unread, []);
+            let tmids: Vec<String> = (0..n).map(|i| format!("t{i:03}")).collect();
+            let mut s = sub("r0000", "r0000", RoomType::Channel);
+            s.tunread = Some(tmids.clone());
+            fx.ws.apply_subscription(Change::Updated, s);
+            let parents = tmids
+                .iter()
+                .enumerate()
+                .take(n - missing)
+                .map(|(i, t)| parent(t, "r0000", i))
+                .collect();
+            fx.ws.apply_thread_parents(parents);
+        }
+
+        /// Parent `tmid` whose last reply is newer the smaller `i` is.
+        fn parent(tmid: &str, rid: &str, i: usize) -> rocketchat::models::Message {
+            rocketchat::models::Message {
+                id: tmid.into(),
+                rid: rid.into(),
+                msg: format!("topic {tmid}"),
+                tcount: Some(2),
+                tlm: RcDate::from_millis(1_750_000_000_000 - i as i64 * 1000),
+                u: UserRef {
+                    id: "bobid".into(),
+                    username: Some("bob".into()),
+                    name: None,
+                },
+                ..Default::default()
+            }
+        }
+
+        fn threads(sb: &Sidebar) -> Vec<String> {
+            sb.sections
+                .iter()
+                .filter(|s| s.is(SectionKind::Threads))
+                .flat_map(|s| s.threads.iter().map(|t| t.tmid.clone()))
+                .collect()
+        }
+
+        fn ctx(fx: &Fx) -> SidebarCtx<'_> {
+            SidebarCtx {
+                server_id: &fx.sid,
+                server: &fx.url,
+                workspace: &fx.ws,
+                images: &fx.images,
+                prefs: &fx.prefs,
+                collapsed: &fx.collapsed,
+                active_room: None,
+                active_thread: None,
+                now: Instant::now(),
+            }
+        }
+
+        /// Thread rows take part in the windowing: only those near the
+        /// viewport are built; the slots count them.
+        #[test]
+        fn thread_rows_are_built_only_in_the_window() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(5);
+            with_threads(&mut fx, 300, 0);
+            fx.refresh();
+            assert_eq!(threads(&fx.sidebar).len(), 300);
+            BUILDS.with(|b| b.set((0, 0)));
+            let mut tree = Tree::new(fx.view().as_widget());
+            let (_, rows) = BUILDS.with(std::cell::Cell::get);
+            assert!((20..64).contains(&rows), "only the rows on screen: {rows}");
+            // Threads (header + 300) and Channels (header + 5) and the DM.
+            let (start, end) = fx.sidebar.window(&ctx(&fx));
+            assert_eq!(start, 0);
+            assert!(end < 64, "{end}");
+            // Scrolled to the channels below the threads: those rows only.
+            let row_h = row_height(Density::Extended);
+            let total = total_len(&fx.sidebar);
+            fx.sidebar.viewport = Some((total - 600.0, 600.0, total));
+            let (start, end) = fx.sidebar.window(&ctx(&fx));
+            assert!(
+                start > 250 && end == 1 + 300 + 1 + 5 + 1 + 1,
+                "{start}..{end}"
+            );
+            let (bodies, rows) = fx.diff(&mut tree);
+            assert_eq!(bodies, 1);
+            assert!(rows < 64 && (rows as f32) > 600.0 / row_h, "{rows}");
+        }
+
+        /// A parent that arrives for a placeholder row rebuilds that row only.
+        #[test]
+        fn a_new_parent_rebuilds_only_its_row() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 5, 1);
+            fx.refresh();
+            let rows = &fx.sidebar.sections[0].threads;
+            assert_eq!(rows.len(), 5);
+            assert!(!rows[4].is_loaded(), "placeholder last: no activity yet");
+            let mut tree = Tree::new(fx.view().as_widget());
+            assert_eq!(fx.diff(&mut tree), (0, 0));
+            // Oldest of all: it stays the last row.
+            fx.ws
+                .apply_thread_parents(vec![parent("t004", "r0000", 10)]);
+            assert_eq!(fx.diff(&mut tree), (1, 1));
+            assert!(fx.sidebar.sections[0].threads[4].is_loaded());
+        }
+
+        /// The open thread stays listed once read (closing the panel keeps
+        /// it) until another thread or room opens.
+        #[test]
+        fn the_open_thread_stays_listed_until_another_opens() {
+            fn open(fx: &mut Fx, rid: Option<&str>, tmid: Option<&str>) {
+                fx.sidebar.track_active(&fx.ws, rid, tmid, &fx.prefs);
+                fx.refresh();
+            }
+            fn read_all(fx: &mut Fx) {
+                let s = sub("r0000", "r0000", RoomType::Channel);
+                fx.ws.apply_subscription(Change::Updated, s);
+            }
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 2, 0);
+            fx.refresh();
+            assert_eq!(threads(&fx.sidebar), ["t000", "t001"]);
+
+            // Marked read in the same update that opened it.
+            read_all(&mut fx);
+            open(&mut fx, Some("r0000"), Some("t001"));
+            assert_eq!(threads(&fx.sidebar), ["t001"]);
+            // The panel closed (or shows something else): still listed.
+            open(&mut fx, Some("r0000"), None);
+            assert_eq!(threads(&fx.sidebar), ["t001"]);
+            open(&mut fx, Some("r0000"), Some("t001"));
+            assert_eq!(threads(&fx.sidebar), ["t001"]);
+            // Another thread that is not listed: the kept one goes.
+            open(&mut fx, Some("r0000"), Some("t000"));
+            assert!(threads(&fx.sidebar).is_empty());
+
+            // Another room drops it too.
+            with_threads(&mut fx, 2, 0);
+            fx.refresh();
+            read_all(&mut fx);
+            open(&mut fx, Some("r0000"), Some("t000"));
+            assert_eq!(threads(&fx.sidebar), ["t000"]);
+            open(&mut fx, Some("r0001"), None);
+            assert!(threads(&fx.sidebar).is_empty());
+        }
+
+        /// Opening a read thread that is listed anyway (kept or followed)
+        /// does not move it into the unread block.
+        #[test]
+        fn opening_a_read_listed_thread_keeps_the_order() {
+            use rustket_core::config::ThreadsMode;
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 3, 0);
+            fx.prefs.sidebar_threads = ThreadsMode::UnreadKept;
+            fx.ws.set_thread_config(
+                ThreadsMode::UnreadKept,
+                [("r0000", "t001"), ("r0000", "t002")],
+            );
+            let mut s = sub("r0000", "r0000", RoomType::Channel);
+            s.tunread = Some(vec!["t000".into()]);
+            fx.ws.apply_subscription(Change::Updated, s);
+            fx.refresh();
+            assert_eq!(threads(&fx.sidebar), ["t000", "t001", "t002"]);
+            fx.sidebar
+                .track_active(&fx.ws, Some("r0000"), Some("t002"), &fx.prefs);
+            fx.refresh();
+            assert_eq!(threads(&fx.sidebar), ["t000", "t001", "t002"]);
+        }
+
+        /// Alt+Up/Down steps through rooms only, skipping the thread rows;
+        /// revealing a room counts the thread rows above it.
+        #[test]
+        fn thread_rows_are_skipped_by_steps_and_counted_by_reveal() {
+            let mut fx = Fx::with_rooms(300);
+            with_threads(&mut fx, 20, 0);
+            fx.refresh();
+            assert!(fx.sidebar.sections[0].is(SectionKind::Threads));
+            let order = crate::omnichannel::sidebar::step_order(
+                &fx.sid,
+                &fx.ws,
+                &fx.sidebar.sections,
+                &fx.collapsed,
+            );
+            assert_eq!(order.len(), 301);
+            assert_eq!(order[0].rid, "r0000");
+
+            let row_h = row_height(Density::Extended);
+            let total = total_len(&fx.sidebar);
+            fx.sidebar.viewport = Some((0.0, 600.0, total));
+            let none = BTreeSet::new();
+            let d = Density::Extended;
+            // Threads header + 20 rows, Channels header, 250 rooms.
+            let row_top = 2.0 * HEADER_H + (20.0 + 250.0) * row_h;
+            let to = fx.sidebar.reveal_offset("r0250", d, &none).unwrap();
+            assert!((to - (row_top + row_h - 600.0)).abs() < 0.5, "{to}");
+            // Collapsed threads take no rows.
+            let collapsed: BTreeSet<String> = [SectionId::from(SectionKind::Threads)
+                .collapse_key()
+                .into_owned()]
+            .into();
+            fx.sidebar.viewport = Some((0.0, 600.0, total - 20.0 * row_h));
+            let to = fx.sidebar.reveal_offset("r0250", d, &collapsed).unwrap();
+            let row_top = 2.0 * HEADER_H + 250.0 * row_h;
+            assert!((to - (row_top + row_h - 600.0)).abs() < 0.5, "{to}");
+        }
+
+        /// Row contents: unread dot without a count, the room in the
+        /// subtitle (in the title when condensed), placeholders and the
+        /// context menu by state; opening and menu items map to outputs.
+        #[test]
+        fn thread_row_props_menu_and_outputs() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 2, 1);
+            let mut s = sub("r0000", "r0000", RoomType::Channel);
+            s.tunread = Some(vec!["t000".into(), "t001".into()]);
+            s.tunread_user = Some(vec!["t000".into()]);
+            fx.ws.apply_subscription(Change::Updated, s);
+            fx.refresh();
+            let rows = fx.sidebar.sections[0].threads.clone();
+            let c = ctx(&fx);
+            let p = thread_row_props(&rows[0], &c);
+            assert_eq!(p.title, "topic t000");
+            assert_eq!(p.subtitle.as_deref(), Some("r0000 · Replies: 2"));
+            assert_eq!(p.badge_dot, Some(BadgeKind::Mention));
+            assert_eq!(p.badge_kind(), Some(BadgeKind::Mention));
+            assert_eq!((p.unread, p.user_mentions), (0, 0), "no count");
+            let p = thread_row_props(&rows[1], &c);
+            assert_eq!(p.title, "Loading…");
+            assert_eq!(p.subtitle.as_deref(), Some("r0000"));
+            assert_eq!(p.badge_dot, Some(BadgeKind::Thread));
+            fx.ws.thread_gone("t001");
+            fx.refresh();
+            let gone = fx.sidebar.sections[0].threads[1].clone();
+            assert_eq!(
+                thread_row_props(&gone, &ctx(&fx)).title,
+                "Message unavailable"
+            );
+
+            fx.prefs.density = Density::Condensed;
+            let p = thread_row_props(&rows[0], &ctx(&fx));
+            assert_eq!(p.title, "r0000 › topic t000");
+
+            let labels = |t: &ThreadListItem, kept_enabled: bool| -> Vec<String> {
+                thread_menu(t, kept_enabled)
+                    .into_iter()
+                    .filter_map(|e| match e {
+                        MenuEntry::Item(i) => Some(i.label),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            // Unfollow only for a followed thread.
+            assert_eq!(labels(&rows[0], false), ["Open room", "Mark as read"]);
+            let mut followed = rows[0].clone();
+            followed.following = true;
+            assert_eq!(
+                labels(&followed, false),
+                ["Open room", "Mark as read", "Unfollow thread"]
+            );
+            assert_eq!(
+                labels(&followed, true),
+                [
+                    "Open room",
+                    "Mark as read",
+                    "Keep in sidebar",
+                    "Unfollow thread"
+                ]
+            );
+            // `chat.readThread` fails without the parent: the room is read.
+            assert_eq!(labels(&gone, true), ["Open room", "Mark room as read"]);
+            let mut kept = followed.clone();
+            kept.kept = true;
+            kept.unread = None;
+            assert_eq!(
+                labels(&kept, true),
+                ["Open room", "Remove from sidebar", "Unfollow thread"]
+            );
+
+            let (rid, tmid) = ("r0000".to_owned(), "t000".to_owned());
+            let act = |act| Message::ThreadAct {
+                rid: rid.clone(),
+                tmid: tmid.clone(),
+                act,
+            };
+            let sb = &mut fx.sidebar;
+            assert!(matches!(
+                sb.update(Message::OpenThread { rid: rid.clone(), tmid: tmid.clone() }),
+                Out::OpenThread { rid, tmid } if rid == "r0000" && tmid == "t000"
+            ));
+            assert!(
+                matches!(sb.update(act(ThreadAct::OpenRoom)), Out::OpenRoom(r) if r == "r0000")
+            );
+            assert!(matches!(
+                sb.update(act(ThreadAct::MarkRead)),
+                Out::ThreadCall {
+                    call: ThreadCall::MarkRead,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                sb.update(act(ThreadAct::MarkRoomRead)),
+                Out::ThreadCall {
+                    rid,
+                    call: ThreadCall::MarkRoomRead,
+                    ..
+                } if rid == "r0000"
+            ));
+            assert!(matches!(
+                sb.update(act(ThreadAct::Unfollow)),
+                Out::ThreadCall {
+                    call: ThreadCall::Unfollow,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                sb.update(act(ThreadAct::Keep)),
+                Out::KeepThread { keep: true, .. }
+            ));
+            assert!(matches!(
+                sb.update(act(ThreadAct::Unkeep)),
+                Out::KeepThread { keep: false, .. }
+            ));
+        }
+
+        /// The row's menu depends on more than its props: a change of the
+        /// kept flag, the read state or the "keep" availability rebuilds it.
+        #[test]
+        fn thread_row_key_covers_the_menu_state() {
+            use rustket_core::config::ThreadsMode;
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 2, 0);
+            fx.refresh();
+            let mut tree = Tree::new(fx.view().as_widget());
+            assert_eq!(fx.diff(&mut tree), (0, 0));
+            // Keeping becomes available (mode change): both rows rebuilt.
+            fx.prefs.sidebar_threads = ThreadsMode::UnreadKept;
+            fx.ws.set_thread_config(ThreadsMode::UnreadKept, []);
+            assert_eq!(fx.diff(&mut tree), (1, 2));
+            // One thread kept: its row only.
+            fx.ws
+                .set_thread_config(ThreadsMode::UnreadKept, [("r0000", "t001")]);
+            assert_eq!(fx.diff(&mut tree), (1, 1));
+        }
+
+        /// Content height of the list, thread rows included.
+        fn total_len(sb: &Sidebar) -> f32 {
+            let rows: usize = sb.sections.iter().map(Section::len).sum();
+            sb.sections.len() as f32 * HEADER_H + rows as f32 * row_height(Density::Extended)
         }
 
         fn first_keyed(tree: &Tree) -> Option<&Tree> {
@@ -1203,6 +2430,478 @@ mod tests {
                 return Some(tree);
             }
             tree.children.iter().find_map(first_keyed)
+        }
+
+        /// The header menu of each listed section, keyed by its config id.
+        fn header_menus(fx: &Fx) -> Vec<(String, Vec<MenuEntry<Message>>)> {
+            let layout = rustket_core::sidebar_layout::Layout::from_prefs(&fx.prefs);
+            let listed: Vec<(&Section, bool)> = fx.sidebar.listed_with(&fx.collapsed).collect();
+            let ids: Vec<&SectionId> = listed.iter().map(|(s, _)| &s.id).collect();
+            listed
+                .iter()
+                .enumerate()
+                .map(|(i, (s, c))| {
+                    let menu = fx
+                        .sidebar
+                        .header_menu_at(s, i, &ids, *c, &layout, &fx.prefs);
+                    (s.id.as_config_str(), menu)
+                })
+                .collect()
+        }
+
+        fn menu_of<'m>(
+            menus: &'m [(String, Vec<MenuEntry<Message>>)],
+            id: &str,
+        ) -> &'m [MenuEntry<Message>] {
+            &menus.iter().find(|(i, _)| i == id).unwrap().1
+        }
+
+        /// The enabled items whose message matches `pred`, with their
+        /// checked state.
+        fn items(
+            menu: &[MenuEntry<Message>],
+            pred: impl Fn(&Message) -> bool,
+        ) -> Vec<&rustket_ui::widget::MenuItem<Message>> {
+            menu.iter()
+                .filter_map(|e| match e {
+                    MenuEntry::Item(i) if pred(&i.on_select) => Some(i),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn layout_edit(m: &Message) -> Option<&LayoutEdit> {
+            match m {
+                Message::Header(HeaderAct::Layout(e)) => Some(e),
+                _ => None,
+            }
+        }
+
+        /// Drops resolve their stable header keys against the current
+        /// sections; vanished sections and own slots do nothing.
+        #[test]
+        fn reorder_maps_keys_to_section_ids() {
+            let mut fx = Fx::with_rooms(3);
+            fx.refresh();
+            let channels = SectionId::from(SectionKind::Channels);
+            let dms = SectionId::from(SectionKind::DirectMessages);
+            let unread = SectionId::from(SectionKind::Unread);
+            let mut drop = |dragged: &SectionId, before: Option<&SectionId>| match fx
+                .sidebar
+                .update(Message::Reorder {
+                    dragged: section_key(dragged),
+                    before: before.map(section_key),
+                }) {
+                Out::Layout(e) => Some(e),
+                Out::None => None,
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(
+                drop(&dms, Some(&channels)),
+                Some(LayoutEdit::MoveTo {
+                    id: dms.clone(),
+                    anchor: channels.clone(),
+                    after: false
+                })
+            );
+            assert_eq!(
+                drop(&channels, None),
+                Some(LayoutEdit::MoveTo {
+                    id: channels.clone(),
+                    anchor: dms.clone(),
+                    after: true
+                })
+            );
+            assert_eq!(drop(&dms, None), None);
+            assert_eq!(drop(&dms, Some(&dms)), None);
+            // Not listed (no unread rooms): gone since the drag started.
+            assert_eq!(drop(&unread, Some(&channels)), None);
+            assert_eq!(drop(&channels, Some(&unread)), None);
+            fx.sidebar.filter = "r0".into();
+            assert!(matches!(
+                fx.sidebar.update(Message::Reorder {
+                    dragged: section_key(&dms),
+                    before: Some(section_key(&channels)),
+                }),
+                Out::None
+            ));
+            assert!(matches!(
+                fx.sidebar.update(Message::AutoScroll(-8.0)),
+                Out::ScrollBy(dy) if dy == -8.0
+            ));
+        }
+
+        /// The drag handles sit on the built headers: dragging the DM header
+        /// above Channels publishes the matching drop.
+        #[test]
+        fn dragging_a_header_reorders_sections() {
+            use iced::advanced::widget::{Id, Operation};
+            use iced::{Point, Rectangle, Size, Vector, mouse};
+            use iced_runtime::user_interface::{Cache, UserInterface};
+
+            struct ListTop(Option<f32>);
+            impl Operation for ListTop {
+                fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                    operate(self);
+                }
+                fn scrollable(
+                    &mut self,
+                    id: Option<&Id>,
+                    _bounds: Rectangle,
+                    content: Rectangle,
+                    _translation: Vector,
+                    _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+                ) {
+                    if id == Some(&Id::new(LIST_ID)) {
+                        self.0 = Some(content.y);
+                    }
+                }
+            }
+
+            let mut fx = Fx::with_rooms(3);
+            fx.refresh();
+            let mut r = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+                rustket_ui::theme::DEFAULT_FONT,
+                iced::Pixels(rustket_ui::theme::TEXT_BODY),
+            ));
+            let mut ui =
+                UserInterface::build(fx.view(), Size::new(300.0, 800.0), Cache::default(), &mut r);
+            let mut probe = ListTop(None);
+            ui.operate(&r, &mut probe);
+            let top = probe.0.unwrap();
+            let row_h = row_height(fx.prefs.density);
+            let dm_header = Point::new(150.0, top + HEADER_H + 3.0 * row_h + HEADER_H / 2.0);
+            let above = Point::new(150.0, top + 4.0);
+            let mut msgs = Vec::new();
+            let ev = |e| iced::Event::Mouse(e);
+            for (at, e) in [
+                (
+                    dm_header,
+                    mouse::Event::CursorMoved {
+                        position: dm_header,
+                    },
+                ),
+                (dm_header, mouse::Event::ButtonPressed(mouse::Button::Left)),
+                (above, mouse::Event::CursorMoved { position: above }),
+                (above, mouse::Event::ButtonReleased(mouse::Button::Left)),
+            ] {
+                ui.update(
+                    &[ev(e)],
+                    mouse::Cursor::Available(at),
+                    &mut r,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut msgs,
+                );
+            }
+            drop(ui);
+            let reorders: Vec<_> = msgs
+                .into_iter()
+                .filter(|m| !matches!(m, Message::Scrolled(_) | Message::AutoScroll(_)))
+                .collect();
+            let [m @ Message::Reorder { .. }] = reorders.as_slice() else {
+                panic!("{reorders:?}");
+            };
+            let out = fx.sidebar.update(m.clone());
+            assert!(
+                matches!(
+                    &out,
+                    Out::Layout(LayoutEdit::MoveTo { id, anchor, after: false })
+                        if *id == SectionId::from(SectionKind::DirectMessages)
+                            && *anchor == SectionId::from(SectionKind::Channels)
+                ),
+                "{out:?}"
+            );
+        }
+
+        /// Move up/down anchor on the visible neighbours (empty sections in
+        /// between are skipped), built with the menu; the ends are disabled.
+        #[test]
+        fn header_menu_moves_next_to_visible_neighbours() {
+            let mut fx = Fx::with_rooms(3);
+            fx.refresh();
+            let menus = header_menus(&fx);
+            assert_eq!(
+                menus.iter().map(|(i, _)| i.as_str()).collect::<Vec<_>>(),
+                ["channels", "direct_messages"]
+            );
+            let moves = |id: &str| -> Vec<(LayoutEdit, bool)> {
+                items(menu_of(&menus, id), |m| {
+                    matches!(layout_edit(m), Some(LayoutEdit::MoveTo { .. }))
+                })
+                .into_iter()
+                .map(|i| (layout_edit(&i.on_select).unwrap().clone(), i.disabled))
+                .collect()
+            };
+            let channels = SectionId::from(SectionKind::Channels);
+            let dms = SectionId::from(SectionKind::DirectMessages);
+            let [(_, up_off), (down, down_off)] = moves("channels").try_into().unwrap();
+            assert!(up_off && !down_off);
+            assert_eq!(
+                down,
+                LayoutEdit::MoveTo {
+                    id: channels.clone(),
+                    anchor: dms.clone(),
+                    after: true
+                }
+            );
+            let [(up, up_off), (_, down_off)] = moves("direct_messages").try_into().unwrap();
+            assert!(!up_off && down_off);
+            assert_eq!(
+                up,
+                LayoutEdit::MoveTo {
+                    id: dms.clone(),
+                    anchor: channels.clone(),
+                    after: false
+                }
+            );
+            // The click carries the edit; the app applies it.
+            let out = fx
+                .sidebar
+                .update(Message::Header(HeaderAct::Layout(down.clone())));
+            assert!(matches!(&out, Out::Layout(e) if *e == down));
+            rustket_core::sidebar_layout::apply(&mut fx.prefs, down);
+            fx.refresh();
+            let order: Vec<String> = fx
+                .sidebar
+                .listed_with(&fx.collapsed)
+                .map(|(s, _)| s.id.as_config_str())
+                .collect();
+            assert_eq!(order, ["direct_messages", "channels"]);
+            // Search results cannot be moved.
+            fx.sidebar.filter = "r".into();
+            fx.refresh();
+            let menus = header_menus(&fx);
+            assert!(
+                items(menu_of(&menus, "channels"), |m| matches!(
+                    layout_edit(m),
+                    Some(LayoutEdit::MoveTo { .. })
+                ))
+                .iter()
+                .all(|i| i.disabled)
+            );
+        }
+
+        /// Sort, "Use default", unread-first and Threads mode items map to
+        /// the right edits; the current choices are checked.
+        #[test]
+        fn header_menu_sort_and_mode_items() {
+            use rustket_core::config::{SidebarSort, ThreadsMode};
+            use rustket_core::sidebar_layout::apply;
+            let mut fx = Fx::with_rooms(3);
+            fx.prefs.sidebar_threads = ThreadsMode::Unread;
+            fx.ws.set_thread_config(ThreadsMode::Unread, []);
+            fx.refresh();
+            let menus = header_menus(&fx);
+            // Shown with no rows while the mode is on.
+            assert_eq!(menus[0].0, "threads");
+            let threads = SectionId::from(SectionKind::Threads);
+            let channels = SectionId::from(SectionKind::Channels);
+            let sorts = |menu: &[MenuEntry<Message>]| -> Vec<(Option<SidebarSort>, bool)> {
+                items(menu, |m| {
+                    matches!(layout_edit(m), Some(LayoutEdit::SetSort { .. }))
+                })
+                .into_iter()
+                .map(|i| match layout_edit(&i.on_select) {
+                    Some(LayoutEdit::SetSort { sort, .. }) => (*sort, i.checked == Some(true)),
+                    _ => unreachable!(),
+                })
+                .collect()
+            };
+            assert_eq!(
+                sorts(menu_of(&menus, "channels")),
+                [
+                    (Some(SidebarSort::Activity), true),
+                    (Some(SidebarSort::ActivityAsc), false),
+                    (Some(SidebarSort::Alphabetical), false),
+                ]
+            );
+            let unread_first = |menu: &[MenuEntry<Message>]| {
+                items(menu, |m| {
+                    matches!(layout_edit(m), Some(LayoutEdit::SetUnreadFirst { .. }))
+                })
+                .into_iter()
+                .map(|i| (layout_edit(&i.on_select).unwrap().clone(), i.checked))
+                .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                unread_first(menu_of(&menus, "threads")),
+                [(
+                    LayoutEdit::SetUnreadFirst {
+                        id: threads.clone(),
+                        on: Some(false)
+                    },
+                    Some(true)
+                )]
+            );
+            assert_eq!(
+                unread_first(menu_of(&menus, "channels")),
+                [(
+                    LayoutEdit::SetUnreadFirst {
+                        id: channels.clone(),
+                        on: Some(true)
+                    },
+                    Some(false)
+                )]
+            );
+            let modes: Vec<(ThreadsMode, bool)> = items(menu_of(&menus, "threads"), |m| {
+                matches!(layout_edit(m), Some(LayoutEdit::SetThreadsMode(_)))
+            })
+            .into_iter()
+            .map(|i| match layout_edit(&i.on_select) {
+                Some(LayoutEdit::SetThreadsMode(m)) => (*m, i.checked == Some(true)),
+                _ => unreachable!(),
+            })
+            .collect();
+            assert_eq!(
+                modes,
+                [
+                    (ThreadsMode::Unread, true),
+                    (ThreadsMode::UnreadKept, false),
+                    (ThreadsMode::Following, false),
+                    (ThreadsMode::Off, false),
+                ]
+            );
+            assert!(matches!(
+                fx.sidebar.update(Message::Header(HeaderAct::Refresh)),
+                Out::RefreshThreads
+            ));
+            assert!(matches!(
+                fx.sidebar.update(Message::Header(HeaderAct::OpenSettings)),
+                Out::OpenSettings { ungroup: None }
+            ));
+
+            // An override: checked, and "Use default" offered.
+            let alpha = LayoutEdit::SetSort {
+                id: channels.clone(),
+                sort: Some(SidebarSort::Alphabetical),
+            };
+            assert!(apply(&mut fx.prefs, alpha).changed);
+            fx.refresh();
+            let menus = header_menus(&fx);
+            assert_eq!(
+                sorts(menu_of(&menus, "channels")),
+                [
+                    (Some(SidebarSort::Activity), false),
+                    (Some(SidebarSort::ActivityAsc), false),
+                    (Some(SidebarSort::Alphabetical), true),
+                    (None, false),
+                ]
+            );
+            assert_eq!(
+                sorts(menu_of(&menus, "direct_messages")).len(),
+                3,
+                "no override"
+            );
+        }
+
+        /// An override equal to the default does not change the resolved
+        /// layout, yet the menus must offer "Default (…)": the body is
+        /// rebuilt (its rows are not).
+        #[test]
+        fn a_sort_override_equal_to_the_default_rebuilds_the_body() {
+            use rustket_core::config::SidebarSort;
+            use rustket_core::sidebar_layout::apply;
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            fx.refresh();
+            let mut tree = Tree::new(fx.view().as_widget());
+            assert_eq!(fx.diff(&mut tree), (0, 0));
+            let channels = SectionId::from(SectionKind::Channels);
+            let same = LayoutEdit::SetSort {
+                id: channels,
+                sort: Some(SidebarSort::Activity),
+            };
+            assert!(apply(&mut fx.prefs, same).changed);
+            assert_eq!(fx.diff(&mut tree), (1, 0));
+            let menus = header_menus(&fx);
+            let defaults = items(menu_of(&menus, "channels"), |m| {
+                matches!(layout_edit(m), Some(LayoutEdit::SetSort { sort: None, .. }))
+            });
+            assert_eq!(defaults.len(), 1);
+            assert_eq!(defaults[0].label, "Default (Newest first)");
+        }
+
+        /// While filtering every section shows expanded: no Collapse/Expand
+        /// item (its label would not match what Toggle does to the stored
+        /// state), and no moves.
+        #[test]
+        fn header_menu_while_filtering_has_no_collapse_item() {
+            let mut fx = Fx::with_rooms(3);
+            fx.collapsed.insert(
+                SectionId::from(SectionKind::Channels)
+                    .collapse_key()
+                    .into_owned(),
+            );
+            fx.refresh();
+            let toggles = |fx: &Fx| {
+                let menus = header_menus(fx);
+                items(menu_of(&menus, "channels"), |m| {
+                    matches!(m, Message::Toggle(_))
+                })
+                .len()
+            };
+            assert_eq!(toggles(&fx), 1);
+            fx.sidebar.filter = "r0".into();
+            fx.refresh();
+            assert_eq!(toggles(&fx), 0);
+        }
+
+        /// Unread offers Hide; a group offers Ungroup…, which opens the
+        /// settings with the deletion to confirm.
+        #[test]
+        fn header_menu_hide_unread_and_ungroup() {
+            use rustket_core::sidebar_layout::{GroupType, apply};
+            let mut fx = Fx::with_rooms(3);
+            fx.prefs.unread_on_top = true;
+            apply(
+                &mut fx.prefs,
+                LayoutEdit::AddGroup {
+                    name: "People".into(),
+                    types: vec![GroupType::DirectMessages],
+                },
+            );
+            let gid = fx.prefs.sidebar_groups[0].id.clone();
+            let mut s = sub("r0001", "r0001", RoomType::Channel);
+            s.unread = 2;
+            s.alert = true;
+            fx.ws.apply_subscription(Change::Updated, s);
+            fx.refresh();
+            let menus = header_menus(&fx);
+            let unread = menu_of(&menus, "unread");
+            assert!(
+                items(unread, |m| matches!(
+                    layout_edit(m),
+                    Some(LayoutEdit::SetUnreadOnTop(false))
+                ))
+                .len()
+                    == 1
+            );
+            assert!(
+                items(unread, |m| matches!(
+                    layout_edit(m),
+                    Some(LayoutEdit::SetUnreadFirst { .. })
+                ))
+                .is_empty(),
+                "always unread"
+            );
+            let group = menu_of(&menus, &format!("group:{gid}"));
+            let ungroup = items(group, |m| {
+                matches!(m, Message::Header(HeaderAct::Ungroup(_)))
+            });
+            assert!(ungroup.len() == 1 && ungroup[0].danger);
+            assert!(matches!(
+                fx.sidebar.update(ungroup[0].on_select.clone()),
+                Out::OpenSettings { ungroup: Some(id) } if id == gid
+            ));
+            for (id, menu) in &menus {
+                let n = items(menu, |m| {
+                    matches!(m, Message::Header(HeaderAct::Ungroup(_)))
+                })
+                .len();
+                assert_eq!(n, usize::from(id.starts_with("group:")), "{id}");
+                let collapse = items(menu, |m| matches!(m, Message::Toggle(_))).len();
+                assert_eq!(collapse, 1, "{id}");
+            }
         }
     }
 

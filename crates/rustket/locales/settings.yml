@@ -200,3 +200,114 @@ settings.size_mb:
 settings.size_gb:
   en: "%{n} GB"
   ru: "%{n} ГБ"
+settings.sidebar:
+  en: "Sidebar"
+  ru: "Боковая панель"
+settings.group_delete:
+  en: "Delete group"
+  ru: "Удалить группу"
+settings.group_cancel:
+  en: "Cancel"
+  ru: "Отмена"
+settings.group_delete_confirm:
+  en: "Delete group “%{name}”? Its rooms return to their sections."
+  ru: "Удалить группу «%{name}»? Её комнаты вернутся в свои разделы."
+settings.group_by_type:
+  en: "Group by type"
+  ru: "Группировать по типу"
+settings.group_by_type_help:
+  en: "Separate sections for teams, discussions, channels, private groups and direct messages."
+  ru: "Отдельные разделы для команд, обсуждений, каналов, приватных групп и личных сообщений."
+settings.sidebar_sort:
+  en: "Default sorting"
+  ru: "Сортировка по умолчанию"
+settings.sort_newest:
+  en: "Newest activity"
+  ru: "Сначала новые"
+settings.sort_oldest:
+  en: "Oldest activity"
+  ru: "Сначала старые"
+settings.sort_alpha:
+  en: "A–Z"
+  ru: "По алфавиту"
+settings.threads_mode:
+  en: "Threads in the sidebar"
+  ru: "Треды в боковой панели"
+settings.threads_mode_help:
+  en: "Threads get their own section in the sidebar."
+  ru: "Треды показываются в отдельном разделе боковой панели."
+settings.threads_off:
+  en: "Off"
+  ru: "Не показывать"
+settings.threads_unread:
+  en: "Unread"
+  ru: "Непрочитанные"
+settings.threads_unread_kept:
+  en: "Unread and kept in the sidebar"
+  ru: "Непрочитанные и оставленные"
+settings.threads_following:
+  en: "All followed"
+  ru: "Все отслеживаемые"
+settings.threads_following_help:
+  en: "Loaded in the background, room by room; may take a few minutes on large servers."
+  ru: "Загружаются в фоне по комнатам; на больших серверах это может занять несколько минут."
+settings.sections:
+  en: "Sections"
+  ru: "Разделы"
+settings.section_off:
+  en: "Off"
+  ru: "Выключено"
+settings.section_unused:
+  en: "Not used while grouping by type is off"
+  ru: "Не используется без группировки по типу"
+settings.section_conversations_unused:
+  en: "Used only while grouping by type is off"
+  ru: "Используется только без группировки по типу"
+settings.section_in_group:
+  en: "In “%{group}”"
+  ru: "В группе «%{group}»"
+settings.section_taken_by_groups:
+  en: "Taken by groups"
+  ru: "Занято группами"
+settings.group_no_types:
+  en: "No room types"
+  ru: "Нет типов комнат"
+settings.omni_on_top:
+  en: "Omnichannel is always on top."
+  ru: "Омниканал всегда вверху."
+settings.move_up:
+  en: "Move up"
+  ru: "Выше"
+settings.move_down:
+  en: "Move down"
+  ru: "Ниже"
+settings.unread_first:
+  en: "Unread first"
+  ru: "Непрочитанные сверху"
+settings.group_new:
+  en: "New group"
+  ru: "Новая группа"
+settings.group_name:
+  en: "Group name"
+  ru: "Название группы"
+settings.group_types:
+  en: "Includes"
+  ru: "Включает"
+settings.group_moves_from:
+  en: "moves from “%{group}”"
+  ru: "будет перенесено из «%{group}»"
+settings.group_save:
+  en: "Save"
+  ru: "Сохранить"
+settings.group_edit:
+  en: "Edit group"
+  ru: "Изменить группу"
+settings.sidebar_reset:
+  en: "Reset sidebar layout"
+  ru: "Сбросить раскладку панели"
+settings.sidebar_reset_confirm:
+  en: "Reset the sidebar layout? Groups, the section order and per-section sorting are removed."
+  ru: "Сбросить раскладку панели? Группы, порядок разделов и их сортировка будут удалены."
+settings.sidebar_reset_do:
+  en: "Reset"
+  ru: "Сбросить"

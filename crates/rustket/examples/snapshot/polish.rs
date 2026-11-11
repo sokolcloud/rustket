@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use super::{Driver, NoClip, SIZE, write_png};
 
 /// What to do to the UI before drawing it.
-enum Step {
+pub(super) enum Step {
     /// A widget operation task (`focus`, `focus_cycle`, `focus_region`).
     Task(iced::Task<Message>),
     Key(keyboard::key::Named),
@@ -41,7 +41,7 @@ fn key(named: keyboard::key::Named) -> Event {
 }
 
 /// Like `Driver::shoot_at`, after running `steps` on the same UI.
-fn shoot_steps(d: &Driver, dir: &Path, name: &str, size: Size, steps: Vec<Step>) {
+pub(super) fn shoot_steps(d: &Driver, dir: &Path, name: &str, size: Size, steps: Vec<Step>) {
     use iced::futures::{FutureExt as _, StreamExt as _};
     let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
         rustket_ui::theme::DEFAULT_FONT,
@@ -188,11 +188,61 @@ pub async fn polish_shots(
     });
     d.send(Message::CloseModal);
 
-    // Settings → Storage (whole page) with the cache limit.
+    // Settings → Storage with the cache limit (scrolled to; the Sidebar
+    // card above it is tall).
     d.send(Message::Rail(rustket::workspace::rail::Message::Settings));
     d.settle(Duration::from_millis(500)).await;
     let tall = Size::new(SIZE.width, 2000.0);
-    both(d, out, "polish-settings-storage", tall, Vec::new);
+    both(d, out, "polish-settings-storage", tall, || {
+        vec![Step::Task(rustket::screens::settings::reveal_storage::<
+            Message,
+        >())]
+    });
+
+    // Settings → Sidebar card with a group taking channels and private
+    // groups (their sections dimmed), a sort override and the group editor
+    // open; en and ru. Reset afterwards so later shots keep the default.
+    {
+        use rustket::screens::settings::SidebarMessage as Sm;
+        use rustket_core::config::{GroupType, SectionId, SidebarSort};
+        use rustket_core::room_list::SectionKind;
+        use rustket_core::sidebar_layout::LayoutEdit;
+        let msgs = [
+            Sm::GroupNew,
+            Sm::GroupName("Work".into()),
+            Sm::GroupType(GroupType::Channels, true),
+            Sm::GroupType(GroupType::PrivateGroups, true),
+            Sm::GroupSave,
+            Sm::Layout(LayoutEdit::SetSort {
+                id: SectionId::Builtin(SectionKind::DirectMessages),
+                sort: Some(SidebarSort::Alphabetical),
+            }),
+            Sm::GroupNew,
+            Sm::GroupName("Teams and talks".into()),
+            Sm::GroupType(GroupType::Teams, true),
+            Sm::GroupType(GroupType::Channels, true),
+        ];
+        for m in msgs {
+            d.send(Message::Settings(
+                rustket::screens::settings::Message::Sidebar(m),
+            ));
+        }
+        d.settle(Duration::from_millis(300)).await;
+        let reveal = || {
+            vec![Step::Task(rustket::screens::settings::reveal_sidebar::<
+                Message,
+            >())]
+        };
+        both(d, out, "polish-settings-sidebar", tall, reveal);
+        rust_i18n::set_locale("ru");
+        both(d, out, "polish-settings-sidebar-ru", tall, reveal);
+        rust_i18n::set_locale("en");
+        for m in [Sm::GroupCancel, Sm::Reset, Sm::ResetConfirm] {
+            d.send(Message::Settings(
+                rustket::screens::settings::Message::Sidebar(m),
+            ));
+        }
+    }
     d.send(Message::Settings(
         rustket::screens::settings::Message::Close,
     ));

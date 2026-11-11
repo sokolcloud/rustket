@@ -27,7 +27,7 @@ use crate::error::Res;
 use crate::room::composer::{self, Composer};
 use crate::room::render;
 use crate::room::timeline::interact::{self, Interactions, Msg as ItemMsg, Source};
-use crate::room::timeline::{Act, SELECTED_FOR, list, row as trow, row_id};
+use crate::room::timeline::{Act, SELECTED_FOR, keep_offer, list, row as trow, row_id};
 use crate::room::{Action, ComposeIntent, Effect, UpdateCtx, ViewCtx};
 use crate::session::SessionHandle;
 
@@ -49,6 +49,8 @@ pub enum Msg {
     AlsoSend(bool),
     ToggleFollow,
     Followed(Res<()>),
+    /// Keep the thread in the sidebar or remove it.
+    ToggleKeep,
     ToggleExpand,
     MarkedRead(Res<()>),
     Reveal(String),
@@ -193,9 +195,15 @@ impl Thread {
         )
     }
 
-    /// Opens the thread timeline, restores the draft, loads the parent (if
-    /// unknown) and the newest replies.
+    /// Opens the thread timeline, restores the draft, loads the parent
+    /// (unless the room timeline holds it: a copy from the sidebar's thread
+    /// index may be out of date and is only shown until the fetch returns)
+    /// and the newest replies.
     pub fn activate(&mut self, ctx: &mut UpdateCtx<'_>) -> Action<Msg> {
+        let in_room = ctx
+            .workspace
+            .timeline(ctx.rid)
+            .is_some_and(|t| t.get(&self.tmid).is_some());
         ctx.workspace.open_thread(ctx.rid, &self.tmid);
         self.opened = true;
         self.refresh_parent(ctx.workspace);
@@ -204,7 +212,7 @@ impl Thread {
         let c = self.composer.on_open(ctx);
         tasks.push(c.task.map(Msg::Composer));
         effects.extend(c.effects);
-        if self.parent.is_none() {
+        if self.parent.is_none() || !in_room {
             tasks.push(self.fetch_parent(ctx));
         }
         tasks.push(self.load_page(ctx));
@@ -492,6 +500,16 @@ impl Thread {
                     )),
                 }
             }
+            Msg::ToggleKeep => {
+                let Some(kept) = keep_offer(ctx.workspace, ctx.rid, &self.tmid) else {
+                    return Action::none();
+                };
+                Action::effect(Effect::KeepThread {
+                    rid: ctx.rid.to_owned(),
+                    tmid: self.tmid.clone(),
+                    keep: !kept,
+                })
+            }
             Msg::ToggleExpand => {
                 self.expanded = !self.expanded;
                 Action::none()
@@ -672,7 +690,7 @@ impl Thread {
         }
     }
 
-    /// Follow and expand buttons for the panel header.
+    /// Expand, follow and keep-in-sidebar buttons for the panel header.
     pub fn header_actions<'a>(&'a self, ctx: &ViewCtx<'a>) -> Vec<Element<'a, Msg>> {
         let mut out = Vec::new();
         out.push(icon_button_with(
@@ -701,6 +719,23 @@ impl Thread {
                     t!("room_panel.thread_not_following").into_owned()
                 },
                 following,
+                32.0,
+            ));
+        }
+        if let Some(kept) = keep_offer(ctx.workspace, ctx.rid, &self.tmid) {
+            out.push(icon_button_with(
+                if kept {
+                    Icon::BookmarkX
+                } else {
+                    Icon::Bookmark
+                },
+                Some(Msg::ToggleKeep),
+                if kept {
+                    t!("sidebar.unkeep_thread").into_owned()
+                } else {
+                    t!("sidebar.keep_thread").into_owned()
+                },
+                kept,
                 32.0,
             ));
         }

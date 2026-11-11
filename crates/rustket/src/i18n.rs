@@ -137,6 +137,11 @@ mod tests {
         for k in [
             "sidebar.unread",
             "sidebar.favorites",
+            "sidebar.threads",
+            "sidebar.thread_loading",
+            "sidebar.thread_removed",
+            "sidebar.thread_unavailable",
+            "preview.encrypted",
             "sidebar.teams",
             "sidebar.discussions",
             "sidebar.channels",

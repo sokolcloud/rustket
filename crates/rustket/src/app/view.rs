@@ -201,6 +201,11 @@ impl App {
             prefs: &self.config.ui,
             collapsed: &self.ui_state.collapsed_sections,
             active_room: s.active_room.as_deref(),
+            active_thread: s
+                .active_room
+                .as_ref()
+                .and_then(|r| s.rooms.get(r))
+                .and_then(|rv| rv.panel.thread_tmid()),
             now,
         };
         // The cached workspace is shown instead of the placeholder.

@@ -2521,3 +2521,219 @@ fn scrollables(ui: &mut Ui<'_>, renderer: &iced::Renderer) -> Vec<(iced::Rectang
     ui.operate(renderer, &mut sc);
     sc.0
 }
+
+// --- sidebar header menu ---------------------------------------------------------------
+
+fn header(sid: &ServerId, act: sidebar::HeaderAct) -> Message {
+    Message::Sidebar(sid.clone(), sidebar::Message::Header(act))
+}
+
+/// A header menu edit changes the layout and is saved; Ungroup… opens the
+/// settings with the deletion to confirm, which drops the group and its
+/// collapse state.
+#[test]
+fn header_menu_edits_the_layout_and_ungroups_through_settings() {
+    use rustket_core::room_list::SectionKind;
+    use rustket_core::sidebar_layout::{GroupType, LayoutEdit, SectionId};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let channels = SectionId::from(SectionKind::Channels);
+    let favorites = SectionId::from(SectionKind::Favorites);
+    let _ = app.update(header(
+        &sid,
+        sidebar::HeaderAct::Layout(LayoutEdit::MoveTo {
+            id: channels.clone(),
+            anchor: favorites.clone(),
+            after: false,
+        }),
+    ));
+    let pos = |order: &[SectionId], id: &SectionId| order.iter().position(|x| x == id).unwrap();
+    app.flush_config();
+    let disk = AppConfig::load(dir.path()).unwrap();
+    assert!(pos(&disk.ui.sidebar_order, &channels) < pos(&disk.ui.sidebar_order, &favorites));
+
+    let _ = app.update(header(
+        &sid,
+        sidebar::HeaderAct::Layout(LayoutEdit::AddGroup {
+            name: "Work".into(),
+            types: vec![GroupType::Channels],
+        }),
+    ));
+    let gid = app.config.ui.sidebar_groups[0].id.clone();
+    let key = format!("sidebar.group.{gid}");
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Toggle(SectionId::group(&gid)),
+    ));
+    assert!(app.ui_state.collapsed_sections.contains(&key));
+
+    let _ = app.update(header(&sid, sidebar::HeaderAct::Ungroup(gid.clone())));
+    let rustket::app::Screen::Settings(settings) = &app.screen else {
+        panic!("settings not open");
+    };
+    assert_eq!(settings.confirm_delete.as_deref(), Some(gid.as_str()));
+    assert_eq!(app.config.ui.sidebar_groups.len(), 1, "not deleted yet");
+
+    let _ = app.update(Message::Settings(
+        rustket::screens::settings::Message::Sidebar(
+            rustket::screens::settings::SidebarMessage::GroupDeleteConfirm,
+        ),
+    ));
+    assert!(app.config.ui.sidebar_groups.is_empty());
+    assert!(!app.ui_state.collapsed_sections.contains(&key));
+    app.flush_config();
+    let disk = AppConfig::load(dir.path()).unwrap();
+    assert!(disk.ui.sidebar_groups.is_empty());
+    assert!(
+        !rustket::ui_state::UiState::load(dir.path())
+            .collapsed_sections
+            .contains(&key)
+    );
+}
+
+/// Bounds of the container with `id`.
+fn container_bounds(
+    ui: &mut Ui<'_>,
+    renderer: &iced::Renderer,
+    id: iced::advanced::widget::Id,
+) -> Option<iced::Rectangle> {
+    struct Find(iced::advanced::widget::Id, Option<iced::Rectangle>);
+    impl iced::advanced::widget::Operation for Find {
+        fn traverse(
+            &mut self,
+            operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+        ) {
+            operate(self);
+        }
+        fn container(&mut self, id: Option<&iced::advanced::widget::Id>, b: iced::Rectangle) {
+            if id == Some(&self.0) {
+                self.1 = Some(b);
+            }
+        }
+    }
+    let mut f = Find(id, None);
+    ui.operate(renderer, &mut f);
+    f.1
+}
+
+/// "Sidebar settings…" opens the settings scrolled to the Sidebar card.
+#[tokio::test]
+async fn header_menu_settings_scrolls_to_the_sidebar_card() {
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let task = app.update(header(&sid, sidebar::HeaderAct::OpenSettings));
+    assert!(matches!(app.screen, rustket::app::Screen::Settings(_)));
+    let mut renderer = test_renderer();
+    let size = iced::Size::new(1280.0, 800.0);
+    let mut ui = UserInterface::build(app.view(), size, Cache::default(), &mut renderer);
+    let before = scrollables(&mut ui, &renderer);
+    assert_eq!(before.len(), 1, "{before:?}");
+    assert_eq!(before[0].1.y, 0.0);
+    run_ops(&mut ui, &renderer, task);
+    let after = scrollables(&mut ui, &renderer);
+    let (bounds, t) = after[0];
+    assert!(t.y > 0.0, "scrolled: {after:?}");
+    let card = container_bounds(
+        &mut ui,
+        &renderer,
+        iced::advanced::widget::Id::new(rustket::screens::settings::SIDEBAR_CARD),
+    )
+    .expect("the Sidebar card");
+    let top = card.y - t.y;
+    assert!(
+        top >= bounds.y && top < bounds.y + bounds.height,
+        "card {card:?} at {top} in {bounds:?}"
+    );
+}
+
+/// "Ungroup…" scrolls to the group's row, where its deletion is confirmed
+/// (a group of direct messages sits far below the card's top).
+#[tokio::test]
+async fn header_menu_ungroup_scrolls_to_the_group_row() {
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    use rustket_core::sidebar_layout::{GroupType, LayoutEdit};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(header(
+        &sid,
+        sidebar::HeaderAct::Layout(LayoutEdit::AddGroup {
+            name: "People".into(),
+            types: vec![GroupType::DirectMessages],
+        }),
+    ));
+    let gid = app.config.ui.sidebar_groups[0].id.clone();
+    let task = app.update(header(&sid, sidebar::HeaderAct::Ungroup(gid.clone())));
+    let mut renderer = test_renderer();
+    let size = iced::Size::new(1280.0, 800.0);
+    let mut ui = UserInterface::build(app.view(), size, Cache::default(), &mut renderer);
+    run_ops(&mut ui, &renderer, task);
+    let (bounds, t) = scrollables(&mut ui, &renderer)[0];
+    let row = container_bounds(
+        &mut ui,
+        &renderer,
+        iced::advanced::widget::Id::from(rustket::screens::settings::sidebar_group_row_id(&gid)),
+    )
+    .expect("the group's row");
+    let top = row.y - t.y;
+    assert!(
+        top >= bounds.y && top + row.height <= bounds.y + bounds.height,
+        "row {row:?} at {top} in {bounds:?}"
+    );
+}
+
+/// "Keep in sidebar" from the message menu and the sidebar edit the
+/// account's kept threads in the config (deduped, capped, saved) and the
+/// workspace mirrors them.
+#[tokio::test]
+async fn kept_threads_are_deduped_capped_and_saved() {
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    use rustket_core::config::ThreadsMode;
+    use rustket_core::sidebar_layout::MAX_KEPT_THREADS;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    app.config.ui.sidebar_threads = ThreadsMode::UnreadKept;
+    let mut parent = rc_msg("p1", "r1", T0 + 10, "B");
+    parent.tcount = Some(1);
+    deliver(&mut app, &sid, parent);
+    let act = |app: &App, a: Act| {
+        room_msg(
+            app,
+            &sid,
+            "r1",
+            rustket::room::Message::Timeline(Tm::Item(ItemMsg::Act("p1".into(), a))),
+        )
+    };
+    let kept = |app: &App| app.config.server(&sid).unwrap().kept_threads().count();
+    let _ = app.update(act(&app, Act::KeepInSidebar));
+    assert_eq!(kept(&app), 1);
+    assert!(app.servers[&sid].workspace.thread_index().is_kept("p1"));
+    // The same thread from the sidebar: no duplicate.
+    let keep = |tmid: &str, act| {
+        Message::Sidebar(
+            sid.clone(),
+            sidebar::Message::ThreadAct {
+                rid: "r1".into(),
+                tmid: tmid.into(),
+                act,
+            },
+        )
+    };
+    let _ = app.update(keep("p1", sidebar::ThreadAct::Keep));
+    assert_eq!(kept(&app), 1);
+    app.flush_config();
+    let disk = AppConfig::load(dir.path()).unwrap();
+    assert_eq!(disk.servers[0].kept_threads().count(), 1);
+
+    let _ = app.update(act(&app, Act::RemoveFromSidebar));
+    assert_eq!(kept(&app), 0);
+    assert!(!app.servers[&sid].workspace.thread_index().is_kept("p1"));
+
+    for i in 0..MAX_KEPT_THREADS + 3 {
+        let _ = app.update(keep(&format!("t{i}"), sidebar::ThreadAct::Keep));
+    }
+    assert_eq!(kept(&app), MAX_KEPT_THREADS);
+    // The oldest are dropped first.
+    let first = app.config.server(&sid).unwrap().kept_threads().next();
+    assert_eq!(first.map(|k| k.tmid.as_str()), Some("t3"));
+}

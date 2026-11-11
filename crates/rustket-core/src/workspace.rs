@@ -23,7 +23,9 @@ use rocketchat::rest::HistoryCursor;
 use crate::emoji::EmojiRegistry;
 use crate::presence::Presence;
 use crate::settings::Settings;
+use crate::sidebar_layout::ThreadsMode;
 use crate::sync::{DeltaData, InitialData, RoomSync};
+use crate::thread_index::ThreadIndex;
 use crate::timeline::{DeliveryState, PageTicket, Timeline, TimelineItem};
 use crate::typing::{TypingLabel, TypingState};
 use crate::uikit::UiKitStore;
@@ -58,8 +60,10 @@ impl Dirty {
     pub const DRAFTS: Self = Self(1 << 12);
     pub const CONNECTION: Self = Self(1 << 13);
     pub const SYNC: Self = Self(1 << 14);
-    pub const ALL: Self = Self((1 << 15) - 1);
-    const BITS: usize = 15;
+    /// Thread parents, followed sets or kept threads (sidebar Threads section).
+    pub const THREAD_INDEX: Self = Self(1 << 15);
+    pub const ALL: Self = Self((1 << 16) - 1);
+    const BITS: usize = 16;
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -256,6 +260,8 @@ pub struct Workspace {
     /// not touched by the server since: the initial load replaces them even
     /// on an `_updatedAt` tie.
     cached_rooms: HashSet<String>,
+    /// Thread parents and followed sets for the sidebar's Threads section.
+    thread_index: ThreadIndex,
 }
 
 /// When a realtime event touched something.
@@ -322,6 +328,29 @@ const NEW_MESSAGE_WINDOW_MS: i64 = 2_000;
 /// `new` is an older version than `old` (both known).
 fn is_older(new: Option<RcDate>, old: Option<RcDate>) -> bool {
     matches!((new, old), (Some(n), Some(o)) if n < o)
+}
+
+/// Where a thread parent passed to `Workspace::index_parent` comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParentSource {
+    /// A realtime (or fresh REST call) update: its follow state is applied to
+    /// the room's followed set and remembered for crawls in flight.
+    Live,
+    /// A timeline or thread page, an opened thread or the offline cache:
+    /// stored if relevant, follow state not applied (it may be stale).
+    Page,
+    /// Asked for over REST: stored even when nothing refers to it yet.
+    Fetched,
+}
+
+/// The user is in the thread's `replies` (author, replied, mentioned or
+/// followed explicitly): `chat.getThreadsList(type=following)`.
+fn follows(m: &Message, me: Option<&str>) -> bool {
+    me.is_some_and(|me| {
+        m.replies
+            .as_ref()
+            .is_some_and(|r| r.iter().any(|u| u == me))
+    })
 }
 
 /// `d` is known and later than `than` (known).
@@ -625,6 +654,16 @@ impl Workspace {
         }
         self.from_cache = false;
         self.cached_rooms.clear();
+        let rooms = &self.rooms;
+        let lr = |rid: &str| {
+            rooms
+                .get(rid)
+                .and_then(|e| e.sub.as_ref())
+                .and_then(|s| s.lr)
+        };
+        if self.thread_index.confirm_restored(lr) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
         self.realtime.snapshot_applied();
         self.changes.rooms.extend(self.rooms.keys().cloned());
         self.mark(Dirty::ALL);
@@ -654,6 +693,7 @@ impl Workspace {
             custom_emoji,
             custom_statuses,
             saved_at: _,
+            threads,
         } = state;
         if self.me.is_none() {
             // Not connected: the own status is not known.
@@ -693,6 +733,7 @@ impl Workspace {
             self.rooms.entry(rid.clone()).or_default().room = Some(r);
             self.cached_rooms.insert(rid);
         }
+        self.restore_threads(threads);
         self.from_cache = true;
         self.changes.rooms.extend(self.rooms.keys().cloned());
         self.mark(Dirty::ALL);
@@ -727,6 +768,9 @@ impl Workspace {
                 changed
             }
             Some(tmid) => {
+                if let Some(p) = parent.as_ref().filter(|p| p.id == tmid && p.rid == rid) {
+                    self.index_parents(std::slice::from_ref(p));
+                }
                 let changed = self
                     .threads
                     .get_mut(tmid)
@@ -1213,6 +1257,9 @@ impl Workspace {
 
     pub fn apply_logged_out(&mut self) {
         self.apply_connection(ConnectionState::LoggedOut);
+        if self.thread_index.clear() {
+            self.mark(Dirty::THREAD_INDEX);
+        }
     }
 
     // --- realtime: rooms and subscriptions --------------------------------------
@@ -1248,6 +1295,7 @@ impl Workspace {
             self.mark_room(rid);
         }
         self.drop_room_timelines(rid);
+        self.index_remove_room(rid);
     }
 
     fn drop_room_timelines(&mut self, rid: &str) {
@@ -1309,6 +1357,7 @@ impl Workspace {
             self.mark_room(rid);
         }
         self.drop_room_timelines(rid);
+        self.index_remove_room(rid);
     }
 
     // --- realtime: messages -------------------------------------------------------
@@ -1322,6 +1371,8 @@ impl Workspace {
     }
 
     fn apply_message_from(&mut self, m: Message, realtime: bool) {
+        // Before the hidden check: a parent that becomes hidden leaves the index.
+        self.index_message(&m);
         if m.hidden == Some(true) {
             return;
         }
@@ -1386,6 +1437,9 @@ impl Workspace {
 
     pub fn apply_message_deleted(&mut self, rid: &str, id: &str) {
         self.forget_ephemeral(rid, id);
+        if self.thread_index.remove_message(rid, id) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
         if let Some(t) = self.timelines.get_mut(rid)
             && t.remove(id)
         {
@@ -1599,19 +1653,26 @@ impl Workspace {
         }
     }
 
-    /// Opens a thread timeline; the parent is taken from the room timeline if known.
+    /// Opens a thread timeline; the parent is taken from the room timeline
+    /// (else the thread index) if known.
     pub fn open_thread(&mut self, rid: &str, tmid: &str) -> &Timeline {
         let parent = self
             .timelines
             .get(rid)
             .and_then(|t| t.get(tmid))
-            .map(|i| i.message.clone());
+            .map(|i| i.message.clone())
+            .or_else(|| {
+                self.thread_index
+                    .parent(tmid)
+                    .filter(|p| p.rid == rid)
+                    .cloned()
+            });
         let t = self
             .threads
             .entry(tmid.to_owned())
             .or_insert_with(|| Timeline::new_thread(rid, tmid));
-        if let Some(p) = parent {
-            t.upsert(p);
+        if let Some(p) = parent.as_ref() {
+            t.upsert(p.clone());
         }
         for item in self.outbox.values() {
             if t.accepts(&item.message) {
@@ -1619,6 +1680,9 @@ impl Workspace {
             }
         }
         self.mark_thread(tmid);
+        if let Some(p) = parent {
+            self.index_parents(&[p]);
+        }
         &self.threads[tmid]
     }
 
@@ -1682,6 +1746,19 @@ impl Workspace {
             .as_ref()
             .map(|ms| ms.iter().map(|m| m.id.clone()).collect())
             .unwrap_or_default();
+        let parents: Vec<Message> = if self.thread_index.enabled() {
+            result
+                .as_ref()
+                .map(|ms| {
+                    ms.iter()
+                        .filter(|m| m.tmid.is_none() && m.tcount.is_some())
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let applied = match ticket {
             Some(tk) => t.finish_load_older_ticket(tk, cursor, result),
             None => t.finish_load_older(cursor, result),
@@ -1692,6 +1769,7 @@ impl Workspace {
             }
             self.confirm_delivered(&ids);
             self.mark_timeline(rid);
+            self.index_parents(&parents);
         }
         applied
     }
@@ -1785,6 +1863,13 @@ impl Workspace {
             .as_ref()
             .map(|p| p.items.iter().map(|m| m.id.clone()).collect())
             .unwrap_or_default();
+        let newest_reply = result.as_ref().ok().and_then(|p| {
+            p.items
+                .iter()
+                .filter(|m| m.hidden != Some(true))
+                .filter_map(|m| m.ts)
+                .max()
+        });
         let applied = match ticket {
             Some(tk) => t.finish_load_thread_ticket(tk, result),
             None => t.finish_load_thread(result),
@@ -1793,8 +1878,15 @@ impl Workspace {
             if let Some(w) = watermark {
                 t.set_sync_watermark_if_missing(w);
             }
+            let parent = t.parent().cloned();
             self.confirm_delivered(&ids);
             self.mark_thread(tmid);
+            if let Some(p) = parent {
+                self.index_parents(&[p]);
+            }
+            if self.thread_index.bump_activity(tmid, newest_reply) {
+                self.mark(Dirty::THREAD_INDEX);
+            }
         }
         applied
     }
@@ -1932,6 +2024,286 @@ impl Workspace {
         &self.drafts
     }
 
+    // --- sidebar threads -------------------------------------------------------------
+
+    /// Thread parents and followed sets behind the sidebar's Threads section.
+    pub fn thread_index(&self) -> &ThreadIndex {
+        &self.thread_index
+    }
+
+    /// Mirrors the Threads mode and the signed-in account's kept threads
+    /// (`(rid, tmid)`) from the config. Cheap when nothing changed; call it on
+    /// every update.
+    pub fn set_thread_config<'k>(
+        &mut self,
+        mode: ThreadsMode,
+        kept: impl IntoIterator<Item = (&'k str, &'k str)>,
+    ) {
+        let kept = kept
+            .into_iter()
+            .map(|(rid, tmid)| (tmid.to_owned(), rid.to_owned()))
+            .collect();
+        let mut changed = self.thread_index.set_mode(mode);
+        changed |= self.thread_index.set_kept(kept);
+        if changed {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// Thread parents fetched over REST (unread or kept threads, a single
+    /// `chat.getMessage`). Hidden ones are gone; older copies than the stored
+    /// ones are ignored.
+    pub fn apply_thread_parents(&mut self, msgs: Vec<Message>) {
+        if !self.thread_index.enabled() {
+            return;
+        }
+        let mut changed = false;
+        for m in msgs.into_iter().filter(|m| m.tmid.is_none()) {
+            changed |= self.index_parent(m, ParentSource::Fetched);
+        }
+        changed |= self.evict_thread_parents();
+        if changed {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// A `chat.getThreadsList(type=following)` result for `rid`, requested at
+    /// `started` while the room's activity was `synced_activity`. Replaces the
+    /// room's followed set, keeping follows and unfollows seen live since
+    /// `started`. Ignored outside Following mode.
+    pub fn apply_followed(
+        &mut self,
+        rid: &str,
+        msgs: Vec<Message>,
+        synced_activity: Option<RcDate>,
+        started: Instant,
+    ) {
+        if self.thread_index.mode() != ThreadsMode::Following {
+            return;
+        }
+        let me = self.user_id().map(str::to_owned);
+        let mut set = std::collections::BTreeSet::new();
+        let mut changed = false;
+        for m in msgs {
+            if m.rid != rid || m.tmid.is_some() {
+                continue;
+            }
+            // A newer stored copy (or a hide or deletion seen since) decides.
+            let current = if self.thread_index.has_newer(&m) {
+                self.thread_index.parent(&m.id)
+            } else {
+                Some(&m)
+            };
+            if current.is_some_and(|c| {
+                c.hidden != Some(true)
+                    && !crate::thread_index::is_removed(c)
+                    && follows(c, me.as_deref())
+            }) {
+                set.insert(m.id.clone());
+            }
+            changed |= self.index_parent(m, ParentSource::Fetched);
+        }
+        changed |= self
+            .thread_index
+            .set_followed(rid, set, synced_activity, started);
+        changed |= self.evict_thread_parents();
+        if changed {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// The parent of `tmid` is not available (not found): its rows show it.
+    pub fn thread_gone(&mut self, tmid: &str) {
+        if self.thread_index.enabled() && self.thread_index.mark_gone(tmid) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// Thread data of the offline cache, for subscribed rooms (see
+    /// `ThreadIndex::restore`).
+    fn restore_threads(&mut self, t: crate::cache::CachedThreads) {
+        let subscribed = |rid: &str| self.rooms.get(rid).is_some_and(|e| e.sub.is_some());
+        let parents: Vec<Message> = t
+            .parents
+            .into_iter()
+            .filter(|m| m.tmid.is_none() && m.hidden != Some(true) && subscribed(&m.rid))
+            .collect();
+        let followed: Vec<_> = t
+            .followed
+            .into_iter()
+            .filter(|f| subscribed(&f.rid))
+            .map(|f| (f.rid, f.tmids.into_iter().collect(), f.synced_activity))
+            .collect();
+        let synced: HashMap<String, Option<RcDate>> = t
+            .parents_synced
+            .into_iter()
+            .map(|p| (p.rid, p.synced_activity))
+            .collect();
+        // A room without a mark: not known to be current.
+        let synced = |rid: &str| synced.get(rid).copied().flatten();
+        if self.thread_index.restore(parents, followed, synced) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// A room's followed set may be out of date: crawled again.
+    pub fn mark_followed_threads_stale(&mut self, rid: &str) {
+        if self.thread_index.mark_followed_stale(rid) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// Forgets one room's followed set (crawled again).
+    pub fn forget_followed_threads(&mut self, rid: &str) {
+        if self.thread_index.forget_followed(rid) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// Whether `tmid` is in any `tunread*` list of the room's subscription.
+    fn is_unread_thread(&self, rid: &str, tmid: &str) -> bool {
+        self.subscription(rid).is_some_and(|s| {
+            [&s.tunread, &s.tunread_user, &s.tunread_group]
+                .into_iter()
+                .any(|v| v.as_ref().is_some_and(|v| v.iter().any(|t| t == tmid)))
+        })
+    }
+
+    /// A row source refers to `m` (as a parent): stored already, kept, unread,
+    /// its thread is open, or (Following) the user follows it.
+    fn thread_relevant(&self, m: &Message) -> bool {
+        let idx = &self.thread_index;
+        idx.parent(&m.id).is_some()
+            || idx.is_kept(&m.id)
+            || self.threads.contains_key(&m.id)
+            || self.is_unread_thread(&m.rid, &m.id)
+            || (idx.mode() == ThreadsMode::Following
+                && self.subscription(&m.rid).is_some()
+                && follows(m, self.user_id()))
+    }
+
+    /// Stores, updates or drops a parent (see [`ParentSource`]). Returns
+    /// whether the index changed.
+    fn index_parent(&mut self, m: Message, source: ParentSource) -> bool {
+        let live = source == ParentSource::Live;
+        if m.hidden == Some(true) {
+            self.thread_index.tombstone(&m);
+            return self.thread_index.mark_gone(&m.id);
+        }
+        if self.thread_index.has_newer(&m) {
+            return false;
+        }
+        if crate::thread_index::is_removed(&m) {
+            let mut changed = self.thread_index.unfollow(&m.id);
+            if live {
+                changed |= self
+                    .thread_index
+                    .live_follow(&m.rid, &m.id, false, Instant::now());
+            }
+            let shown = self.thread_index.is_kept(&m.id)
+                || self.threads.contains_key(&m.id)
+                || self.is_unread_thread(&m.rid, &m.id);
+            changed |= if shown {
+                self.thread_index.put_parent(m)
+            } else {
+                self.thread_index.tombstone(&m);
+                self.thread_index.remove_parent(&m.id)
+            };
+            return changed;
+        }
+        // Every live follow state counts: a crawl may be in flight for the room.
+        let follow = (live && self.subscription(&m.rid).is_some())
+            .then(|| (m.rid.clone(), m.id.clone(), follows(&m, self.user_id())));
+        let mut changed = false;
+        // Stored first: trimming the followed set ranks by the stored activity.
+        if source == ParentSource::Fetched || self.thread_relevant(&m) {
+            changed |= self.thread_index.put_parent(m);
+        }
+        if let Some((rid, tmid, follows)) = follow {
+            changed |= self
+                .thread_index
+                .live_follow(&rid, &tmid, follows, Instant::now());
+        }
+        changed
+    }
+
+    /// Parents from a page or an open thread (relevant ones only).
+    fn index_parents(&mut self, msgs: &[Message]) {
+        if !self.thread_index.enabled() {
+            return;
+        }
+        let mut changed = false;
+        for m in msgs.iter().filter(|m| m.tmid.is_none()) {
+            changed |= self.index_parent(m.clone(), ParentSource::Page);
+        }
+        changed |= self.evict_thread_parents();
+        if changed {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// The realtime / sync hook: parent updates (counters, follows, deletion
+    /// as `t: "rm"`, hiding) and replies (parent activity).
+    fn index_message(&mut self, m: &Message) {
+        if !self.thread_index.enabled() {
+            return;
+        }
+        let changed = match m.tmid.as_deref() {
+            Some(tmid) => {
+                m.hidden != Some(true)
+                    && !crate::thread_index::is_removed(m)
+                    && self.thread_index.bump_activity(tmid, m.ts)
+            }
+            None if m.hidden == Some(true) => {
+                let known = self.thread_index.parent(&m.id).is_some()
+                    || self.thread_index.is_followed(&m.id);
+                if known || m.tcount.is_some() {
+                    self.thread_index.tombstone(m);
+                }
+                known && self.thread_index.mark_gone(&m.id)
+            }
+            None => {
+                let parent = m.tcount.is_some()
+                    || crate::thread_index::is_removed(m)
+                    || self.thread_index.parent(&m.id).is_some();
+                if parent {
+                    let changed = self.index_parent(m.clone(), ParentSource::Live);
+                    self.evict_thread_parents() || changed
+                } else {
+                    false
+                }
+            }
+        };
+        if changed {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    fn index_remove_room(&mut self, rid: &str) {
+        if self.thread_index.remove_room(rid) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// Evicts parents no row source refers to once the index is full.
+    fn evict_thread_parents(&mut self) -> bool {
+        if !self.thread_index.needs_eviction() {
+            return false;
+        }
+        let mut referenced: HashSet<String> = self.threads.keys().cloned().collect();
+        referenced.extend(self.thread_index.kept().map(|(_, t)| t.to_owned()));
+        referenced.extend(self.thread_index.followed_tmids().map(str::to_owned));
+        for s in self.rooms.values().filter_map(|e| e.sub.as_ref()) {
+            for v in [&s.tunread, &s.tunread_user, &s.tunread_group]
+                .into_iter()
+                .flatten()
+            {
+                referenced.extend(v.iter().cloned());
+            }
+        }
+        self.thread_index.evict(&referenced)
+    }
+
     // --- end-to-end encryption ------------------------------------------------------
 
     /// The account's E2E manager, if the app started one.
@@ -1986,6 +2358,10 @@ impl Workspace {
             && f(m)
         {
             self.mark_room(rid);
+            changed = true;
+        }
+        if self.thread_index.rewrite(rid, f) {
+            self.mark(Dirty::THREAD_INDEX);
             changed = true;
         }
         changed
@@ -2412,6 +2788,272 @@ mod tests {
         assert!(!ws.me().unwrap().has_role("admin"));
         ws.apply_user_role_change("other", "admin", true, None);
         assert!(!ws.me().unwrap().has_role("admin"));
+    }
+
+    fn thread_parent(id: &str, rid: &str, tlm: i64, replies: &[&str], updated: i64) -> Message {
+        let mut m = msg(id, rid, 1, "bob");
+        m.tcount = Some(1);
+        m.tlm = Some(ts(tlm));
+        m.replies = Some(replies.iter().map(|r| (*r).to_owned()).collect());
+        m.updated_at = Some(ts(updated));
+        m
+    }
+
+    fn threads_ws(mode: ThreadsMode) -> Workspace {
+        let mut ws = Workspace::new();
+        ws.apply_me(me("me", "me"));
+        ws.apply_subscription(Change::Inserted, sub("r", "room", RoomType::Channel));
+        ws.set_thread_config(mode, []);
+        ws.take_changes();
+        ws
+    }
+
+    fn followed(ws: &Workspace, rid: &str) -> Vec<String> {
+        ws.thread_index()
+            .followed(rid)
+            .map(|f| f.tmids.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn live_parent_updates_keep_followed_sets_current() {
+        let mut ws = threads_ws(ThreadsMode::Following);
+        ws.apply_followed(
+            "r",
+            vec![thread_parent("a", "r", 10, &["me"], 10)],
+            None,
+            Instant::now(),
+        );
+        assert_eq!(followed(&ws, "r"), ["a"]);
+        // A reply in a thread the user joins re-broadcasts its parent.
+        ws.apply_message(thread_parent("b", "r", 20, &["bob", "me"], 20));
+        assert_eq!(followed(&ws, "r"), ["a", "b"]);
+        assert!(ws.thread_index().parent("b").is_some());
+        // Unfollowed elsewhere: the parent arrives without "me".
+        ws.apply_message(thread_parent("a", "r", 10, &["bob"], 30));
+        assert_eq!(followed(&ws, "r"), ["b"]);
+        // A reply bumps the parent's activity.
+        let mut reply = msg("x", "r", 40, "bob");
+        reply.tmid = Some("b".into());
+        ws.apply_message(reply);
+        assert_eq!(ws.thread_index().parent("b").unwrap().tlm, Some(ts(40)));
+        // Deleting a parent with replies turns it into `t: "rm"`.
+        let mut rm = thread_parent("b", "r", 40, &["bob", "me"], 50);
+        rm.t = Some("rm".into());
+        rm.msg = String::new();
+        ws.apply_message(rm);
+        assert!(followed(&ws, "r").is_empty());
+        assert!(
+            ws.thread_index().parent("b").is_none(),
+            "not unread or kept"
+        );
+        // A plain deletion removes it too.
+        ws.apply_message(thread_parent("c", "r", 60, &["me"], 60));
+        assert_eq!(followed(&ws, "r"), ["c"]);
+        ws.apply_message_deleted("r", "c");
+        assert!(followed(&ws, "r").is_empty());
+        assert!(ws.thread_index().parent("c").is_none());
+        // Parents of uncrawled rooms are stored, not added to any set.
+        ws.apply_subscription(Change::Inserted, sub("s", "other", RoomType::Channel));
+        ws.apply_message(thread_parent("d", "s", 70, &["me"], 70));
+        assert!(ws.thread_index().followed("s").is_none());
+        assert!(ws.thread_index().parent("d").is_some());
+        // Leaving the room drops its parents and set.
+        ws.apply_subscription(Change::Removed, sub("r", "room", RoomType::Channel));
+        assert!(ws.thread_index().followed("r").is_none());
+        assert!(ws.thread_index().parents().all(|p| p.rid != "r"));
+    }
+
+    #[test]
+    fn a_followed_set_keeps_live_changes_made_during_the_request() {
+        let mut ws = threads_ws(ThreadsMode::Following);
+        let started = Instant::now();
+        // While the request runs: "a" is unfollowed, "b" followed, "c" replied to.
+        ws.apply_message(thread_parent("a", "r", 10, &["bob"], 30));
+        ws.apply_message(thread_parent("b", "r", 20, &["me"], 30));
+        ws.apply_message(thread_parent("c", "r", 25, &["me"], 30));
+        // The response was read before: "a" followed (older copy), "b" not.
+        ws.apply_followed(
+            "r",
+            vec![
+                thread_parent("a", "r", 10, &["me"], 10),
+                thread_parent("c", "r", 5, &["me"], 5),
+            ],
+            Some(ts(99)),
+            started,
+        );
+        assert_eq!(followed(&ws, "r"), ["b", "c"]);
+        assert_eq!(
+            ws.thread_index().parent("c").unwrap().tlm,
+            Some(ts(25)),
+            "the older REST copy does not replace the live one"
+        );
+        assert_eq!(
+            ws.thread_index().followed("r").unwrap().synced_activity,
+            Some(ts(99))
+        );
+    }
+
+    #[test]
+    fn hidden_parents_are_gone() {
+        let mut ws = threads_ws(ThreadsMode::Following);
+        ws.apply_followed(
+            "r",
+            vec![thread_parent("a", "r", 10, &["me"], 10)],
+            None,
+            Instant::now(),
+        );
+        let mut h = thread_parent("a", "r", 10, &["me"], 20);
+        h.hidden = Some(true);
+        ws.apply_message(h.clone());
+        assert!(ws.thread_index().is_gone("a"));
+        assert!(ws.thread_index().parent("a").is_none());
+        assert!(followed(&ws, "r").is_empty());
+        // A hidden REST result too.
+        h.id = "b".into();
+        ws.apply_thread_parents(vec![h]);
+        assert!(ws.thread_index().is_gone("b"));
+        // A visible copy brings it back.
+        ws.apply_thread_parents(vec![thread_parent("b", "r", 10, &[], 30)]);
+        assert!(!ws.thread_index().is_gone("b"));
+    }
+
+    #[test]
+    fn a_live_follow_in_a_full_room_replaces_the_oldest() {
+        let mut ws = threads_ws(ThreadsMode::Following);
+        let n = crate::thread_index::FOLLOWED_PER_ROOM as i64;
+        let crawl = (0..n)
+            .map(|i| thread_parent(&format!("t{i:02}"), "r", 100 + i, &["me"], 100 + i))
+            .collect();
+        ws.apply_followed("r", crawl, None, Instant::now());
+        ws.take_changes();
+        ws.apply_message(thread_parent("new", "r", 500, &["bob", "me"], 500));
+        let set = followed(&ws, "r");
+        assert_eq!(set.len(), n as usize);
+        assert!(set.contains(&"new".to_owned()) && !set.contains(&"t00".to_owned()));
+        assert!(ws.take_changes().areas.contains(Dirty::THREAD_INDEX));
+    }
+
+    #[test]
+    fn a_hidden_parent_is_not_revived_by_an_older_rest_copy() {
+        let mut ws = threads_ws(ThreadsMode::Following);
+        let started = Instant::now();
+        ws.apply_followed(
+            "r",
+            vec![thread_parent("a", "r", 10, &["me"], 10)],
+            None,
+            started,
+        );
+        let mut h = thread_parent("a", "r", 10, &["me"], 20);
+        h.hidden = Some(true);
+        ws.apply_message(h);
+        // Read on the server before the hide, applied after it.
+        ws.apply_followed(
+            "r",
+            vec![thread_parent("a", "r", 10, &["me"], 10)],
+            None,
+            started,
+        );
+        ws.apply_thread_parents(vec![thread_parent("a", "r", 10, &["me"], 10)]);
+        assert!(ws.thread_index().is_gone("a"));
+        assert!(ws.thread_index().parent("a").is_none());
+        assert!(followed(&ws, "r").is_empty());
+    }
+
+    #[test]
+    fn pages_and_cached_parents_do_not_change_followed_sets() {
+        let mut ws = threads_ws(ThreadsMode::Following);
+        ws.apply_followed(
+            "r",
+            vec![thread_parent("a", "r", 10, &["me"], 10)],
+            None,
+            Instant::now(),
+        );
+        // Unfollowed elsewhere; a stale cached copy still lists "me".
+        ws.apply_message(thread_parent("a", "r", 10, &["bob"], 30));
+        // A crawl in flight while the cache is seeded.
+        let started = Instant::now();
+        ws.open_thread("r", "b");
+        ws.seed_cached_messages(
+            "r",
+            Some("b"),
+            Some(thread_parent("b", "r", 10, &["me"], 5)),
+            Vec::new(),
+        );
+        assert!(followed(&ws, "r").is_empty());
+        ws.apply_followed("r", Vec::new(), None, started);
+        assert!(followed(&ws, "r").is_empty(), "no live mark recorded");
+    }
+
+    #[test]
+    fn unread_and_kept_parents_are_indexed_from_pages_and_threads() {
+        let mut ws = threads_ws(ThreadsMode::UnreadKept);
+        let mut s = sub("r", "room", RoomType::Channel);
+        s.tunread = Some(vec!["u".into()]);
+        ws.apply_subscription(Change::Updated, s);
+        ws.set_thread_config(ThreadsMode::UnreadKept, [("r", "k")]);
+        ws.open_room("r");
+        let c = ws.begin_load_older("r").unwrap();
+        ws.finish_load_older(
+            "r",
+            c,
+            Ok(vec![
+                thread_parent("u", "r", 10, &[], 10),
+                thread_parent("k", "r", 10, &[], 10),
+                thread_parent("other", "r", 10, &[], 10),
+            ]),
+        );
+        let idx = ws.thread_index();
+        assert!(idx.parent("u").is_some() && idx.parent("k").is_some());
+        assert!(idx.parent("other").is_none(), "nothing refers to it");
+        // Opening a thread indexes its parent, and seeds it from the index.
+        ws.open_thread("r", "other");
+        assert!(ws.thread_index().parent("other").is_some());
+        ws.close_room("r");
+        ws.close_thread("other");
+        ws.open_thread("r", "u");
+        assert_eq!(ws.thread("u").unwrap().parent().unwrap().id, "u");
+        // A thread page's replies bump the parent's activity.
+        ws.begin_load_thread("u").unwrap();
+        let mut reply = msg("x", "r", 50, "bob");
+        reply.tmid = Some("u".into());
+        ws.finish_load_thread(
+            "u",
+            Ok(Paginated {
+                items: vec![reply],
+                ..Default::default()
+            }),
+        );
+        assert_eq!(ws.thread_index().parent("u").unwrap().tlm, Some(ts(50)));
+    }
+
+    #[test]
+    fn thread_index_is_marked_only_on_real_changes() {
+        let mut ws = threads_ws(ThreadsMode::Unread);
+        let mut s = sub("r", "room", RoomType::Channel);
+        s.tunread = Some(vec!["a".into()]);
+        ws.apply_subscription(Change::Updated, s.clone());
+        ws.take_changes();
+        let rev = ws.revision(Dirty::THREAD_INDEX);
+        let p = thread_parent("a", "r", 10, &[], 10);
+        ws.apply_message(p.clone());
+        assert!(ws.take_changes().areas.contains(Dirty::THREAD_INDEX));
+        ws.apply_message(p.clone());
+        assert!(!ws.take_changes().areas.contains(Dirty::THREAD_INDEX));
+        // Unrelated parents and messages.
+        ws.apply_message(thread_parent("z", "r", 10, &["me"], 10));
+        ws.apply_message(msg("m", "r", 5, "bob"));
+        ws.set_thread_config(ThreadsMode::Unread, []);
+        assert!(!ws.take_changes().areas.contains(Dirty::THREAD_INDEX));
+        assert_eq!(ws.revision(Dirty::THREAD_INDEX), rev + 1);
+        // Off: nothing is indexed, everything is dropped.
+        ws.set_thread_config(ThreadsMode::Off, []);
+        assert!(ws.thread_index().is_empty());
+        ws.take_changes();
+        ws.apply_message(thread_parent("a", "r", 20, &[], 20));
+        assert!(ws.thread_index().is_empty());
+        assert!(!ws.take_changes().areas.contains(Dirty::THREAD_INDEX));
+        assert!(Dirty::ALL.contains(Dirty::THREAD_INDEX));
     }
 
     #[test]

@@ -674,3 +674,257 @@ async fn every_picker_key_is_a_valid_reaction() {
     })
     .await;
 }
+
+/// Applies every `__my_messages__` event until the stream is quiet for `secs`.
+async fn drain_messages(ws: &mut Workspace, sub: &mut meteor_ddp::Subscription, secs: u64) {
+    while let Some(v) = next_event(sub, secs).await {
+        if let Ok(m) = serde_json::from_value::<Message>(v) {
+            ws.apply_message(m);
+        }
+    }
+}
+
+/// Polls the room's subscription until `pred` holds, then applies it like a
+/// `subscriptions-changed` event.
+async fn sync_sub(
+    ws: &mut Workspace,
+    rest: &RestClient,
+    rid: &str,
+    pred: impl Fn(&rocketchat::models::Subscription) -> bool,
+) {
+    let mut sub = rest.subscriptions_get_one(rid).await.unwrap();
+    for _ in 0..30 {
+        if pred(&sub) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        sub = rest.subscriptions_get_one(rid).await.unwrap();
+    }
+    assert!(pred(&sub), "{sub:?}");
+    ws.apply_subscription(rustket_core::Change::Updated, sub);
+}
+
+fn thread_rows(
+    ws: &Workspace,
+    opts: &rustket_core::room_list::RoomListOptions,
+) -> Vec<rustket_core::room_list::ThreadListItem> {
+    use rustket_core::room_list::{self, SectionKind};
+    room_list::compute(ws, opts, "")
+        .into_iter()
+        .find(|s| s.is(SectionKind::Threads))
+        .map(|s| s.threads)
+        .unwrap_or_default()
+}
+
+fn has_tunread(tmid: &str) -> impl Fn(&rocketchat::models::Subscription) -> bool + '_ {
+    move |s| s.tunread.iter().flatten().any(|t| t == tmid)
+}
+
+/// The sidebar's Threads section against the server: unread placeholders
+/// filled from `getThreadsList(unread)`, read state from subscription
+/// changes, followed sets kept current by `__my_messages__` (also against a
+/// stale REST snapshot), deleted parents (`t: "rm"`) dropped unless kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn sidebar_threads_follow_the_server() {
+    use rustket_core::room_list::{RoomListOptions, ThreadTitle};
+    use rustket_core::sidebar_layout::ThreadsMode;
+    use std::time::Instant;
+    with_fixture(|s, fx| async move {
+        let a = fx.user(&s, "core-thra").await;
+        let b = fx.user(&s, "core-thrb").await;
+        let mut req = CreateRoom::new(unique("core-thr"));
+        req.members = vec![b.username.clone()];
+        let room = a.rest.channels_create(&req).await.unwrap();
+        fx.room(&room.id);
+        let rid = room.id.clone();
+        let p1 = a
+            .rest
+            .send_message(&OutgoingMessage::new(&rid, "first thread"))
+            .await
+            .unwrap()
+            .id;
+        let p2 = a
+            .rest
+            .send_message(&OutgoingMessage::new(&rid, "kept thread"))
+            .await
+            .unwrap()
+            .id;
+
+        let mut ws = Workspace::new();
+        ws.apply_initial(sync::initial_load(&a.rest).await.unwrap());
+        assert!(
+            ws.settings().threads_enabled(),
+            "Threads_enabled on the dev server"
+        );
+        ws.set_thread_config(ThreadsMode::Unread, []);
+        let ddp = ddp_login(&s, a.rest.credentials().unwrap().auth_token).await;
+        let mut stream = ddp
+            .subscribe(
+                "stream-room-messages",
+                vec![json!("__my_messages__"), json!(false)],
+            )
+            .await
+            .unwrap();
+        let mut opts = RoomListOptions::default();
+        opts.layout.threads = ThreadsMode::Unread;
+        assert!(thread_rows(&ws, &opts).is_empty());
+
+        // Bob replies to p1: unread for alice (the author follows).
+        b.rest
+            .send_message(&OutgoingMessage::new(&rid, "reply").in_thread(&p1, false))
+            .await
+            .unwrap();
+        sync_sub(&mut ws, &a.rest, &rid, has_tunread(&p1)).await;
+        let rows = thread_rows(&ws, &opts);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].tmid, p1);
+        assert!(rows[0].unread.is_some());
+        // The parent broadcast fills the row (an unread thread is indexed).
+        drain_messages(&mut ws, &mut stream, 2).await;
+        let rows = thread_rows(&ws, &opts);
+        assert!(rows[0].is_loaded(), "{rows:?}");
+        // Same through REST, as the loader does when the broadcast was missed.
+        ws.set_thread_config(ThreadsMode::Off, []);
+        ws.set_thread_config(ThreadsMode::Unread, []);
+        assert_eq!(thread_rows(&ws, &opts)[0].title, ThreadTitle::Loading);
+        let unread = a
+            .rest
+            .threads_list(&rid, Some("unread"), None, 0, 100)
+            .await
+            .unwrap();
+        ws.apply_thread_parents(unread.items);
+        let rows = thread_rows(&ws, &opts);
+        assert_eq!(rows[0].title, ThreadTitle::Text("first thread".into()));
+        assert_eq!(rows[0].tcount, 1);
+        assert!(rows[0].tlm.is_some());
+
+        // Read: the row goes, unless it is the open (kept) thread.
+        a.rest.read_thread(&p1).await.unwrap();
+        sync_sub(&mut ws, &a.rest, &rid, |s| !has_tunread(&p1)(s)).await;
+        assert!(thread_rows(&ws, &opts).is_empty());
+        opts.kept_thread = Some((rid.clone(), p1.clone()));
+        let rows = thread_rows(&ws, &opts);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].unread.is_none() && rows[0].is_loaded());
+        opts.kept_thread = None;
+
+        // Following: the crawl result lists p1 although it is read.
+        ws.set_thread_config(ThreadsMode::Following, []);
+        opts.layout.threads = ThreadsMode::Following;
+        let started = Instant::now();
+        let snapshot = a
+            .rest
+            .threads_list(&rid, Some("following"), None, 0, 100)
+            .await
+            .unwrap()
+            .items;
+        assert!(snapshot.iter().any(|m| m.id == p1));
+        let lr = ws.subscription(&rid).and_then(|s| s.lr);
+        ws.apply_followed(&rid, snapshot.clone(), lr, started);
+        let rows = thread_rows(&ws, &opts);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].following && rows[0].unread.is_none());
+
+        // Unfollow live; the older snapshot applied afterwards (a crawl that
+        // was in flight) must not bring the thread back.
+        a.rest.unfollow_message(&p1).await.unwrap();
+        drain_messages(&mut ws, &mut stream, 2).await;
+        assert!(thread_rows(&ws, &opts).is_empty());
+        ws.apply_followed(&rid, snapshot.clone(), lr, started);
+        assert!(
+            thread_rows(&ws, &opts).is_empty(),
+            "stale snapshot revived it"
+        );
+        ws.apply_thread_parents(snapshot.clone());
+        assert!(thread_rows(&ws, &opts).is_empty());
+        // The stored parent is still the newer, unfollowed copy.
+        let me = ws.user_id().unwrap().to_owned();
+        let stored = ws.thread_index().parent(&p1).expect("p1 indexed");
+        assert!(
+            !stored.replies.iter().flatten().any(|u| u == &me),
+            "stale copy replaced the newer parent: {stored:?}"
+        );
+        // Following again (live): back in the set.
+        a.rest.follow_message(&p1).await.unwrap();
+        drain_messages(&mut ws, &mut stream, 2).await;
+        let rows = thread_rows(&ws, &opts);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].following);
+
+        // A new followed thread is discovered live (no crawl).
+        b.rest
+            .send_message(&OutgoingMessage::new(&rid, "reply").in_thread(&p2, false))
+            .await
+            .unwrap();
+        drain_messages(&mut ws, &mut stream, 2).await;
+        sync_sub(&mut ws, &a.rest, &rid, has_tunread(&p2)).await;
+        let rows = thread_rows(&ws, &opts);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0].tmid, p2, "newest activity first");
+        assert!(rows[0].unread.is_some());
+
+        // Keep p2, read it, then delete both parents: they arrive as `t: "rm"`
+        // updates (no delete event). p1 (followed only) leaves; the kept p2
+        // stays as "Message removed".
+        ws.set_thread_config(ThreadsMode::Following, [(rid.as_str(), p2.as_str())]);
+        a.rest.read_thread(&p2).await.unwrap();
+        sync_sub(&mut ws, &a.rest, &rid, |s| !has_tunread(&p2)(s)).await;
+        let before_delete = a
+            .rest
+            .threads_list(&rid, Some("following"), None, 0, 100)
+            .await
+            .unwrap()
+            .items;
+        let started = Instant::now();
+        a.rest.delete_message(&rid, &p1).await.unwrap();
+        a.rest.delete_message(&rid, &p2).await.unwrap();
+        drain_messages(&mut ws, &mut stream, 2).await;
+        let rows = thread_rows(&ws, &opts);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].tmid, p2);
+        assert!(rows[0].kept);
+        assert_eq!(rows[0].title, ThreadTitle::Removed);
+        assert!(ws.thread_index().parent(&p1).is_none());
+        // Stale and fresh REST copies agree.
+        ws.apply_followed(&rid, before_delete.clone(), lr, started);
+        ws.apply_thread_parents(before_delete);
+        let rows = thread_rows(&ws, &opts);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].tmid, p2);
+        assert_eq!(rows[0].title, ThreadTitle::Removed, "stale copy revived p2");
+        assert!(
+            ws.thread_index().parent(&p1).is_none(),
+            "stale copy revived p1"
+        );
+        let fresh = a
+            .rest
+            .threads_list(&rid, Some("following"), None, 0, 100)
+            .await
+            .unwrap()
+            .items;
+        ws.apply_followed(&rid, fresh, lr, Instant::now());
+        let rows = thread_rows(&ws, &opts);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].title, ThreadTitle::Removed);
+        // Unkept: gone.
+        ws.set_thread_config(ThreadsMode::Following, []);
+        assert!(thread_rows(&ws, &opts).is_empty());
+
+        // A missing parent is a bare 400 without an error code.
+        let err = a.rest.get_message(&unique("missing")).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                rocketchat::Error::Api {
+                    status: 400,
+                    error: None,
+                    error_type: None,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        ddp.close().await;
+    })
+    .await;
+}

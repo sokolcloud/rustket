@@ -668,3 +668,77 @@ async fn public_channel_messages_without_membership_are_flagged() {
     })
     .await;
 }
+
+fn follows(m: &rocketchat::models::Message, me: &str) -> bool {
+    m.replies.iter().flatten().any(|u| u == me)
+}
+
+/// Live discovery behind the sidebar's Threads section: `__my_messages__`
+/// re-broadcasts a thread parent on every reply, follow, unfollow and
+/// deletion (as `t: "rm"`, not as a delete event) without a room watch.
+#[tokio::test(flavor = "multi_thread")]
+async fn thread_parent_updates_reach_my_messages() {
+    with_fixture(|server, fx| async move {
+        let a = fx.user("sa").await;
+        let b = fx.user("sb").await;
+        let rid = shared_channel(&fx, &a, &b).await;
+        let parent = post(&a, &rid, "thread parent").await;
+        let (sa, mut ea) = start(&server, &a).await;
+        let is_parent = |pred: fn(&rocketchat::models::Message, &str) -> bool| {
+            let parent = parent.clone();
+            let me = a.id.clone();
+            move |e: &SessionEvent| {
+                matches!(e, SessionEvent::Message { message, .. }
+                    if message.id == parent && pred(message, &me))
+            }
+        };
+
+        let reply = b
+            .rest
+            .send_message(&OutgoingMessage::new(&rid, "reply").in_thread(&parent, false))
+            .await
+            .unwrap();
+        let ev = expect_event(
+            &mut ea,
+            is_parent(|m, me| m.tcount == Some(1) && follows(m, me)),
+            WAIT,
+        )
+        .await;
+        let SessionEvent::Message { message: p, .. } = ev else {
+            unreachable!()
+        };
+        assert!(p.tlm.is_some(), "{p:?}");
+        assert!(p.replies.iter().flatten().any(|u| u == &b.id), "{p:?}");
+
+        a.rest.unfollow_message(&parent).await.unwrap();
+        expect_event(&mut ea, is_parent(|m, me| !follows(m, me)), WAIT).await;
+        a.rest.follow_message(&parent).await.unwrap();
+        expect_event(&mut ea, is_parent(follows), WAIT).await;
+
+        // A second reply bumps `tcount` and `tlm`.
+        b.rest
+            .send_message(&OutgoingMessage::new(&rid, "reply 2").in_thread(&parent, false))
+            .await
+            .unwrap();
+        let ev = expect_event(&mut ea, is_parent(|m, _| m.tcount == Some(2)), WAIT).await;
+        let SessionEvent::Message { message: p2, .. } = ev else {
+            unreachable!()
+        };
+        assert!(p2.tlm > p.tlm && p2.updated_at > p.updated_at, "{p2:?}");
+
+        // Deleting the parent sends it again as `t: "rm"`; no delete event
+        // without a room watch.
+        a.rest.delete_message(&rid, &parent).await.unwrap();
+        expect_event(
+            &mut ea,
+            is_parent(|m, _| m.t.as_deref() == Some("rm")),
+            WAIT,
+        )
+        .await;
+        let deleted = collect_for(&mut ea, is_deleted(&parent), Duration::from_secs(2)).await;
+        assert!(deleted.is_empty(), "{deleted:?}");
+        assert!(!reply.id.is_empty());
+        sa.close().await;
+    })
+    .await;
+}

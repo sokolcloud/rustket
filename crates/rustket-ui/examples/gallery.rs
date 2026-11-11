@@ -52,6 +52,11 @@ enum Message {
     Notify(bool),
     Plan(Plan),
     Workspace(usize),
+    /// Section `dragged` (a key from `section_key`) moves before `before`.
+    ReorderSections(u64, Option<u64>),
+    MoveSection(&'static str, isize),
+    SectionSort(&'static str, u8),
+    AutoScroll(f32),
     Noop,
 }
 
@@ -232,8 +237,21 @@ fn rooms() -> Vec<Room> {
     ]
 }
 
-const SECTIONS: [&str; 5] = [
+const SIDEBAR_LIST: &str = "gallery-sidebar";
+/// Header slot height; rows have the fixed `room_list_item` heights.
+const HEADER_SLOT: f32 = 27.0;
+const THREADS: &str = "Threads";
+
+fn section_key(name: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    name.hash(&mut h);
+    h.finish()
+}
+
+const SECTIONS: [&str; 6] = [
     "Favorites",
+    THREADS,
     "Teams",
     "Discussions",
     "Channels",
@@ -268,6 +286,8 @@ struct Gallery {
     notify: bool,
     plan: Plan,
     workspace: usize,
+    sections: Vec<&'static str>,
+    section_sort: std::collections::HashMap<&'static str, u8>,
 }
 
 fn env_flag(name: &str) -> bool {
@@ -336,6 +356,8 @@ impl Gallery {
             notify: true,
             plan: Plan::Activity,
             workspace: 0,
+            sections: SECTIONS.to_vec(),
+            section_sort: std::collections::HashMap::new(),
         };
         let mut task = Task::none();
         if env_flag("GALLERY_TOASTS") {
@@ -467,6 +489,30 @@ impl Gallery {
             Message::Notify(v) => self.notify = v,
             Message::Plan(p) => self.plan = p,
             Message::Workspace(i) => self.workspace = i,
+            Message::ReorderSections(dragged, before) => {
+                if let Some(i) = self.sections.iter().position(|s| section_key(s) == dragged) {
+                    let name = self.sections.remove(i);
+                    let at = before
+                        .and_then(|b| self.sections.iter().position(|s| section_key(s) == b))
+                        .unwrap_or(self.sections.len());
+                    self.sections.insert(at, name);
+                }
+            }
+            Message::MoveSection(name, delta) => {
+                if let Some(i) = self.sections.iter().position(|s| *s == name) {
+                    let j = i.saturating_add_signed(delta).min(self.sections.len() - 1);
+                    self.sections.swap(i, j);
+                }
+            }
+            Message::SectionSort(name, sort) => {
+                self.section_sort.insert(name, sort);
+            }
+            Message::AutoScroll(dy) => {
+                return iced::widget::operation::scroll_by(
+                    SIDEBAR_LIST,
+                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
+                );
+            }
             Message::Noop => {}
         }
         Task::none()
@@ -591,8 +637,13 @@ impl Gallery {
         .align_y(Alignment::Center)
         .padding([SPACE_2, SPACE_3]);
 
-        let mut list = Column::new().spacing(1).padding([0.0, SPACE_2]);
-        for section in SECTIONS {
+        // Fixed slot heights: the drag handles come from the same math.
+        let row_h = if self.condensed { 32.0 } else { 56.0 };
+        let mut list = Column::new().spacing(0).padding([0.0, SPACE_2]);
+        let mut handles = Vec::new();
+        let mut y = 0.0;
+        let last = self.sections.len().saturating_sub(1);
+        for (n, &section) in self.sections.iter().enumerate() {
             let items: Vec<(usize, &Room)> = self
                 .rooms
                 .iter()
@@ -600,13 +651,24 @@ impl Gallery {
                 .filter(|(_, r)| r.section == section)
                 .collect();
             let collapsed = self.collapsed.contains(section);
-            list = list.push(section_header(
-                section,
-                collapsed,
-                Some(items.len() as u32),
-                Message::ToggleSection(section),
+            let count = if section == THREADS { 1 } else { items.len() };
+            handles.push((section_key(section), y, HEADER_SLOT));
+            y += HEADER_SLOT + if collapsed { 0.0 } else { count as f32 * row_h };
+            list = list.push(context_menu(
+                container(section_header(
+                    section,
+                    collapsed,
+                    Some(count as u32),
+                    Message::ToggleSection(section),
+                ))
+                .center_y(HEADER_SLOT),
+                self.section_menu(section, n == 0, n == last, collapsed),
             ));
             if collapsed {
+                continue;
+            }
+            if section == THREADS {
+                list = list.push(self.thread_row());
                 continue;
             }
             for (i, r) in items {
@@ -650,8 +712,9 @@ impl Gallery {
                 ];
                 list = list.push(context_menu(room_list_item(p), entries));
             }
-            list = list.push(space().height(SPACE_2));
         }
+        let list = reorder_area(list, handles, Message::ReorderSections)
+            .on_auto_scroll(Message::AutoScroll);
 
         column![
             top,
@@ -662,11 +725,101 @@ impl Gallery {
                 Some(("Retry now".into(), Message::Noop))
             ),
             scrollable(list)
+                .id(SIDEBAR_LIST)
                 .height(Length::Fill)
                 .style(style::scrollable),
         ]
         .height(Length::Fill)
         .apply_style(style::container_sidebar)
+    }
+
+    /// Header context menu: move, sort (checked), collapse.
+    fn section_menu(
+        &self,
+        section: &'static str,
+        first: bool,
+        last: bool,
+        collapsed: bool,
+    ) -> Vec<MenuEntry<Message>> {
+        let sort = self.section_sort.get(section).copied().unwrap_or(0);
+        let sorts: [&str; 3] = if section == THREADS {
+            ["Latest reply first", "Oldest reply first", "By room"]
+        } else {
+            ["Newest first", "Oldest first", "A–Z"]
+        };
+        let mut entries: Vec<MenuEntry<Message>> = vec![
+            MenuItem::new("Move up", Message::MoveSection(section, -1))
+                .icon(Icon::ArrowUp)
+                .disabled(first)
+                .into(),
+            MenuItem::new("Move down", Message::MoveSection(section, 1))
+                .icon(Icon::ArrowDown)
+                .disabled(last)
+                .into(),
+            MenuEntry::Separator,
+            MenuEntry::Header("Sort".into()),
+        ];
+        for (i, label) in (0u8..).zip(sorts) {
+            entries.push(
+                MenuItem::new(label, Message::SectionSort(section, i))
+                    .checked(sort == i)
+                    .into(),
+            );
+        }
+        entries.push(MenuEntry::Separator);
+        entries.push(
+            MenuItem::new(
+                if collapsed { "Expand" } else { "Collapse" },
+                Message::ToggleSection(section),
+            )
+            .into(),
+        );
+        entries.push(
+            MenuItem::new("Sidebar settings…", Message::Noop)
+                .icon(Icon::Settings)
+                .into(),
+        );
+        entries
+    }
+
+    /// A followed thread with unread replies.
+    fn thread_row(&self) -> Element<'_, Message> {
+        let mut p = RoomListItemProps::new(
+            AvatarSource::initials("Alice Johnson", "alice"),
+            if self.condensed {
+                "general › Release checklist for 0.3"
+            } else {
+                "Release checklist for 0.3"
+            },
+            Message::Noop,
+        );
+        p.subtitle = Some("general · 12 replies".into());
+        p.time = Some("10:41".into());
+        p.icon = Some(Icon::MessageCircle);
+        p.badge_dot = Some(BadgeKind::Thread);
+        p.density = if self.condensed {
+            Density::Condensed
+        } else {
+            Density::Extended
+        };
+        context_menu(
+            room_list_item(p),
+            vec![
+                MenuItem::new("Open room", Message::MenuAction("open-room"))
+                    .icon(Icon::Hash)
+                    .into(),
+                MenuItem::new("Mark as read", Message::MenuAction("read"))
+                    .icon(Icon::CheckCheck)
+                    .into(),
+                MenuItem::new("Keep in sidebar", Message::MenuAction("keep"))
+                    .icon(Icon::Bookmark)
+                    .into(),
+                MenuEntry::Separator,
+                MenuItem::new("Unfollow", Message::MenuAction("unfollow"))
+                    .icon(Icon::BellOff)
+                    .into(),
+            ],
+        )
     }
 
     fn room(&self) -> Element<'_, Message> {

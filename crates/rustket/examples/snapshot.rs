@@ -411,7 +411,10 @@ async fn teardown(server: &ServerUrl, ledger: &Ledger) {
         let r: Result<Value, _> = admin.post("channels.delete", &json!({"roomId": rid})).await;
         match r {
             Ok(_) => println!("deleted room {rid}"),
-            Err(e) => eprintln!("channels.delete {rid}: {e}"),
+            Err(_) => match admin.rooms_delete(&rid).await {
+                Ok(()) => println!("deleted room {rid}"),
+                Err(e) => eprintln!("rooms.delete {rid}: {e}"),
+            },
         }
     }
     for id in users {
@@ -740,6 +743,11 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
         polish::polish_shots(&mut d, &server, &out, &sid, &rid, &user).await;
         return;
     }
+    // `RUSTKET_SNAPSHOT_SIDEBAR`: only the configurable sidebar shots.
+    if std::env::var("RUSTKET_SNAPSHOT_SIDEBAR").is_ok() {
+        sidebar_layout::sidebar_shots(&mut d, &server, &out, &sid, &user, &fixture.ledger).await;
+        return;
+    }
     // `RUSTKET_SNAPSHOT_SHELL`: only the shots up to the shell states.
     if std::env::var("RUSTKET_SNAPSHOT_SHELL").is_ok() {
         return;
@@ -955,6 +963,8 @@ mod polish;
 mod selection;
 #[path = "snapshot/shell.rs"]
 mod shell;
+#[path = "snapshot/sidebar_layout.rs"]
+mod sidebar_layout;
 
 #[path = "snapshot/admin.rs"]
 mod admin_shots;

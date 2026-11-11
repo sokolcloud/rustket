@@ -11,7 +11,8 @@ pub const FILE: &str = "ui-state.toml";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiState {
-    /// `SectionKind` i18n keys of collapsed sections (shared by all servers).
+    /// Collapse keys of collapsed sidebar sections (`SectionId::collapse_key`,
+    /// omnichannel section keys), shared by all servers.
     pub collapsed_sections: BTreeSet<String>,
     pub sidebar_width: f32,
 }

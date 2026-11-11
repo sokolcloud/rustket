@@ -1,7 +1,7 @@
 //! The SQLite store behind the offline cache (synchronous; see
 //! [`super::CacheHandle`] for the worker thread).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rocketchat::models::Message;
@@ -10,8 +10,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    Batch, CacheError, CachedState, CachedTimeline, DEFAULT_MAX_MESSAGE_BYTES, FILE_NAME,
-    MAX_TIMELINES, MESSAGES_PER_TIMELINE, OutboxEntry, Result, TimelineKey, sanitize,
+    Batch, CacheError, CachedState, CachedThreads, CachedTimeline, DEFAULT_MAX_MESSAGE_BYTES,
+    FILE_NAME, MAX_TIMELINES, MESSAGES_PER_TIMELINE, OutboxEntry, Result, TimelineKey, sanitize,
 };
 
 /// Current schema (`PRAGMA user_version`).
@@ -65,6 +65,11 @@ const KIND_SUB: &str = "sub";
 const KIND_ROOM: &str = "room";
 const KIND_EMOJI: &str = "emoji";
 const KIND_STATUS: &str = "status";
+/// Sidebar thread data (`CachedThreads`): not part of a full snapshot.
+const KIND_THREAD_ROOM: &str = "thread_room";
+const KIND_THREAD_PARENT: &str = "thread_parent";
+const KIND_THREAD_SYNCED: &str = "thread_synced";
+const THREAD_KINDS: [&str; 3] = [KIND_THREAD_ROOM, KIND_THREAD_PARENT, KIND_THREAD_SYNCED];
 
 const META_USER: &str = "user_id";
 const META_SAVED_AT: &str = "saved_at";
@@ -407,7 +412,11 @@ impl CacheDb {
             }
             if sub.is_none() && room.is_none() {
                 drop_room_timelines(&tx, rid)?;
+                drop_room_threads(&tx, rid)?;
             }
+        }
+        if let Some(threads) = &batch.threads {
+            write_threads(&tx, threads)?;
         }
         for (t, stamp) in batch.timelines.iter().zip(stamps) {
             write_timeline(&tx, t, stamp)?;
@@ -467,6 +476,11 @@ impl CacheDb {
             custom_emoji: self.docs(KIND_EMOJI)?,
             custom_statuses: self.docs(KIND_STATUS)?,
             saved_at: self.meta(META_SAVED_AT)?.and_then(|s| s.parse().ok()),
+            threads: CachedThreads {
+                followed: self.docs(KIND_THREAD_ROOM)?,
+                parents: self.docs(KIND_THREAD_PARENT)?,
+                parents_synced: self.docs(KIND_THREAD_SYNCED)?,
+            },
         })
     }
 
@@ -577,11 +591,15 @@ impl CacheDb {
 }
 
 fn put_doc<T: Serialize>(tx: &Transaction<'_>, kind: &str, id: &str, v: &T) -> Result<()> {
+    put_json(tx, kind, id, &to_json(v)?)
+}
+
+fn put_json(tx: &Transaction<'_>, kind: &str, id: &str, json: &str) -> Result<()> {
     tx.prepare_cached(
         "INSERT INTO docs (kind, id, json) VALUES (?1, ?2, ?3)
          ON CONFLICT (kind, id) DO UPDATE SET json = excluded.json",
     )?
-    .execute(params![kind, id, to_json(v)?])?;
+    .execute(params![kind, id, json])?;
     Ok(())
 }
 
@@ -604,7 +622,10 @@ fn replace_kind<'a, T: Serialize + 'a>(
 }
 
 fn write_full(tx: &Transaction<'_>, s: &CachedState) -> Result<()> {
-    tx.execute("DELETE FROM docs", [])?;
+    tx.execute(
+        "DELETE FROM docs WHERE kind NOT IN (?1, ?2, ?3)",
+        THREAD_KINDS,
+    )?;
     if let Some(me) = &s.me {
         put_doc(tx, KIND_ME, "me", &sanitize::user(me))?;
     }
@@ -646,6 +667,61 @@ fn write_full(tx: &Transaction<'_>, s: &CachedState) -> Result<()> {
     };
     for rid in rids.iter().filter(|r| !known.contains(r.as_str())) {
         drop_room_timelines(tx, rid)?;
+    }
+    let rids: Vec<String> = {
+        let mut st = tx.prepare(
+            "SELECT DISTINCT id FROM docs WHERE kind IN (?1, ?3)
+             UNION SELECT DISTINCT json_extract(json, '$.rid') FROM docs WHERE kind = ?2",
+        )?;
+        st.query_map(THREAD_KINDS, |r| r.get::<_, Option<String>>(0))?
+            .filter_map(|r| r.transpose())
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for rid in rids.iter().filter(|r| !known.contains(r.as_str())) {
+        drop_room_threads(tx, rid)?;
+    }
+    Ok(())
+}
+
+fn drop_room_threads(tx: &Transaction<'_>, rid: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM docs WHERE (kind IN (?1, ?3) AND id = ?4)
+             OR (kind = ?2 AND json_extract(json, '$.rid') = ?4)",
+        params![
+            KIND_THREAD_ROOM,
+            KIND_THREAD_PARENT,
+            KIND_THREAD_SYNCED,
+            rid
+        ],
+    )?;
+    Ok(())
+}
+
+/// Replaces the sidebar's thread data; parents pass [`sanitize`] like
+/// every message. Only documents that changed are written.
+fn write_threads(tx: &Transaction<'_>, t: &CachedThreads) -> Result<()> {
+    let mut stored: HashMap<(String, String), String> = {
+        let mut st = tx.prepare("SELECT kind, id, json FROM docs WHERE kind IN (?1, ?2, ?3)")?;
+        st.query_map(THREAD_KINDS, |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let mut put = |kind: &str, id: &str, json: String| -> Result<()> {
+        if stored.remove(&(kind.to_owned(), id.to_owned())).as_ref() != Some(&json) {
+            put_json(tx, kind, id, &json)?;
+        }
+        Ok(())
+    };
+    for f in &t.followed {
+        put(KIND_THREAD_ROOM, &f.rid, to_json(f)?)?;
+    }
+    for m in t.parents.iter().filter_map(sanitize::message) {
+        put(KIND_THREAD_PARENT, &m.id, to_json(&m)?)?;
+    }
+    for p in &t.parents_synced {
+        put(KIND_THREAD_SYNCED, &p.rid, to_json(p)?)?;
+    }
+    for (kind, id) in stored.into_keys() {
+        delete_doc(tx, &kind, &id)?;
     }
     Ok(())
 }

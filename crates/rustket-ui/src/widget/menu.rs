@@ -30,6 +30,9 @@ pub struct MenuItem<Message> {
     pub hint: Option<String>,
     pub danger: bool,
     pub disabled: bool,
+    /// `Some`: a choice or toggle; `Some(true)` shows a check mark. A menu
+    /// with any such item gives every item a leading slot of the same width.
+    pub checked: Option<bool>,
     pub on_select: Message,
 }
 
@@ -41,6 +44,7 @@ impl<Message> MenuItem<Message> {
             hint: None,
             danger: false,
             disabled: false,
+            checked: None,
             on_select,
         }
     }
@@ -62,6 +66,11 @@ impl<Message> MenuItem<Message> {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
         self
     }
 }
@@ -119,6 +128,10 @@ pub fn menu_panel<'a, Message: Clone + 'a>(entries: &[MenuEntry<Message>]) -> El
             _ => None,
         })
         .collect();
+    // The leading slot is part of `menu_width`'s chrome either way.
+    let checkable = entries
+        .iter()
+        .any(|e| matches!(e, MenuEntry::Item(i) if i.checked.is_some()));
     let rows = entries.iter().map(|entry| -> Element<'a, Message> {
         match entry {
             MenuEntry::Separator => container(divider()).padding([SPACE_1, 0.0]).into(),
@@ -131,9 +144,16 @@ pub fn menu_panel<'a, Message: Clone + 'a>(entries: &[MenuEntry<Message>]) -> El
             .into(),
             MenuEntry::Item(item) => {
                 let mut content = row![].spacing(SPACE_3).align_y(Alignment::Center);
-                content = match item.icon {
-                    Some(i) => content.push(icon::sized(i, 16.0)),
-                    None => content.push(space().width(0)),
+                let lead = match (item.checked, item.icon) {
+                    (Some(true), _) => Some(Icon::Check),
+                    (Some(false), _) => None,
+                    (None, i) => i,
+                };
+                content = match (lead, checkable) {
+                    (Some(i), true) => content.push(container(icon::sized(i, 16.0)).width(16)),
+                    (Some(i), false) => content.push(icon::sized(i, 16.0)),
+                    (None, true) => content.push(space().width(16)),
+                    (None, false) => content.push(space().width(0)),
                 };
                 content = content.push(ellipsis(item.label.clone()).size(TEXT_BODY));
                 if let Some(hint) = &item.hint {
