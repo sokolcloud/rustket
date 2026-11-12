@@ -9,7 +9,8 @@
 # Needs: Rust (with the target's std), MSVC build tools, Python 3 (`python`),
 # Inno Setup 6.3+ (ISCC.exe on PATH or in its default folder). arm64 also needs
 # clang-cl (aws-lc-sys); on x64 without NASM, aws-lc-sys uses its prebuilt
-# NASM objects. Environment: CARGO_TARGET_DIR, RUSTKET_PACKAGE_OUT, ISCC.
+# NASM objects. Environment: CARGO_TARGET_DIR, RUSTKET_PACKAGE_OUT, ISCC,
+# RUSTKET_CARGO_FEATURES (Cargo features of the build).
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('x64', 'arm64')]
@@ -40,9 +41,11 @@ if (-not $SkipBuild) {
     if ($Arch -eq 'x64' -and -not $env:AWS_LC_SYS_PREBUILT_NASM -and -not (Get-Command nasm -ErrorAction SilentlyContinue)) {
         $env:AWS_LC_SYS_PREBUILT_NASM = '1'
     }
+    $Features = @()
+    if ($env:RUSTKET_CARGO_FEATURES) { $Features = @('--features', $env:RUSTKET_CARGO_FEATURES) }
     Push-Location $Root
     try {
-        Invoke-Checked 'cargo build' { cargo build --locked --profile dist -p rustket --bin rustket --target $Triple }
+        Invoke-Checked 'cargo build' { cargo build --locked --profile dist -p rustket --bin rustket --target $Triple @Features }
     } finally {
         Pop-Location
     }
@@ -58,6 +61,10 @@ Copy-Item (Join-Path $Root 'LICENSE') (Join-Path $AppDir 'LICENSE.txt')
 Invoke-Checked 'notices.py' {
     python -I (Join-Path $Root 'packaging\notices.py') $Triple -o (Join-Path $AppDir 'THIRD-PARTY-NOTICES.txt')
 }
+
+# Marker for the self-updater (crates/rustket/src/updater): only the zip ships
+# it, the installer's [Files] list is explicit.
+Set-Content -LiteralPath (Join-Path $AppDir 'install-kind') -Value 'zip' -Encoding ascii
 
 $Zip = Join-Path $Out "rustket-$Version-windows-$Arch.zip"
 if (Test-Path $Zip) { Remove-Item -Force $Zip }

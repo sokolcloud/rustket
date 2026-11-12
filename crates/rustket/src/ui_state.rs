@@ -1,5 +1,6 @@
 //! Small UI state persisted next to the config (`ui-state.toml`): collapsed
-//! sidebar sections and sidebar width. `AppConfig` has no field for these yet.
+//! sidebar sections, sidebar width and the updater's last check and skipped
+//! version. `AppConfig` has no field for these yet.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -15,6 +16,12 @@ pub struct UiState {
     /// omnichannel section keys), shared by all servers.
     pub collapsed_sections: BTreeSet<String>,
     pub sidebar_width: f32,
+    /// Unix seconds of the last completed update check (`crate::updater`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_last_check: Option<i64>,
+    /// Version whose update notice the user chose to skip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_skipped: Option<String>,
 }
 
 impl Default for UiState {
@@ -22,6 +29,8 @@ impl Default for UiState {
         Self {
             collapsed_sections: BTreeSet::new(),
             sidebar_width: rustket_ui::theme::SIDEBAR_WIDTH,
+            update_last_check: None,
+            update_skipped: None,
         }
     }
 }
@@ -61,6 +70,8 @@ mod tests {
         let mut s = UiState::default();
         s.collapsed_sections.insert("sidebar.channels".into());
         s.sidebar_width = 300.0;
+        s.update_last_check = Some(1_700_000_000);
+        s.update_skipped = Some("0.3.0".into());
         s.save(dir.path()).unwrap();
         assert_eq!(UiState::load(dir.path()), s);
     }

@@ -124,6 +124,13 @@ pub enum Message {
     Sidebar(SidebarMessage),
     OpenUrl(String),
     Close,
+    // Updates card (`crate::updater`).
+    #[cfg(feature = "self-update")]
+    SetCheckUpdates(bool),
+    #[cfg(feature = "self-update")]
+    SetUpdatePrereleases(bool),
+    #[cfg(feature = "self-update")]
+    Updater(crate::updater::app::Msg),
 }
 
 impl From<SidebarMessage> for Message {
@@ -154,6 +161,8 @@ pub struct SettingsView<'a> {
     pub flags: Vec<FlagAccount<'a>>,
     /// "Move kept threads to Favorites" is running.
     pub star_kept_busy: bool,
+    #[cfg(feature = "self-update")]
+    pub updater: crate::updater::view::SettingsData,
 }
 
 #[derive(Debug)]
@@ -312,6 +321,19 @@ impl Settings {
             Message::SetThreadsMode(m) => Self::pref(ctx, |p| p.sidebar_threads = m),
             Message::SetStarredThreads(v) => Self::pref(ctx, |p| p.sidebar_starred_threads = v),
             Message::Sidebar(m) => self.update_sidebar(m, ctx),
+            #[cfg(feature = "self-update")]
+            Message::SetCheckUpdates(v) => Self::pref(ctx, |p| p.check_updates = v),
+            #[cfg(feature = "self-update")]
+            Message::SetUpdatePrereleases(v) => {
+                let a = Self::pref(ctx, |p| p.update_prereleases = v);
+                if v {
+                    a
+                } else {
+                    a.with(Effect::Updater(crate::updater::app::Msg::PrereleasesOff))
+                }
+            }
+            #[cfg(feature = "self-update")]
+            Message::Updater(m) => Action::effect(Effect::Updater(m)),
         }
     }
 
@@ -635,6 +657,11 @@ impl Settings {
             .id(STORAGE_CARD),
         );
 
+        #[cfg(feature = "self-update")]
+        {
+            body = body.push(updates_card(ui, &v.updater));
+        }
+
         body = body.push(section(
             t!("settings.about").into_owned(),
             vec![
@@ -660,6 +687,64 @@ impl Settings {
             Message::Close,
         )
     }
+}
+
+/// The "Updates" card: automatic checks, pre-releases, how this copy is
+/// updated, the status and "Check now" (+ "Install").
+#[cfg(feature = "self-update")]
+fn updates_card<'a>(ui: &UiPrefs, d: &crate::updater::view::SettingsData) -> Element<'a, Message> {
+    use crate::updater::app::Msg;
+    use crate::updater::state::CheckOrigin;
+    let mut status = column![].spacing(SPACE_1).width(Length::Fill);
+    if !d.status.is_empty() {
+        status = status.push(text(d.status.clone()).size(TEXT_BODY));
+    }
+    status = status.push(
+        text(d.last_checked.clone())
+            .size(TEXT_CAPTION)
+            .style(style::text_secondary),
+    );
+    let mut actions = row![
+        status,
+        secondary_button(
+            t!("updater.check_now"),
+            (!d.busy).then_some(Message::Updater(Msg::Check(CheckOrigin::Manual))),
+        )
+    ]
+    .spacing(SPACE_3)
+    .align_y(Alignment::Center);
+    if let Some(label) = &d.install {
+        actions = actions.push(rustket_ui::widget::primary_button(
+            label.clone(),
+            Some(Message::Updater(Msg::Install)),
+        ));
+    }
+    section(
+        t!("updater.title").into_owned(),
+        vec![
+            switch(
+                t!("updater.auto_check").into_owned(),
+                Some(t!("updater.auto_check_help").into_owned()),
+                ui.check_updates,
+                Some(Message::SetCheckUpdates),
+            ),
+            switch(
+                t!("updater.prereleases").into_owned(),
+                Some(t!("updater.prereleases_help").into_owned()),
+                ui.update_prereleases,
+                Some(Message::SetUpdatePrereleases),
+            ),
+            column![
+                text(t!("updater.method")).size(TEXT_BODY),
+                text(d.method.clone())
+                    .size(TEXT_CAPTION)
+                    .style(style::text_secondary),
+            ]
+            .spacing(SPACE_1)
+            .into(),
+            actions.into(),
+        ],
+    )
 }
 
 /// A titled card with rows separated by dividers.
@@ -874,6 +959,12 @@ mod tests {
                 Message::Sidebar(SidebarMessage::Layout(LayoutEdit::SetThreadsLimit(0))),
                 |c| c.sidebar_threads_limit == 0,
             ),
+            #[cfg(feature = "self-update")]
+            (Message::SetCheckUpdates(false), |c| !c.check_updates),
+            #[cfg(feature = "self-update")]
+            (Message::SetUpdatePrereleases(true), |c| {
+                c.update_prereleases
+            }),
             (
                 Message::Sidebar(SidebarMessage::Layout(LayoutEdit::Move {
                     id: SectionId::Builtin(SectionKind::Channels),
@@ -1611,6 +1702,22 @@ mod tests {
         // No autostart directory: the switch does nothing.
         let a = run(&mut s, &mut cfg, Message::SetAutostart(true));
         assert!(a.effects.is_empty() && !s.autostart_busy);
+        #[cfg(feature = "self-update")]
+        {
+            use crate::updater::app::Msg;
+            let a = run(&mut s, &mut cfg, Message::Updater(Msg::Install));
+            assert!(matches!(
+                a.effects.as_slice(),
+                [Effect::Updater(Msg::Install)]
+            ));
+            // Switching pre-releases off withdraws an offered one.
+            let a = run(&mut s, &mut cfg, Message::SetUpdatePrereleases(false));
+            assert!(!cfg.ui.update_prereleases);
+            assert!(matches!(
+                a.effects.as_slice(),
+                [Effect::SaveConfig, Effect::Updater(Msg::PrereleasesOff)]
+            ));
+        }
     }
 
     #[test]

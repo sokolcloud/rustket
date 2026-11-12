@@ -66,6 +66,8 @@ cp -a "%{rustket_stage}/." "%{buildroot}/"
 /usr/share/metainfo/rustket.metainfo.xml
 /usr/share/icons/hicolor/*/apps/rustket.png
 /usr/share/man/man1/rustket.1.gz
+%dir /usr/lib/rustket
+/usr/lib/rustket/install-kind
 %dir /usr/share/doc/rustket
 %doc /usr/share/doc/rustket/THIRD-PARTY-NOTICES
 %dir /usr/share/licenses/rustket

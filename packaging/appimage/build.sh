@@ -8,6 +8,7 @@
 # Environment: CARGO_TARGET_DIR, RUSTKET_PACKAGE_OUT, APPIMAGETOOL (path),
 # APPIMAGETOOL_ARGS (default "--no-appstream": the metainfo has two AppStream
 # warnings, a non-rDNS id and no homepage, which appimagetool treats as errors).
+# RUSTKET_CARGO_FEATURES: Cargo features of the build.
 set -euo pipefail
 umask 022
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
@@ -26,6 +27,7 @@ install -Dm644 "$LINUX/rustket.desktop" "$APPDIR/usr/share/applications/rustket.
 # appimagetool looks for <desktop id>.appdata.xml.
 install -Dm644 "$LINUX/rustket.metainfo.xml" "$APPDIR/usr/share/metainfo/rustket.appdata.xml"
 install_icons "$APPDIR/usr/share"
+install_marker "$APPDIR/usr/lib/rustket/install-kind" appimage
 install -Dm644 "$ROOT/packaging/deb/copyright" "$APPDIR/usr/share/doc/rustket/copyright"
 third_party_notices "$APPDIR/usr/share/doc/rustket/THIRD-PARTY-NOTICES"
 {

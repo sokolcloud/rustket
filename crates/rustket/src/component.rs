@@ -163,6 +163,9 @@ pub enum Effect {
     SetFlag(rustket_core::ServerId, rustket_core::flags::FlagEdit),
     /// Star the parents of the signed-in accounts' kept threads (Settings).
     StarKeptThreads,
+    /// In-app updates (Settings "Updates" card).
+    #[cfg(feature = "self-update")]
+    Updater(crate::updater::app::Msg),
 }
 
 /// Result of an app-level component `update`.

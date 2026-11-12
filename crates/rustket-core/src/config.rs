@@ -409,6 +409,10 @@ pub struct UiPrefs {
     /// Threads whose parent message the user starred show in Favorites
     /// (whatever the Threads mode is).
     pub sidebar_starred_threads: bool,
+    /// Look for new releases automatically (builds with the updater only).
+    pub check_updates: bool,
+    /// Offer pre-releases as updates.
+    pub update_prereleases: bool,
 }
 
 impl Default for UiPrefs {
@@ -439,6 +443,8 @@ impl Default for UiPrefs {
             sidebar_threads: ThreadsMode::Off,
             sidebar_threads_limit: DEFAULT_SIDEBAR_THREADS_LIMIT,
             sidebar_starred_threads: true,
+            check_updates: true,
+            update_prereleases: false,
         }
     }
 }
@@ -545,6 +551,8 @@ const UI_KEYS: &[&str] = &[
     "sidebar_threads",
     "sidebar_threads_limit",
     "sidebar_starred_threads",
+    "check_updates",
+    "update_prereleases",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -1470,6 +1478,18 @@ mod tests {
         assert!(AppConfig::parse(&text).unwrap().ui.system_title_bar);
         let c = AppConfig::parse("[ui]\nsystem_title_bar = 1").unwrap();
         assert!(!c.ui.system_title_bar, "invalid value falls back");
+    }
+
+    #[test]
+    fn update_prefs_default_and_parse() {
+        let c = AppConfig::parse("[ui]\nzoom = 1.0").unwrap();
+        assert!(c.ui.check_updates && !c.ui.update_prereleases);
+        let c = AppConfig::parse("[ui]\ncheck_updates = false\nupdate_prereleases = true").unwrap();
+        assert!(!c.ui.check_updates && c.ui.update_prereleases);
+        let text = toml::to_string(&c).unwrap();
+        assert_eq!(AppConfig::parse(&text).unwrap().ui, c.ui);
+        let c = AppConfig::parse("[ui]\ncheck_updates = \"no\"").unwrap();
+        assert!(c.ui.check_updates, "invalid value falls back");
     }
 
     #[test]

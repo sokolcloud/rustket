@@ -84,6 +84,9 @@ fn main() -> iced::Result {
         print!("{text}");
         return Ok(());
     }
+    // A relaunch after an update waits until the old process has exited.
+    #[cfg(feature = "self-update")]
+    let waited = rustket::updater::relaunch::wait_for_parent_if_requested();
     // Before anything else: the restarted process redoes all of it.
     let reexec_error = software_reexec();
     let user_filter = std::env::var("RUST_LOG").ok();
@@ -95,6 +98,8 @@ fn main() -> iced::Result {
             }),
         )
         .init();
+    #[cfg(feature = "self-update")]
+    waited.log();
     if let Some(e) = reexec_error {
         tracing::warn!(error = %e, "cannot restart with the software renderer; using the default");
     }

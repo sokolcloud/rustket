@@ -15,10 +15,12 @@ die() {
 }
 
 # Builds the binary with the `dist` profile unless SKIP_BUILD=1 (then the
-# existing $BIN is used).
+# existing $BIN is used). RUSTKET_CARGO_FEATURES adds Cargo features (release
+# builds: self-update).
 build_binary() {
     if [ "${SKIP_BUILD:-0}" != 1 ]; then
-        (cd "$ROOT" && cargo build --locked --profile dist -p rustket --bin rustket) ||
+        (cd "$ROOT" && cargo build --locked --profile dist -p rustket --bin rustket \
+            ${RUSTKET_CARGO_FEATURES:+--features "$RUSTKET_CARGO_FEATURES"}) ||
             die "cargo build failed"
     fi
     [ -x "$BIN" ] || die "$BIN not found (build with: cargo build --profile dist -p rustket)"
@@ -40,6 +42,14 @@ install_icons() {
         install -Dm644 "$ICONS/rustket-$size.png" \
             "$share/icons/hicolor/${size}x${size}/apps/rustket.png"
     done
+}
+
+# install_marker <file> <kind>: the install-kind marker the self-updater reads
+# (crates/rustket/src/updater): one word and a newline, mode 0644.
+install_marker() {
+    install -d "$(dirname "$1")"
+    printf '%s\n' "$2" >"$1"
+    chmod 644 "$1"
 }
 
 # third_party_notices <file>: copyright notices and license texts of every

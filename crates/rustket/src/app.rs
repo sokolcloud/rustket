@@ -173,6 +173,9 @@ pub struct App {
     pub offline: crate::cache::Caches,
     /// "Move kept threads to Favorites" in progress.
     star_kept: star_kept::StarKept,
+    /// In-app updates (`crate::updater`).
+    #[cfg(feature = "self-update")]
+    pub updater: crate::updater::Updater,
 }
 
 fn notice_text(n: &SecretNotice) -> String {
@@ -321,6 +324,8 @@ impl App {
             decorated,
             offline: crate::cache::Caches::new(flags.offline_cache.clone()),
             star_kept: Default::default(),
+            #[cfg(feature = "self-update")]
+            updater: crate::updater::Updater::new(flags.desktop),
         };
         let wanted: Vec<(ServerId, String)> = app
             .config
@@ -427,7 +432,7 @@ impl App {
     }
 
     /// Queues the current config + UI state for the single writer thread.
-    fn save_config(&self) -> Task<Message> {
+    pub(crate) fn save_config(&self) -> Task<Message> {
         if let Some(w) = &self.writer {
             w.save(self.config.clone(), self.ui_state.clone());
         }
@@ -460,7 +465,7 @@ impl App {
 
     /// Opens an absolute `http`/`https`/`mailto` URL in the browser; anything
     /// else (other schemes, paths) is refused.
-    fn open_url(&mut self, url: String) -> Task<Message> {
+    pub(crate) fn open_url(&mut self, url: String) -> Task<Message> {
         let Some(url) = rustket_core::uikit::openable_url(&url).map(str::to_owned) else {
             tracing::warn!("refusing to open a non-http URL");
             return self.toast(BannerKind::Error, t!("app.url_refused"), String::new());
@@ -991,6 +996,8 @@ impl App {
             Message::Dialog(instance, m) => self.on_dialog_result(instance, *m),
             Message::E2e(sid, epoch, m) => self.on_e2e(sid, epoch, m),
             Message::Cache(m) => crate::cache::update(self, m),
+            #[cfg(feature = "self-update")]
+            Message::Updater(m) => crate::updater::app::update(self, m),
             Message::SecretsReady(s) => self.on_secrets_ready(s),
             Message::SystemTheme(mode) => {
                 self.system_mode = match mode {
@@ -1380,6 +1387,8 @@ impl App {
             Screen::Server
         };
         self.booted = true;
+        #[cfg(feature = "self-update")]
+        tasks.push(crate::updater::app::boot(self));
         let links = std::mem::take(&mut self.queued_links);
         for l in links {
             tasks.push(self.handle_link(&l));
@@ -3136,6 +3145,8 @@ impl App {
         {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick));
         }
+        #[cfg(feature = "self-update")]
+        subs.extend(crate::updater::app::subscription(self));
         // A long-running session expires opened media too, not only startup.
         subs.push(
             iced::time::every(crate::room::timeline::transfer::MEDIA_PURGE_INTERVAL)

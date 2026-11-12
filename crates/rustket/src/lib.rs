@@ -44,6 +44,8 @@ pub mod teams;
 mod tree_probe;
 pub mod ui_state;
 pub mod uikit;
+#[cfg(feature = "self-update")]
+pub mod updater;
 pub mod url_handler;
 pub mod videoconf;
 pub mod workspace;

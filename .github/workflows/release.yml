@@ -20,10 +20,36 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # Release packages ship the self-updater (crates/rustket/src/updater); the
+  # packaging scripts pass RUSTKET_CARGO_FEATURES to cargo. The updater checks
+  # the releases of the repository that built it.
+  RUSTKET_CARGO_FEATURES: self-update
+  RUSTKET_UPDATE_REPO: ${{ github.repository }}
 
 jobs:
+  # The release notes come from CHANGELOG.md: a tag without a section for its
+  # version fails here, before the long package builds.
+  changelog:
+    name: CHANGELOG.md section
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Release notes for the Cargo version
+        env:
+          STRICT: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if ! bash packaging/release-notes.sh "$version"; then
+            [ "$STRICT" = true ] && exit 1
+            echo "::warning::CHANGELOG.md has no section for $version"
+          fi
+
   linux:
     name: Linux x86_64 (deb, rpm, AppImage)
+    needs: [changelog]
     # glibc 2.35 baseline: the binary runs on this release and newer.
     runs-on: ubuntu-22.04
     env:
@@ -58,7 +84,7 @@ jobs:
           fetch "$APPIMAGE_RUNTIME_URL" "$APPIMAGE_RUNTIME_SHA256" "$RUNNER_TEMP/runtime-x86_64"
           chmod +x "$RUNNER_TEMP/appimagetool"
       - name: Build
-        run: cargo build --locked --profile dist -p rustket --bin rustket
+        run: cargo build --locked --profile dist -p rustket --bin rustket --features "$RUSTKET_CARGO_FEATURES"
       - name: deb + AppImage + package checks
         env:
           SKIP_BUILD: 1
@@ -81,7 +107,8 @@ jobs:
           for f in /usr/bin/rustket /usr/share/applications/rustket.desktop \
               /usr/share/metainfo/rustket.metainfo.xml /usr/share/man/man1/rustket.1.gz \
               /usr/share/icons/hicolor/512x512/apps/rustket.png \
-              /usr/share/doc/rustket/THIRD-PARTY-NOTICES /usr/share/licenses/rustket/LICENSE; do
+              /usr/share/doc/rustket/THIRD-PARTY-NOTICES /usr/share/licenses/rustket/LICENSE \
+              /usr/lib/rustket/install-kind; do
             grep -qx "$f" <<<"$files" || { echo "::error::$f missing from the rpm"; exit 1; }
           done
       - name: Collect
@@ -110,6 +137,7 @@ jobs:
 
   windows:
     name: Windows ${{ matrix.arch }} (setup.exe, zip)
+    needs: [changelog]
     strategy:
       fail-fast: false
       matrix:
@@ -160,6 +188,7 @@ jobs:
 
   macos:
     name: macOS universal (dmg)
+    needs: [changelog]
     # Apple Silicon runner; the x86_64 slice is cross-compiled.
     runs-on: macos-latest
     steps:
@@ -233,6 +262,10 @@ jobs:
           fi
           sha256sum -- * >SHA256SUMS
           cat SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash packaging/release-notes.sh "$VERSION" >"$RUNNER_TEMP/notes.md"
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -243,5 +276,6 @@ jobs:
           set -euo pipefail
           prerelease=()
           case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
-          gh release create "$TAG" --verify-tag --title "Rustket $VERSION" --generate-notes \
-            "${prerelease[@]}" release/*
+          # The CHANGELOG.md section comes first, GitHub's generated list after it.
+          gh release create "$TAG" --verify-tag --title "Rustket $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" --generate-notes "${prerelease[@]}" release/*

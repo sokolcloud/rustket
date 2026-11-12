@@ -54,6 +54,15 @@ pub(crate) fn layered<'a, M: Clone + 'a>(
 impl App {
     // --- view --------------------------------------------------------------------
 
+    /// Pinned corner cards: call popups, then the update card.
+    fn corner_cards(&self) -> Vec<Element<'_, Message>> {
+        #[allow(unused_mut)]
+        let mut cards = crate::videoconf::view::popups(self);
+        #[cfg(feature = "self-update")]
+        cards.extend(crate::updater::view::card(self));
+        cards
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let base: Element<'_, Message> = match &self.screen {
             Screen::Loading => loading_placeholder(None),
@@ -93,7 +102,7 @@ impl App {
             overlay.map(|o| (key, o)),
             dismiss,
             |c| crate::videoconf::view::layer(self, c),
-            crate::videoconf::view::popups(self),
+            self.corner_cards(),
             &self.toasts,
             Message::CloseToast,
         );
