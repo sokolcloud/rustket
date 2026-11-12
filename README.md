@@ -17,7 +17,7 @@ Packages for every release are on the
 ### Debian / Ubuntu (.deb)
 
 ```sh
-sudo apt install ./rustket_0.2.1-1_amd64.deb
+sudo apt install ./rustket_0.2.2-1_amd64.deb
 ```
 
 The package installs `/usr/bin/rustket`, the desktop entry
@@ -32,8 +32,8 @@ Third-party licenses: `/usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz`.
 ### Fedora / openSUSE (.rpm)
 
 ```sh
-sudo dnf install ./rustket-0.2.1-1.x86_64.rpm       # Fedora
-sudo zypper install ./rustket-0.2.1-1.x86_64.rpm    # openSUSE
+sudo dnf install ./rustket-0.2.2-1.x86_64.rpm       # Fedora
+sudo zypper install ./rustket-0.2.2-1.x86_64.rpm    # openSUSE
 ```
 
 Same layout and runtime dependencies as the .deb (libraries are required by
@@ -45,8 +45,8 @@ soname, so both distributions resolve them); the license file is in
 ### AppImage
 
 ```sh
-chmod +x Rustket-0.2.1-x86_64.AppImage
-./Rustket-0.2.1-x86_64.AppImage
+chmod +x Rustket-0.2.2-x86_64.AppImage
+./Rustket-0.2.2-x86_64.AppImage
 ```
 
 To make `rocketchat://` links open the AppImage, use the "Open rocketchat:// links
@@ -62,12 +62,12 @@ building it yourself, build on the oldest distribution you want to support.
 
 Two downloads for x64 and ARM64 (Windows 10 or 11):
 
-- `Rustket-0.2.1-x64-setup.exe` / `Rustket-0.2.1-arm64-setup.exe`: installer.
+- `Rustket-0.2.2-x64-setup.exe` / `Rustket-0.2.2-arm64-setup.exe`: installer.
   It installs for the current user without administrator rights (the first page
   offers an all-users install), adds a Start menu shortcut, optionally a
   desktop icon, and registers `rocketchat://` links (a checked option, since it takes them over from the official Rocket.Chat app). Uninstall from Settings →
   Apps.
-- `rustket-0.2.1-windows-x64.zip` / `rustket-0.2.1-windows-arm64.zip`: portable.
+- `rustket-0.2.2-windows-x64.zip` / `rustket-0.2.2-windows-arm64.zip`: portable.
   Extract anywhere and run `rustket.exe`; use the "Open rocketchat:// links with
   Rustket" action in the app to register the links for that copy.
 
@@ -77,7 +77,7 @@ click **More info → Run anyway**. Third-party licenses:
 
 ### macOS
 
-`Rustket-0.2.1-macos-universal.dmg` runs natively on Apple Silicon and Intel
+`Rustket-0.2.2-macos-universal.dmg` runs natively on Apple Silicon and Intel
 Macs with macOS 11 or newer. Open it and drag Rustket to Applications.
 
 The app is not notarized, so Gatekeeper blocks the first start. Either
