@@ -118,7 +118,22 @@ pwsh packaging/windows/build.ps1 -Arch x64   # Windows: setup.exe (Inno Setup 6.
 
 Releases are built by `.github/workflows/release.yml` on a `v<version>` tag
 (pushing the `release-dry-run` branch builds the same packages without
-publishing).
+publishing). Release packages are built with `--features self-update`
+(`RUSTKET_CARGO_FEATURES=self-update` for the packaging scripts), which adds the
+in-app updater; the default build has none. Every user-visible change adds an
+entry under `## [Unreleased]` in `CHANGELOG.md`. To release X.Y.Z:
+
+1. Move the `[Unreleased]` entries under a new `## [X.Y.Z] - YYYY-MM-DD`
+   heading, point the `[Unreleased]` link at `compare/vX.Y.Z...HEAD` and add an
+   `[X.Y.Z]: …/compare/v<previous>...vX.Y.Z` link.
+2. Bump `version` in `[workspace.package]` of the root `Cargo.toml`, the
+   versions of the path dependencies (`rocketchat`, `rustket-core`,
+   `rustket-ui`) and the `<release>` in `packaging/linux/rustket.metainfo.xml`.
+3. Run `cargo test --workspace`: the packaging tests fail when `CHANGELOG.md`
+   has no section for the new version. `packaging/release-notes.sh X.Y.Z`
+   prints the notes the release will get.
+4. Commit "Release X.Y.Z" and push the tag `vX.Y.Z`. The release notes are the
+   changelog section followed by GitHub's generated list.
 
 `SKIP_BUILD=1` reuses an existing `target/dist/rustket`. The scripts need
 `python3` for the third-party notices. cargo-deb users can run

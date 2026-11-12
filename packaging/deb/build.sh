@@ -8,7 +8,8 @@
 #   LINT=1 packaging/deb/build.sh     # also run lintian
 #
 # Environment: CARGO_TARGET_DIR, RUSTKET_PACKAGE_OUT (output directory),
-# DEB_MAINTAINER ("Name <email>"), DEB_REVISION (default 1).
+# DEB_MAINTAINER ("Name <email>"), DEB_REVISION (default 1), RUSTKET_CARGO_FEATURES
+# (Cargo features of the build).
 set -euo pipefail
 umask 022
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
@@ -29,6 +30,7 @@ install -Dm755 "$BIN" "$STAGE/usr/bin/rustket"
 install -Dm644 "$LINUX/rustket.desktop" "$STAGE/usr/share/applications/rustket.desktop"
 install -Dm644 "$LINUX/rustket.metainfo.xml" "$STAGE/usr/share/metainfo/rustket.metainfo.xml"
 install_icons "$STAGE/usr/share"
+install_marker "$STAGE/usr/lib/rustket/install-kind" deb
 
 DOC="$STAGE/usr/share/doc/rustket"
 install -Dm644 "$ROOT/packaging/deb/copyright" "$DOC/copyright"

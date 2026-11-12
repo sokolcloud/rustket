@@ -338,6 +338,10 @@ pub struct UiPrefs {
     )]
     pub sidebar_section_prefs: BTreeMap<String, SectionPrefs>,
     pub sidebar_threads: ThreadsMode,
+    /// Look for new releases automatically (builds with the updater only).
+    pub check_updates: bool,
+    /// Offer pre-releases as updates.
+    pub update_prereleases: bool,
 }
 
 impl Default for UiPrefs {
@@ -366,6 +370,8 @@ impl Default for UiPrefs {
             sidebar_groups: Vec::new(),
             sidebar_section_prefs: BTreeMap::new(),
             sidebar_threads: ThreadsMode::Off,
+            check_updates: true,
+            update_prereleases: false,
         }
     }
 }
@@ -461,6 +467,8 @@ const UI_KEYS: &[&str] = &[
     "sidebar_groups",
     "sidebar_section_prefs",
     "sidebar_threads",
+    "check_updates",
+    "update_prereleases",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -1256,6 +1264,18 @@ mod tests {
         assert!(AppConfig::parse(&text).unwrap().ui.system_title_bar);
         let c = AppConfig::parse("[ui]\nsystem_title_bar = 1").unwrap();
         assert!(!c.ui.system_title_bar, "invalid value falls back");
+    }
+
+    #[test]
+    fn update_prefs_default_and_parse() {
+        let c = AppConfig::parse("[ui]\nzoom = 1.0").unwrap();
+        assert!(c.ui.check_updates && !c.ui.update_prereleases);
+        let c = AppConfig::parse("[ui]\ncheck_updates = false\nupdate_prereleases = true").unwrap();
+        assert!(!c.ui.check_updates && c.ui.update_prereleases);
+        let text = toml::to_string(&c).unwrap();
+        assert_eq!(AppConfig::parse(&text).unwrap().ui, c.ui);
+        let c = AppConfig::parse("[ui]\ncheck_updates = \"no\"").unwrap();
+        assert!(c.ui.check_updates, "invalid value falls back");
     }
 
     #[test]

@@ -11,7 +11,7 @@
 # Application" identity in the keychain (then hardened runtime and a secure
 # timestamp). Notarization, optional and only with an identity: set
 # MACOS_NOTARY_PROFILE to a `xcrun notarytool store-credentials` profile.
-# Environment: CARGO_TARGET_DIR, RUSTKET_PACKAGE_OUT.
+# Environment: CARGO_TARGET_DIR, RUSTKET_PACKAGE_OUT, RUSTKET_CARGO_FEATURES.
 set -euo pipefail
 umask 022
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
@@ -28,7 +28,8 @@ DMG="$OUT/Rustket-$VERSION-macos-universal.dmg"
 slices=()
 for t in $TRIPLES; do
     if [ "${SKIP_BUILD:-0}" != 1 ]; then
-        (cd "$ROOT" && cargo build --locked --profile dist -p rustket --bin rustket --target "$t") ||
+        (cd "$ROOT" && cargo build --locked --profile dist -p rustket --bin rustket --target "$t" \
+            ${RUSTKET_CARGO_FEATURES:+--features "$RUSTKET_CARGO_FEATURES"}) ||
             die "cargo build for $t failed"
     fi
     [ -x "$TARGET_DIR/$t/dist/rustket" ] || die "$TARGET_DIR/$t/dist/rustket not found"
@@ -41,6 +42,7 @@ lipo -create -output "$APP/Contents/MacOS/rustket" "${slices[@]}"
 lipo "$APP/Contents/MacOS/rustket" -verify_arch arm64 x86_64 || die "not a universal binary"
 install -m644 "$ICONS/rustket.icns" "$APP/Contents/Resources/rustket.icns"
 install -m644 "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
+install_marker "$APP/Contents/Resources/install-kind" dmg
 # shellcheck disable=SC2086 # one argument per triple
 python3 -I "$ROOT/packaging/notices.py" $TRIPLES -o "$APP/Contents/Resources/THIRD-PARTY-NOTICES" ||
     die "packaging/notices.py failed"

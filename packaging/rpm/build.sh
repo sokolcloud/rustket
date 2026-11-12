@@ -7,7 +7,8 @@
 #   packaging/rpm/build.sh
 #   SKIP_BUILD=1 packaging/rpm/build.sh   # package an existing target/dist/rustket
 #
-# Environment: CARGO_TARGET_DIR, RUSTKET_PACKAGE_OUT, RPM_RELEASE (default 1).
+# Environment: CARGO_TARGET_DIR, RUSTKET_PACKAGE_OUT, RPM_RELEASE (default 1),
+# RUSTKET_CARGO_FEATURES (Cargo features of the build).
 set -euo pipefail
 umask 022
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
@@ -30,6 +31,7 @@ install -Dm755 "$BIN" "$STAGE/usr/bin/rustket"
 install -Dm644 "$LINUX/rustket.desktop" "$STAGE/usr/share/applications/rustket.desktop"
 install -Dm644 "$LINUX/rustket.metainfo.xml" "$STAGE/usr/share/metainfo/rustket.metainfo.xml"
 install_icons "$STAGE/usr/share"
+install_marker "$STAGE/usr/lib/rustket/install-kind" rpm
 mkdir -p "$STAGE/usr/share/man/man1"
 gzip -9n <"$LINUX/rustket.1" >"$STAGE/usr/share/man/man1/rustket.1.gz"
 chmod 644 "$STAGE/usr/share/man/man1/rustket.1.gz"

@@ -34,6 +34,7 @@ expected=(
     ./usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz
     ./usr/share/lintian/overrides/rustket
     ./usr/share/man/man1/rustket.1.gz
+    ./usr/lib/rustket/install-kind
 )
 for size in $ICON_SIZES; do
     expected+=("./usr/share/icons/hicolor/${size}x${size}/apps/rustket.png")
@@ -61,6 +62,7 @@ check "no GTK dependency" "! grep -qi '^Depends:.*gtk' <<<\"\$INFO\""
 X="$(mktemp -d)"
 trap 'rm -rf "$X"' EXIT
 dpkg-deb --extract "$DEB" "$X"
+check "deb: install-kind marker" "[ \"\$(cat '$X/usr/lib/rustket/install-kind')\" = deb ]"
 D="$X/usr/share/applications/rustket.desktop"
 check "desktop: Exec=rustket %u" "grep -qx 'Exec=rustket %u' '$D'"
 check "desktop: rocketchat scheme" "grep -qx 'MimeType=x-scheme-handler/rocketchat;' '$D'"
@@ -94,9 +96,11 @@ check "AppDir: AppRun --version" "[ \"\$('$APPDIR/AppRun' --version)\" = '$V' ]"
 for f in AppRun rustket.desktop rustket.png .DirIcon usr/bin/rustket \
     usr/share/applications/rustket.desktop usr/share/metainfo/rustket.appdata.xml \
     usr/share/icons/hicolor/256x256/apps/rustket.png \
-    usr/share/doc/rustket/THIRD-PARTY-NOTICES usr/share/doc/rustket/copyright; do
+    usr/share/doc/rustket/THIRD-PARTY-NOTICES usr/share/doc/rustket/copyright \
+    usr/lib/rustket/install-kind; do
     check "AppDir: $f" "[ -e '$APPDIR/$f' ]"
 done
+check "AppDir: install-kind marker" "[ \"\$(cat '$APPDIR/usr/lib/rustket/install-kind')\" = appimage ]"
 
 if command -v lintian >/dev/null; then
     LINT="$(lintian --tag-display-limit 0 "$DEB" 2>&1 || true)"

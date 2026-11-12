@@ -5,6 +5,12 @@
 ;   /DOutputDir=<dir>
 ; Output: Rustket-<version>-<arch>-setup.exe. Per-user install by default
 ; (no UAC prompt); the first page offers an all-users install.
+; The app's self-updater runs it as
+;   setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS
+;     /CURRENTUSER|/ALLUSERS /relaunch=1 /LOG="..."
+; after it started to quit; RelaunchRequested below starts the app again.
+; A silent update that does not finish writes failed:<step> to "result" next
+; to setup.exe (the app reports it) and starts the old copy again.
 
 #ifndef AppVersion
   #error Define AppVersion (/DAppVersion=...)
@@ -44,7 +50,8 @@ DefaultDirName={autopf}\Rustket
 DefaultGroupName=Rustket
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+; commandline: the updater passes /CURRENTUSER or /ALLUSERS.
+PrivilegesRequiredOverridesAllowed=commandline dialog
 #if AppArch == "arm64"
 ArchitecturesAllowed=arm64
 ArchitecturesInstallIn64BitMode=arm64
@@ -101,8 +108,16 @@ Root: HKA; Subkey: "Software\Classes\{#Scheme}\shell\open\command"; ValueType: s
 
 [Run]
 Filename: "{app}\rustket.exe"; Description: "{cm:LaunchProgram,Rustket}"; Flags: nowait postinstall skipifsilent
+; Silent update started by the app (/relaunch=1): start it again, unelevated.
+Filename: "{app}\rustket.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
 
 [Code]
+var
+  { Set by PrepareToInstall for a silent update started by the app. }
+  RelaunchExe: String;
+  FailedStep: String;
+  Installed: Boolean;
+
 function ExePath(): String;
 begin
   Result := ExpandConstant('{app}\rustket.exe');
@@ -129,6 +144,26 @@ begin
   end;
 end;
 
+{ Silent install started by the app's updater, which restarts it afterwards. }
+function RelaunchRequested(): Boolean;
+begin
+  Result := WizardSilent() and (ExpandConstant('{param:relaunch|0}') = '1');
+end;
+
+{ Waits up to 60 s for the updating app to quit; True when it did. }
+function WaitForUpdatingApp(): Boolean;
+var
+  I: Integer;
+begin
+  I := 0;
+  while IsRustketRunning() and (I < 240) do
+  begin
+    Sleep(250);
+    I := I + 1;
+  end;
+  Result := not IsRustketRunning();
+end;
+
 { Asks the user to close Rustket; False when they cancel. }
 function WaitUntilClosed(Message: String): Boolean;
 begin
@@ -144,9 +179,42 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  { Silent installs rely on Restart Manager (CloseApplications). }
-  if not WizardSilent() and not WaitUntilClosed(SetupMessage(msgSetupAppRunningError)) then
+  { The updater starts setup and then quits: wait for it rather than let
+    Restart Manager schedule a replace-on-reboot (/NORESTART). Other silent
+    installs rely on Restart Manager (CloseApplications). }
+  if RelaunchRequested() then
+  begin
+    RelaunchExe := ExePath();
+    if not WaitForUpdatingApp() then
+    begin
+      FailedStep := 'wait';
+      Result := FmtMessage(SetupMessage(msgSetupAppRunningError), ['Rustket']);
+    end;
+  end
+  else if not WizardSilent() and not WaitUntilClosed(SetupMessage(msgSetupAppRunningError)) then
     Result := FmtMessage(SetupMessage(msgSetupAppRunningError), ['Rustket']);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    Installed := True;
+end;
+
+{ A silent update that did not finish (the [Run] relaunch runs only after a
+  successful install): tell the app and start the old copy again. }
+procedure DeinitializeSetup();
+var
+  Code: Integer;
+begin
+  if (RelaunchExe = '') or Installed then
+    Exit;
+  if FailedStep = '' then
+    FailedStep := 'install';
+  if not SaveStringToFile(ExpandConstant('{src}\result'), 'failed:' + FailedStep + #13#10, False) then
+    Log('Could not write the update result');
+  if not ExecAsOriginalUser(RelaunchExe, '', '', SW_SHOWNORMAL, ewNoWait, Code) then
+    Log('Could not restart Rustket: ' + SysErrorMessage(Code));
 end;
 
 function InitializeUninstall(): Boolean;

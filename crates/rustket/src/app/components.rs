@@ -237,6 +237,8 @@ impl App {
                     }
                     None => Task::none(),
                 },
+                #[cfg(feature = "self-update")]
+                Effect::Updater(m) => crate::updater::app::update(self, m),
             });
         }
         Task::batch(tasks)
@@ -423,7 +425,7 @@ impl App {
     /// quick switcher, calls, logout, window close) asks an admin screen with
     /// unsaved settings first: `false` when it asked; `then` is replayed
     /// after "Discard".
-    pub(super) fn may_leave(&mut self, then: Message) -> bool {
+    pub(crate) fn may_leave(&mut self, then: Message) -> bool {
         match &mut self.screen {
             Screen::Admin(_, c) => c.ask_leave(then),
             _ => true,
@@ -431,7 +433,7 @@ impl App {
     }
 
     /// Whether the admin screen holds unsaved settings edits.
-    pub(super) fn admin_dirty(&self) -> bool {
+    pub(crate) fn admin_dirty(&self) -> bool {
         matches!(&self.screen, Screen::Admin(_, c) if c.is_dirty())
     }
 
@@ -475,12 +477,16 @@ impl App {
                 let nav = self.navigate(Nav::CreateDiscussion { rid, pmid });
                 Task::batch([a, nav])
             }
-            Go::Quit => {
-                self.flush_config();
-                crate::cache::on_quit(self);
-                iced::exit()
-            }
+            Go::Quit => self.quit_now(),
         }
+    }
+
+    /// Quits without asking anything (after the admin check of `Go::Quit`,
+    /// or once an update is installed and its relaunch is under way).
+    pub(crate) fn quit_now(&mut self) -> Task<Message> {
+        self.flush_config();
+        crate::cache::on_quit(self);
+        iced::exit()
     }
 
     /// Realtime events for an open admin screen of `sid`.
@@ -740,6 +746,12 @@ impl App {
                 .offline
                 .enabled()
                 .then_some((self.offline.size, self.offline.clearing)),
+            #[cfg(feature = "self-update")]
+            updater: crate::updater::view::settings_data(
+                &self.updater,
+                self.ui_state.update_last_check,
+                self.ui_state.update_skipped.as_deref(),
+            ),
         }
     }
 }

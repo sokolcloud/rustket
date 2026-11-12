@@ -156,6 +156,9 @@ pub enum Effect {
     RecentStatusTexts(Vec<String>),
     /// A UIKit interaction (app action button of the user menu).
     UiKit(Box<crate::uikit::UiKitMsg>),
+    /// In-app updates (Settings "Updates" card).
+    #[cfg(feature = "self-update")]
+    Updater(crate::updater::app::Msg),
 }
 
 /// Result of an app-level component `update`.

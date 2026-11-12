@@ -1,0 +1,181 @@
+_version: 2
+updater.title:
+  en: "Updates"
+  ru: "Обновления"
+updater.auto_check:
+  en: "Check for updates automatically"
+  ru: "Автоматически проверять обновления"
+updater.auto_check_help:
+  en: "Looks for a new release on GitHub at startup and twice a day. Nothing is installed without your confirmation."
+  ru: "Новые выпуски ищутся на GitHub при запуске и дважды в сутки. Без вашего подтверждения ничего не устанавливается."
+updater.prereleases:
+  en: "Include pre-releases"
+  ru: "Предлагать предварительные версии"
+updater.prereleases_help:
+  en: "Also offer test versions published before a release."
+  ru: "Предлагать и тестовые версии, которые выходят до релиза."
+updater.method:
+  en: "Installation"
+  ru: "Способ установки"
+updater.kind_detecting:
+  en: "Detecting…"
+  ru: "Определяется…"
+updater.kind_deb:
+  en: "Debian/Ubuntu package: updates are installed with apt (needs an administrator password)"
+  ru: "Пакет Debian/Ubuntu: обновления устанавливаются через apt (нужен пароль администратора)"
+updater.kind_rpm:
+  en: "RPM package: updates are installed with dnf, zypper or rpm (needs an administrator password)"
+  ru: "Пакет RPM: обновления устанавливаются через dnf, zypper или rpm (нужен пароль администратора)"
+updater.kind_appimage:
+  en: "AppImage: the file is replaced with the new version"
+  ru: "AppImage: файл заменяется новой версией"
+updater.kind_inno_user:
+  en: "Windows installer, for this user"
+  ru: "Установщик Windows, для текущего пользователя"
+updater.kind_inno_all:
+  en: "Windows installer, for all users (needs administrator rights)"
+  ru: "Установщик Windows, для всех пользователей (нужны права администратора)"
+updater.kind_zip:
+  en: "Portable Windows version: the files in its folder are replaced"
+  ru: "Портативная версия для Windows: файлы в её папке заменяются"
+updater.kind_mac:
+  en: "macOS app: the app bundle is replaced"
+  ru: "Приложение macOS: пакет приложения заменяется"
+updater.kind_unmanaged:
+  en: "Not installed from a Rustket package: new versions are only announced, download them from the release page"
+  ru: "Установлено не из пакета Rustket: о новых версиях только сообщается, скачать их можно на странице выпуска"
+updater.check_now:
+  en: "Check now"
+  ru: "Проверить сейчас"
+updater.checking:
+  en: "Checking for updates…"
+  ru: "Проверка обновлений…"
+updater.check_failed:
+  en: "Could not check for updates"
+  ru: "Не удалось проверить обновления"
+updater.up_to_date:
+  en: "Rustket is up to date"
+  ru: "Установлена последняя версия Rustket"
+updater.last_checked:
+  en: "Last checked %{time}"
+  ru: "Последняя проверка: %{time}"
+updater.never_checked:
+  en: "Not checked yet"
+  ru: "Ещё не проверялось"
+updater.status_available:
+  en: "Version %{version} is available"
+  ru: "Доступна версия %{version}"
+updater.skipped:
+  en: "(skipped)"
+  ru: "(пропущена)"
+updater.available_title:
+  en: "Rustket %{version} is available"
+  ru: "Доступен Rustket %{version}"
+updater.available_body:
+  en: "You have version %{current}."
+  ru: "У вас версия %{current}."
+updater.admin_hint:
+  en: "Installing asks for an administrator password."
+  ru: "При установке потребуется пароль администратора."
+updater.release_notes:
+  en: "What's new"
+  ru: "Что нового"
+updater.release_page:
+  en: "Release page"
+  ru: "Страница выпуска"
+updater.install:
+  en: "Install and restart"
+  ru: "Установить и перезапустить"
+updater.download:
+  en: "Download"
+  ru: "Скачать"
+updater.later:
+  en: "Later"
+  ru: "Позже"
+updater.skip:
+  en: "Skip this version"
+  ru: "Пропустить версию"
+updater.cancel:
+  en: "Cancel"
+  ru: "Отмена"
+updater.dismiss:
+  en: "Close"
+  ru: "Закрыть"
+updater.downloading:
+  en: "Downloading: %{done} of %{total} MB"
+  ru: "Загрузка: %{done} из %{total} МБ"
+updater.ready:
+  en: "The update is downloaded and verified."
+  ru: "Обновление загружено и проверено."
+updater.installing:
+  en: "Installing the update…"
+  ru: "Установка обновления…"
+updater.failed_title:
+  en: "Could not update to %{version}"
+  ru: "Не удалось обновиться до %{version}"
+updater.installed_title:
+  en: "Rustket %{version} is installed"
+  ru: "Rustket %{version} установлен"
+updater.installed_body:
+  en: "The update is installed, but Rustket could not restart itself. Restart it to use the new version."
+  ru: "Обновление установлено, но Rustket не смог перезапуститься сам. Перезапустите его, чтобы начать работу в новой версии."
+updater.open_package:
+  en: "Open package"
+  ru: "Открыть пакет"
+updater.show_file:
+  en: "Show file"
+  ru: "Показать файл"
+updater.auth_cancelled:
+  en: "Update cancelled: authentication was not confirmed"
+  ru: "Обновление отменено: подтверждение не получено"
+updater.error_network:
+  en: "No connection to GitHub. Check your network and try again."
+  ru: "Нет соединения с GitHub. Проверьте сеть и повторите попытку."
+updater.error_rate_limited:
+  en: "GitHub limits how often updates can be checked. Try again later."
+  ru: "GitHub ограничивает частоту проверок. Повторите попытку позже."
+updater.error_http:
+  en: "GitHub answered with an error (HTTP %{code})."
+  ru: "GitHub ответил ошибкой (HTTP %{code})."
+updater.error_bad_release:
+  en: "The release data is invalid."
+  ru: "Данные выпуска некорректны."
+updater.error_no_asset:
+  en: "The release has no package for this system."
+  ru: "В выпуске нет пакета для этой системы."
+updater.error_no_checksum:
+  en: "The release has no checksum for the package, so it cannot be verified."
+  ru: "В выпуске нет контрольной суммы пакета, проверить его нельзя."
+updater.error_checksum:
+  en: "The downloaded file is damaged: its checksum does not match."
+  ru: "Загруженный файл повреждён: контрольная сумма не совпадает."
+updater.error_size:
+  en: "The download was incomplete."
+  ru: "Файл загрузился не полностью."
+updater.error_disk:
+  en: "Not enough disk space."
+  ru: "Недостаточно места на диске."
+updater.error_permission:
+  en: "Permission denied."
+  ru: "Недостаточно прав доступа."
+updater.error_io:
+  en: "A file operation failed."
+  ru: "Ошибка при работе с файлами."
+updater.error_auth_agent:
+  en: "No authentication dialog is available to ask for the administrator password. Install the package yourself."
+  ru: "Нет окна запроса пароля администратора. Установите пакет вручную."
+updater.error_tool:
+  en: "%{tool} failed (exit code %{code})."
+  ru: "Ошибка %{tool} (код выхода %{code})."
+updater.error_not_writable:
+  en: "Cannot write to %{path}."
+  ru: "Нет прав на запись в %{path}."
+updater.error_translocated:
+  en: "Rustket runs from the disk image or a temporary location. Move it to the Applications folder first."
+  ru: "Rustket запущен с образа диска или из временного расположения. Сначала перенесите его в папку «Программы»."
+updater.error_unsupported:
+  en: "This installation cannot be updated automatically."
+  ru: "Эту установку нельзя обновить автоматически."
+updater.error_cancelled:
+  en: "The update was interrupted."
+  ru: "Обновление прервано."
