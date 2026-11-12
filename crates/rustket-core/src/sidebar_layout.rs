@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{MAX_SIDEBAR_THREADS_LIMIT, SidebarSort, UiPrefs, lenient_opt, lenient_vec};
+use crate::flags::FlagColor;
 use crate::room_list::{RoomKind, SectionKind};
 
 /// Most user-defined groups kept.
@@ -19,6 +20,9 @@ pub const MAX_GROUPS: usize = 16;
 pub const MAX_GROUP_NAME_CHARS: usize = 40;
 /// Most kept threads stored per server entry.
 pub const MAX_KEPT_THREADS: usize = 200;
+/// Most starred thread rows the Favorites section shows (no row limit
+/// applies otherwise).
+pub const MAX_STARRED_THREADS: usize = 500;
 /// Thread limits the settings and the Threads header menu offer (0: none).
 pub const THREADS_LIMIT_CHOICES: [u32; 6] = [5, 10, 20, 50, 100, 0];
 
@@ -35,6 +39,7 @@ pub fn threads_limit_choices(current: u32) -> Vec<u32> {
 
 const GROUP_PREFIX: &str = "group:";
 const GROUP_COLLAPSE_PREFIX: &str = "sidebar.group.";
+const FLAG_PREFIX: &str = "flag:";
 
 /// Default order of the orderable built-in sections. Omnichannel is not
 /// orderable: it is always rendered on top.
@@ -53,13 +58,16 @@ pub const DEFAULT_ORDER: [SectionKind; 9] = [
 /// Persisted identity of a sidebar section; also the source of its collapse key.
 /// Serialized as a string: `"unread"`, `"favorites"`, `"threads"`, `"teams"`,
 /// `"discussions"`, `"channels"`, `"private_groups"`, `"direct_messages"`,
-/// `"conversations"`, `"omnichannel"`, `"group:<id>"`; anything else is
-/// [`SectionId::Unknown`] (kept in the stored order, otherwise ignored).
+/// `"conversations"`, `"omnichannel"`, `"group:<id>"`, `"flag:<color>"`;
+/// anything else is [`SectionId::Unknown`] (kept in the stored order,
+/// otherwise ignored).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum SectionId {
     Builtin(SectionKind),
     Group(String),
+    /// Rooms and threads carrying a flag of this color.
+    Flag(FlagColor),
     Unknown(String),
 }
 
@@ -100,17 +108,36 @@ impl SectionId {
         match self {
             Self::Builtin(k) => builtin_str(*k).to_owned(),
             Self::Group(id) => format!("{GROUP_PREFIX}{id}"),
+            Self::Flag(c) => format!("{FLAG_PREFIX}{}", c.as_str()),
             Self::Unknown(s) => s.clone(),
         }
     }
 
     /// Key in `ui_state.collapsed_sections`: built-ins keep their i18n key
-    /// (`sidebar.<x>`, as before groups existed), groups use `sidebar.group.<id>`.
+    /// (`sidebar.<x>`, as before groups existed), groups use
+    /// `sidebar.group.<id>`, flags `sidebar.flag.<color>`.
     pub fn collapse_key(&self) -> Cow<'static, str> {
         match self {
             Self::Builtin(k) => Cow::Borrowed(k.i18n_key()),
             Self::Group(id) => Cow::Owned(format!("{GROUP_COLLAPSE_PREFIX}{id}")),
+            Self::Flag(c) => Cow::Borrowed(c.i18n_key()),
             Self::Unknown(s) => Cow::Owned(format!("sidebar.unknown.{s}")),
+        }
+    }
+
+    /// The i18n key of the default title (built-ins and flags).
+    pub fn i18n_key(&self) -> Option<&'static str> {
+        match self {
+            Self::Builtin(k) => Some(k.i18n_key()),
+            Self::Flag(c) => Some(c.i18n_key()),
+            _ => None,
+        }
+    }
+
+    pub fn flag(&self) -> Option<FlagColor> {
+        match self {
+            Self::Flag(c) => Some(*c),
+            _ => None,
         }
     }
 
@@ -143,6 +170,9 @@ impl From<String> for SectionId {
     fn from(s: String) -> Self {
         if let Some(k) = ALL_KINDS.into_iter().find(|k| builtin_str(*k) == s) {
             return Self::Builtin(k);
+        }
+        if let Some(c) = s.strip_prefix(FLAG_PREFIX).and_then(FlagColor::parse) {
+            return Self::Flag(c);
         }
         match s.strip_prefix(GROUP_PREFIX) {
             Some(id) if !id.is_empty() => Self::Group(id.to_owned()),
@@ -376,13 +406,15 @@ fn orderable(id: &SectionId, groups: &HashSet<&str>) -> bool {
     match id {
         SectionId::Builtin(k) => DEFAULT_ORDER.contains(k),
         SectionId::Group(g) => groups.contains(g.as_str()),
-        SectionId::Unknown(_) => true,
+        SectionId::Flag(_) | SectionId::Unknown(_) => true,
     }
 }
 
 /// The stored order made complete: deduplicated, gone groups dropped, unknown
 /// ids kept in place, missing built-ins inserted after their nearest preceding
-/// [`DEFAULT_ORDER`] neighbour, missing groups appended.
+/// [`DEFAULT_ORDER`] neighbour, missing flag sections after Favorites (in
+/// palette order, after the flags already placed there), missing groups
+/// appended.
 fn materialized_order(p: &UiPrefs) -> Vec<SectionId> {
     let groups: HashSet<&str> = p.sidebar_groups.iter().map(|g| g.id.as_str()).collect();
     let mut seen = HashSet::new();
@@ -401,6 +433,20 @@ fn materialized_order(p: &UiPrefs) -> Vec<SectionId> {
             .iter()
             .rev()
             .find_map(|prev| out.iter().position(|x| x == &SectionId::Builtin(*prev)))
+            .map_or(0, |p| p + 1);
+        out.insert(at, id);
+    }
+    let favorites = SectionId::Builtin(SectionKind::Favorites);
+    for (i, c) in FlagColor::ALL.into_iter().enumerate() {
+        let id = SectionId::Flag(c);
+        if out.contains(&id) {
+            continue;
+        }
+        let at = FlagColor::ALL[..i]
+            .iter()
+            .rev()
+            .find_map(|prev| out.iter().position(|x| x == &SectionId::Flag(*prev)))
+            .or_else(|| out.iter().position(|x| x == &favorites))
             .map_or(0, |p| p + 1);
         out.insert(at, id);
     }
@@ -734,8 +780,15 @@ mod tests {
         }
     }
 
+    fn flag_ids() -> Vec<SectionId> {
+        FlagColor::ALL.into_iter().map(SectionId::Flag).collect()
+    }
+
+    /// The default order: the built-ins, flags after Favorites.
     fn default_ids() -> Vec<SectionId> {
-        DEFAULT_ORDER.iter().map(|k| b(*k)).collect()
+        let mut v: Vec<SectionId> = DEFAULT_ORDER.iter().map(|k| b(*k)).collect();
+        v.splice(2..2, flag_ids());
+        v
     }
 
     #[test]
@@ -749,7 +802,20 @@ mod tests {
         assert_eq!(g, SectionId::group("abc"));
         assert_eq!(g.collapse_key(), "sidebar.group.abc");
         assert_eq!(g.as_config_str(), "group:abc");
-        for s in ["group:", "future", "Unread"] {
+        for c in FlagColor::ALL {
+            let f = SectionId::Flag(c);
+            assert_eq!(SectionId::from(f.as_config_str()), f);
+            assert_eq!(f.collapse_key(), c.i18n_key());
+            assert_eq!(f.i18n_key(), Some(c.i18n_key()));
+            assert_eq!(f.flag(), Some(c));
+        }
+        assert_eq!(
+            SectionId::Flag(FlagColor::Blue).as_config_str(),
+            "flag:blue"
+        );
+        assert_eq!(b(Favorites).i18n_key(), Some("sidebar.favorites"));
+        assert_eq!(g.i18n_key(), None);
+        for s in ["group:", "future", "Unread", "flag:", "flag:pink"] {
             assert_eq!(
                 SectionId::from(s.to_owned()),
                 SectionId::Unknown(s.to_owned())
@@ -769,6 +835,74 @@ mod tests {
     }
 
     #[test]
+    fn flag_sections_default_after_favorites() {
+        // Missing flags go after Favorites; placed ones keep their place,
+        // and missing ones follow the nearest earlier flag.
+        let p = UiPrefs {
+            sidebar_order: ids(&[
+                "flag:blue",
+                "channels",
+                "unread",
+                "favorites",
+                "flag:orange",
+            ]),
+            ..Default::default()
+        };
+        let order = effective_order(&p);
+        assert_eq!(
+            order[..9],
+            ids(&[
+                "flag:blue",
+                "flag:purple",
+                "channels",
+                "private_groups",
+                "direct_messages",
+                "conversations",
+                "unread",
+                "favorites",
+                "flag:red",
+            ])
+        );
+        assert_eq!(
+            order[12..],
+            ids(&["flag:orange", "flag:yellow", "flag:green"])
+        );
+        // Flags move, sort and stay unread-first like any section.
+        let mut p = UiPrefs::default();
+        let red = SectionId::Flag(FlagColor::Red);
+        apply(
+            &mut p,
+            LayoutEdit::MoveTo {
+                id: red.clone(),
+                anchor: b(DirectMessages),
+                after: true,
+            },
+        );
+        apply(
+            &mut p,
+            LayoutEdit::SetSort {
+                id: red.clone(),
+                sort: Some(SidebarSort::Alphabetical),
+            },
+        );
+        apply(
+            &mut p,
+            LayoutEdit::SetUnreadFirst {
+                id: red.clone(),
+                on: Some(true),
+            },
+        );
+        sanitize_prefs(&mut p);
+        let l = Layout::from_prefs(&p);
+        let at = |id: &SectionId| l.order.iter().position(|x| x == id).unwrap();
+        assert_eq!(at(&red), at(&b(DirectMessages)) + 1);
+        assert_eq!(l.sort_of(&red), SidebarSort::Alphabetical);
+        assert!(l.is_unread_first(&red));
+        assert!(!l.is_unread_first(&SectionId::Flag(FlagColor::Blue)));
+        assert!(p.sidebar_section_prefs.contains_key("flag:red"));
+    }
+
+    #[test]
     fn effective_order_fills_in_missing_builtins() {
         let p = UiPrefs {
             sidebar_order: ids(&["channels", "future", "unread", "group:w", "group:gone"]),
@@ -784,6 +918,12 @@ mod tests {
                 "conversations",
                 "unread",
                 "favorites",
+                "flag:red",
+                "flag:orange",
+                "flag:yellow",
+                "flag:green",
+                "flag:blue",
+                "flag:purple",
                 "threads",
                 "teams",
                 "discussions",

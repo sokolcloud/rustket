@@ -163,7 +163,7 @@ pub fn results(
     let mut local: Vec<(bool, u32, Option<rocketchat::RcDate>, &RoomEntry)> = ws
         .rooms()
         .values()
-        .filter(|e| e.sub.is_some())
+        .filter(|e| e.sub.is_some() && !e.is_service_room())
         .filter(|e| {
             let direct = e.room_type() == RoomType::Direct;
             match scope {
@@ -235,6 +235,7 @@ pub fn results(
             for room in &r.rooms {
                 if room.t == RoomType::Direct
                     || (ws.subscription(&room.id).is_some() && listed(&room.id))
+                    || ws.is_service_room(&room.id)
                 {
                     continue;
                 }
@@ -712,6 +713,62 @@ mod tests {
         assert_eq!(rids(&results(&ws, &opts, "@", None)), vec!["d1"]);
         assert!(!rids(&results(&ws, &opts, "#", None)).contains(&"d1".to_owned()));
         assert!(results(&ws, &opts, "#bob", Some(&spotlight_with("bob"))).is_empty());
+    }
+
+    #[test]
+    fn service_rooms_are_never_found() {
+        let mut ws = ws();
+        add(&mut ws, "svc", "rustket-sync-me", RoomType::Private, 1);
+        let fields = rocketchat::models::ServiceFields::new("me").to_custom_fields();
+        let mut s = ws.subscription("svc").unwrap().clone();
+        s.open = false;
+        s.roles = Some(vec!["owner".into()]);
+        s.custom_fields = Some(fields.clone());
+        ws.apply_subscription(Change::Updated, s);
+        let mut r = ws.room("svc").unwrap().room.clone().unwrap();
+        r.u = Some(UserRef {
+            id: "me".into(),
+            username: Some("me".into()),
+            name: None,
+        });
+        r.users_count = Some(1);
+        r.custom_fields = Some(fields.clone());
+        ws.apply_room(Change::Updated, r.clone());
+        // Someone else's marked room is an ordinary one.
+        add(&mut ws, "forged", "rustket-sync-x", RoomType::Private, 0);
+        let mut s = ws.subscription("forged").unwrap().clone();
+        s.roles = Some(vec!["owner".into()]);
+        s.custom_fields = Some(fields.clone());
+        ws.apply_subscription(Change::Updated, s);
+        ws.apply_room(
+            Change::Updated,
+            Room {
+                id: "forged".into(),
+                name: Some("rustket-sync-x".into()),
+                u: Some(UserRef {
+                    id: "bob".into(),
+                    username: Some("bob".into()),
+                    name: None,
+                }),
+                ..r
+            },
+        );
+        assert!(ws.is_service_room("svc") && !ws.is_service_room("forged"));
+        let remote = SpotlightResult {
+            users: vec![],
+            rooms: vec![RoomSummary {
+                id: "svc".into(),
+                t: RoomType::Private,
+                name: Some("rustket-sync-me".into()),
+                ..Default::default()
+            }],
+        };
+        let opts = RoomListOptions::default();
+        assert_eq!(
+            rids(&results(&ws, &opts, "rustket", Some(&remote))),
+            vec!["forged"]
+        );
+        assert!(!rids(&results(&ws, &opts, "", None)).contains(&"svc".to_owned()));
     }
 
     fn with_ctx<R>(ws: &mut Workspace, f: impl FnOnce(&mut Ctx<'_>) -> R) -> R {

@@ -2737,3 +2737,286 @@ async fn kept_threads_are_deduped_capped_and_saved() {
     let first = app.config.server(&sid).unwrap().kept_threads().next();
     assert_eq!(first.map(|k| k.tmid.as_str()), Some("t3"));
 }
+
+/// "Add thread to Favorites" stars the parent through the server: nothing
+/// happens without a session, and a failed call takes the optimistic star
+/// back.
+#[tokio::test]
+async fn failed_thread_star_is_reverted() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let idx = |app: &App| app.servers[&sid].workspace.thread_index().is_starred("t1");
+    assert!(app.servers[&sid].workspace.thread_index().pins_enabled());
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::ThreadAct {
+            rid: "r1".into(),
+            tmid: "t1".into(),
+            act: sidebar::ThreadAct::Star,
+        },
+    ));
+    assert!(!idx(&app), "no session: not applied");
+    // As applied when the call was made.
+    app.servers
+        .get_mut(&sid)
+        .unwrap()
+        .workspace
+        .set_thread_starred("r1", "t1", true);
+    let _ = app.update(Message::ThreadStarred {
+        sid: sid.clone(),
+        epoch: app.servers[&sid].generation,
+        rid: "r1".into(),
+        tmid: "t1".into(),
+        on: true,
+        queued: false,
+        result: Err(Failure::from(rocketchat::Error::Timeout(
+            "chat.starMessage",
+        ))),
+    });
+    assert!(!idx(&app), "reverted");
+    // Off in the settings: nothing is tracked.
+    app.config.ui.sidebar_starred_threads = false;
+    let _ = app.update(Message::Noop);
+    assert!(!app.servers[&sid].workspace.thread_index().pins_enabled());
+}
+
+/// Failures of "Move kept threads to Favorites" are reverted silently and
+/// reported once the queue is done; rate-limited ones are tried again.
+#[tokio::test]
+async fn queued_star_failures_are_reported_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    app.config.ui.sidebar_starred_threads = true;
+    let _ = app.update(Message::Noop);
+    let failed = |app: &mut App, e: rocketchat::Error| {
+        app.servers
+            .get_mut(&sid)
+            .unwrap()
+            .workspace
+            .set_thread_starred("r1", "t1", true);
+        let _ = app.update(Message::ThreadStarred {
+            sid: sid.clone(),
+            epoch: app.servers[&sid].generation,
+            rid: "r1".into(),
+            tmid: "t1".into(),
+            on: true,
+            queued: true,
+            result: Err(Failure::from(e)),
+        });
+        assert!(!app.servers[&sid].workspace.thread_index().is_starred("t1"));
+    };
+    failed(
+        &mut app,
+        rocketchat::Error::RateLimited {
+            retry_after: Some(std::time::Duration::ZERO),
+            message: None,
+        },
+    );
+    failed(&mut app, rocketchat::Error::Timeout("chat.starMessage"));
+    assert!(app.toasts.is_empty());
+    // The retried one has no session to go out on: skipped. Then one
+    // message for the failure.
+    let _ = app.update(Message::StarKeptNext);
+    assert_eq!(app.toasts.len(), 1, "{:?}", app.toasts);
+    assert!(app.toasts[0].title.contains('1'), "{:?}", app.toasts[0]);
+}
+
+#[tokio::test]
+async fn flag_edits_persist_until_the_service_room_shows_them() {
+    use rocketchat::models::{FLAGS_KEY, ServiceFields};
+    use rustket_core::flags::{FlagColor, FlagEdit};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let edit = FlagEdit::Room {
+        rid: "r1".into(),
+        color: Some(FlagColor::Red),
+    };
+    let _ = app.update(Message::SetFlag(sid.clone(), edit));
+    assert_eq!(
+        app.servers[&sid].workspace.room_flag("r1"),
+        Some(FlagColor::Red),
+        "shown at once"
+    );
+    assert!(app.config.device_id.is_some());
+    let pending = app.config.server(&sid).unwrap().pending_flags("A");
+    assert_eq!(pending.view().room("r1"), Some(FlagColor::Red));
+    // A restart (same config) shows the pending edit before any sync.
+    app.flush_config();
+    let saved = AppConfig::load(dir.path()).unwrap();
+    assert_eq!(
+        saved.servers[0].pending_flags("A").view().room("r1"),
+        Some(FlagColor::Red)
+    );
+    // The service room's subscription echo stores it: the overlay goes.
+    let mut fields = ServiceFields::new("A");
+    fields.set(FLAGS_KEY, pending.to_value());
+    let svc = Sub {
+        t: RoomType::Private,
+        open: false,
+        roles: Some(vec!["owner".into()]),
+        custom_fields: Some(fields.to_custom_fields()),
+        ts: Some(ts(T0)),
+        ..sub("svc", "A", 0, T0)
+    };
+    let m = ev(
+        &app,
+        &sid,
+        SessionEvent::SubscriptionChanged {
+            kind: ChangeKind::Inserted,
+            sub: Box::new(svc),
+        },
+    );
+    let _ = app.update(m);
+    let svc_room = Room {
+        t: RoomType::Private,
+        u: Some(UserRef {
+            id: "A".into(),
+            username: Some("alice".into()),
+            name: None,
+        }),
+        users_count: Some(1),
+        custom_fields: Some(fields.to_custom_fields()),
+        ..room("svc", T0)
+    };
+    let m = ev(
+        &app,
+        &sid,
+        SessionEvent::RoomChanged {
+            kind: ChangeKind::Inserted,
+            room: Box::new(svc_room),
+        },
+    );
+    let _ = app.update(m);
+    let s = &app.servers[&sid];
+    assert!(s.flags.overlay().is_empty());
+    assert_eq!(s.workspace.room_flag("r1"), Some(FlagColor::Red));
+    assert!(
+        app.config
+            .server(&sid)
+            .unwrap()
+            .pending_flags("A")
+            .is_empty()
+    );
+    assert_eq!(s.workspace.service_rooms(), ["svc".to_owned()]);
+}
+
+/// Sidebar flag items go through the flag sync (shown at once); "Rename
+/// flag…" opens the settings at that flag's name field, focused, and the
+/// name typed there renames the section; "Add to favorites" needs a session.
+#[tokio::test]
+async fn sidebar_flags_and_rename_through_settings() {
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    use rustket_core::flags::FlagColor;
+    use rustket_core::sidebar_layout::SectionId;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::RoomAct {
+            rid: "r1".into(),
+            act: sidebar::RoomAct::Flag(Some(FlagColor::Purple)),
+        },
+    ));
+    assert_eq!(
+        app.servers[&sid].workspace.room_flag("r1"),
+        Some(FlagColor::Purple)
+    );
+    assert!(
+        app.servers[&sid]
+            .sidebar
+            .sections
+            .iter()
+            .any(|s| s.id == SectionId::Flag(FlagColor::Purple))
+    );
+    // No session in this app: nothing is called, nothing breaks.
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::RoomAct {
+            rid: "r1".into(),
+            act: sidebar::RoomAct::Favorite(true),
+        },
+    ));
+
+    let task = app.update(header(
+        &sid,
+        sidebar::HeaderAct::RenameFlag(FlagColor::Purple),
+    ));
+    assert!(matches!(app.screen, rustket::app::Screen::Settings(_)));
+    let mut renderer = test_renderer();
+    let size = iced::Size::new(1280.0, 800.0);
+    let mut ui = UserInterface::build(app.view(), size, Cache::default(), &mut renderer);
+    run_ops(&mut ui, &renderer, task);
+    let (bounds, t) = scrollables(&mut ui, &renderer)[0];
+    let row = container_bounds(
+        &mut ui,
+        &renderer,
+        iced::advanced::widget::Id::from(rustket::screens::settings::flag_row_id(
+            &sid,
+            FlagColor::Purple,
+        )),
+    )
+    .expect("the flag's row");
+    let top = row.y - t.y;
+    assert!(
+        top >= bounds.y && top + row.height <= bounds.y + bounds.height,
+        "row {row:?} at {top} in {bounds:?}"
+    );
+    let focus = focused(&mut ui, &renderer);
+    let name_id = iced::advanced::widget::Id::from(rustket::screens::settings::flag_name_id(
+        &sid,
+        FlagColor::Purple,
+    ));
+    assert!(
+        focus.iter().any(|(id, _)| id.as_ref() == Some(&name_id)),
+        "{focus:?}"
+    );
+    drop(ui);
+    let settings = |m: rustket::screens::settings::SidebarMessage| {
+        Message::Settings(rustket::screens::settings::Message::Sidebar(m))
+    };
+    let _ = app.update(settings(
+        rustket::screens::settings::SidebarMessage::FlagName(
+            sid.clone(),
+            FlagColor::Purple,
+            "Waiting".into(),
+        ),
+    ));
+    let _ = app.update(settings(
+        rustket::screens::settings::SidebarMessage::FlagNameSave(sid.clone(), FlagColor::Purple),
+    ));
+    let ws = &app.servers[&sid].workspace;
+    assert_eq!(ws.flags().name(FlagColor::Purple), Some("Waiting"));
+    let pending = app.config.server(&sid).unwrap().pending_flags("A");
+    assert_eq!(pending.view().name(FlagColor::Purple), Some("Waiting"));
+
+    // A draft that reads like the stored name is dropped.
+    use rustket::screens::settings::SidebarMessage;
+    let drafts = |app: &App| match &app.screen {
+        rustket::app::Screen::Settings(s) => s.flag_drafts.len(),
+        _ => usize::MAX,
+    };
+    let _ = app.update(settings(SidebarMessage::FlagName(
+        sid.clone(),
+        FlagColor::Purple,
+        "Waiting ".into(),
+    )));
+    assert_eq!(drafts(&app), 1);
+    let _ = app.update(settings(SidebarMessage::FlagName(
+        sid.clone(),
+        FlagColor::Purple,
+        "Waiting".into(),
+    )));
+    assert_eq!(drafts(&app), 0);
+    // Leaving the settings saves a name typed without Enter.
+    let _ = app.update(settings(SidebarMessage::FlagName(
+        sid.clone(),
+        FlagColor::Blue,
+        "Later".into(),
+    )));
+    let _ = app.update(Message::Settings(
+        rustket::screens::settings::Message::Close,
+    ));
+    assert!(!matches!(app.screen, rustket::app::Screen::Settings(_)));
+    let ws = &app.servers[&sid].workspace;
+    assert_eq!(ws.flags().name(FlagColor::Blue), Some("Later"));
+}

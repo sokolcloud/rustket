@@ -47,6 +47,8 @@ pub enum Message {
     UiKit(Box<crate::uikit::UiKitMsg>),
     /// End-to-end encryption: menu entries, dialogs, room body buttons.
     E2e(crate::e2e::room::Msg),
+    /// Menu: set the room's flag (`None`: remove it).
+    Flag(Option<rustket_core::flags::FlagColor>),
 }
 
 pub struct Header {
@@ -217,14 +219,31 @@ pub fn menu_entries(
     if !allowed.is_empty() {
         v.push(MenuEntry::Separator);
     }
-    for a in allowed {
-        v.push(
-            MenuItem::new(a.label(), Message::Room(a))
-                .icon(a.icon())
-                .danger(a.danger())
-                .into(),
-        );
+    let item = |a: RoomAction| -> MenuEntry<Message> {
+        MenuItem::new(a.label(), Message::Room(a))
+            .icon(a.icon())
+            .danger(a.danger())
+            .into()
+    };
+    // Favorites, the flag block, then the other actions.
+    let (fav_action, rest): (Vec<RoomAction>, Vec<RoomAction>) = allowed
+        .into_iter()
+        .partition(|a| matches!(a, RoomAction::Favorite(_)));
+    v.extend(fav_action.into_iter().map(item));
+    if crate::workspace::flag_menu::can_flag_room(ws, rid) {
+        if !matches!(v.last(), Some(MenuEntry::Separator)) {
+            v.push(MenuEntry::Separator);
+        }
+        v.extend(crate::workspace::flag_menu::entries(
+            ws.flags(),
+            ws.room_flag(rid),
+            Message::Flag,
+        ));
+        if !rest.is_empty() {
+            v.push(MenuEntry::Separator);
+        }
     }
+    v.extend(rest.into_iter().map(item));
     v.extend(crate::uikit::buttons::room_entries(ws, rid, |m| {
         Message::UiKit(Box::new(m))
     }));
@@ -461,6 +480,13 @@ impl Header {
             Message::E2e(m) => {
                 self.menu_open = false;
                 self.e2e.update(m, ctx).map(Message::E2e)
+            }
+            Message::Flag(color) => {
+                self.menu_open = false;
+                Action::effect(Effect::SetFlag(rustket_core::flags::FlagEdit::Room {
+                    rid: self.rid.clone(),
+                    color,
+                }))
             }
         }
     }
@@ -870,6 +896,61 @@ mod tests {
         let ws = ws("d", json!({"uids": ["me", "b", "c"]}));
         assert_eq!(dm_partner(&ws, "r"), None);
         assert!(buttons(&ws, "r").members);
+    }
+
+    /// The flag block follows Favorites; a choice closes the menu and sets
+    /// the room's flag. Omnichannel rooms have none.
+    #[test]
+    fn menu_has_the_flag_block_after_favorites() {
+        use rustket_core::flags::{FlagColor, FlagEdit};
+        let w = ws("c", json!({}));
+        let entries = menu_entries(&w, "r", &[]);
+        let fav = entries
+            .iter()
+            .position(|e| matches!(e, MenuEntry::Item(i) if matches!(i.on_select, Message::Room(RoomAction::Favorite(_)))))
+            .unwrap();
+        assert!(matches!(entries[fav + 1], MenuEntry::Separator));
+        assert!(matches!(entries[fav + 2], MenuEntry::Header(_)));
+        let flags: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Item(i) => match i.on_select {
+                    Message::Flag(c) => Some((c, i.swatch, i.checked)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(flags.len(), 6, "no removal without a flag");
+        assert_eq!(flags[0], (Some(FlagColor::Red), Some(0), Some(false)));
+        let mut h = Header::new("r");
+        h.menu_open = true;
+        let mut w = w;
+        let sid = rustket_core::ServerId("s".into());
+        let server = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &server,
+            rid: "r",
+            workspace: &mut w,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let a = h.update(Message::Flag(Some(FlagColor::Yellow)), &mut ctx);
+        assert!(!h.menu_open);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::SetFlag(FlagEdit::Room { rid, color: Some(FlagColor::Yellow) })] if rid == "r"
+        ));
+        let live = ws("l", json!({}));
+        assert!(
+            !menu_entries(&live, "r", &[]).iter().any(
+                |e| matches!(e, MenuEntry::Item(i) if matches!(i.on_select, Message::Flag(_)))
+            )
+        );
     }
 
     #[test]

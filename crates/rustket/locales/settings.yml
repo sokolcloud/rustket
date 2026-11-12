@@ -257,6 +257,63 @@ settings.threads_limit:
 settings.threads_limit_help:
   en: "Only what fits is loaded: a smaller number means less traffic and work."
   ru: "Загружается только то, что помещается: чем меньше число, тем меньше трафика и работы."
+settings.starred_threads:
+  en: "Starred threads in Favorites"
+  ru: "Избранные треды в «Избранном»"
+settings.starred_threads_help:
+  en: "Threads whose first message you starred are listed in Favorites, even with the Threads section off. Adding a thread to Favorites stars its first message: it also appears among the room's starred messages."
+  ru: "Треды, первое сообщение которых вы отметили звёздочкой, показываются в «Избранном», даже если раздел «Треды» выключен. Добавить тред в избранное — значит отметить звёздочкой его первое сообщение: оно появится и среди отмеченных сообщений комнаты."
+settings.starred_threads_sync_help:
+  en: "Stars from other devices on old threads in quiet rooms may take up to a week to show here; “Refresh starred threads” in the Favorites menu checks every room now."
+  ru: "Звёздочки, поставленные на других устройствах в старых тредах малоактивных комнат, могут появиться здесь только через неделю; пункт «Обновить избранные треды» в меню «Избранного» проверит все комнаты сразу."
+settings.star_kept:
+  en: "Move kept threads to Favorites"
+  ru: "Перенести оставленные треды в «Избранное»"
+settings.star_kept_help:
+  en: "Kept threads not in Favorites: %{count}. Kept threads stay on this device; moving them stars their first messages, so they show on your other devices too."
+  ru: "Оставленных тредов не в «Избранном»: %{count}. Оставленные треды хранятся только на этом устройстве, а при переносе их первые сообщения отмечаются звёздочкой и появляются на других ваших устройствах."
+settings.star_kept_confirm:
+  en: "Star the first messages of the kept threads (%{count})? They also appear among the rooms' starred messages in other clients. Each thread takes a few seconds; the threads stay kept."
+  ru: "Отметить звёздочкой первые сообщения оставленных тредов (%{count})? Они появятся и среди отмеченных сообщений комнат в других клиентах. На каждый тред уходит несколько секунд, треды останутся оставленными."
+settings.star_kept_do:
+  en: "Move"
+  ru: "Перенести"
+settings.star_kept_busy:
+  en: "Moving kept threads to Favorites…"
+  ru: "Оставленные треды переносятся в «Избранное»…"
+settings.flags:
+  en: "Flags"
+  ru: "Флажки"
+settings.flags_caption:
+  en: "Flag rooms and threads from their menus. Flags and their names sync across your devices through the server; each account has its own."
+  ru: "Флажки ставятся через меню комнат и тредов. Флажки и их названия синхронизируются между вашими устройствами через сервер, у каждой учётной записи они свои."
+settings.flags_signed_out:
+  en: "Sign in to a server to name its flags."
+  ru: "Войдите на сервер, чтобы задать названия его флажков."
+settings.flags_account:
+  en: "%{user} on %{server}"
+  ru: "%{user} на %{server}"
+settings.flags_pending:
+  en: "Some changes are not saved on the server yet."
+  ru: "Часть изменений ещё не сохранена на сервере."
+settings.flags_failed:
+  en: "Couldn't sync flags: %{error}. They are kept on this device until the next try."
+  ru: "Не удалось синхронизировать флажки: %{error}. Они сохранены на этом устройстве до следующей попытки."
+settings.flag_used:
+  en: "In use: %{count}"
+  ru: "Используется: %{count}"
+settings.flag_unavailable:
+  en: "unavailable: %{count}"
+  ru: "недоступно: %{count}"
+settings.flag_save:
+  en: "Save name"
+  ru: "Сохранить название"
+settings.flag_clear:
+  en: "Remove from all"
+  ru: "Снять со всех"
+settings.flag_clear_confirm:
+  en: "Remove the “%{name}” flag from all rooms and threads on all your devices?"
+  ru: "Снять флажок «%{name}» со всех комнат и тредов на всех ваших устройствах?"
 settings.sections:
   en: "Sections"
   ru: "Разделы"
@@ -266,6 +323,9 @@ settings.section_off:
 settings.section_unused:
   en: "Not used while grouping by type is off"
   ru: "Не используется без группировки по типу"
+settings.section_flag:
+  en: "Flagged rooms and threads"
+  ru: "Комнаты и треды с флажком"
 settings.section_conversations_unused:
   en: "Used only while grouping by type is off"
   ru: "Используется только без группировки по типу"

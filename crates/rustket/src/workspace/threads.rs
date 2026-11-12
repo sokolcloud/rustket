@@ -11,7 +11,7 @@
 //! start at least [`LIST_INTERVAL`] apart, single parents [`GET_INTERVAL`]
 //! apart (a third of the getMessage limit at most: the rest is left to
 //! fetches the user asks for and to other clients) within [`GET_BUDGET`] per
-//! session, and nothing is fetched while disconnected or showing the offline
+//! session (parents only starred or flagged: [`PIN_GET_BUDGET`]), and nothing is fetched while disconnected or showing the offline
 //! cache. [`plan`] picks the next request and is pure;
 //! [`SidebarThreads::tick`] runs it when its inputs changed.
 //!
@@ -30,15 +30,29 @@
 //! smaller than [`FOLLOWED_PER_ROOM`] that had more ([`ShortCrawl`], kept in
 //! the offline cache) is crawled again when the page grows, when the crawl
 //! dropped threads (deleted, hidden) or when its set shrank since.
+//!
+//! Starred threads (Favorites) are tracked whatever the Threads mode is,
+//! while the thread index has pins on. Live updates and every parent copy
+//! keep their star state current; stars made while this device was away,
+//! or on threads it never indexed, are found by scanning each listed room's
+//! starred messages (`chat.getStarredMessages`, its own route and limit:
+//! [`STARRED_INTERVAL`] apart, its own rate-limit pause, only when no other
+//! request is ready). A room is scanned when it never was, when its scan
+//! (restored from the offline cache) predates its last message or is older
+//! than [`STARRED_RESCAN_TTL`], and after missed live updates when it had
+//! messages meanwhile. Stars do not bump `lm`: a star made elsewhere on an
+//! old thread of a quiet room shows after the TTL or a refresh. A room with
+//! many starred messages is scanned [`STARRED_PAGES_PER_TURN`] pages at a
+//! time, other rooms going in between.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iced::Task;
-use rocketchat::models::{Message, Paginated, Subscription};
+use rocketchat::models::{Message, Paginated, RoomType, Subscription};
 use rocketchat::{Error, RcDate};
-use rustket_core::cache::{CachedFollowed, CachedParentsSynced, CachedThreads};
+use rustket_core::cache::{CachedFollowed, CachedParentsSynced, CachedStarred, CachedThreads};
 use rustket_core::config::{SidebarSort, ThreadsMode, UiPrefs};
 use rustket_core::room_list::{SectionKind, display_name, thread_unread};
 use rustket_core::sidebar_layout::{SectionId, section_sort, section_unread_first};
@@ -57,8 +71,13 @@ pub const SLOW_LIST_INTERVAL: Duration = Duration::from_secs(6);
 /// Minimum time between two `chat.getMessage` calls (at most 3 of the 10
 /// per minute allowed per IP).
 pub const GET_INTERVAL: Duration = Duration::from_secs(20);
-/// `chat.getMessage` calls per session.
+/// `chat.getMessage` calls per session for the Threads section (kept and
+/// unread parents).
 pub const GET_BUDGET: u32 = 20;
+/// `chat.getMessage` calls per session for parents only starred or flagged
+/// (e.g. flagged on another device): a budget of their own, so many of them
+/// do not starve the Threads section.
+pub const PIN_GET_BUDGET: u32 = 20;
 /// Page size of the unread list (`API_Upper_Count_Limit` default).
 const UNREAD_PAGE: u64 = 100;
 /// Pages of one room's unread list per pass.
@@ -69,6 +88,17 @@ const DEBOUNCE: Duration = Duration::from_secs(1);
 /// Pause after a rate-limit response without a reset time.
 const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(10);
 const MAX_PAUSE: Duration = Duration::from_secs(300);
+/// Minimum time between two `chat.getStarredMessages` calls (at most 6 of
+/// the 10 per minute allowed per IP: the rest is left to the room's
+/// "Starred messages" panel).
+pub const STARRED_INTERVAL: Duration = Duration::from_secs(10);
+/// Page size of a starred-messages scan.
+const STARRED_PAGE: u64 = 100;
+/// Pages of one room's scan before other rooms due go first.
+pub const STARRED_PAGES_PER_TURN: u32 = 5;
+/// A scan restored from the offline cache older than this runs again even
+/// for a room without new messages.
+pub const STARRED_RESCAN_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Tries of a request whose failure is not recognised (e.g. a proxy's
 /// error page, an unreadable body) before it is given up for the session.
 const MAX_OTHER_FAILURES: u32 = 3;
@@ -126,7 +156,7 @@ impl Cap {
 }
 
 /// The rows the Threads section has now, to tell which rows still to load
-/// can land within the limit.
+/// can land within the limit. Starred threads are in Favorites, not here.
 #[derive(Debug, Default)]
 struct Bound {
     /// `None`: no limit, everything is loaded.
@@ -184,7 +214,8 @@ impl Bound {
                 .map(|(e, s)| (s.rid.clone(), display_name(ws, e, real).to_lowercase()))
                 .collect();
         }
-        let mut seen: HashSet<&str> = HashSet::new();
+        // Starred and flagged threads take no row here.
+        let mut seen: HashSet<&str> = idx.pinned().map(|(_, t)| t).collect();
         let mut loaded: Vec<(bool, &str, Option<RcDate>)> = Vec::new();
         for (_, s) in listed(ws) {
             for t in shown_unread(s) {
@@ -326,14 +357,26 @@ impl Bound {
 pub enum Fetch {
     /// One page of a room's unread threads.
     Unread { rid: String, offset: u64 },
-    /// One parent (kept, or unread but missing from the list).
-    Parent { rid: String, tmid: String },
+    /// One parent (kept, or unread but missing from the list; `pinned`:
+    /// only starred or flagged, from [`PIN_GET_BUDGET`]).
+    Parent {
+        rid: String,
+        tmid: String,
+        pinned: bool,
+    },
     /// A room's newest `count` followed threads; `activity` is the room's
     /// `lr` now.
     Followed {
         rid: String,
         activity: Option<RcDate>,
         count: usize,
+    },
+    /// One page of a room's starred messages; `lm` is the room's last
+    /// message now.
+    Starred {
+        rid: String,
+        offset: u64,
+        lm: Option<RcDate>,
     },
 }
 
@@ -343,6 +386,7 @@ impl Fetch {
             Self::Unread { rid, .. } => Key::Unread(rid.clone()),
             Self::Parent { tmid, .. } => Key::Parent(tmid.clone()),
             Self::Followed { rid, .. } => Key::Followed(rid.clone()),
+            Self::Starred { rid, .. } => Key::Starred(rid.clone()),
         }
     }
 }
@@ -353,6 +397,7 @@ enum Key {
     Unread(String),
     Parent(String),
     Followed(String),
+    Starred(String),
 }
 
 /// What [`plan`] decided.
@@ -387,6 +432,11 @@ pub enum Done {
     Followed {
         rid: String,
         activity: Option<RcDate>,
+        res: Res<Paginated<Message>>,
+    },
+    Starred {
+        rid: String,
+        offset: u64,
         res: Res<Paginated<Message>>,
     },
 }
@@ -424,6 +474,20 @@ struct Paging {
     floor: Option<RcDate>,
 }
 
+/// A room's starred-messages scan in progress (more pages to come).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StarredPass {
+    /// Offset of the next page.
+    offset: u64,
+    /// When the first page was asked for: star changes seen since win.
+    started: Instant,
+    /// The room's `lm` then.
+    lm: Option<RcDate>,
+    /// Starred thread parents of the pages so far.
+    found: Vec<String>,
+    pages: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Backoff {
     failures: u32,
@@ -459,6 +523,8 @@ pub struct SidebarThreads {
     /// room's `lr` when that was first noticed. Rooms whose `lr` differs
     /// after the next sync had replies in between.
     lr_before: Option<HashMap<String, Option<RcDate>>>,
+    /// Each listed room's last message when `lr_before` was captured.
+    lm_before: Option<HashMap<String, Option<RcDate>>>,
     in_flight: Option<InFlight>,
     /// Start of the last list / single-parent request (kept across sessions
     /// and logouts: the limits are per IP).
@@ -466,8 +532,12 @@ pub struct SidebarThreads {
     last_get: Option<Instant>,
     /// Rate limited: nothing before this (kept like `last_list`).
     paused_until: Option<Instant>,
-    /// `chat.getMessage` calls in this session.
+    /// The same for the starred-messages route, limited on its own.
+    last_starred: Option<Instant>,
+    starred_paused_until: Option<Instant>,
+    /// `chat.getMessage` calls in this session (Threads section, pins).
     gets: u32,
+    pin_gets: u32,
     /// The pending pacing timer.
     timer: Option<Instant>,
     /// Unread tmids without a parent, since when (debounce).
@@ -489,6 +559,17 @@ pub struct SidebarThreads {
     /// Rooms whose crawl failed (unrecognised failures); crawled again after
     /// missed live updates.
     crawl_failed: HashSet<String>,
+    /// Scanned rooms to scan again (restored scans not current, messages
+    /// while live updates were missed, a refresh).
+    starred_due: BTreeSet<String>,
+    /// Unfinished starred scans by room.
+    starred_passes: BTreeMap<String, StarredPass>,
+    /// Rooms whose scan was checked against the room's `lm` (or made) in
+    /// this session.
+    starred_checked: HashSet<String>,
+    /// Rooms whose scan failed (not allowed, unrecognised): scanned again
+    /// after missed live updates or a refresh.
+    starred_failed: HashSet<String>,
     backoff: HashMap<Key, Backoff>,
 }
 
@@ -526,14 +607,26 @@ impl TickKey {
     }
 }
 
-/// Rooms of the room list: subscribed, open, not archived.
+/// Rooms of the room list: subscribed, open, not archived, not service
+/// rooms.
 fn listed(ws: &Workspace) -> impl Iterator<Item = (&RoomEntry, &Subscription)> {
     ws.rooms().values().filter_map(|e| {
         e.sub
             .as_ref()
-            .filter(|s| s.open && !e.is_archived())
+            .filter(|s| s.open && !e.is_archived() && !e.is_service_room())
             .map(|s| (e, s))
     })
+}
+
+/// Rooms whose starred messages are scanned: listed, not omnichannel.
+fn scanned_rooms(ws: &Workspace) -> impl Iterator<Item = (&RoomEntry, &Subscription)> {
+    listed(ws).filter(|(e, _)| !matches!(e.room_type(), RoomType::Livechat | RoomType::Voip))
+}
+
+/// A room's last message.
+fn room_lm(e: &RoomEntry) -> Option<RcDate> {
+    let r = e.room.as_ref()?;
+    r.lm.or_else(|| r.last_message.as_ref().and_then(|m| m.ts))
 }
 
 /// Unread threads of a subscription that the Threads section shows.
@@ -586,7 +679,9 @@ fn earliest(a: Option<Instant>, b: Instant) -> Option<Instant> {
 /// row limit and sort, whether the Threads section is collapsed (the
 /// Following crawl waits then) and the loader state. Order: unread pages,
 /// then single parents, then the Following crawl; a request that must wait
-/// for its pacing lets a ready one of the other kind go first.
+/// for its pacing lets a ready one of the other kind go first. Starred
+/// scans (pins on, any mode) come last: only when nothing else is ready.
+/// With the Threads section off only starred threads are loaded.
 pub fn plan(
     ws: &Workspace,
     mode: ThreadsMode,
@@ -595,7 +690,8 @@ pub fn plan(
     st: &SidebarThreads,
     now: Instant,
 ) -> Next {
-    if mode == ThreadsMode::Off
+    let pins = ws.thread_index().pins_enabled();
+    if !ws.thread_index().indexing()
         || st.in_flight.is_some()
         || !ws.settings().threads_enabled()
         || ws.from_cache()
@@ -604,27 +700,41 @@ pub fn plan(
     {
         return Next::Idle;
     }
-    if let Some(p) = st.paused_until.filter(|p| *p > now) {
-        return Next::Wait(p);
-    }
     let mut wake = None;
-    let bound = Bound::new(ws, mode, cap);
-    let page = cap.followed_page();
-    let list = st.list_candidate(ws, mode, &bound, page, threads_collapsed, now, &mut wake);
-    let get = st.get_candidate(ws, mode, &bound, page, threads_collapsed, now, &mut wake);
-    if let Some((f, interval)) = list {
-        let at = st.last_list.map_or(now, |t| t + interval);
-        if at <= now {
-            return Next::Fetch(f);
+    if let Some(p) = st.paused_until.filter(|p| *p > now) {
+        wake = Some(p);
+    } else {
+        let bound = Bound::new(ws, mode, cap);
+        let page = cap.followed_page();
+        let list = (mode != ThreadsMode::Off)
+            .then(|| st.list_candidate(ws, mode, &bound, page, threads_collapsed, now, &mut wake))
+            .flatten();
+        let get = st.get_candidate(ws, mode, &bound, page, threads_collapsed, now, &mut wake);
+        if let Some((f, interval)) = list {
+            let at = st.last_list.map_or(now, |t| t + interval);
+            if at <= now {
+                return Next::Fetch(f);
+            }
+            wake = earliest(wake, at);
         }
-        wake = earliest(wake, at);
+        if let Some(f) = get {
+            let at = st.last_get.map_or(now, |t| t + GET_INTERVAL);
+            if at <= now {
+                return Next::Fetch(f);
+            }
+            wake = earliest(wake, at);
+        }
     }
-    if let Some(f) = get {
-        let at = st.last_get.map_or(now, |t| t + GET_INTERVAL);
-        if at <= now {
-            return Next::Fetch(f);
+    if pins {
+        if let Some(p) = st.starred_paused_until.filter(|p| *p > now) {
+            wake = earliest(wake, p);
+        } else if let Some(f) = st.starred_candidate(ws, now, &mut wake) {
+            let at = st.last_starred.map_or(now, |t| t + STARRED_INTERVAL);
+            if at <= now {
+                return Next::Fetch(f);
+            }
+            wake = earliest(wake, at);
         }
-        wake = earliest(wake, at);
     }
     wake.map_or(Next::Idle, Next::Wait)
 }
@@ -767,8 +877,59 @@ impl SidebarThreads {
             && bound.reaches(&s.rid, bound.crawl_lr(s), false)
     }
 
+    /// Whether room `rid` is to be scanned for starred threads, and how
+    /// urgently: 0 a scan under way, 1 not scanned or due, 2 a scan that had
+    /// its turn of pages (other rooms first).
+    fn starred_tier(&self, ws: &Workspace, rid: &str) -> Option<u8> {
+        let omnichannel =
+            |e: &RoomEntry| matches!(e.room_type(), RoomType::Livechat | RoomType::Voip);
+        if self.starred_failed.contains(rid) || ws.room(rid).is_none_or(omnichannel) {
+            return None;
+        }
+        match self.starred_passes.get(rid) {
+            Some(p) if p.pages > 0 && p.pages % STARRED_PAGES_PER_TURN == 0 => Some(2),
+            Some(_) => Some(0),
+            None if self.starred_due.contains(rid)
+                || ws.thread_index().starred_scan(rid).is_none() =>
+            {
+                Some(1)
+            }
+            None => None,
+        }
+    }
+
+    /// The next starred-messages page: scans under way, then rooms not
+    /// scanned or due, newest activity first.
+    fn starred_candidate(
+        &self,
+        ws: &Workspace,
+        now: Instant,
+        wake: &mut Option<Instant>,
+    ) -> Option<Fetch> {
+        let mut queue: Vec<(u8, Option<RcDate>, &str, &RoomEntry)> = scanned_rooms(ws)
+            .filter_map(|(e, s)| {
+                let tier = self.starred_tier(ws, &s.rid)?;
+                Some((tier, e.last_activity(), s.rid.as_str(), e))
+            })
+            .collect();
+        queue.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(b.2))
+        });
+        queue
+            .into_iter()
+            .find(|(_, _, rid, _)| self.ready(&Key::Starred((*rid).to_owned()), now, wake))
+            .map(|(_, _, rid, e)| Fetch::Starred {
+                rid: rid.to_owned(),
+                offset: self.starred_passes.get(rid).map_or(0, |p| p.offset),
+                lm: room_lm(e),
+            })
+    }
+
     /// The next single parent: kept threads first (rooms the user is in),
-    /// then unread ones the unread list did not return. A kept thread that a
+    /// then unread ones the unread list did not return, then (from a budget
+    /// of their own) starred and flagged ones. A kept thread that a
     /// list request still to run may return (the room's unread list, the
     /// room's Following crawl) waits for it: `chat.getMessage` is scarce.
     #[allow(clippy::too_many_arguments)]
@@ -782,9 +943,6 @@ impl SidebarThreads {
         now: Instant,
         wake: &mut Option<Instant>,
     ) -> Option<Fetch> {
-        if self.gets >= GET_BUDGET {
-            return None;
-        }
         let idx = ws.thread_index();
         let wanted =
             |t: &str| idx.parent(t).is_none() && !idx.is_gone(t) && !self.settled.contains(t);
@@ -804,42 +962,70 @@ impl SidebarThreads {
                 mode == ThreadsMode::Following && !collapsed && self.crawl_due(ws, bound, page, s);
             unread_pass || crawl
         };
-        if matches!(mode, ThreadsMode::UnreadKept | ThreadsMode::Following) {
-            for (rid, tmid) in idx.kept() {
-                if ws.subscription(rid).is_some()
-                    && wanted(tmid)
-                    && !awaits_list(rid, tmid)
-                    && self.ready(&Key::Parent(tmid.to_owned()), now, wake)
-                {
-                    return Some(Fetch::Parent {
-                        rid: rid.to_owned(),
-                        tmid: tmid.to_owned(),
-                    });
-                }
-            }
-        }
-        if self.unresolved.is_empty() {
-            return None;
-        }
-        let mut found: Option<(&str, &str)> = None;
-        for (_, s) in listed(ws) {
-            if !bound.reaches(&s.rid, s.lr, true) {
-                continue;
-            }
-            for t in missing_in(ws, s) {
-                if self.unresolved.contains(t)
-                    && wanted(t)
-                    && found.is_none_or(|(_, f)| t.as_str() < f)
-                    && self.ready(&Key::Parent(t.clone()), now, wake)
-                {
-                    found = Some((&s.rid, t));
-                }
-            }
-        }
-        found.map(|(rid, tmid)| Fetch::Parent {
+        let parent = |rid: &str, tmid: &str, pinned| Fetch::Parent {
             rid: rid.to_owned(),
             tmid: tmid.to_owned(),
-        })
+            pinned,
+        };
+        if self.gets < GET_BUDGET {
+            if matches!(mode, ThreadsMode::UnreadKept | ThreadsMode::Following) {
+                for (rid, tmid) in idx.kept() {
+                    if ws.subscription(rid).is_some()
+                        && wanted(tmid)
+                        && !awaits_list(rid, tmid)
+                        && self.ready(&Key::Parent(tmid.to_owned()), now, wake)
+                    {
+                        return Some(parent(rid, tmid, false));
+                    }
+                }
+            }
+            if !self.unresolved.is_empty() {
+                let mut found: Option<(&str, &str)> = None;
+                for (_, s) in listed(ws) {
+                    if !bound.reaches(&s.rid, s.lr, true) {
+                        continue;
+                    }
+                    for t in missing_in(ws, s) {
+                        if self.unresolved.contains(t)
+                            && wanted(t)
+                            && found.is_none_or(|(_, f)| t.as_str() < f)
+                            && self.ready(&Key::Parent(t.clone()), now, wake)
+                        {
+                            found = Some((&s.rid, t));
+                        }
+                    }
+                }
+                if let Some((rid, tmid)) = found {
+                    return Some(parent(rid, tmid, false));
+                }
+            }
+        }
+        if self.pin_gets >= PIN_GET_BUDGET {
+            return None;
+        }
+        // Starred threads without a parent (e.g. restored from the offline
+        // cache), unless the room's scan, which brings it, is to run.
+        for (rid, tmid) in idx.starred() {
+            if listed_sub(rid).is_some()
+                && wanted(tmid)
+                && self.starred_tier(ws, rid).is_none()
+                && (mode == ThreadsMode::Off || !awaits_list(rid, tmid))
+                && self.ready(&Key::Parent(tmid.to_owned()), now, wake)
+            {
+                return Some(parent(rid, tmid, true));
+            }
+        }
+        // Flagged threads without a parent (flagged on another device).
+        for (rid, tmid) in idx.flagged() {
+            if listed_sub(rid).is_some()
+                && wanted(tmid)
+                && (mode == ThreadsMode::Off || !awaits_list(rid, tmid))
+                && self.ready(&Key::Parent(tmid.to_owned()), now, wake)
+            {
+                return Some(parent(rid, tmid, true));
+            }
+        }
+        None
     }
 
     /// Logout: everything but the pacing and a rate-limit pause, which are
@@ -850,6 +1036,8 @@ impl SidebarThreads {
             last_list: self.last_list,
             last_get: self.last_get,
             paused_until: self.paused_until,
+            last_starred: self.last_starred,
+            starred_paused_until: self.starred_paused_until,
             ..Self::default()
         };
     }
@@ -863,8 +1051,10 @@ impl SidebarThreads {
         self.in_flight = None;
         self.timer = None;
         self.gets = 0;
+        self.pin_gets = 0;
         self.sync_rev = None;
         self.lr_before = None;
+        self.lm_before = None;
         self.missing_since.clear();
         self.unresolved.clear();
         self.settled.clear();
@@ -873,6 +1063,10 @@ impl SidebarThreads {
         self.paging.clear();
         self.recrawl.clear();
         self.crawl_failed.clear();
+        self.starred_due.clear();
+        self.starred_passes.clear();
+        self.starred_checked.clear();
+        self.starred_failed.clear();
         self.backoff.clear();
     }
 
@@ -890,7 +1084,7 @@ impl SidebarThreads {
             self.failed.clear();
             self.refresh_unread.clear();
             self.paging.clear();
-            self.backoff.clear();
+            self.backoff.retain(|k, _| matches!(k, Key::Starred(_)));
         }
         self.mode = mode;
     }
@@ -901,6 +1095,11 @@ impl SidebarThreads {
     pub fn note_missed_live(&mut self, ws: &Workspace) {
         if self.lr_before.is_none() {
             self.lr_before = Some(listed(ws).map(|(_, s)| (s.rid.clone(), s.lr)).collect());
+            self.lm_before = Some(
+                listed(ws)
+                    .map(|(e, s)| (s.rid.clone(), room_lm(e)))
+                    .collect(),
+            );
             self.synced_after_capture = false;
             self.changed = true;
         }
@@ -928,7 +1127,8 @@ impl SidebarThreads {
             && let Some(before) = self.lr_before.take()
         {
             self.synced_after_capture = false;
-            self.requeue_stale(ws, &before);
+            let lm_before = self.lm_before.take().unwrap_or_default();
+            self.requeue_stale(ws, &before, &lm_before);
         }
         self.sync_rev = Some(rev);
     }
@@ -943,6 +1143,7 @@ impl SidebarThreads {
             self.note_missed_live(ws);
         }
         self.check_sync(ws);
+        self.observe_starred(ws);
         if mode == ThreadsMode::Off {
             return;
         }
@@ -956,21 +1157,73 @@ impl SidebarThreads {
         }
     }
 
+    /// Starred-scan bookkeeping: everything goes with pins off; scans under
+    /// way of rooms left are dropped; once the workspace is live, each scan
+    /// not checked yet in this session (restored from the offline cache) is
+    /// due when the room had messages since or it is older than
+    /// [`STARRED_RESCAN_TTL`].
+    fn observe_starred(&mut self, ws: &Workspace) {
+        let idx = ws.thread_index();
+        if !idx.pins_enabled() {
+            self.starred_due.clear();
+            self.starred_passes.clear();
+            self.starred_checked.clear();
+            self.starred_failed.clear();
+            return;
+        }
+        self.starred_passes
+            .retain(|rid, _| ws.subscription(rid).is_some());
+        if ws.from_cache() || *ws.connection() != ConnectionState::Connected {
+            return;
+        }
+        let now_ms = RcDate::now().timestamp_millis();
+        let ttl_ms = STARRED_RESCAN_TTL.as_millis() as i64;
+        for (rid, scan) in idx.starred_scans() {
+            if self.starred_checked.contains(rid) {
+                continue;
+            }
+            self.starred_checked.insert(rid.to_owned());
+            let old = scan
+                .scanned_at
+                .is_none_or(|at| now_ms.saturating_sub(at.timestamp_millis()) > ttl_ms);
+            if old || ws.room(rid).and_then(room_lm) > scan.lm {
+                self.starred_due.insert(rid.to_owned());
+                self.changed = true;
+            }
+        }
+    }
+
     /// After a sync that followed missed live updates (`before`: each
     /// room's `lr` when they started). Rooms whose `lr` changed in between
     /// had replies the loader did not see: their known unread parents are
     /// listed again and, if crawled, they are crawled again. What failed for
     /// unrecognised reasons is tried again. Follows made elsewhere without a
-    /// reply are not seen until "Refresh".
-    fn requeue_stale(&mut self, ws: &Workspace, before: &HashMap<String, Option<RcDate>>) {
+    /// reply are not seen until "Refresh". Scanned rooms with messages since
+    /// (`lm_before`: each room's last message then) are scanned again, and
+    /// scans under way start over (stars made meanwhile were missed).
+    fn requeue_stale(
+        &mut self,
+        ws: &Workspace,
+        before: &HashMap<String, Option<RcDate>>,
+        lm_before: &HashMap<String, Option<RcDate>>,
+    ) {
         for t in self.failed.drain() {
             self.settled.remove(&t);
         }
         self.crawl_failed.clear();
+        self.starred_failed.clear();
+        self.starred_passes.clear();
+        let idx = ws.thread_index();
+        for (e, s) in scanned_rooms(ws) {
+            if idx.starred_scan(&s.rid).is_some()
+                && lm_before.get(&s.rid).is_some_and(|lm| *lm != room_lm(e))
+            {
+                self.starred_due.insert(s.rid.clone());
+            }
+        }
         if self.mode == ThreadsMode::Off {
             return;
         }
-        let idx = ws.thread_index();
         for (_, s) in listed(ws) {
             // Not listed before (restored from the offline cache after live
             // updates were first missed): `confirm_restored` decides. Restored
@@ -988,6 +1241,15 @@ impl SidebarThreads {
         }
     }
 
+    /// The session's `chat.getMessage` counter for (non-)pinned parents.
+    fn budget(&mut self, pinned: bool) -> &mut u32 {
+        if pinned {
+            &mut self.pin_gets
+        } else {
+            &mut self.gets
+        }
+    }
+
     /// Records that `f` starts now.
     fn begin(&mut self, f: &Fetch, now: Instant) {
         let (pass_start, floor) = match f {
@@ -998,11 +1260,23 @@ impl SidebarThreads {
             _ => (now, None),
         };
         match f {
-            Fetch::Parent { .. } => {
+            Fetch::Parent { pinned, .. } => {
                 self.last_get = Some(now);
-                self.gets += 1;
+                *self.budget(*pinned) += 1;
             }
             Fetch::Unread { .. } | Fetch::Followed { .. } => self.last_list = Some(now),
+            Fetch::Starred { rid, lm, .. } => {
+                self.last_starred = Some(now);
+                self.starred_passes
+                    .entry(rid.clone())
+                    .or_insert_with(|| StarredPass {
+                        offset: 0,
+                        started: now,
+                        lm: *lm,
+                        found: Vec::new(),
+                        pages: 0,
+                    });
+            }
         }
         self.in_flight = Some(InFlight {
             fetch: f.clone(),
@@ -1117,16 +1391,20 @@ impl SidebarThreads {
         let failure = match &result {
             Done::Unread { res: Err(f), .. }
             | Done::Followed { res: Err(f), .. }
+            | Done::Starred { res: Err(f), .. }
             | Done::Parent { res: Err(f), .. } => Some(f.clone()),
             _ => None,
         };
-        if fl.mode_gen != self.mode_gen {
+        let starred = matches!(fl.fetch, Fetch::Starred { .. });
+        // Starred scans do not depend on the mode.
+        if fl.mode_gen != self.mode_gen && !starred {
             // Asked for under another mode (e.g. before Off, whose state was
             // dropped): only a rate limit, which is per IP, still counts.
             if let Some(Class::RateLimited(wait)) = failure.as_ref().map(classify) {
                 self.paused_until = Some(now + wait);
-                if matches!(fl.fetch, Fetch::Parent { .. }) {
-                    self.gets = self.gets.saturating_sub(1);
+                if let Fetch::Parent { pinned, .. } = fl.fetch {
+                    let n = self.budget(pinned);
+                    *n = n.saturating_sub(1);
                 }
             }
             return Vec::new();
@@ -1137,10 +1415,16 @@ impl SidebarThreads {
             }
             Some((Class::RateLimited(wait), f)) => {
                 tracing::debug!(error = %f, "sidebar threads: rate limited");
-                self.paused_until = Some(now + wait);
+                // Limits are per route: a starred scan pauses only scans.
+                if starred {
+                    self.starred_paused_until = Some(now + wait);
+                } else {
+                    self.paused_until = Some(now + wait);
+                }
                 // Refused before it ran: not a spent call.
-                if matches!(fl.fetch, Fetch::Parent { .. }) {
-                    self.gets = self.gets.saturating_sub(1);
+                if let Fetch::Parent { pinned, .. } = fl.fetch {
+                    let n = self.budget(pinned);
+                    *n = n.saturating_sub(1);
                 }
                 self.keep_paging(&result, &fl);
                 return Vec::new();
@@ -1167,6 +1451,10 @@ impl SidebarThreads {
                 tracing::debug!(error = %f, "sidebar threads: request failed");
                 self.backoff.remove(&key);
             }
+        }
+        if let Done::Starred { rid, offset, res } = result {
+            self.starred_done(ws, rid, offset, fl.started, res);
+            return Vec::new();
         }
         let other = failure
             .as_ref()
@@ -1288,8 +1576,53 @@ impl SidebarThreads {
                     }
                 }
             }
+            // Handled above.
+            Done::Starred { .. } => {}
         }
         out
+    }
+
+    /// A page of a starred scan (not one to retry): the scan goes on, ends
+    /// (the room's starred threads are replaced) or, failed, is given up
+    /// until missed live updates or a refresh.
+    fn starred_done(
+        &mut self,
+        ws: &mut Workspace,
+        rid: String,
+        offset: u64,
+        started: Instant,
+        res: Res<Paginated<Message>>,
+    ) {
+        let page = match res {
+            Ok(page) => page,
+            Err(_) => {
+                self.starred_passes.remove(&rid);
+                self.starred_failed.insert(rid);
+                return;
+            }
+        };
+        // Dropped meanwhile (room left, pins off, missed live updates): the
+        // copies still count, not as a scan.
+        let pass = self
+            .starred_passes
+            .remove(&rid)
+            .filter(|p| p.offset == offset);
+        let started = pass.as_ref().map_or(started, |p| p.started);
+        let found = ws.apply_starred_page(&rid, page.items, started);
+        let Some(mut pass) = pass else {
+            return;
+        };
+        pass.found.extend(found);
+        pass.pages += 1;
+        let next = offset + page.raw_len as u64;
+        if page.raw_len > 0 && next < page.total {
+            pass.offset = next;
+            self.starred_passes.insert(rid, pass);
+            return;
+        }
+        ws.finish_starred_scan(&rid, pass.found, pass.started, pass.lm);
+        self.starred_due.remove(&rid);
+        self.starred_checked.insert(rid);
     }
 
     /// A retried unread page continues the pass it belongs to.
@@ -1334,6 +1667,19 @@ impl SidebarThreads {
         (done < total).then_some((done, total))
     }
 
+    /// Scans every scanned room for starred threads again (Favorites'
+    /// "Refresh"); scans under way finish as they are.
+    pub fn refresh_starred(&mut self, ws: &Workspace) {
+        self.changed = true;
+        self.starred_failed.clear();
+        self.backoff.retain(|k, _| !matches!(k, Key::Starred(_)));
+        for (rid, _) in ws.thread_index().starred_scans() {
+            if !self.starred_passes.contains_key(rid) {
+                self.starred_due.insert(rid.to_owned());
+            }
+        }
+    }
+
     /// Loads everything again ("Refresh"): crawled rooms are crawled again
     /// and known unread parents listed again; the rows stay until the new
     /// results replace them. What was given up on is tried again.
@@ -1365,10 +1711,11 @@ impl SidebarThreads {
 /// unread), each with the room's `lr` up to which it is current. Data kept
 /// current by live updates (nothing pending for the room) is current up to
 /// the room's `lr` now, or, while live updates are missed, up to its `lr`
-/// when that started.
+/// when that started. Starred threads are kept per room with the room's
+/// scan, whose `lm` advances the same way once checked and not due.
 pub fn cached_threads(ws: &Workspace, st: &SidebarThreads) -> CachedThreads {
     let idx = ws.thread_index();
-    if !idx.enabled() {
+    if !idx.indexing() {
         return CachedThreads::default();
     }
     let live = ws.last_sync().is_some()
@@ -1404,6 +1751,7 @@ pub fn cached_threads(ws: &Workspace, st: &SidebarThreads) -> CachedThreads {
         });
     }
     wanted.extend(idx.kept().map(|(_, t)| t));
+    wanted.extend(idx.pinned().map(|(_, t)| t));
     for e in ws.rooms().values() {
         if let Some(s) = &e.sub {
             wanted.extend(
@@ -1458,10 +1806,47 @@ pub fn cached_threads(ws: &Workspace, st: &SidebarThreads) -> CachedThreads {
             })
         })
         .collect();
+    // Up to which `lm` a scanned room's stars are current.
+    let scan_upto = |rid: &str, e: &RoomEntry| -> Option<RcDate> {
+        if !st.starred_checked.contains(rid)
+            || st.starred_due.contains(rid)
+            || st.starred_passes.contains_key(rid)
+        {
+            return None;
+        }
+        if live {
+            room_lm(e)
+        } else {
+            st.lm_before.as_ref()?.get(rid).copied().flatten()
+        }
+    };
+    let mut starred: BTreeMap<&str, CachedStarred> = BTreeMap::new();
+    fn entry<'a, 'k>(
+        m: &'a mut BTreeMap<&'k str, CachedStarred>,
+        rid: &'k str,
+    ) -> &'a mut CachedStarred {
+        m.entry(rid).or_insert_with(|| CachedStarred {
+            rid: rid.to_owned(),
+            ..Default::default()
+        })
+    }
+    for (rid, tmid) in idx.starred() {
+        if ws.subscription(rid).is_some() {
+            entry(&mut starred, rid).tmids.push(tmid.to_owned());
+        }
+    }
+    for (rid, scan) in idx.starred_scans() {
+        if let Some(e) = ws.room(rid).filter(|e| e.sub.is_some()) {
+            let c = entry(&mut starred, rid);
+            c.scanned_at = scan.scanned_at;
+            c.scanned_lm = scan.lm.max(scan_upto(rid, e));
+        }
+    }
     CachedThreads {
         followed,
         parents,
         parents_synced,
+        starred: starred.into_values().collect(),
     }
 }
 
@@ -1513,7 +1898,7 @@ fn request(rest: rocketchat::RestClient, epoch: u64, f: Fetch) -> Task<Msg> {
             },
             move |res| done(Done::Unread { rid, offset, res }),
         ),
-        Fetch::Parent { rid, tmid } => Task::perform(
+        Fetch::Parent { rid, tmid, .. } => Task::perform(
             {
                 let tmid = tmid.clone();
                 async move {
@@ -1539,6 +1924,17 @@ fn request(rest: rocketchat::RestClient, epoch: u64, f: Fetch) -> Task<Msg> {
                 }
             },
             move |res| done(Done::Followed { rid, activity, res }),
+        ),
+        Fetch::Starred { rid, offset, .. } => Task::perform(
+            {
+                let rid = rid.clone();
+                async move {
+                    rest.get_starred(&rid, offset, STARRED_PAGE)
+                        .await
+                        .map_err(Failure::from)
+                }
+            },
+            move |res| done(Done::Starred { rid, offset, res }),
         ),
     }
 }
@@ -1655,6 +2051,16 @@ mod tests {
         Fetch::Parent {
             rid: rid.into(),
             tmid: tmid.into(),
+            pinned: false,
+        }
+    }
+
+    /// A parent only starred or flagged.
+    fn get_pin(rid: &str, tmid: &str) -> Fetch {
+        Fetch::Parent {
+            rid: rid.into(),
+            tmid: tmid.into(),
+            pinned: true,
         }
     }
 
@@ -1678,6 +2084,8 @@ mod tests {
         cap: Cap,
         collapsed: bool,
         t0: Instant,
+        /// Starred threads on (also after `restart`).
+        pins: bool,
     }
 
     impl Fx {
@@ -1689,6 +2097,7 @@ mod tests {
                 cap: Cap::default(),
                 collapsed: false,
                 t0: Instant::now(),
+                pins: false,
             }
         }
 
@@ -1741,6 +2150,35 @@ mod tests {
         fx.ws.apply_connection(ConnectionState::Connected);
         assert_eq!(fx.start(8000), Next::Fetch(unread("a", 0)));
         assert_eq!(fx.plan(20_000), Next::Idle, "one request at a time");
+    }
+
+    #[test]
+    fn flagged_parents_load_with_threads_off() {
+        use rustket_core::flags::{FlagBlob, FlagColor, FlagEdit};
+        let mut fx = Fx::new(ThreadsMode::Off);
+        add(&mut fx.ws, "a", Some(5), &[]);
+        assert_eq!(fx.plan(0), Next::Idle);
+        let mut overlay = FlagBlob::default();
+        let edit = FlagEdit::Thread {
+            rid: "a".into(),
+            tmid: "f1".into(),
+            color: Some(FlagColor::Red),
+        };
+        overlay.edit(&FlagBlob::default(), &edit, 1, "dev").unwrap();
+        fx.ws.set_flag_overlay(overlay);
+        assert_eq!(fx.start(1000), Next::Fetch(get_pin("a", "f1")));
+        fx.done(
+            1100,
+            Done::Parent {
+                rid: "a".into(),
+                tmid: "f1".into(),
+                res: Ok(Box::new(parent("f1", "a", 5))),
+            },
+        );
+        assert!(fx.ws.thread_index().parent("f1").is_some());
+        assert_eq!(fx.plan(60_000), Next::Idle);
+        let cached = cached_threads(&fx.ws, &fx.st);
+        assert!(cached.parents.iter().any(|p| p.id == "f1"));
     }
 
     #[test]
@@ -2181,6 +2619,23 @@ mod tests {
         assert_eq!(fx.plan(0), Next::Idle);
         fx.st.reset_session();
         assert_eq!(fx.plan(0), Next::Fetch(get("a", "k")));
+        // Pinned-only parents have a budget of their own, both ways.
+        use rustket_core::flags::{FlagBlob, FlagColor, FlagEdit};
+        let mut overlay = FlagBlob::default();
+        let edit = FlagEdit::Thread {
+            rid: "a".into(),
+            tmid: "f".into(),
+            color: Some(FlagColor::Red),
+        };
+        overlay.edit(&FlagBlob::default(), &edit, 1, "dev").unwrap();
+        fx.ws.set_flag_overlay(overlay);
+        fx.st.pin_gets = PIN_GET_BUDGET;
+        assert_eq!(fx.plan(0), Next::Fetch(get("a", "k")));
+        fx.st.pin_gets = 0;
+        fx.st.gets = GET_BUDGET;
+        assert_eq!(fx.plan(0), Next::Fetch(get_pin("a", "f")));
+        fx.st.begin(&get_pin("a", "f"), fx.at(0));
+        assert_eq!((fx.st.gets, fx.st.pin_gets), (GET_BUDGET, 1));
     }
 
     #[test]
@@ -2837,6 +3292,7 @@ mod tests {
         fx.ws = Workspace::new();
         fx.st = SidebarThreads::default();
         fx.ws.set_thread_config(fx.mode, []);
+        fx.ws.set_starred_threads(fx.pins);
         fx.ws.apply_connection(ConnectionState::Connecting);
         fx.plan(0);
         let me = User {
@@ -2899,6 +3355,7 @@ mod tests {
             ],
             parents: vec![parent("t", "a", 1000)],
             parents_synced: vec![mark("a", 1003)],
+            starred: Vec::new(),
         };
         let cached = vec![
             sub("a", Some(1003), &[]),
@@ -2950,6 +3407,7 @@ mod tests {
             followed: Vec::new(),
             parents: vec![parent("x", "a", 1000), parent("y", "b", 2000)],
             parents_synced: vec![mark("a", 1003), mark("b", 2003)],
+            starred: Vec::new(),
         };
         let cached = vec![sub("a", Some(1003), &["x"]), sub("b", Some(2003), &["y"])];
         // A reply in x after the cache was written; none in b.
@@ -2978,6 +3436,7 @@ mod tests {
             followed: Vec::new(),
             parents: vec![parent("x", "a", 1000)],
             parents_synced: vec![mark("a", 1003)],
+            starred: Vec::new(),
         };
         restart(
             &mut fx,
@@ -3227,5 +3686,426 @@ mod tests {
             })),
             Class::Other
         );
+    }
+
+    // --- Starred threads ---------------------------------------------------------
+
+    fn star(mut m: Message) -> Message {
+        m.starred = Some(vec![rocketchat::models::IdRef { id: "me".into() }]);
+        m
+    }
+
+    fn scan(rid: &str, offset: u64, lm: Option<i64>) -> Fetch {
+        Fetch::Starred {
+            rid: rid.into(),
+            offset,
+            lm: lm.map(ts),
+        }
+    }
+
+    fn set_lm(ws: &mut Workspace, rid: &str, lm: i64) {
+        ws.apply_room(
+            Change::Updated,
+            rocketchat::models::Room {
+                id: rid.into(),
+                t: RoomType::Channel,
+                lm: Some(ts(lm)),
+                ..Default::default()
+            },
+        );
+    }
+
+    /// A subscribed room whose last message is at `lm`.
+    fn add_lm(ws: &mut Workspace, rid: &str, lm: i64) {
+        add(ws, rid, None, &[]);
+        set_lm(ws, rid, lm);
+    }
+
+    fn pinned(mode: ThreadsMode) -> Fx {
+        let mut fx = Fx::new(mode);
+        fx.pins = true;
+        fx.ws.set_starred_threads(true);
+        fx
+    }
+
+    fn starred_page(
+        items: Vec<Message>,
+        offset: u64,
+        raw_len: usize,
+        total: u64,
+    ) -> Res<Paginated<Message>> {
+        Ok(Paginated {
+            count: raw_len as u64,
+            items,
+            offset,
+            total,
+            raw_len,
+            dropped: 0,
+        })
+    }
+
+    fn scan_done(fx: &mut Fx, ms: u64, rid: &str, offset: u64, res: Res<Paginated<Message>>) {
+        fx.done(
+            ms,
+            Done::Starred {
+                rid: rid.into(),
+                offset,
+                res,
+            },
+        );
+    }
+
+    fn starred_tmids(fx: &Fx) -> Vec<&str> {
+        fx.ws.thread_index().starred().map(|(_, t)| t).collect()
+    }
+
+    #[test]
+    fn starred_scans_run_with_threads_off_newest_rooms_first_and_paced() {
+        let mut fx = pinned(ThreadsMode::Off);
+        add_lm(&mut fx.ws, "a", 100);
+        add_lm(&mut fx.ws, "b", 200);
+        let mut omni = sub("l", None, &[]);
+        omni.t = RoomType::Livechat;
+        fx.ws.apply_subscription(Change::Inserted, omni);
+        assert_eq!(fx.start(0), Next::Fetch(scan("b", 0, Some(200))));
+        assert_eq!(fx.plan(10), Next::Idle, "one request at a time");
+        let items = vec![
+            star(parent("s1", "b", 150)),
+            // Starred, not a thread: not listed.
+            star(Message {
+                tcount: None,
+                ..parent("m", "b", 1)
+            }),
+        ];
+        scan_done(&mut fx, 100, "b", 0, starred_page(items, 0, 2, 2));
+        assert_eq!(starred_tmids(&fx), ["s1"]);
+        assert!(fx.ws.thread_index().parent("s1").is_some());
+        assert_eq!(
+            fx.ws.thread_index().starred_scan("b").unwrap().lm,
+            Some(ts(200))
+        );
+        assert_eq!(fx.plan(1000), Next::Wait(fx.at(10_000)));
+        assert_eq!(fx.start(10_000), Next::Fetch(scan("a", 0, Some(100))));
+        scan_done(&mut fx, 10_100, "a", 0, starred_page(Vec::new(), 0, 0, 0));
+        // Omnichannel rooms are not scanned; live updates keep the rest current.
+        assert_eq!(fx.plan(30_000), Next::Idle);
+        set_lm(&mut fx.ws, "a", 300);
+        assert_eq!(
+            fx.plan(40_000),
+            Next::Idle,
+            "messages seen live need no scan"
+        );
+        // Pins off: nothing (the Threads section is off too).
+        fx.ws.set_starred_threads(false);
+        add_lm(&mut fx.ws, "c", 50);
+        assert_eq!(fx.plan(50_000), Next::Idle);
+    }
+
+    #[test]
+    fn starred_scans_page_and_let_other_rooms_go_in_between() {
+        let mut fx = pinned(ThreadsMode::Off);
+        add_lm(&mut fx.ws, "big", 200);
+        add_lm(&mut fx.ws, "small", 100);
+        let mut ms = 0;
+        let total = (STARRED_PAGES_PER_TURN as u64 + 2) * STARRED_PAGE;
+        for i in 0..STARRED_PAGES_PER_TURN as u64 {
+            let offset = i * STARRED_PAGE;
+            assert_eq!(
+                fx.start(ms),
+                Next::Fetch(scan("big", offset, Some(200))),
+                "page {i}"
+            );
+            let items = vec![star(parent(&format!("p{i}"), "big", 10))];
+            scan_done(
+                &mut fx,
+                ms + 100,
+                "big",
+                offset,
+                starred_page(items, offset, 100, total),
+            );
+            ms += STARRED_INTERVAL.as_millis() as u64;
+        }
+        // Not done yet: the stars found so far count, nothing is dropped.
+        assert_eq!(starred_tmids(&fx).len(), STARRED_PAGES_PER_TURN as usize);
+        assert!(fx.ws.thread_index().starred_scan("big").is_none());
+        // Its turn is over: the other room first.
+        assert_eq!(fx.start(ms), Next::Fetch(scan("small", 0, Some(100))));
+        scan_done(
+            &mut fx,
+            ms + 100,
+            "small",
+            0,
+            starred_page(Vec::new(), 0, 0, 0),
+        );
+        ms += STARRED_INTERVAL.as_millis() as u64;
+        let mut offset = STARRED_PAGES_PER_TURN as u64 * STARRED_PAGE;
+        // A transient failure is retried at its offset.
+        assert_eq!(fx.start(ms), Next::Fetch(scan("big", offset, Some(200))));
+        scan_done(
+            &mut fx,
+            ms + 100,
+            "big",
+            offset,
+            Err(fail(Error::Timeout("t"))),
+        );
+        ms += 10_000;
+        assert_eq!(fx.start(ms), Next::Fetch(scan("big", offset, Some(200))));
+        // Unstarred elsewhere meanwhile: p0 is not on the last pages.
+        scan_done(
+            &mut fx,
+            ms + 100,
+            "big",
+            offset,
+            starred_page(Vec::new(), offset, 100, total),
+        );
+        ms += STARRED_INTERVAL.as_millis() as u64;
+        offset += STARRED_PAGE;
+        assert_eq!(fx.start(ms), Next::Fetch(scan("big", offset, Some(200))));
+        let last = vec![star(parent("last", "big", 10))];
+        scan_done(
+            &mut fx,
+            ms + 100,
+            "big",
+            offset,
+            starred_page(last, offset, 100, total),
+        );
+        let mut got = starred_tmids(&fx);
+        got.sort();
+        assert_eq!(got, ["last", "p0", "p1", "p2", "p3", "p4"]);
+        assert!(fx.ws.thread_index().starred_scan("big").is_some());
+        assert_eq!(fx.plan(ms + 20_000), Next::Idle);
+    }
+
+    #[test]
+    fn a_scan_keeps_stars_changed_while_it_ran() {
+        let mut fx = pinned(ThreadsMode::Off);
+        add_lm(&mut fx.ws, "r", 100);
+        fx.ws
+            .apply_thread_parents(vec![star(parent("old", "r", 10))]);
+        assert_eq!(starred_tmids(&fx), ["old"]);
+        assert_eq!(fx.start(0), Next::Fetch(scan("r", 0, Some(100))));
+        // Starred and unstarred while the request runs.
+        fx.ws.set_thread_starred("r", "new", true);
+        fx.ws.set_thread_starred("r", "old", false);
+        let items = vec![star(parent("old", "r", 10))];
+        scan_done(&mut fx, 100, "r", 0, starred_page(items, 0, 1, 1));
+        assert_eq!(starred_tmids(&fx), ["new"]);
+        // "new" has no parent: fetched singly (before scans) now that the
+        // room's scan ran.
+        add_lm(&mut fx.ws, "x", 50);
+        assert_eq!(fx.start(10_000), Next::Fetch(get_pin("r", "new")));
+        fx.done(
+            10_100,
+            Done::Parent {
+                rid: "r".into(),
+                tmid: "new".into(),
+                res: Err(not_found()),
+            },
+        );
+        assert!(
+            starred_tmids(&fx).is_empty(),
+            "not found: no longer starred"
+        );
+        // A scan that is not allowed changes nothing and is not retried.
+        fx.ws.set_thread_starred("r", "kept", true);
+        assert_eq!(fx.start(10_200), Next::Fetch(scan("x", 0, Some(50))));
+        scan_done(&mut fx, 10_300, "x", 0, Err(not_allowed()));
+        assert_eq!(starred_tmids(&fx), ["kept"]);
+        // ("kept" has no parent and is asked for.)
+        assert_eq!(fx.start(40_000), Next::Fetch(get_pin("r", "kept")));
+        fx.done(
+            40_100,
+            Done::Parent {
+                rid: "r".into(),
+                tmid: "kept".into(),
+                res: Err(not_allowed()),
+            },
+        );
+        assert_eq!(fx.plan(80_000), Next::Idle);
+    }
+
+    #[test]
+    fn rate_limited_scans_do_not_delay_other_loads() {
+        let mut fx = pinned(ThreadsMode::Unread);
+        add_lm(&mut fx.ws, "a", 100);
+        assert_eq!(fx.start(0), Next::Fetch(scan("a", 0, Some(100))));
+        scan_done(
+            &mut fx,
+            100,
+            "a",
+            0,
+            Err(fail(Error::RateLimited {
+                retry_after: Some(Duration::from_secs(60)),
+                message: None,
+            })),
+        );
+        assert_eq!(fx.plan(200), Next::Wait(fx.at(60_100)));
+        // A new unread thread is loaded right away.
+        let mut s = sub("a", Some(150), &["t"]);
+        s.lr = Some(ts(150));
+        fx.ws.apply_subscription(Change::Updated, s);
+        assert_eq!(fx.plan(300), Next::Wait(fx.at(1300)));
+        assert_eq!(fx.start(1300), Next::Fetch(unread("a", 0)));
+        unread_done(&mut fx, 1400, "a", vec![parent("t", "a", 150)]);
+        assert_eq!(fx.plan(1500), Next::Wait(fx.at(60_100)));
+        assert_eq!(fx.start(60_100), Next::Fetch(scan("a", 0, Some(100))));
+        // Other loads that are rate limited do not stop scans.
+        scan_done(&mut fx, 60_200, "a", 0, starred_page(Vec::new(), 0, 0, 0));
+        fx.st.paused_until = Some(fx.at(500_000));
+        add_lm(&mut fx.ws, "b", 10);
+        assert_eq!(fx.start(70_100), Next::Fetch(scan("b", 0, Some(10))));
+    }
+
+    #[test]
+    fn starred_threads_take_no_threads_rows() {
+        let mut fx = pinned(ThreadsMode::UnreadKept);
+        fx.cap = Cap {
+            limit: 1,
+            sort: SidebarSort::Activity,
+            unread_first: false,
+            real_names: None,
+        };
+        add(&mut fx.ws, "k", Some(500), &[]);
+        add(&mut fx.ws, "u", Some(100), &["u1"]);
+        fx.ws
+            .set_thread_config(ThreadsMode::UnreadKept, [("k", "k1")]);
+        fx.ws
+            .apply_thread_parents(vec![star(parent("k1", "k", 500))]);
+        fx.plan(0);
+        // The kept thread is starred (in Favorites): the unread one fits.
+        assert_eq!(fx.start(1000), Next::Fetch(unread("u", 0)));
+    }
+
+    #[test]
+    fn restored_scans_run_again_only_for_rooms_with_new_messages() {
+        let mut fx = pinned(ThreadsMode::Off);
+        let now = RcDate::now().timestamp_millis();
+        let entry = |rid: &str, tmid: &str, at: i64, lm: i64| CachedStarred {
+            rid: rid.into(),
+            tmids: vec![tmid.into()],
+            scanned_at: Some(ts(at)),
+            scanned_lm: Some(ts(lm)),
+        };
+        let threads = CachedThreads {
+            parents: vec![star(parent("n1", "new", 10)), star(parent("o1", "old", 10))],
+            starred: vec![
+                entry("quiet", "q1", now, 50),
+                entry("new", "n1", now, 50),
+                entry("old", "o1", now - 30 * 24 * 3600 * 1000, 50),
+            ],
+            ..Default::default()
+        };
+        let subs = vec![
+            sub("quiet", None, &[]),
+            sub("new", None, &[]),
+            sub("old", None, &[]),
+        ];
+        restart(&mut fx, subs.clone(), threads, subs);
+        set_lm(&mut fx.ws, "quiet", 50);
+        set_lm(&mut fx.ws, "new", 80);
+        set_lm(&mut fx.ws, "old", 40);
+        let mut got = starred_tmids(&fx);
+        got.sort();
+        assert_eq!(got, ["n1", "o1", "q1"]);
+        // The quiet room's restored star has no parent: fetched singly first.
+        assert_eq!(fx.start(1000), Next::Fetch(get_pin("quiet", "q1")));
+        fx.done(
+            1100,
+            Done::Parent {
+                rid: "quiet".into(),
+                tmid: "q1".into(),
+                res: Ok(Box::new(star(parent("q1", "quiet", 10)))),
+            },
+        );
+        // Rooms with messages since their scan, and scans past the TTL.
+        assert_eq!(fx.start(1200), Next::Fetch(scan("new", 0, Some(80))));
+        scan_done(&mut fx, 1300, "new", 0, starred_page(Vec::new(), 0, 0, 0));
+        assert_eq!(fx.start(11_200), Next::Fetch(scan("old", 0, Some(40))));
+        scan_done(&mut fx, 11_300, "old", 0, starred_page(Vec::new(), 0, 0, 0));
+        assert_eq!(starred_tmids(&fx), ["q1"]);
+        assert_eq!(fx.plan(30_000), Next::Idle);
+    }
+
+    #[test]
+    fn missed_live_updates_rescan_rooms_with_new_messages() {
+        let mut fx = pinned(ThreadsMode::Off);
+        add_lm(&mut fx.ws, "a", 100);
+        add_lm(&mut fx.ws, "b", 90);
+        assert_eq!(fx.start(0), Next::Fetch(scan("a", 0, Some(100))));
+        scan_done(&mut fx, 100, "a", 0, starred_page(Vec::new(), 0, 0, 0));
+        // Disconnected while b's scan runs: it starts over.
+        assert_eq!(fx.start(10_000), Next::Fetch(scan("b", 0, Some(90))));
+        let page1 = vec![star(parent("b1", "b", 10))];
+        scan_done(&mut fx, 10_100, "b", 0, starred_page(page1, 0, 100, 200));
+        fx.ws.apply_connection(ConnectionState::Disconnected);
+        fx.plan(11_000);
+        fx.ws.apply_connection(ConnectionState::Connected);
+        set_lm(&mut fx.ws, "a", 150);
+        fx.delta();
+        assert_eq!(fx.start(20_000), Next::Fetch(scan("a", 0, Some(150))));
+        scan_done(&mut fx, 20_100, "a", 0, starred_page(Vec::new(), 0, 0, 0));
+        assert_eq!(fx.start(30_000), Next::Fetch(scan("b", 0, Some(90))));
+        scan_done(&mut fx, 30_100, "b", 0, starred_page(Vec::new(), 0, 0, 0));
+        assert!(starred_tmids(&fx).is_empty());
+        assert_eq!(fx.plan(40_000), Next::Idle);
+        // "Refresh" scans every room again.
+        fx.st.refresh_starred(&fx.ws);
+        assert_eq!(fx.start(40_000), Next::Fetch(scan("a", 0, Some(150))));
+    }
+
+    #[test]
+    fn cached_starred_threads_are_current_up_to_what_live_updates_covered() {
+        let mut fx = pinned(ThreadsMode::Off);
+        add_lm(&mut fx.ws, "a", 100);
+        add_lm(&mut fx.ws, "b", 100);
+        fx.ws.apply_initial(rustket_core::sync::InitialData {
+            me: User {
+                id: "me".into(),
+                username: Some("me".into()),
+                ..Default::default()
+            },
+            subscriptions: vec![sub("a", None, &[]), sub("b", None, &[])],
+            rooms: ["a", "b"]
+                .map(|rid| rocketchat::models::Room {
+                    id: rid.into(),
+                    t: RoomType::Channel,
+                    lm: Some(ts(100)),
+                    ..Default::default()
+                })
+                .into(),
+            next_since: Some(ts(1)),
+            ..Default::default()
+        });
+        assert_eq!(fx.start(0), Next::Fetch(scan("a", 0, Some(100))));
+        let items = vec![star(parent("a1", "a", 10))];
+        scan_done(&mut fx, 100, "a", 0, starred_page(items, 0, 1, 1));
+        set_lm(&mut fx.ws, "a", 150);
+        set_lm(&mut fx.ws, "b", 120);
+        let c = cached_threads(&fx.ws, &fx.st);
+        assert_eq!(
+            c.starred,
+            [CachedStarred {
+                rid: "a".into(),
+                tmids: vec!["a1".into()],
+                scanned_at: fx.ws.thread_index().starred_scan("a").unwrap().scanned_at,
+                // Live since the scan: current now.
+                scanned_lm: Some(ts(150)),
+            }]
+        );
+        assert_eq!(
+            c.parents.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["a1"]
+        );
+        // While live updates are missed: as of when that started.
+        fx.ws.apply_connection(ConnectionState::Disconnected);
+        fx.plan(1000);
+        set_lm(&mut fx.ws, "a", 200);
+        assert_eq!(
+            cached_threads(&fx.ws, &fx.st).starred[0].scanned_lm,
+            Some(ts(150))
+        );
+        // With the Threads section off and pins off: nothing.
+        fx.ws.set_starred_threads(false);
+        assert!(cached_threads(&fx.ws, &fx.st).is_empty());
     }
 }

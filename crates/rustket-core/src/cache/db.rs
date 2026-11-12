@@ -69,7 +69,13 @@ const KIND_STATUS: &str = "status";
 const KIND_THREAD_ROOM: &str = "thread_room";
 const KIND_THREAD_PARENT: &str = "thread_parent";
 const KIND_THREAD_SYNCED: &str = "thread_synced";
-const THREAD_KINDS: [&str; 3] = [KIND_THREAD_ROOM, KIND_THREAD_PARENT, KIND_THREAD_SYNCED];
+const KIND_THREAD_STARRED: &str = "thread_starred";
+const THREAD_KINDS: [&str; 4] = [
+    KIND_THREAD_ROOM,
+    KIND_THREAD_PARENT,
+    KIND_THREAD_SYNCED,
+    KIND_THREAD_STARRED,
+];
 
 const META_USER: &str = "user_id";
 const META_SAVED_AT: &str = "saved_at";
@@ -480,6 +486,7 @@ impl CacheDb {
                 followed: self.docs(KIND_THREAD_ROOM)?,
                 parents: self.docs(KIND_THREAD_PARENT)?,
                 parents_synced: self.docs(KIND_THREAD_SYNCED)?,
+                starred: self.docs(KIND_THREAD_STARRED)?,
             },
         })
     }
@@ -623,7 +630,7 @@ fn replace_kind<'a, T: Serialize + 'a>(
 
 fn write_full(tx: &Transaction<'_>, s: &CachedState) -> Result<()> {
     tx.execute(
-        "DELETE FROM docs WHERE kind NOT IN (?1, ?2, ?3)",
+        "DELETE FROM docs WHERE kind NOT IN (?1, ?2, ?3, ?4)",
         THREAD_KINDS,
     )?;
     if let Some(me) = &s.me {
@@ -670,7 +677,7 @@ fn write_full(tx: &Transaction<'_>, s: &CachedState) -> Result<()> {
     }
     let rids: Vec<String> = {
         let mut st = tx.prepare(
-            "SELECT DISTINCT id FROM docs WHERE kind IN (?1, ?3)
+            "SELECT DISTINCT id FROM docs WHERE kind IN (?1, ?3, ?4)
              UNION SELECT DISTINCT json_extract(json, '$.rid') FROM docs WHERE kind = ?2",
         )?;
         st.query_map(THREAD_KINDS, |r| r.get::<_, Option<String>>(0))?
@@ -685,12 +692,13 @@ fn write_full(tx: &Transaction<'_>, s: &CachedState) -> Result<()> {
 
 fn drop_room_threads(tx: &Transaction<'_>, rid: &str) -> Result<()> {
     tx.execute(
-        "DELETE FROM docs WHERE (kind IN (?1, ?3) AND id = ?4)
-             OR (kind = ?2 AND json_extract(json, '$.rid') = ?4)",
+        "DELETE FROM docs WHERE (kind IN (?1, ?3, ?4) AND id = ?5)
+             OR (kind = ?2 AND json_extract(json, '$.rid') = ?5)",
         params![
             KIND_THREAD_ROOM,
             KIND_THREAD_PARENT,
             KIND_THREAD_SYNCED,
+            KIND_THREAD_STARRED,
             rid
         ],
     )?;
@@ -701,7 +709,8 @@ fn drop_room_threads(tx: &Transaction<'_>, rid: &str) -> Result<()> {
 /// every message. Only documents that changed are written.
 fn write_threads(tx: &Transaction<'_>, t: &CachedThreads) -> Result<()> {
     let mut stored: HashMap<(String, String), String> = {
-        let mut st = tx.prepare("SELECT kind, id, json FROM docs WHERE kind IN (?1, ?2, ?3)")?;
+        let mut st =
+            tx.prepare("SELECT kind, id, json FROM docs WHERE kind IN (?1, ?2, ?3, ?4)")?;
         st.query_map(THREAD_KINDS, |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
@@ -719,6 +728,9 @@ fn write_threads(tx: &Transaction<'_>, t: &CachedThreads) -> Result<()> {
     }
     for p in &t.parents_synced {
         put(KIND_THREAD_SYNCED, &p.rid, to_json(p)?)?;
+    }
+    for s in &t.starred {
+        put(KIND_THREAD_STARRED, &s.rid, to_json(s)?)?;
     }
     for (kind, id) in stored.into_keys() {
         delete_doc(tx, &kind, &id)?;

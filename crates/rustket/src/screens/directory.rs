@@ -340,8 +340,10 @@ impl Directory {
                 }
                 self.loading = false;
                 match r {
-                    Ok(p) => {
+                    Ok(mut p) => {
                         self.error = None;
+                        // Rustket's own hidden service room is not a room to open.
+                        p.rows.retain(|e| !ctx.workspace.is_service_room(&e.id));
                         self.page = Some(p);
                     }
                     Err(e) => self.error = Some(e.user_text()),

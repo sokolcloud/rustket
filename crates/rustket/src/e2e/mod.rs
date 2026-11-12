@@ -321,6 +321,8 @@ pub fn after_update(
             .collect();
         for rid in changed {
             match s.workspace.room(&rid) {
+                // Rustket's service room holds no messages: no keys.
+                Some(e) if e.is_service_room() => {}
                 Some(e) => {
                     if let Some(r) = &e.room {
                         let _ = w.tx.send(Input::Room(Box::new(r.clone())));
@@ -559,12 +561,14 @@ fn start(s: &mut ServerState, secrets: Option<&Arc<dyn SecretStore>>) {
         .workspace
         .rooms()
         .values()
+        .filter(|e| !e.is_service_room())
         .filter_map(|e| e.room.clone())
         .collect();
     let subs: Vec<RcSub> = s
         .workspace
         .rooms()
         .values()
+        .filter(|e| !e.is_service_room())
         .filter_map(|e| e.sub.clone())
         .collect();
     let _ = tx.send(Input::Load(rooms, subs));

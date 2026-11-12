@@ -328,6 +328,12 @@ impl Interactions {
             // The app leaves the room first, like the web client.
             Act::MarkUnread => Action::effect(Effect::MarkUnread(mid)),
             Act::StartDiscussion => Action::effect(Effect::StartDiscussion { pmid: Some(mid) }),
+            // The app applies it to the sidebar at once and reverts a failure.
+            Act::StarThread | Act::UnstarThread => Action::effect(Effect::StarThread {
+                rid: m.rid.clone(),
+                tmid: mid,
+                on: act == Act::StarThread,
+            }),
             Act::KeepInSidebar | Act::RemoveFromSidebar => match actions::kept_thread_of(&m) {
                 Some(tmid) => Action::effect(Effect::KeepThread {
                     rid: m.rid.clone(),
@@ -558,6 +564,18 @@ mod tests {
         assert!(matches!(
             a.effects.as_slice(),
             [Effect::KeepThread { tmid, keep: false, .. }] if tmid == "p"
+        ));
+        // Starring the parent goes through the app (applied to the sidebar
+        // at once).
+        ctx.workspace.set_starred_threads(true);
+        let mut parent = reply("p", "p");
+        parent.tmid = None;
+        parent.tcount = Some(1);
+        ctx.workspace.apply_message(parent);
+        let a = i.update(Msg::Act("p".into(), Act::StarThread), &mut ctx);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::StarThread { rid, tmid, on: true }] if rid == "r" && tmid == "p"
         ));
     }
 }

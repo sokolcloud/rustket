@@ -102,6 +102,10 @@ pub enum Message {
     Omni(ServerId, u64, crate::omnichannel::Message),
     /// Sidebar Threads loader message: server, session epoch, message.
     Threads(ServerId, u64, crate::workspace::threads::Msg),
+    /// Flag sync message: server, session epoch, message.
+    Flags(ServerId, u64, crate::workspace::flags::Msg),
+    /// A flag edit of the user (sidebar, room header, thread panel).
+    SetFlag(ServerId, rustket_core::flags::FlagEdit),
     /// Ctrl+K.
     OpenQuickSwitcher,
     /// Tab / Shift+Tab that no widget handled (modal dialogs cycle their own
@@ -156,6 +160,23 @@ pub enum Message {
     MarkedUnread(ServerId, Res<()>),
     /// A thread row's server call (mark read, unfollow) finished.
     SidebarThreadDone(ServerId, crate::workspace::sidebar::ThreadCall, Res<()>),
+    /// A room row's "Add to/Remove from favorites" (`rooms.favorite`) ended.
+    SidebarFavoriteDone(ServerId, bool, Res<()>),
+    /// `chat.starMessage`/`chat.unstarMessage` of a thread parent ended
+    /// (reverted in the sidebar on failure).
+    ThreadStarred {
+        sid: ServerId,
+        /// The session generation the call was made in.
+        epoch: u64,
+        rid: String,
+        tmid: String,
+        /// Part of "Move kept threads to Favorites".
+        queued: bool,
+        on: bool,
+        result: Res<()>,
+    },
+    /// "Move kept threads to Favorites": time for the next star.
+    StarKeptNext,
     /// Current handler, whether it is Rustket, and the executable check
     /// (warnings to confirm, or why registration is refused).
     HandlerQueried(Option<String>, bool, Result<Vec<String>, String>),

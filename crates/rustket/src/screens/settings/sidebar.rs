@@ -21,9 +21,12 @@ use rustket_ui::widget::{
     danger_button, divider, ghost_button, icon_button, primary_button, secondary_button, text_field,
 };
 
+use rustket_core::ServerId;
+use rustket_core::flags::{FlagColor, FlagEdit, Flags};
+
 use super::{
-    Message as SettingsMessage, SIDEBAR_CARD, Settings, SettingsCtx, field, section, segmented,
-    sidebar_group_row_id, switch,
+    Message as SettingsMessage, SIDEBAR_CARD, Settings, SettingsCtx, field, flag_name_id,
+    flag_row_id, section, segmented, sidebar_group_row_id, switch,
 };
 use crate::component::{Action, Effect};
 use crate::workspace::sidebar::{sort_label, threads_limit_label};
@@ -52,6 +55,21 @@ impl GroupDraft {
     }
 }
 
+/// A signed-in account's flags, for the Flags block. Names are per account
+/// (synced through its server), so the block is labelled with the account.
+#[derive(Debug, Clone)]
+pub struct FlagAccount<'a> {
+    pub sid: ServerId,
+    /// "alice on Company".
+    pub label: String,
+    pub flags: &'a Flags,
+    /// Per color: `(listed, other)` items (`room_list::flag_usage`).
+    pub usage: std::collections::BTreeMap<FlagColor, (usize, usize)>,
+    pub status: crate::workspace::flags::Status,
+    /// Kept threads whose parent is not starred (0 without a session).
+    pub kept_unstarred: usize,
+}
+
 /// Messages of the section list, the group editor and the layout reset.
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -71,6 +89,18 @@ pub enum Message {
     /// Delete the group whose deletion is being confirmed.
     GroupDeleteConfirm,
     GroupDeleteCancel,
+    /// A flag name field changed (account, color, text).
+    FlagName(ServerId, FlagColor, String),
+    /// Store the edited name (blank: back to the default name).
+    FlagNameSave(ServerId, FlagColor),
+    /// "Move kept threads to Favorites", then its confirmation.
+    StarKept,
+    StarKeptConfirm,
+    StarKeptCancel,
+    /// Ask to remove a flag from every room and thread.
+    FlagClear(ServerId, FlagColor),
+    FlagClearConfirm,
+    FlagClearCancel,
     /// Ask to reset the sidebar layout.
     Reset,
     ResetConfirm,
@@ -134,10 +164,15 @@ fn threads_limit_choices(current: u32) -> Vec<Choice<u32>> {
         .collect()
 }
 
-fn section_name(id: &SectionId, layout: &Layout) -> String {
+/// `flags`: the active account's, naming the flag sections.
+fn section_name(id: &SectionId, layout: &Layout, flags: Option<&Flags>) -> String {
     match id {
         SectionId::Builtin(k) => t!(k.i18n_key()).into_owned(),
         SectionId::Group(g) => layout.group_name(g).unwrap_or_default().to_owned(),
+        SectionId::Flag(c) => match flags {
+            Some(f) => crate::workspace::flag_menu::flag_name(f, *c),
+            None => t!(c.i18n_key()).into_owned(),
+        },
         SectionId::Unknown(s) => s.clone(),
     }
 }
@@ -224,6 +259,7 @@ pub(super) fn section_caption(
                 false,
             )
         }
+        SectionId::Flag(_) => (Some(t!("settings.section_flag").into_owned()), false),
         SectionId::Unknown(_) => (None, false),
     }
 }
@@ -349,6 +385,52 @@ impl Settings {
                 self.confirm_delete = None;
                 Action::none()
             }
+            Message::FlagName(sid, color, name) => {
+                let name: String = name
+                    .chars()
+                    .take(rustket_core::flags::MAX_FLAG_NAME_CHARS)
+                    .collect();
+                self.flag_drafts.insert((sid, color), name);
+                Action::none()
+            }
+            Message::FlagNameSave(sid, color) => {
+                let Some(name) = self.flag_drafts.remove(&(sid.clone(), color)) else {
+                    return Action::none();
+                };
+                Action::effect(Effect::SetFlag(
+                    sid,
+                    FlagEdit::Rename {
+                        color,
+                        name: rustket_core::flags::clean_flag_name(&name),
+                    },
+                ))
+            }
+            Message::StarKept => {
+                self.confirm_star_kept = true;
+                Action::none()
+            }
+            Message::StarKeptConfirm => {
+                self.confirm_star_kept = false;
+                Action::effect(Effect::StarKeptThreads)
+            }
+            Message::StarKeptCancel => {
+                self.confirm_star_kept = false;
+                Action::none()
+            }
+            Message::FlagClear(sid, color) => {
+                self.confirm_flag_clear = Some((sid, color));
+                Action::none()
+            }
+            Message::FlagClearConfirm => match self.confirm_flag_clear.take() {
+                Some((sid, color)) => {
+                    Action::effect(Effect::SetFlag(sid, FlagEdit::ClearColor(color)))
+                }
+                None => Action::none(),
+            },
+            Message::FlagClearCancel => {
+                self.confirm_flag_clear = None;
+                Action::none()
+            }
             Message::Reset => {
                 self.confirm_reset = true;
                 Action::none()
@@ -371,7 +453,12 @@ impl Settings {
     /// The Sidebar card. A group's deletion preset by the sidebar's
     /// "Ungroup…" is confirmed in its row here; an edited group's editor is
     /// shown in its row too.
-    pub(super) fn sidebar_card<'a>(&'a self, ui: &'a UiPrefs) -> Element<'a, SettingsMessage> {
+    pub(super) fn sidebar_card<'a>(
+        &'a self,
+        ui: &'a UiPrefs,
+        flags: &[FlagAccount<'a>],
+        star_kept_busy: bool,
+    ) -> Element<'a, SettingsMessage> {
         let layout = Layout::from_prefs(ui);
         let mut threads_help = t!("settings.threads_mode_help").into_owned();
         if ui.sidebar_threads == ThreadsMode::Following {
@@ -466,12 +553,34 @@ impl Settings {
             ),
         ];
         rows.extend(limit_field);
+        rows.push(switch(
+            t!("settings.starred_threads").into_owned(),
+            Some(format!(
+                "{}\n{}",
+                t!("settings.starred_threads_help"),
+                t!("settings.starred_threads_sync_help")
+            )),
+            ui.sidebar_starred_threads,
+            Some(SettingsMessage::SetStarredThreads),
+        ));
+        let kept: usize = flags.iter().map(|a| a.kept_unstarred).sum();
+        if ui.sidebar_starred_threads && kept > 0 {
+            rows.push(
+                self.star_kept_row(kept, star_kept_busy)
+                    .map(SettingsMessage::Sidebar),
+            );
+        }
+        let active = flags.first().map(|a| a.flags);
         rows.extend([
             Element::from(
-                column![self.sections_list(ui, &layout), self.new_group(ui, &layout)]
-                    .spacing(SPACE_3),
+                column![
+                    self.sections_list(ui, &layout, active),
+                    self.new_group(ui, &layout)
+                ]
+                .spacing(SPACE_3),
             )
             .map(SettingsMessage::Sidebar),
+            self.flags_block(flags).map(SettingsMessage::Sidebar),
             self.reset_row().map(SettingsMessage::Sidebar),
         ]);
         container(section(t!("settings.sidebar").into_owned(), rows))
@@ -479,17 +588,31 @@ impl Settings {
             .into()
     }
 
-    fn sections_list<'a>(&'a self, ui: &'a UiPrefs, layout: &Layout) -> Element<'a, Message> {
+    /// The sections in their order. Flag sections are listed only while the
+    /// active account (`flags`) uses their color.
+    fn sections_list<'a>(
+        &'a self,
+        ui: &'a UiPrefs,
+        layout: &Layout,
+        flags: Option<&Flags>,
+    ) -> Element<'a, Message> {
         let mut list = column![
             text(t!("settings.sections"))
                 .size(TEXT_BODY)
                 .font(FONT_SEMIBOLD),
         ]
         .spacing(SPACE_3);
-        let n = layout.order.len();
-        for (i, id) in layout.order.iter().enumerate() {
+        let ids = listed_sections(layout, flags);
+        for (i, id) in ids.iter().enumerate() {
             list = list.push(divider());
-            list = list.push(self.section_row(ui, layout, id, i, n));
+            list = list.push(self.section_row(
+                ui,
+                layout,
+                flags,
+                id,
+                i.checked_sub(1).and_then(|j| ids.get(j).copied()),
+                ids.get(i + 1).copied(),
+            ));
         }
         list = list.push(
             text(t!("settings.omni_on_top"))
@@ -502,18 +625,20 @@ impl Settings {
     /// A section: name, caption and the move/edit/delete buttons, then the
     /// sort and "Unread first" (wrapping in narrow windows). A group's row
     /// shows its deletion confirmation or its editor instead of the controls.
+    /// `prev`/`next`: the listed neighbours (moves skip unlisted sections).
     fn section_row<'a>(
         &'a self,
         ui: &'a UiPrefs,
         layout: &Layout,
+        flags: Option<&Flags>,
         id: &SectionId,
-        i: usize,
-        n: usize,
+        prev: Option<&SectionId>,
+        next: Option<&SectionId>,
     ) -> Element<'a, Message> {
         let (caption, claimed) = section_caption(id, ui, layout);
         let group = id.group_id().map(str::to_owned);
         let mut head = row![
-            text(section_name(id, layout))
+            text(section_name(id, layout, flags))
                 .size(TEXT_BODY)
                 .font(FONT_SEMIBOLD)
                 .style(if claimed {
@@ -534,21 +659,25 @@ impl Settings {
             )),
             None => head.push(Space::new().width(Length::Fill)),
         };
-        let mv = |delta: i32, ok: bool| {
-            (ok && !claimed).then(|| {
-                Message::Layout(LayoutEdit::Move {
+        let mv = |anchor: Option<&SectionId>, after: bool| {
+            anchor.filter(|_| !claimed).map(|a| {
+                Message::Layout(LayoutEdit::MoveTo {
                     id: id.clone(),
-                    delta,
+                    anchor: a.clone(),
+                    after,
                 })
             })
         };
         head = head.push(
             row![
-                icon_button(Icon::ArrowUp, mv(-1, i > 0), t!("settings.move_up")),
-                icon_button(Icon::ArrowDown, mv(1, i + 1 < n), t!("settings.move_down")),
+                icon_button(Icon::ArrowUp, mv(prev, false), t!("settings.move_up")),
+                icon_button(Icon::ArrowDown, mv(next, true), t!("settings.move_down")),
             ]
             .spacing(SPACE_1),
         );
+        if let Some(c) = id.flag() {
+            head = head.push(rustket_ui::widget::flag_swatch(c.index(), 10.0));
+        }
         if let Some(g) = &group {
             head = head.push(
                 row![
@@ -576,7 +705,7 @@ impl Settings {
             column![
                 text(t!(
                     "settings.group_delete_confirm",
-                    name = section_name(id, layout)
+                    name = section_name(id, layout, flags)
                 ))
                 .size(TEXT_BODY),
                 row![
@@ -740,6 +869,156 @@ impl Settings {
         .into()
     }
 
+    /// "Flags": per account, a row per color with its name field, how many
+    /// items carry it and "Remove from all" (confirmed in place).
+    fn flags_block<'a>(&'a self, accounts: &[FlagAccount<'a>]) -> Element<'a, Message> {
+        let mut block = column![
+            text(t!("settings.flags"))
+                .size(TEXT_BODY)
+                .font(FONT_SEMIBOLD),
+            text(t!("settings.flags_caption"))
+                .size(TEXT_CAPTION)
+                .style(style::text_secondary),
+        ]
+        .spacing(SPACE_2);
+        if accounts.is_empty() {
+            return block
+                .push(
+                    text(t!("settings.flags_signed_out"))
+                        .size(TEXT_CAPTION)
+                        .style(style::text_hint),
+                )
+                .into();
+        }
+        for a in accounts {
+            let mut head = column![
+                text(a.label.clone())
+                    .size(TEXT_BODY)
+                    .style(style::text_secondary)
+            ]
+            .spacing(SPACE_1);
+            let status = match &a.status {
+                crate::workspace::flags::Status::Synced => None,
+                crate::workspace::flags::Status::Pending => {
+                    Some((t!("settings.flags_pending").into_owned(), false))
+                }
+                crate::workspace::flags::Status::Failed(e) => {
+                    Some((t!("settings.flags_failed", error = e).into_owned(), true))
+                }
+            };
+            if let Some((s, failed)) = status {
+                head = head.push(text(s).size(TEXT_CAPTION).style(if failed {
+                    style::text_danger
+                } else {
+                    style::text_hint
+                }));
+            }
+            block = block.push(divider()).push(head);
+            for c in FlagColor::ALL {
+                block = block.push(self.flag_row(a, c));
+            }
+        }
+        block.into()
+    }
+
+    /// A color of an account: swatch, name field (saved with Enter, the
+    /// check button or on leaving the settings), usage and "Remove from all".
+    fn flag_row<'a>(&'a self, a: &FlagAccount<'a>, c: FlagColor) -> Element<'a, Message> {
+        let key = (a.sid.clone(), c);
+        let stored = a.flags.name(c).unwrap_or_default();
+        let draft = self.flag_drafts.get(&key);
+        let value = draft.map_or(stored, String::as_str);
+        let dirty = draft
+            .is_some_and(|d| rustket_core::flags::clean_flag_name(d).as_deref() != a.flags.name(c));
+        let sid = a.sid.clone();
+        let save = dirty.then(|| Message::FlagNameSave(a.sid.clone(), c));
+        let mut name = text_field("", value, move |s| Message::FlagName(sid.clone(), c, s))
+            .placeholder(t!(c.i18n_key()))
+            .id(flag_name_id(&a.sid, c))
+            .width(Length::Fixed(240.0));
+        if let Some(m) = save.clone() {
+            name = name.on_submit(m);
+        }
+        let (listed, other) = a.usage.get(&c).copied().unwrap_or_default();
+        let mut usage = t!("settings.flag_used", count = listed).into_owned();
+        if other > 0 {
+            usage = format!(
+                "{usage} · {}",
+                t!("settings.flag_unavailable", count = other)
+            );
+        }
+        let mut r = row![
+            rustket_ui::widget::flag_swatch(c.index(), 12.0),
+            Element::from(name),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+        if dirty {
+            r = r.push(icon_button(Icon::Check, save, t!("settings.flag_save")));
+        }
+        r = r.push(
+            text(usage)
+                .size(TEXT_CAPTION)
+                .width(Length::Fill)
+                .style(style::text_secondary),
+        );
+        if listed + other > 0 {
+            r = r.push(ghost_button(
+                t!("settings.flag_clear"),
+                Some(Message::FlagClear(a.sid.clone(), c)),
+            ));
+        }
+        let mut body = column![r.wrap().vertical_spacing(SPACE_2)].spacing(SPACE_2);
+        if self.confirm_flag_clear.as_ref() == Some(&key) {
+            let name = crate::workspace::flag_menu::flag_name(a.flags, c);
+            body = body.extend([
+                text(t!("settings.flag_clear_confirm", name = name))
+                    .size(TEXT_BODY)
+                    .into(),
+                row![
+                    danger_button(t!("settings.flag_clear"), Some(Message::FlagClearConfirm)),
+                    secondary_button(t!("settings.group_cancel"), Some(Message::FlagClearCancel)),
+                ]
+                .spacing(SPACE_2)
+                .into(),
+            ]);
+        }
+        container(body).id(flag_row_id(&a.sid, c)).into()
+    }
+
+    /// "Move kept threads to Favorites" (`count` of them), confirmed first:
+    /// starring shows in other clients too.
+    fn star_kept_row<'a>(&'a self, count: usize, busy: bool) -> Element<'a, Message> {
+        if self.confirm_star_kept && !busy {
+            return column![
+                text(t!("settings.star_kept_confirm", count = count)).size(TEXT_BODY),
+                row![
+                    primary_button(t!("settings.star_kept_do"), Some(Message::StarKeptConfirm)),
+                    secondary_button(t!("settings.group_cancel"), Some(Message::StarKeptCancel)),
+                ]
+                .spacing(SPACE_2),
+            ]
+            .spacing(SPACE_2)
+            .into();
+        }
+        let caption = if busy {
+            t!("settings.star_kept_busy")
+        } else {
+            t!("settings.star_kept_help", count = count)
+        };
+        column![
+            row![ghost_button(
+                t!("settings.star_kept"),
+                (!busy).then_some(Message::StarKept)
+            )],
+            text(caption)
+                .size(TEXT_CAPTION)
+                .style(style::text_secondary),
+        ]
+        .spacing(SPACE_1)
+        .into()
+    }
+
     fn reset_row<'a>(&'a self) -> Element<'a, Message> {
         if self.confirm_reset {
             return column![
@@ -759,6 +1038,17 @@ impl Settings {
         )]
         .into()
     }
+}
+
+/// The sections of the list: the layout's order without flag sections
+/// whose color the active account does not use (none without an account).
+pub(super) fn listed_sections<'l>(layout: &'l Layout, flags: Option<&Flags>) -> Vec<&'l SectionId> {
+    let used = flags.map(Flags::used_colors).unwrap_or_default();
+    layout
+        .order
+        .iter()
+        .filter(|id| id.flag().is_none_or(|c| used.contains(&c)))
+        .collect()
 }
 
 #[cfg(test)]

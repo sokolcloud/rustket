@@ -23,6 +23,10 @@ pub enum Act {
     Unpin,
     Star,
     Unstar,
+    /// Star a thread parent while starred threads are listed in Favorites:
+    /// the same call, worded for what the user sees.
+    StarThread,
+    UnstarThread,
     MarkUnread,
     StartDiscussion,
     Follow,
@@ -46,8 +50,8 @@ impl Act {
             Act::Edit => Icon::Pencil,
             Act::Pin => Icon::Pin,
             Act::Unpin => Icon::PinOff,
-            Act::Star => Icon::Star,
-            Act::Unstar => Icon::StarOff,
+            Act::Star | Act::StarThread => Icon::Star,
+            Act::Unstar | Act::UnstarThread => Icon::StarOff,
             Act::MarkUnread => Icon::MailOpen,
             Act::StartDiscussion => Icon::MessagesSquare,
             Act::Follow => Icon::Bell,
@@ -71,6 +75,8 @@ impl Act {
             Act::Unpin => "room_timeline.act_unpin",
             Act::Star => "room_timeline.act_star",
             Act::Unstar => "room_timeline.act_unstar",
+            Act::StarThread => "sidebar.star_thread",
+            Act::UnstarThread => "sidebar.unstar_thread",
             Act::MarkUnread => "room_timeline.act_mark_unread",
             Act::StartDiscussion => "room_timeline.act_start_discussion",
             Act::Follow => "room_timeline.act_follow",
@@ -124,7 +130,13 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
             Act::Pin
         });
     }
-    if perm::can_star(ws, rid) {
+    if let Some(starred) = star_thread_offer(ws, m) {
+        v.push(if starred {
+            Act::UnstarThread
+        } else {
+            Act::StarThread
+        });
+    } else if perm::can_star(ws, rid) {
         let starred = me.is_some_and(|id| m.is_starred_by(id));
         v.push(if starred { Act::Unstar } else { Act::Star });
     }
@@ -198,6 +210,19 @@ pub fn keep_offer(ws: &Workspace, rid: &str, tmid: &str) -> Option<bool> {
     }
     let kept = ws.thread_index().is_kept(tmid);
     (kept || ws.subscription(rid).is_some()).then_some(kept)
+}
+
+/// Whether `m` is a thread parent whose star puts the thread into the
+/// sidebar's Favorites, and if so whether it is starred now (as the sidebar
+/// shows it).
+pub fn star_thread_offer(ws: &Workspace, m: &Message) -> Option<bool> {
+    let idx = ws.thread_index();
+    let parent = m.tmid.is_none() && m.tcount.is_some_and(|c| c > 0);
+    let omnichannel = ws
+        .room(&m.rid)
+        .is_some_and(|e| matches!(e.room_type(), RoomType::Livechat | RoomType::Voip));
+    (parent && idx.pins_enabled() && !omnichannel && perm::can_star(ws, &m.rid))
+        .then(|| idx.is_starred(&m.id))
 }
 
 /// The thread "Keep in sidebar" acts on for `m`: its thread for a reply,
@@ -568,6 +593,50 @@ mod tests {
         assert_eq!(keep_key(&w, &msg("x", "bob")), 0);
         w.set_thread_config(ThreadsMode::Off, []);
         assert_eq!(keep_key(&w, &reply), 0);
+        // A thread parent's star entry.
+        let mut parent = msg("p", "bob");
+        parent.tcount = Some(1);
+        assert_eq!(keep_key(&w, &parent), 0);
+        w.set_starred_threads(true);
+        assert_eq!(keep_key(&w, &parent), 3);
+        w.set_thread_starred("r1", "p", true);
+        assert_eq!(keep_key(&w, &parent), 6);
+    }
+
+    /// While starred threads are listed in Favorites, a thread parent's star
+    /// is worded for the thread and follows the sidebar's state.
+    #[test]
+    fn thread_parents_star_the_thread() {
+        use serde_json::json;
+        let mut w = ws(&[], &[("Threads_enabled", json!(true))], RoomType::Channel);
+        let mut parent = msg("p", "bob");
+        parent.tcount = Some(1);
+        let plain = msg("x", "bob");
+        let mut reply = msg("a", "bob");
+        reply.tmid = Some("p".into());
+        let has = |w: &Workspace, m: &Message, a: Act| available(w, m, now()).contains(&a);
+        assert!(has(&w, &parent, Act::Star));
+        assert_eq!(star_thread_offer(&w, &parent), None);
+        w.set_starred_threads(true);
+        assert!(has(&w, &parent, Act::StarThread) && !has(&w, &parent, Act::Star));
+        assert!(has(&w, &plain, Act::Star) && has(&w, &reply, Act::Star));
+        w.set_thread_starred("r1", "p", true);
+        assert_eq!(star_thread_offer(&w, &parent), Some(true));
+        assert!(has(&w, &parent, Act::UnstarThread));
+        assert_ne!(Act::StarThread.label(), Act::Star.label());
+        // Not in a room the user is not subscribed to (no star at all there).
+        let mut other = parent.clone();
+        other.rid = "r2".into();
+        assert_eq!(star_thread_offer(&w, &other), None);
+        // Starring disallowed: nothing.
+        let mut w = ws(
+            &[],
+            &[("Message_AllowStarring", json!(false))],
+            RoomType::Channel,
+        );
+        w.set_starred_threads(true);
+        assert_eq!(star_thread_offer(&w, &parent), None);
+        assert!(!has(&w, &parent, Act::Star));
     }
 
     #[test]

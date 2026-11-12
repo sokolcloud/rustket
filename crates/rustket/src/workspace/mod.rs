@@ -1,5 +1,7 @@
 //! Per-server state and the workspace layout (rail + sidebar + room area).
 
+pub mod flag_menu;
+pub mod flags;
 pub mod rail;
 pub mod sidebar;
 pub mod status_menu;
@@ -38,6 +40,8 @@ pub struct ServerState {
     pub omni: crate::omnichannel::Omni,
     /// Loader of the sidebar's Threads section.
     pub threads: threads::SidebarThreads,
+    /// Sync of the account's flags (`workspace::flags`).
+    pub flags: flags::FlagSync,
     /// Open room views (currently only the active one is kept open).
     pub rooms: HashMap<String, RoomView>,
     pub active_room: Option<String>,
@@ -95,6 +99,7 @@ impl ServerState {
             status_menu: status_menu::StatusMenu::new(),
             omni: crate::omnichannel::Omni::default(),
             threads: threads::SidebarThreads::default(),
+            flags: flags::FlagSync::default(),
             rooms: HashMap::new(),
             active_room: None,
             syncing: false,
@@ -147,6 +152,7 @@ impl ServerState {
         self.sidebar = sidebar::Sidebar::default();
         self.omni.reset(&self.id);
         self.threads.reset();
+        self.flags.reset();
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;

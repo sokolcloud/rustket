@@ -713,6 +713,88 @@ async fn sidebar_thread_sources() {
     a.rooms_delete(&room.id).await.unwrap();
 }
 
+/// What the sidebar's starred-threads scan relies on: `chat.getStarredMessages`
+/// lists every starred message of the room (thread parents with `tcount`,
+/// plain messages too), paged, with the caller's star only; an unstar leaves
+/// `starred: []`.
+#[tokio::test]
+async fn starred_thread_parents() {
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let b = login(&s, "bob").await;
+    let me = a.user_id().unwrap();
+    let room = a
+        .groups_create(&CreateRoom {
+            members: vec!["bob".into()],
+            ..CreateRoom::new(unique("star-live"))
+        })
+        .await
+        .unwrap();
+    let parent = a
+        .send_message(&OutgoingMessage::new(&room.id, "starred parent"))
+        .await
+        .unwrap();
+    let plain = a
+        .send_message(&OutgoingMessage::new(&room.id, "starred plain"))
+        .await
+        .unwrap();
+    b.send_message(&OutgoingMessage::new(&room.id, "reply").in_thread(&parent.id, false))
+        .await
+        .unwrap();
+    a.star_message(&parent.id).await.unwrap();
+    a.star_message(&plain.id).await.unwrap();
+    // Bob's star must not show in Alice's copies.
+    b.star_message(&plain.id).await.unwrap();
+
+    let all = a.get_starred(&room.id, 0, 100).await.unwrap();
+    assert_eq!(all.total, 2);
+    assert!(!all.has_more());
+    let p = all.items.iter().find(|m| m.id == parent.id).unwrap();
+    assert_eq!(p.tcount, Some(1));
+    assert!(p.tmid.is_none());
+    assert!(p.is_starred_by(&me));
+    let m = all.items.iter().find(|m| m.id == plain.id).unwrap();
+    assert!(m.tcount.unwrap_or(0) == 0, "{m:?}");
+    assert_eq!(
+        m.starred.as_ref().map(Vec::len),
+        Some(1),
+        "only the caller's star"
+    );
+    // Paged by offset.
+    let first = a.get_starred(&room.id, 0, 1).await.unwrap();
+    assert_eq!((first.items.len(), first.total), (1, 2));
+    assert!(first.has_more());
+    let second = a.get_starred(&room.id, 1, 1).await.unwrap();
+    assert_eq!(second.items.len(), 1);
+    assert!(!second.has_more());
+    assert_ne!(first.items[0].id, second.items[0].id);
+
+    a.unstar_message(&parent.id).await.unwrap();
+    let unstarred = a.get_message(&parent.id).await.unwrap();
+    assert_eq!(unstarred.starred.as_deref().map(<[_]>::len), Some(0));
+    assert!(!unstarred.is_starred_by(&me));
+    assert!(
+        unstarred.updated_at > p.updated_at,
+        "unstar bumps _updatedAt"
+    );
+    let left = a.get_starred(&room.id, 0, 100).await.unwrap();
+    assert_eq!(
+        left.items.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        [plain.id.as_str()]
+    );
+
+    // A room the user is not in.
+    let other = b
+        .groups_create(&CreateRoom::new(unique("star-private")))
+        .await
+        .unwrap();
+    let err = a.get_starred(&other.id, 0, 100).await.unwrap_err();
+    assert!(matches!(err, Error::Api { .. }), "{err:?}");
+
+    b.rooms_delete(&other.id).await.unwrap();
+    a.rooms_delete(&room.id).await.unwrap();
+}
+
 #[tokio::test]
 async fn history_pagination() {
     let Some(s) = server() else { return };
@@ -1144,4 +1226,172 @@ async fn oauth_keycloak_with_email_two_factor() {
     };
     disabled.expect("disable kcuser email 2FA");
     assert_eq!(result.unwrap().as_deref(), Some("kcuser"));
+}
+
+/// A group someone else created, with a marker naming the user and the user
+/// made an owner, passes the subscription check but not the room check.
+#[tokio::test]
+async fn forged_service_room_is_not_trusted() {
+    use rocketchat::models::{FLAGS_KEY, ServiceFields, service_subscriptions};
+
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let b = login(&s, "bob").await;
+    let alice = a.user_id().unwrap();
+    let mut fields = ServiceFields::new(&alice);
+    fields.set(
+        FLAGS_KEY,
+        json!({ "rooms": { "x": { "c": "red", "t": i64::MAX } } }),
+    );
+    let room = b
+        .groups_create(&CreateRoom {
+            members: vec!["alice".into()],
+            custom_fields: Some(fields.to_custom_fields()),
+            ..CreateRoom::new(unique("rk-forged"))
+        })
+        .await
+        .unwrap();
+    let rid = room.id.clone();
+    let (a2, b2, rid2) = (a.clone(), b.clone(), rid.clone());
+    let result = async move {
+        let (a, b, rid) = (a2, b2, rid2);
+        let _: Value = b
+            .post(
+                "groups.addOwner",
+                &json!({ "roomId": rid, "userId": alice }),
+            )
+            .await
+            .unwrap();
+        let sub = a.subscriptions_get_one(&rid).await.unwrap();
+        assert!(sub.is_service_room_of(&alice), "{sub:?}");
+        let room = a.rooms_info(&rid).await.unwrap();
+        assert!(!room.is_service_room_of(&alice), "{room:?}");
+        assert!(service_subscriptions([(&sub, &room)], &alice).is_empty());
+        // Even after the creator leaves, the creator stays on the room.
+        let _: Value = b
+            .post("groups.leave", &json!({ "roomId": rid }))
+            .await
+            .unwrap();
+        let room = a.rooms_info(&rid).await.unwrap();
+        assert_eq!(room.users_count, Some(1));
+        assert!(!room.is_service_room_of(&alice), "{room:?}");
+    };
+    let result = tokio::spawn(result).await;
+    a.rooms_delete(&rid).await.unwrap();
+    let _ = a.logout().await;
+    let _ = b.logout().await;
+    if let Err(e) = result {
+        std::panic::resume_unwind(e.into_panic());
+    }
+}
+
+/// The hidden service room behind synced flags: created with its marker in
+/// `customFields`, hidden, rewritten whole with `groups.setCustomFields`,
+/// mirrored into the owner's (still hidden) subscription and visible through
+/// `updatedSince`. Uses a throwaway name, not alice's real service room.
+#[tokio::test]
+async fn service_room_custom_fields() {
+    use rocketchat::models::{FLAGS_KEY, ServiceFields, service_subscriptions};
+
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let b = login(&s, "bob").await;
+    let me = a.user_id().unwrap();
+    let name = unique("rk-svc");
+    let room = a
+        .create_service_room(&name, &ServiceFields::new(&me))
+        .await
+        .unwrap();
+    let rid = room.id.clone();
+    let (a2, b2, rid2) = (a.clone(), b.clone(), rid.clone());
+    let result = async move {
+        let (a, b, rid) = (a2, b2, rid2);
+        assert!(room.is_service_room_of(&me), "{room:?}");
+        let sub = a.subscriptions_get_one(&rid).await.unwrap();
+        assert!(!sub.open, "created hidden");
+        assert!(sub.is_service_room_of(&me), "{sub:?}");
+        // Hiding again is fine; the name now acts as a lock.
+        a.hide_service_room(&rid).await.unwrap();
+        let dup = a
+            .create_service_room(&name, &ServiceFields::new(&me))
+            .await
+            .unwrap_err();
+        assert!(dup.is_duplicate_room_name(), "{dup:?}");
+
+        // Read-modify-write keeps keys this client does not know.
+        let mut fields = a.read_service_fields(&rid).await.unwrap().unwrap();
+        fields.set("rustketOther", json!({ "keep": true }));
+        let fields = a.write_service_fields(&rid, &fields).await.unwrap();
+        let since = RcDate::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut next = fields.clone();
+        let rooms: serde_json::Map<String, Value> = (0..1000)
+            .map(|i| {
+                (
+                    format!("room{i:04}"),
+                    json!({ "c": "blue", "t": 1_700_000_000_000i64 + i }),
+                )
+            })
+            .collect();
+        next.set(
+            FLAGS_KEY,
+            json!({ "rooms": rooms, "names": { "red": { "n": "Срочно", "t": 1 } } }),
+        );
+        let stored = a.write_service_fields(&rid, &next).await.unwrap();
+        assert_eq!(stored, next);
+        assert_eq!(stored.get("rustketOther"), Some(&json!({ "keep": true })));
+        assert_eq!(
+            a.read_service_fields(&rid).await.unwrap(),
+            Some(next.clone())
+        );
+
+        // Mirrored into the subscription, which stays hidden and is picked up
+        // by an incremental sync.
+        let subs = a.subscriptions_get(Some(since)).await.unwrap();
+        let rooms = a.rooms_get(Some(since)).await.unwrap();
+        let pairs = subs
+            .update
+            .iter()
+            .filter_map(|s| rooms.update.iter().find(|r| r.id == s.rid).map(|r| (s, r)));
+        let own = service_subscriptions(pairs, &me);
+        let sub = own
+            .iter()
+            .find(|s| s.rid == rid)
+            .expect("changed subscription");
+        assert!(!sub.open);
+        assert_eq!(sub.service_fields(), Some(next.clone()));
+        assert!(
+            rooms
+                .update
+                .iter()
+                .any(|r| r.id == rid && r.is_service_room_of(&me))
+        );
+
+        // Other users neither see nor write it.
+        let err = b
+            .groups_set_custom_fields(&rid, &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.api_error_code(),
+            Some("error-room-not-found"),
+            "{err:?}"
+        );
+        let bob_subs = b.subscriptions_get(None).await.unwrap();
+        assert!(bob_subs.update.iter().all(|s| s.rid != rid));
+        // Not an object: refused, nothing changes.
+        let err = a
+            .groups_set_custom_fields(&rid, &json!("x"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.api_error_code(), Some("invalid-params"), "{err:?}");
+        assert_eq!(a.read_service_fields(&rid).await.unwrap(), Some(next));
+    };
+    let result = tokio::spawn(result).await;
+    a.rooms_delete(&rid).await.unwrap();
+    let _ = a.logout().await;
+    let _ = b.logout().await;
+    if let Err(e) = result {
+        std::panic::resume_unwind(e.into_panic());
+    }
 }

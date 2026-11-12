@@ -973,3 +973,67 @@ fn keep_toggle_needs_a_subscription_unless_already_kept() {
         [Effect::KeepThread { keep: false, .. }]
     ));
 }
+
+/// The star button stars the parent (the thread joins Favorites); it is
+/// offered once the parent is loaded and while starred threads are listed.
+#[test]
+fn star_toggle_stars_the_parent() {
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    assert!(t.parent.is_some());
+    let buttons = t.header_actions(&view_ctx(&env)).len();
+    let a = t.update(Msg::ToggleStar, &mut env.ctx());
+    assert!(a.effects.is_empty(), "starred threads are off");
+    env.ws.set_starred_threads(true);
+    assert_eq!(t.header_actions(&view_ctx(&env)).len(), buttons + 1);
+    let a = t.update(Msg::ToggleStar, &mut env.ctx());
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::StarThread { rid, tmid, on: true }] if rid == "R1" && tmid == "P"
+    ));
+    env.ws.set_thread_starred("R1", "P", true);
+    let a = t.update(Msg::ToggleStar, &mut env.ctx());
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::StarThread { on: false, .. }]
+    ));
+    // Not before the parent is known.
+    let mut t = Thread::new("R1", "Q");
+    let a = t.update(Msg::ToggleStar, &mut env.ctx());
+    assert!(a.effects.is_empty());
+}
+
+/// The flag button opens the flag block; a choice sets the thread's flag
+/// (the menu closes), and only while the parent is known.
+#[test]
+fn flag_menu_sets_the_thread_flag() {
+    use rustket_core::flags::{FlagColor, FlagEdit};
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    let mut t = Thread::new("R1", "P");
+    let before = t.header_actions(&view_ctx(&env)).len();
+    let _ = t.activate(&mut env.ctx());
+    assert!(t.parent.is_some());
+    // Star (off) is not offered: expand, follow, flag.
+    assert!(t.header_actions(&view_ctx(&env)).len() > before);
+    let _ = t.update(Msg::ToggleFlagMenu, &mut env.ctx());
+    assert!(t.flag_menu);
+    let a = t.update(Msg::Flag(Some(FlagColor::Orange)), &mut env.ctx());
+    assert!(!t.flag_menu);
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::SetFlag(FlagEdit::Thread { rid, tmid, color: Some(FlagColor::Orange) })]
+            if rid == "R1" && tmid == "P"
+    ));
+    let _ = t.update(Msg::ToggleFlagMenu, &mut env.ctx());
+    let _ = t.update(Msg::CloseFlagMenu, &mut env.ctx());
+    assert!(!t.flag_menu);
+    // Not in a room the user is not in.
+    let mut other = Thread::new("R2", "P");
+    let mut ctx = env.ctx();
+    ctx.rid = "R2";
+    let a = other.update(Msg::Flag(None), &mut ctx);
+    assert!(a.effects.is_empty());
+}

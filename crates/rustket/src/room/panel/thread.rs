@@ -27,7 +27,9 @@ use crate::error::Res;
 use crate::room::composer::{self, Composer};
 use crate::room::render;
 use crate::room::timeline::interact::{self, Interactions, Msg as ItemMsg, Source};
-use crate::room::timeline::{Act, SELECTED_FOR, keep_offer, list, row as trow, row_id};
+use crate::room::timeline::{
+    Act, SELECTED_FOR, keep_offer, list, row as trow, row_id, star_thread_offer,
+};
 use crate::room::{Action, ComposeIntent, Effect, UpdateCtx, ViewCtx};
 use crate::session::SessionHandle;
 
@@ -51,6 +53,13 @@ pub enum Msg {
     Followed(Res<()>),
     /// Keep the thread in the sidebar or remove it.
     ToggleKeep,
+    /// Star the parent (the thread joins Favorites) or unstar it.
+    ToggleStar,
+    /// Open or close the flag menu.
+    ToggleFlagMenu,
+    CloseFlagMenu,
+    /// Set the thread's flag (`None`: remove it).
+    Flag(Option<rustket_core::flags::FlagColor>),
     ToggleExpand,
     MarkedRead(Res<()>),
     Reveal(String),
@@ -91,6 +100,8 @@ pub struct Thread {
     opened: bool,
     /// The last page request.
     ticket: Option<PageTicket>,
+    /// The flag menu of the header is open.
+    flag_menu: bool,
 }
 
 /// The user's `alsoSendThreadToChannel` preference (`default`, `always`,
@@ -141,6 +152,7 @@ impl Thread {
             stamp: 0,
             opened: false,
             ticket: None,
+            flag_menu: false,
         }
     }
 
@@ -329,6 +341,13 @@ impl Thread {
         })
     }
 
+    /// The star toggle, once the parent is loaded (see [`star_thread_offer`]).
+    fn star_offer(&self, ws: &Workspace) -> Option<bool> {
+        self.parent
+            .as_ref()
+            .and_then(|p| star_thread_offer(ws, &p.message))
+    }
+
     /// Pending replies in this thread (a send adds one).
     fn pending_count(&self, ws: &Workspace) -> usize {
         ws.thread(&self.tmid).map_or(0, |t| t.pending().count())
@@ -510,6 +529,35 @@ impl Thread {
                     keep: !kept,
                 })
             }
+            Msg::ToggleStar => {
+                let Some(starred) = self.star_offer(ctx.workspace) else {
+                    return Action::none();
+                };
+                Action::effect(Effect::StarThread {
+                    rid: ctx.rid.to_owned(),
+                    tmid: self.tmid.clone(),
+                    on: !starred,
+                })
+            }
+            Msg::ToggleFlagMenu => {
+                self.flag_menu = !self.flag_menu;
+                Action::none()
+            }
+            Msg::CloseFlagMenu => {
+                self.flag_menu = false;
+                Action::none()
+            }
+            Msg::Flag(color) => {
+                self.flag_menu = false;
+                if !crate::workspace::flag_menu::can_flag_thread(ctx.workspace, ctx.rid) {
+                    return Action::none();
+                }
+                Action::effect(Effect::SetFlag(rustket_core::flags::FlagEdit::Thread {
+                    rid: ctx.rid.to_owned(),
+                    tmid: self.tmid.clone(),
+                    color,
+                }))
+            }
             Msg::ToggleExpand => {
                 self.expanded = !self.expanded;
                 Action::none()
@@ -690,7 +738,8 @@ impl Thread {
         }
     }
 
-    /// Expand, follow and keep-in-sidebar buttons for the panel header.
+    /// Expand, follow, star, keep-in-sidebar and flag buttons for the panel
+    /// header.
     pub fn header_actions<'a>(&'a self, ctx: &ViewCtx<'a>) -> Vec<Element<'a, Msg>> {
         let mut out = Vec::new();
         out.push(icon_button_with(
@@ -722,6 +771,19 @@ impl Thread {
                 32.0,
             ));
         }
+        if let Some(starred) = self.star_offer(ctx.workspace) {
+            out.push(icon_button_with(
+                if starred { Icon::StarOff } else { Icon::Star },
+                Some(Msg::ToggleStar),
+                if starred {
+                    t!("sidebar.unstar_thread").into_owned()
+                } else {
+                    t!("sidebar.star_thread").into_owned()
+                },
+                starred,
+                32.0,
+            ));
+        }
         if let Some(kept) = keep_offer(ctx.workspace, ctx.rid, &self.tmid) {
             out.push(icon_button_with(
                 if kept {
@@ -739,7 +801,38 @@ impl Thread {
                 32.0,
             ));
         }
+        if self.parent.is_some()
+            && crate::workspace::flag_menu::can_flag_thread(ctx.workspace, ctx.rid)
+        {
+            out.push(self.flag_button(ctx.workspace));
+        }
         out
+    }
+
+    /// The flag button: the current flag's name as its tooltip; opens the
+    /// flag block as a menu.
+    fn flag_button<'a>(&'a self, ws: &Workspace) -> Element<'a, Msg> {
+        let flags = ws.flags();
+        let current = ws.thread_flag(&self.tmid);
+        let tip = match current {
+            Some(c) => crate::workspace::flag_menu::flag_name(flags, c),
+            None => t!("sidebar.menu_flag").into_owned(),
+        };
+        let trigger = icon_button_with(
+            Icon::Flag,
+            Some(Msg::ToggleFlagMenu),
+            tip,
+            current.is_some(),
+            32.0,
+        );
+        let entries = crate::workspace::flag_menu::entries(flags, current, Msg::Flag);
+        rustket_ui::widget::popover_menu(
+            trigger,
+            &entries,
+            self.flag_menu,
+            Msg::CloseFlagMenu,
+            rustket_ui::widget::Placement::BelowEnd,
+        )
     }
 
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {

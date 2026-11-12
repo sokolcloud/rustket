@@ -1,0 +1,46 @@
+{
+    "subscription": {
+        "_id": "6af55cb9d0cdf436c2340c0e",
+        "open": false,
+        "alert": false,
+        "unread": 0,
+        "userMentions": 0,
+        "groupMentions": 0,
+        "ts": "2026-11-12T06:29:13.886Z",
+        "rid": "6af55cb9d0cdf436c2340c0d",
+        "name": "rk-probe-1794464953",
+        "fname": "rk-probe-1794464953",
+        "customFields": {
+            "rustketService": {
+                "v": 1,
+                "owner": "Er3h8XYKahaopbSA7"
+            },
+            "rustketFlags": {
+                "rooms": {
+                    "GENERAL": {
+                        "c": "red",
+                        "t": 1794464953000
+                    }
+                },
+                "names": {
+                    "red": {
+                        "n": "Срочно",
+                        "t": 1794464953001
+                    }
+                }
+            }
+        },
+        "t": "p",
+        "u": {
+            "_id": "Er3h8XYKahaopbSA7",
+            "username": "alice",
+            "name": "Alice"
+        },
+        "ls": "2026-11-12T06:29:13.886Z",
+        "roles": [
+            "owner"
+        ],
+        "_updatedAt": "2026-11-12T06:32:20.570Z"
+    },
+    "success": true
+}

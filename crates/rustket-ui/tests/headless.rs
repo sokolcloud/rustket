@@ -1594,3 +1594,82 @@ fn reorder_auto_scroll_waits_for_the_cursor_to_head_for_the_edge() {
     );
     step(&mut ui, &mut r, &[escape()], up);
 }
+
+/// Number of drawn pixels within 2 per channel of `c`.
+fn pixels_of(r: &mut iced::Renderer, c: Color) -> usize {
+    let shot = r.screenshot(
+        Size::new(SIZE.width as u32, SIZE.height as u32),
+        1.0,
+        Color::WHITE,
+    );
+    let want = c.into_rgba8();
+    shot.as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|px| (0..3).all(|i| px[i].abs_diff(want[i]) <= 2))
+        .count()
+}
+
+/// Flag marks on rows, the header swatch and menu swatches are drawn in
+/// their palette colour, and only where a flag is set.
+#[test]
+fn flags_are_drawn_in_their_colour() {
+    let t = &rustket_ui::theme::LIGHT;
+    let view = |flagged: bool| -> Element<'static, M> {
+        let mut p = w::RoomListItemProps::new(
+            w::AvatarSource::initials("general", "g"),
+            "general",
+            M::Item,
+        );
+        let mut entries = vec![w::MenuEntry::Header("Flag".into())];
+        for i in [1usize, 5] {
+            let mut item = w::MenuItem::new(format!("Flag {i}"), M::Noop).checked(i == 1);
+            if flagged {
+                item = item.swatch(i);
+            }
+            entries.push(item.into());
+        }
+        if flagged {
+            p.flag = Some(w::FlagMark::new(0, "Red"));
+        }
+        column![
+            w::section_header_full(
+                "Urgent",
+                false,
+                Some(1),
+                flagged.then_some(4),
+                None,
+                M::Toggle(1)
+            ),
+            w::room_list_item(p),
+            w::menu_panel(&entries),
+        ]
+        .width(300)
+        .into()
+    };
+    let mut r = renderer();
+    for flagged in [false, true] {
+        let mut ui = UserInterface::build(view(flagged), SIZE, Cache::default(), &mut r);
+        let away = Point::new(700.0, 500.0);
+        step(&mut ui, &mut r, &[redraw()], away);
+        for i in [0, 4, 1, 5] {
+            let n = pixels_of(&mut r, t.flag[i]);
+            if flagged {
+                assert!(n >= 12, "flag {i}: {n} pixels");
+            } else {
+                assert_eq!(n, 0, "flag {i} without a flag");
+            }
+        }
+    }
+}
+
+#[test]
+fn menu_width_makes_room_for_swatches() {
+    load_fonts();
+    let label = "Waiting for reply from the team";
+    let plain = vec![w::MenuEntry::from(w::MenuItem::new(label, M::Noop))];
+    let swatched = vec![w::MenuEntry::from(
+        w::MenuItem::new(label, M::Noop).swatch(2),
+    )];
+    assert!(w::menu_width(&swatched) > w::menu_width(&plain));
+}

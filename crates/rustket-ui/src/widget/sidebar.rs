@@ -6,6 +6,7 @@ use iced::{Alignment, Element, Length, Theme, border};
 use super::avatar::{AvatarShape, AvatarSource, avatar, face};
 use super::badge::{BadgeKind, badge, dot};
 use super::ellipsis::ellipsis;
+use super::flag::{FlagMark, flag_mark, flag_swatch};
 use super::focus_ring::focus_ring;
 use super::misc::{TooltipPosition, tooltip};
 use super::presence::Presence;
@@ -51,6 +52,8 @@ pub struct RoomListItemProps<Message> {
     /// A dot of this kind instead of the counters, and a bold title (thread
     /// rows: unread replies, a mention, without a count).
     pub badge_dot: Option<BadgeKind>,
+    /// Flag mark after the title.
+    pub flag: Option<FlagMark>,
     pub on_press: Message,
 }
 
@@ -73,6 +76,7 @@ impl<Message> RoomListItemProps<Message> {
             typing_label: String::new(),
             density: Density::Extended,
             badge_dot: None,
+            flag: None,
             on_press,
         }
     }
@@ -149,6 +153,9 @@ pub fn room_list_item<'a, Message: Clone + 'a>(
                 Some(if dim { t.text_hint } else { t.text_primary })
             }),
     );
+    if let Some(mark) = &p.flag {
+        title_row = title_row.push(flag_mark(mark, 12.0));
+    }
     if p.is_muted {
         title_row = title_row.push(icon::sized(Icon::BellOff, 12.0).style(style::text_hint));
     }
@@ -235,22 +242,38 @@ pub fn section_header_with<'a, Message: Clone + 'a>(
     status: Option<Element<'a, Message>>,
     on_toggle: Message,
 ) -> Element<'a, Message> {
-    let mut content = row![
-        icon::sized(
-            if collapsed {
-                Icon::ChevronRight
-            } else {
-                Icon::ChevronDown
-            },
-            14.0
-        ),
+    section_header_full(title, collapsed, count, None, status, on_toggle)
+}
+
+/// [`section_header_with`] with an optional flag swatch (palette index of
+/// [`Tokens::flag`](crate::theme::Tokens::flag)) before the title.
+pub fn section_header_full<'a, Message: Clone + 'a>(
+    title: impl Into<String>,
+    collapsed: bool,
+    count: Option<u32>,
+    swatch: Option<usize>,
+    status: Option<Element<'a, Message>>,
+    on_toggle: Message,
+) -> Element<'a, Message> {
+    let mut content = row![icon::sized(
+        if collapsed {
+            Icon::ChevronRight
+        } else {
+            Icon::ChevronDown
+        },
+        14.0
+    ),]
+    .spacing(SPACE_1)
+    .align_y(Alignment::Center);
+    if let Some(index) = swatch {
+        content = content.push(flag_swatch(index, 8.0));
+    }
+    content = content.push(
         text(title.into().to_uppercase())
             .size(TEXT_MICRO + 1.0)
             .font(FONT_SEMIBOLD)
             .wrapping(text::Wrapping::None),
-    ]
-    .spacing(SPACE_1)
-    .align_y(Alignment::Center);
+    );
     if let Some(count) = count {
         content = content.push(
             text(count.to_string())

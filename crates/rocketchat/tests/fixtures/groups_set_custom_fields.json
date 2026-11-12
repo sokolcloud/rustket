@@ -1,0 +1,41 @@
+{
+    "group": {
+        "_id": "6af55cb9d0cdf436c2340c0d",
+        "fname": "rk-probe-1794464953",
+        "_updatedAt": "2026-11-12T06:32:20.567Z",
+        "customFields": {
+            "rustketService": {
+                "v": 1,
+                "owner": "Er3h8XYKahaopbSA7"
+            },
+            "rustketFlags": {
+                "rooms": {
+                    "GENERAL": {
+                        "c": "red",
+                        "t": 1794464953000
+                    }
+                },
+                "names": {
+                    "red": {
+                        "n": "Срочно",
+                        "t": 1794464953001
+                    }
+                }
+            }
+        },
+        "name": "rk-probe-1794464953",
+        "t": "p",
+        "msgs": 0,
+        "usersCount": 1,
+        "u": {
+            "_id": "Er3h8XYKahaopbSA7",
+            "username": "alice",
+            "name": "Alice"
+        },
+        "ts": "2026-11-12T06:29:13.886Z",
+        "ro": false,
+        "default": false,
+        "sysMes": true
+    },
+    "success": true
+}

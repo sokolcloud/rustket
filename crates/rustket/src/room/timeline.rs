@@ -37,6 +37,7 @@ use super::{Action, Effect, UpdateCtx, ViewCtx};
 
 pub use actions::{
     Act, available as available_actions, channel_url, keep_offer, kept_thread_of, permalink,
+    star_thread_offer,
 };
 pub use interact::{Interactions, Msg as ItemMsg, Source};
 pub use viewer::{Viewer, ViewerMsg};

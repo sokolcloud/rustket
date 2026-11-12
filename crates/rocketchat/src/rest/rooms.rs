@@ -5,8 +5,10 @@ use serde_json::{Value, json};
 
 use super::{Query, RestClient, field, paginated};
 use crate::RcDate;
-use crate::error::Result;
-use crate::models::{Paginated, Room, RoomType, Subscription, UpdatedSince, UserSummary};
+use crate::error::{Error, Result};
+use crate::models::{
+    Paginated, Room, RoomType, ServiceFields, Subscription, UpdatedSince, UserSummary,
+};
 
 /// Parameters of `channels.create` / `groups.create`.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -17,6 +19,9 @@ pub struct CreateRoom {
     pub members: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
+    /// Room `customFields` (`groups.create` / `channels.create`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_fields: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_data: Option<Value>,
 }
@@ -182,6 +187,82 @@ impl RestClient {
     pub async fn groups_create(&self, params: &CreateRoom) -> Result<Room> {
         let v: Value = self.post("groups.create", params).await?;
         field(v, "group")
+    }
+
+    /// `groups.setCustomFields`: replaces the group's whole `customFields`
+    /// (and every member's subscription copy). Needs `edit-room`.
+    pub async fn groups_set_custom_fields(&self, rid: &str, custom_fields: &Value) -> Result<Room> {
+        let v: Value = self
+            .post(
+                "groups.setCustomFields",
+                &json!({ "roomId": rid, "customFields": custom_fields }),
+            )
+            .await?;
+        field(v, "group")
+    }
+
+    /// Creates a service room (see [`crate::models::ServiceFields`]) named
+    /// `name` and hides it. A failed hide is only logged: the room exists, and
+    /// the caller re-hides it ([`Self::hide_service_room`]) whenever it sees its
+    /// subscription open. A taken name fails with
+    /// [`Error::is_duplicate_room_name`]; another device may have just created
+    /// the room, so re-read the subscriptions before trying another name.
+    pub async fn create_service_room(&self, name: &str, fields: &ServiceFields) -> Result<Room> {
+        let room = self
+            .groups_create(&CreateRoom {
+                custom_fields: Some(fields.to_custom_fields()),
+                ..CreateRoom::new(name)
+            })
+            .await?;
+        if let Err(e) = self.hide_service_room(&room.id).await {
+            tracing::warn!(rid = %room.id, error = %e, "could not hide the new service room");
+        }
+        Ok(room)
+    }
+
+    /// `rooms.hide`; a room that is already hidden is fine.
+    pub async fn hide_service_room(&self, rid: &str) -> Result<()> {
+        match self.rooms_hide(rid).await {
+            Err(e) if e.api_error_code() == Some("error-room-already-hidden") => Ok(()),
+            r => r,
+        }
+    }
+
+    /// The service room's current fields from the room itself (`rooms.info`),
+    /// for a re-read after a write. `None` when the marker is gone.
+    pub async fn read_service_fields(&self, rid: &str) -> Result<Option<ServiceFields>> {
+        Ok(self.rooms_info(rid).await?.service_fields())
+    }
+
+    /// The service room's fields as the user's subscription holds them
+    /// (`subscriptions.getOne`; the server updates subscriptions together with
+    /// the room). A rate-limit bucket apart from `rooms.info`. `Ok(None)`: not
+    /// subscribed (the room is gone or was left); `Ok(Some(None))`: the
+    /// marker is gone.
+    pub async fn read_service_subscription(
+        &self,
+        rid: &str,
+    ) -> Result<Option<Option<ServiceFields>>> {
+        let v: Value = self
+            .get("subscriptions.getOne", &Query::new().push("roomId", rid))
+            .await?;
+        let sub: Option<Subscription> = field(v, "subscription")?;
+        Ok(sub.map(|s| s.service_fields()))
+    }
+
+    /// Writes the whole `fields` object and returns what the server stored, as
+    /// echoed by the response.
+    pub async fn write_service_fields(
+        &self,
+        rid: &str,
+        fields: &ServiceFields,
+    ) -> Result<ServiceFields> {
+        let room = self
+            .groups_set_custom_fields(rid, &fields.to_custom_fields())
+            .await?;
+        room.service_fields().ok_or_else(|| {
+            Error::Protocol("groups.setCustomFields: no service marker in the response".into())
+        })
     }
 
     /// Room members of any room type (`rooms.membersOrderedByRole`: owners,

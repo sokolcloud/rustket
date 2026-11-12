@@ -13,6 +13,7 @@ use rocketchat::models::UserStatus;
 use rust_i18n::t;
 use rustket_core::config::{Density, UiPrefs};
 use rustket_core::config::{SidebarSort, ThreadsMode};
+use rustket_core::flags::{FlagColor, FlagEdit};
 use rustket_core::room_list::{
     self, Avatar, BadgeVariant, Preview, PreviewKind, RoomKind, RoomListItem, RoomListOptions,
     Section, SectionKind, ThreadListItem,
@@ -25,7 +26,7 @@ use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY};
 use rustket_ui::widget::{
     BadgeKind, MenuEntry, MenuItem, Presence, RoomListItemProps, TooltipPosition, context_menu,
-    empty_state, icon_button, keyed_list, reorder_area, room_list_item, section_header_with,
+    empty_state, icon_button, keyed_list, reorder_area, room_list_item, section_header_full,
     spinner, tooltip,
 };
 
@@ -62,6 +63,11 @@ pub enum Message {
         tmid: String,
         act: ThreadAct,
     },
+    /// An item of a room row's context menu.
+    RoomAct {
+        rid: String,
+        act: RoomAct,
+    },
     /// An item of a section header's context menu.
     Header(HeaderAct),
     /// A header was dragged before another one (`None`: to the end); keys
@@ -82,8 +88,12 @@ pub enum HeaderAct {
     Layout(LayoutEdit),
     /// Load the Threads section again.
     Refresh,
+    /// Scan every room for starred threads again (Favorites).
+    RefreshStarred,
     /// Settings, with the deletion of this group to confirm.
     Ungroup(String),
+    /// Settings, at this flag's name.
+    RenameFlag(FlagColor),
     /// Settings, scrolled to the Sidebar card.
     OpenSettings,
 }
@@ -95,9 +105,22 @@ pub enum ThreadAct {
     MarkRead,
     /// For rows whose parent is unavailable (`chat.readThread` needs it).
     MarkRoomRead,
+    /// Star the parent: the thread joins Favorites.
+    Star,
+    Unstar,
     Keep,
     Unkeep,
     Unfollow,
+    /// Set the thread's flag (`None`: remove it).
+    Flag(Option<FlagColor>),
+}
+
+/// Context menu actions of a room row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomAct {
+    Favorite(bool),
+    /// Set the room's flag (`None`: remove it).
+    Flag(Option<FlagColor>),
 }
 
 /// Server calls made for a thread row (see [`Out::ThreadCall`]).
@@ -132,18 +155,34 @@ pub enum Out {
         tmid: String,
         keep: bool,
     },
+    /// Star or unstar the thread's parent message.
+    StarThread {
+        rid: String,
+        tmid: String,
+        on: bool,
+    },
     ThreadCall {
         rid: String,
         tmid: String,
         call: ThreadCall,
     },
+    /// Add the room to Favorites or remove it (`rooms.favorite`).
+    Favorite {
+        rid: String,
+        on: bool,
+    },
+    /// Set or remove a flag (the flag sync stores it).
+    Flag(FlagEdit),
     /// Edit the sidebar layout (`sidebar_layout::apply`) and save.
     Layout(LayoutEdit),
     RefreshThreads,
+    /// Scan every room for starred threads again.
+    RefreshStarred,
     /// Open the Sidebar settings (`ungroup`: with that group's deletion to
-    /// confirm).
+    /// confirm; `flag`: at that flag's name).
     OpenSettings {
         ungroup: Option<String>,
+        flag: Option<FlagColor>,
     },
     /// Scroll the room list ([`LIST_ID`]) by this much.
     ScrollBy(f32),
@@ -189,6 +228,9 @@ pub struct Sidebar {
     open_thread: Option<(String, String)>,
     /// Following crawl progress `(done, rooms)` shown in the Threads header.
     thread_progress: Option<(usize, usize)>,
+    /// Starred threads are tracked (Favorites offers a refresh); set by
+    /// [`Self::refresh`], whose inputs cover it.
+    starred_tracked: bool,
 }
 
 /// Height of a section header slot (the header is centred in it; its own
@@ -222,8 +264,11 @@ struct SectionsKey {
     settings: u64,
     drafts_me: u64,
     presence: u64,
-    /// Thread index revision; 0 while the Threads section is off.
+    /// Thread index revision; 0 while nothing lists threads (the Threads
+    /// section is off and starred threads are not tracked).
     threads: u64,
+    /// Synced flags (routing, flag section titles).
+    flags: u64,
     opts: RoomListOptions,
 }
 
@@ -305,6 +350,7 @@ fn row_key(rid: &str, p: &RoomListItemProps<Message>) -> u64 {
     p.presence.hash(&mut h);
     p.icon.as_ref().map(std::mem::discriminant).hash(&mut h);
     p.badge_dot.hash(&mut h);
+    p.flag.hash(&mut h);
     p.typing_label.hash(&mut h);
     std::mem::discriminant(&p.density).hash(&mut h);
     h.finish()
@@ -312,9 +358,9 @@ fn row_key(rid: &str, p: &RoomListItemProps<Message>) -> u64 {
 
 /// Header title: the group name, else the built-in's translated name.
 fn section_title(s: &Section) -> String {
-    match (&s.title, s.kind()) {
+    match (&s.title, s.id.i18n_key()) {
         (Some(t), _) => t.clone(),
-        (None, Some(k)) => t!(k.i18n_key()).into_owned(),
+        (None, Some(k)) => t!(k).into_owned(),
         (None, None) => String::new(),
     }
 }
@@ -364,8 +410,19 @@ impl Sidebar {
             Message::Header(act) => match act {
                 HeaderAct::Layout(e) => Out::Layout(e),
                 HeaderAct::Refresh => Out::RefreshThreads,
-                HeaderAct::Ungroup(id) => Out::OpenSettings { ungroup: Some(id) },
-                HeaderAct::OpenSettings => Out::OpenSettings { ungroup: None },
+                HeaderAct::RefreshStarred => Out::RefreshStarred,
+                HeaderAct::Ungroup(id) => Out::OpenSettings {
+                    ungroup: Some(id),
+                    flag: None,
+                },
+                HeaderAct::RenameFlag(c) => Out::OpenSettings {
+                    ungroup: None,
+                    flag: Some(c),
+                },
+                HeaderAct::OpenSettings => Out::OpenSettings {
+                    ungroup: None,
+                    flag: None,
+                },
             },
             Message::ThreadAct { rid, tmid, act } => match act {
                 ThreadAct::OpenRoom => Out::OpenRoom(rid),
@@ -384,11 +441,21 @@ impl Sidebar {
                     tmid,
                     call: ThreadCall::Unfollow,
                 },
+                ThreadAct::Star | ThreadAct::Unstar => Out::StarThread {
+                    rid,
+                    tmid,
+                    on: act == ThreadAct::Star,
+                },
                 ThreadAct::Keep | ThreadAct::Unkeep => Out::KeepThread {
                     rid,
                     tmid,
                     keep: act == ThreadAct::Keep,
                 },
+                ThreadAct::Flag(color) => Out::Flag(FlagEdit::Thread { rid, tmid, color }),
+            },
+            Message::RoomAct { rid, act } => match act {
+                RoomAct::Favorite(on) => Out::Favorite { rid, on },
+                RoomAct::Flag(color) => Out::Flag(FlagEdit::Room { rid, color }),
             },
         }
     }
@@ -541,6 +608,7 @@ impl Sidebar {
         prefetch: usize,
     ) {
         use rustket_core::Dirty;
+        self.starred_tracked = ws.thread_index().pins_enabled();
         let mut opts = RoomListOptions::from_prefs(prefs, ws);
         opts.kept_unread.clone_from(&self.kept_unread);
         opts.kept_unread_first.clone_from(&self.kept_unread_first);
@@ -557,11 +625,12 @@ impl Sidebar {
             } else {
                 presence
             },
-            threads: if opts.layout.threads == rustket_core::config::ThreadsMode::Off {
-                0
-            } else {
+            threads: if ws.thread_index().indexing() {
                 ws.revision(Dirty::THREAD_INDEX)
+            } else {
+                0
             },
+            flags: ws.revision(Dirty::FLAGS),
             opts,
         };
         if self.computed_for.as_ref() == Some(&key) {
@@ -929,13 +998,22 @@ impl Sidebar {
                         (section.threads_hidden > 0)
                             .then(|| hidden_status(section.threads_hidden, layout.threads_limit))
                     })
+                } else if collapsed && let Some(dot) = unread_threads_status(section) {
+                    // Unread threads have no Unread section to go to.
+                    Some(dot)
                 } else {
-                    None
+                    (section.threads_hidden > 0).then(|| {
+                        hidden_status(
+                            section.threads_hidden,
+                            rustket_core::sidebar_layout::MAX_STARRED_THREADS as u32,
+                        )
+                    })
                 };
-                let header = section_header_with(
+                let header = section_header_full(
                     section_title(section),
                     collapsed,
                     Some(section.len() as u32),
+                    section.id.flag().map(FlagColor::index),
                     status,
                     Message::Toggle(section.id.clone()),
                 );
@@ -954,7 +1032,7 @@ impl Sidebar {
             let hi = end.clamp(slot, slot + n) - slot;
             before += lo as f32 * row_h;
             after += (n - hi) as f32 * row_h;
-            // Room rows, then thread rows (a section has one or the other).
+            // Room rows, then thread rows (Favorites may have both).
             let rooms = section.items.len();
             for item in &section.items[lo.min(rooms)..hi.min(rooms)] {
                 built.push((hash_of(&item.rid), self.row(item, ctx)));
@@ -999,15 +1077,28 @@ impl Sidebar {
             filtering: !self.filter.trim().is_empty(),
             layout,
             prefs,
+            starred_tracked: self.starred_tracked,
         })
     }
 
     fn row(&self, item: &RoomListItem, ctx: &SidebarCtx<'_>) -> Element<'static, Message> {
         let p = self.row_props(item, ctx);
-        let key = row_key(&item.rid, &p);
+        let menu = RoomMenu::of(item, ctx.workspace);
+        let key = hash_of((
+            row_key(&item.rid, &p),
+            &menu,
+            menu.flag
+                .then(|| super::flag_menu::names_key(ctx.workspace.flags())),
+            rust_i18n::locale().to_string(),
+        ));
+        let entries = menu.entries(&item.rid, ctx.workspace);
         lazy(key, move |_| {
             count_build(0, 1);
-            room_list_item(p.clone())
+            if entries.is_empty() {
+                room_list_item(p.clone())
+            } else {
+                context_menu(room_list_item(p.clone()), entries.clone())
+            }
         })
         .into()
     }
@@ -1054,12 +1145,75 @@ impl Sidebar {
         p.is_selected = ctx.active_room == Some(item.rid.as_str());
         p.presence = item.dm_status.map(presence);
         p.icon = Some(room_icon(item.kind));
+        p.flag = item
+            .flag
+            .map(|c| super::flag_menu::mark(ctx.workspace.flags(), c));
         crate::omnichannel::sidebar::decorate(&mut p, item, ctx);
         if let Some(label) = ctx.workspace.typing_label(&item.rid, None, ctx.now) {
             p.typing = true;
             p.typing_label = typing_text(&label);
         }
         p
+    }
+}
+
+/// What a room row's context menu offers (hashed into the row's key).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RoomMenu {
+    /// "Add to Favorites" (`Some(false)`) or "Remove from Favorites".
+    favorite: Option<bool>,
+    /// The flag block, with the current color.
+    flag: bool,
+    current: Option<FlagColor>,
+}
+
+impl RoomMenu {
+    /// Omnichannel rows keep their own actions (the room's header).
+    fn of(item: &RoomListItem, ws: &Workspace) -> Self {
+        if item.kind == RoomKind::Omnichannel {
+            return Self {
+                favorite: None,
+                flag: false,
+                current: None,
+            };
+        }
+        let favorite = crate::room::panel::common::room_action_allowed(
+            ws,
+            &item.rid,
+            crate::room::panel::common::RoomAction::Favorite(!item.favorite),
+        )
+        .then_some(item.favorite);
+        Self {
+            favorite,
+            flag: super::flag_menu::can_flag_room(ws, &item.rid),
+            current: item.flag,
+        }
+    }
+
+    /// Favorites, then the flag block.
+    fn entries(&self, rid: &str, ws: &Workspace) -> Vec<MenuEntry<Message>> {
+        let act = |act: RoomAct| Message::RoomAct {
+            rid: rid.to_owned(),
+            act,
+        };
+        let mut v: Vec<MenuEntry<Message>> = Vec::new();
+        if let Some(fav) = self.favorite {
+            let a = crate::room::panel::common::RoomAction::Favorite(!fav);
+            v.push(
+                MenuItem::new(a.label(), act(RoomAct::Favorite(!fav)))
+                    .icon(a.icon())
+                    .into(),
+            );
+        }
+        if self.flag {
+            if !v.is_empty() {
+                v.push(MenuEntry::Separator);
+            }
+            v.extend(super::flag_menu::entries(ws.flags(), self.current, |c| {
+                act(RoomAct::Flag(c))
+            }));
+        }
+        v
     }
 }
 
@@ -1084,6 +1238,27 @@ fn progress_status((done, total): (usize, usize)) -> Element<'static, Message> {
 }
 
 /// "+N": thread rows left out by the limit, explained in a tooltip.
+/// A dot for the unread thread rows of a collapsed section (the strongest
+/// kind), their number in a tooltip.
+fn unread_threads_status(section: &Section) -> Option<Element<'static, Message>> {
+    let unread: Vec<BadgeVariant> = section.threads.iter().filter_map(|t| t.unread).collect();
+    let kind = if unread.contains(&BadgeVariant::Mention) {
+        BadgeKind::Mention
+    } else if unread.contains(&BadgeVariant::GroupMention) {
+        BadgeKind::GroupMention
+    } else if unread.is_empty() {
+        return None;
+    } else {
+        BadgeKind::Thread
+    };
+    let full = t!("sidebar.threads_unread_collapsed", count = unread.len()).into_owned();
+    Some(tooltip(
+        rustket_ui::widget::dot(kind, 8.0),
+        full,
+        TooltipPosition::Bottom,
+    ))
+}
+
 fn hidden_status(hidden: usize, limit: u32) -> Element<'static, Message> {
     let full = t!("sidebar.threads_hidden_tip", count = hidden, limit = limit).into_owned();
     let content = iced::widget::text(t!("sidebar.threads_hidden", count = hidden).into_owned())
@@ -1107,19 +1282,25 @@ pub fn threads_limit_label(n: u32) -> String {
 fn thread_row(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> Element<'static, Message> {
     let p = thread_row_props(t, ctx);
     let kept_enabled = ctx.workspace.thread_index().kept_enabled();
+    let star_enabled = can_star_thread(ctx.workspace, &t.rid);
+    let flags =
+        super::flag_menu::can_flag_thread(ctx.workspace, &t.rid).then(|| ctx.workspace.flags());
     let key = hash_of((
         "thread",
         row_key(&t.tmid, &p),
         (
             t.kept,
+            t.starred,
+            t.flag,
             t.unread.is_some(),
             t.following,
             std::mem::discriminant(&t.title),
         ),
-        kept_enabled,
+        (kept_enabled, star_enabled),
+        flags.map(super::flag_menu::names_key),
         rust_i18n::locale().to_string(),
     ));
-    let entries = thread_menu(t, kept_enabled);
+    let entries = thread_menu(t, kept_enabled, star_enabled, flags);
     lazy(key, move |_| {
         count_build(0, 1);
         context_menu(room_list_item(p.clone()), entries.clone())
@@ -1176,6 +1357,9 @@ fn thread_row_props(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> RoomListItemPro
         .tlm
         .map(|ts| short_time(ts, chrono::Local::now(), ctx.prefs.clock_24h));
     p.icon = Some(Icon::MessageCircle);
+    p.flag = t
+        .flag
+        .map(|c| super::flag_menu::mark(ctx.workspace.flags(), c));
     p.badge_dot = t.unread.map(|v| match v {
         BadgeVariant::Mention => BadgeKind::Mention,
         BadgeVariant::GroupMention => BadgeKind::GroupMention,
@@ -1189,7 +1373,20 @@ fn thread_row_props(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> RoomListItemPro
     p
 }
 
-fn thread_menu(t: &ThreadListItem, kept_enabled: bool) -> Vec<MenuEntry<Message>> {
+/// Thread rows of `rid` offer "Add thread to Favorites": starred threads are
+/// tracked and the user may star messages there.
+fn can_star_thread(ws: &Workspace, rid: &str) -> bool {
+    ws.thread_index().pins_enabled() && rustket_core::permissions::can_star(ws, rid)
+}
+
+/// Open the room, mark read, star, keep, unfollow; then the flag block
+/// (`flags`: the thread can carry a flag).
+fn thread_menu(
+    t: &ThreadListItem,
+    kept_enabled: bool,
+    star_enabled: bool,
+    flags: Option<&rustket_core::flags::Flags>,
+) -> Vec<MenuEntry<Message>> {
     let act = |act: ThreadAct| Message::ThreadAct {
         rid: t.rid.clone(),
         tmid: t.tmid.clone(),
@@ -1211,6 +1408,19 @@ fn thread_menu(t: &ThreadListItem, kept_enabled: bool) -> Vec<MenuEntry<Message>
         };
         entries.push(MenuItem::new(label, act(a)).icon(Icon::CheckCheck).into());
     }
+    if star_enabled && t.starred {
+        entries.push(
+            MenuItem::new(t!("sidebar.unstar_thread"), act(ThreadAct::Unstar))
+                .icon(Icon::StarOff)
+                .into(),
+        );
+    } else if star_enabled && loaded && t.tcount > 0 {
+        entries.push(
+            MenuItem::new(t!("sidebar.star_thread"), act(ThreadAct::Star))
+                .icon(Icon::Star)
+                .into(),
+        );
+    }
     if t.kept {
         entries.push(
             MenuItem::new(t!("sidebar.unkeep_thread"), act(ThreadAct::Unkeep))
@@ -1231,6 +1441,12 @@ fn thread_menu(t: &ThreadListItem, kept_enabled: bool) -> Vec<MenuEntry<Message>
                 .into(),
         );
     }
+    if let Some(flags) = flags {
+        entries.push(MenuEntry::Separator);
+        entries.extend(super::flag_menu::entries(flags, t.flag, |c| {
+            act(ThreadAct::Flag(c))
+        }));
+    }
     entries
 }
 
@@ -1245,6 +1461,8 @@ struct HeaderMenu<'a> {
     filtering: bool,
     layout: &'a Layout,
     prefs: &'a UiPrefs,
+    /// Favorites lists starred threads: offer scanning for them again.
+    starred_tracked: bool,
 }
 
 pub(crate) fn sort_label(sort: SidebarSort, threads: bool) -> String {
@@ -1260,7 +1478,8 @@ pub(crate) fn sort_label(sort: SidebarSort, threads: bool) -> String {
 }
 
 /// Move up/down, sort, unread first; the Threads mode, Refresh and Hide;
-/// Hide for Unread, Ungroup for groups; collapse and the settings.
+/// Hide for Unread, Refresh for Favorites with starred threads, Rename for
+/// flags, Ungroup for groups; collapse and the settings.
 fn header_menu(m: &HeaderMenu<'_>) -> Vec<MenuEntry<Message>> {
     let id = &m.section.id;
     let edit = |e: LayoutEdit| Message::Header(HeaderAct::Layout(e));
@@ -1388,6 +1607,26 @@ fn header_menu(m: &HeaderMenu<'_>) -> Vec<MenuEntry<Message>> {
                 edit(LayoutEdit::SetUnreadOnTop(false)),
             )
             .icon(Icon::EyeOff)
+            .into(),
+            MenuEntry::Separator,
+        ]);
+    } else if m.starred_tracked && m.section.is(SectionKind::Favorites) {
+        entries.extend([
+            MenuItem::new(
+                t!("sidebar.menu_refresh_starred"),
+                Message::Header(HeaderAct::RefreshStarred),
+            )
+            .icon(Icon::RefreshCw)
+            .into(),
+            MenuEntry::Separator,
+        ]);
+    } else if let Some(c) = id.flag() {
+        entries.extend([
+            MenuItem::new(
+                t!("sidebar.menu_rename_flag"),
+                Message::Header(HeaderAct::RenameFlag(c)),
+            )
+            .icon(Icon::Pencil)
             .into(),
             MenuEntry::Separator,
         ]);
@@ -1738,6 +1977,22 @@ mod tests {
                     .iter()
                     .any(|s| s.is(SectionKind::Threads))
             );
+
+            // Starred threads are listed in Favorites with the mode off.
+            fx.prefs.sidebar_threads = ThreadsMode::Off;
+            fx.ws.set_thread_config(ThreadsMode::Off, []);
+            fx.ws.set_starred_threads(true);
+            let rev = fx.refresh();
+            fx.ws.set_thread_starred("r0000", "t", true);
+            assert_ne!(fx.refresh(), rev, "recomputed for starred threads");
+            let fav = fx
+                .sidebar
+                .sections
+                .iter()
+                .find(|s| s.is(SectionKind::Favorites))
+                .unwrap();
+            assert_eq!(fav.threads.len(), 1);
+            assert!(fav.threads[0].starred);
         }
 
         /// A room opened from the Unread section stays there once read, until
@@ -2398,7 +2653,7 @@ mod tests {
             assert_eq!(p.title, "r0000 › topic t000");
 
             let labels = |t: &ThreadListItem, kept_enabled: bool| -> Vec<String> {
-                thread_menu(t, kept_enabled)
+                thread_menu(t, kept_enabled, false, None)
                     .into_iter()
                     .filter_map(|e| match e {
                         MenuEntry::Item(i) => Some(i.label),
@@ -2431,6 +2686,38 @@ mod tests {
             assert_eq!(
                 labels(&kept, true),
                 ["Open room", "Remove from sidebar", "Unfollow thread"]
+            );
+            // Starring comes before keeping; a placeholder row can only be
+            // unstarred.
+            let star_labels = |t: &ThreadListItem| -> Vec<String> {
+                thread_menu(t, true, true, None)
+                    .into_iter()
+                    .filter_map(|e| match e {
+                        MenuEntry::Item(i) => Some(i.label),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            assert_eq!(
+                star_labels(&kept),
+                [
+                    "Open room",
+                    "Add thread to Favorites",
+                    "Remove from sidebar",
+                    "Unfollow thread"
+                ]
+            );
+            let mut starred = kept.clone();
+            starred.starred = true;
+            assert_eq!(
+                star_labels(&starred)[1..2],
+                ["Remove thread from Favorites"]
+            );
+            let mut gone_starred = gone.clone();
+            assert!(!star_labels(&gone_starred).contains(&"Add thread to Favorites".to_owned()));
+            gone_starred.starred = true;
+            assert!(
+                star_labels(&gone_starred).contains(&"Remove thread from Favorites".to_owned())
             );
 
             let (rid, tmid) = ("r0000".to_owned(), "t000".to_owned());
@@ -2477,6 +2764,14 @@ mod tests {
                 sb.update(act(ThreadAct::Unkeep)),
                 Out::KeepThread { keep: false, .. }
             ));
+            assert!(matches!(
+                sb.update(act(ThreadAct::Star)),
+                Out::StarThread { rid, tmid, on: true } if rid == "r0000" && tmid == "t000"
+            ));
+            assert!(matches!(
+                sb.update(act(ThreadAct::Unstar)),
+                Out::StarThread { on: false, .. }
+            ));
         }
 
         /// The row's menu depends on more than its props: a change of the
@@ -2498,6 +2793,324 @@ mod tests {
             fx.ws
                 .set_thread_config(ThreadsMode::UnreadKept, [("r0000", "t001")]);
             assert_eq!(fx.diff(&mut tree), (1, 1));
+            // Starring becomes available: both rows rebuilt.
+            fx.ws.set_starred_threads(true);
+            assert_eq!(fx.diff(&mut tree), (1, 2));
+        }
+
+        /// Favorites with starred threads: a refresh in its header menu, an
+        /// unread dot while collapsed.
+        #[test]
+        fn favorites_with_starred_threads() {
+            use rustket_core::config::ThreadsMode;
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            fx.ws.set_thread_config(ThreadsMode::Off, []);
+            fx.ws.set_starred_threads(true);
+            fx.ws.set_thread_starred("r0000", "t", true);
+            fx.refresh();
+            let menus = header_menus(&fx);
+            let refresh = |m: &Message| matches!(m, Message::Header(HeaderAct::RefreshStarred));
+            assert_eq!(items(menu_of(&menus, "favorites"), refresh).len(), 1);
+            assert!(items(menu_of(&menus, "channels"), refresh).is_empty());
+            assert!(matches!(
+                fx.sidebar
+                    .update(Message::Header(HeaderAct::RefreshStarred)),
+                Out::RefreshStarred
+            ));
+            let fav = fx
+                .sidebar
+                .sections
+                .iter()
+                .find(|s| s.is(SectionKind::Favorites))
+                .unwrap()
+                .clone();
+            assert!(unread_threads_status(&fav).is_none());
+            let mut s = sub("r0000", "r0000", RoomType::Channel);
+            s.tunread = Some(vec!["t".into()]);
+            fx.ws.apply_subscription(Change::Updated, s);
+            fx.refresh();
+            let fav = fx
+                .sidebar
+                .sections
+                .iter()
+                .find(|s| s.is(SectionKind::Favorites))
+                .unwrap();
+            assert!(fav.threads[0].unread.is_some());
+            assert!(unread_threads_status(fav).is_some());
+            // Without tracking there is no refresh.
+            fx.ws.set_starred_threads(false);
+            fx.refresh();
+            let menus = header_menus(&fx);
+            assert!(menus.iter().all(|(_, m)| items(m, refresh).is_empty()));
+        }
+
+        fn set_flags(ws: &mut Workspace, edits: &[FlagEdit]) {
+            let mut overlay = ws.flag_overlay().clone();
+            for e in edits {
+                overlay.edit(ws.flag_blob(), e, 1_000, "dev").unwrap();
+            }
+            ws.set_flag_overlay(overlay);
+        }
+
+        fn item_labels(menu: &[MenuEntry<Message>]) -> Vec<String> {
+            menu.iter()
+                .filter_map(|e| match e {
+                    MenuEntry::Item(i) => Some(i.label.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// Room rows: the flag mark (named by the user), a context menu with
+        /// Favorites and the flag block, mapped to outputs; none for
+        /// omnichannel rows.
+        #[test]
+        fn room_row_menu_flag_items() {
+            use rustket_core::flags::FlagColor::{Blue, Red};
+            use rustket_ui::widget::FlagMark;
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            set_flags(
+                &mut fx.ws,
+                &[
+                    FlagEdit::Room {
+                        rid: "r0001".into(),
+                        color: Some(Red),
+                    },
+                    FlagEdit::Rename {
+                        color: Red,
+                        name: Some("Urgent".into()),
+                    },
+                ],
+            );
+            fx.refresh();
+            let section = fx
+                .sidebar
+                .sections
+                .iter()
+                .find(|s| s.id == SectionId::Flag(Red))
+                .unwrap()
+                .clone();
+            assert_eq!(section_title(&section), "Urgent");
+            let item = section.items[0].clone();
+            assert_eq!(item.rid, "r0001");
+            let c = ctx(&fx);
+            let p = fx.sidebar.row_props(&item, &c);
+            assert_eq!(p.flag, Some(FlagMark::new(Red.index(), "Urgent")));
+            let menu = RoomMenu::of(&item, &fx.ws);
+            let entries = menu.entries(&item.rid, &fx.ws);
+            assert_eq!(
+                item_labels(&entries),
+                [
+                    "Add to favorites",
+                    "Urgent",
+                    "Orange",
+                    "Yellow",
+                    "Green",
+                    "Blue",
+                    "Purple",
+                    "Remove flag"
+                ]
+            );
+            let checked: Vec<_> = items(&entries, |_| true)
+                .into_iter()
+                .filter(|i| i.checked == Some(true))
+                .map(|i| i.swatch)
+                .collect();
+            assert_eq!(checked, [Some(Red.index())]);
+            // An unflagged room has nothing to remove; its row has no mark.
+            let plain = fx
+                .sidebar
+                .sections
+                .iter()
+                .flat_map(|s| &s.items)
+                .find(|i| i.rid == "r0000")
+                .unwrap()
+                .clone();
+            assert!(fx.sidebar.row_props(&plain, &c).flag.is_none());
+            let plain_menu = RoomMenu::of(&plain, &fx.ws).entries("r0000", &fx.ws);
+            assert!(!item_labels(&plain_menu).contains(&"Remove flag".to_owned()));
+            // The row key follows the flag.
+            assert_ne!(
+                row_key("r0001", &p),
+                row_key("r0001", &fx.sidebar.row_props(&plain, &c))
+            );
+            // Outputs.
+            assert!(matches!(
+                fx.sidebar.update(Message::RoomAct {
+                    rid: "r0001".into(),
+                    act: RoomAct::Flag(Some(Blue)),
+                }),
+                Out::Flag(FlagEdit::Room { rid, color: Some(Blue) }) if rid == "r0001"
+            ));
+            assert!(matches!(
+                fx.sidebar.update(Message::RoomAct {
+                    rid: "r0001".into(),
+                    act: RoomAct::Flag(None),
+                }),
+                Out::Flag(FlagEdit::Room { color: None, .. })
+            ));
+            assert!(matches!(
+                fx.sidebar.update(Message::RoomAct {
+                    rid: "r0000".into(),
+                    act: RoomAct::Favorite(true),
+                }),
+                Out::Favorite { rid, on: true } if rid == "r0000"
+            ));
+            // A favorite offers removal.
+            let mut fav = plain.clone();
+            fav.favorite = true;
+            let labels = item_labels(&RoomMenu::of(&fav, &fx.ws).entries("r0000", &fx.ws));
+            assert_eq!(labels[0], "Remove from favorites");
+            // Omnichannel rows keep their own actions.
+            let mut omni = plain.clone();
+            omni.kind = RoomKind::Omnichannel;
+            assert!(
+                RoomMenu::of(&omni, &fx.ws)
+                    .entries("r0000", &fx.ws)
+                    .is_empty()
+            );
+            // Renaming the color renames the mark.
+            set_flags(
+                &mut fx.ws,
+                &[FlagEdit::Rename {
+                    color: Red,
+                    name: None,
+                }],
+            );
+            fx.refresh();
+            let item = fx
+                .sidebar
+                .sections
+                .iter()
+                .find(|s| s.id == SectionId::Flag(Red))
+                .unwrap()
+                .items[0]
+                .clone();
+            let p = fx.sidebar.row_props(&item, &ctx(&fx));
+            assert_eq!(p.flag, Some(FlagMark::new(Red.index(), "Red")));
+        }
+
+        /// Thread rows: the flag block after the other items, mapped to a
+        /// thread edit; the mark on the row.
+        #[test]
+        fn thread_row_flag_items() {
+            use rustket_core::flags::FlagColor::Green;
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 1, 0);
+            fx.refresh();
+            let t = fx.sidebar.sections[0].threads[0].clone();
+            let menu = thread_menu(&t, false, false, Some(fx.ws.flags()));
+            assert_eq!(
+                item_labels(&menu),
+                [
+                    "Open room",
+                    "Mark as read",
+                    "Red",
+                    "Orange",
+                    "Yellow",
+                    "Green",
+                    "Blue",
+                    "Purple"
+                ]
+            );
+            assert!(
+                menu.iter()
+                    .any(|e| matches!(e, MenuEntry::Header(h) if h == "Flag"))
+            );
+            let green = items(&menu, |m| {
+                matches!(
+                    m,
+                    Message::ThreadAct {
+                        act: ThreadAct::Flag(Some(Green)),
+                        ..
+                    }
+                )
+            });
+            assert_eq!(green.len(), 1);
+            assert!(matches!(
+                fx.sidebar.update(green[0].on_select.clone()),
+                Out::Flag(FlagEdit::Thread { rid, tmid, color: Some(Green) })
+                    if rid == "r0000" && tmid == "t000"
+            ));
+            assert!(crate::workspace::flag_menu::can_flag_thread(
+                &fx.ws, "r0000"
+            ));
+            set_flags(
+                &mut fx.ws,
+                &[FlagEdit::Thread {
+                    rid: "r0000".into(),
+                    tmid: "t000".into(),
+                    color: Some(Green),
+                }],
+            );
+            fx.refresh();
+            let flagged = fx
+                .sidebar
+                .sections
+                .iter()
+                .find(|s| s.id == SectionId::Flag(Green))
+                .unwrap()
+                .threads[0]
+                .clone();
+            assert_eq!(flagged.flag, Some(Green));
+            assert_eq!(
+                thread_row_props(&flagged, &ctx(&fx)).flag.map(|f| f.index),
+                Some(Green.index())
+            );
+            let menu = thread_menu(&flagged, false, false, Some(fx.ws.flags()));
+            assert_eq!(
+                item_labels(&menu).last().map(String::as_str),
+                Some("Remove flag")
+            );
+        }
+
+        /// A flag section's header offers "Rename flag…", which opens the
+        /// settings at that flag; other sections do not.
+        #[test]
+        fn flag_header_menu_items() {
+            use rustket_core::flags::FlagColor::Purple;
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            set_flags(
+                &mut fx.ws,
+                &[FlagEdit::Room {
+                    rid: "r0002".into(),
+                    color: Some(Purple),
+                }],
+            );
+            fx.refresh();
+            let menus = header_menus(&fx);
+            let rename = |m: &Message| matches!(m, Message::Header(HeaderAct::RenameFlag(_)));
+            let items_ = items(menu_of(&menus, "flag:purple"), rename);
+            assert_eq!(items_.len(), 1);
+            assert_eq!(items_[0].label, "Rename flag…");
+            assert!(items(menu_of(&menus, "channels"), rename).is_empty());
+            assert!(matches!(
+                fx.sidebar.update(items_[0].on_select.clone()),
+                Out::OpenSettings {
+                    ungroup: None,
+                    flag: Some(Purple)
+                }
+            ));
+            // Flag sections sort and collapse like any other.
+            let menu = menu_of(&menus, "flag:purple");
+            assert!(
+                !items(menu, |m| matches!(
+                    layout_edit(m),
+                    Some(LayoutEdit::SetSort { .. })
+                ))
+                .is_empty()
+            );
+            assert!(
+                !items(menu, |m| matches!(
+                    m,
+                    Message::Toggle(SectionId::Flag(Purple))
+                ))
+                .is_empty()
+            );
         }
 
         /// Content height of the list, thread rows included.
@@ -2887,7 +3500,10 @@ mod tests {
             ));
             assert!(matches!(
                 fx.sidebar.update(Message::Header(HeaderAct::OpenSettings)),
-                Out::OpenSettings { ungroup: None }
+                Out::OpenSettings {
+                    ungroup: None,
+                    flag: None
+                }
             ));
 
             // An override: checked, and "Use default" offered.
@@ -3011,7 +3627,10 @@ mod tests {
             assert!(ungroup.len() == 1 && ungroup[0].danger);
             assert!(matches!(
                 fx.sidebar.update(ungroup[0].on_select.clone()),
-                Out::OpenSettings { ungroup: Some(id) } if id == gid
+                Out::OpenSettings {
+                    ungroup: Some(id),
+                    flag: None
+                } if id == gid
             ));
             for (id, menu) in &menus {
                 let n = items(menu, |m| {

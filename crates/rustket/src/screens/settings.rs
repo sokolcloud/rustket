@@ -24,7 +24,7 @@ use crate::ui_state::UiState;
 
 mod sidebar;
 
-pub use sidebar::{GroupDraft, Message as SidebarMessage};
+pub use sidebar::{FlagAccount, GroupDraft, Message as SidebarMessage};
 
 /// The Sidebar card (scrolled to by the sidebar's "Sidebar settings…").
 pub const SIDEBAR_CARD: &str = "settings-sidebar";
@@ -34,6 +34,16 @@ pub const STORAGE_CARD: &str = "settings-storage";
 /// Container id of a group's row in the Sidebar card's section list.
 pub fn sidebar_group_row_id(group: &str) -> String {
     format!("settings-sidebar-group-{group}")
+}
+
+/// Id of a flag's name field in the Flags block (per account).
+pub fn flag_name_id(sid: &rustket_core::ServerId, color: rustket_core::flags::FlagColor) -> String {
+    format!("settings-flag-{}-{}", sid.as_str(), color.as_str())
+}
+
+/// Container id of a flag's row in the Flags block.
+pub fn flag_row_id(sid: &rustket_core::ServerId, color: rustket_core::flags::FlagColor) -> String {
+    format!("settings-flag-row-{}-{}", sid.as_str(), color.as_str())
 }
 
 fn reveal_container<M: Send + 'static>(id: iced::widget::Id) -> Task<M> {
@@ -49,6 +59,18 @@ pub fn reveal_sidebar<M: Send + 'static>() -> Task<M> {
 /// (where its deletion preset by "Ungroup…" is confirmed).
 pub fn reveal_sidebar_group<M: Send + 'static>(group: &str) -> Task<M> {
     reveal_container(iced::widget::Id::from(sidebar_group_row_id(group)))
+}
+
+/// Scrolls the open settings page to a flag's name field and focuses it
+/// ("Rename flag…" of a flag section).
+pub fn reveal_flag<M: Send + 'static>(
+    sid: &rustket_core::ServerId,
+    color: rustket_core::flags::FlagColor,
+) -> Task<M> {
+    Task::batch([
+        reveal_container(iced::widget::Id::from(flag_row_id(sid, color))),
+        iced::widget::operation::focus(iced::widget::Id::from(flag_name_id(sid, color))),
+    ])
 }
 
 /// Scrolls the open settings page to the Storage card.
@@ -97,6 +119,7 @@ pub enum Message {
     SetGroupByType(bool),
     SetSidebarSort(SidebarSort),
     SetThreadsMode(ThreadsMode),
+    SetStarredThreads(bool),
     /// The section list, the group editor and the layout reset.
     Sidebar(SidebarMessage),
     OpenUrl(String),
@@ -126,6 +149,11 @@ pub struct SettingsView<'a> {
     /// Offline cache (`crate::cache`): `Some((bytes on disk, clearing))`
     /// when it is enabled.
     pub offline_cache: Option<(Option<u64>, bool)>,
+    /// Flags of the signed-in accounts, the active server's first (its
+    /// names and colors also label the flag sections).
+    pub flags: Vec<FlagAccount<'a>>,
+    /// "Move kept threads to Favorites" is running.
+    pub star_kept_busy: bool,
 }
 
 #[derive(Debug)]
@@ -141,6 +169,15 @@ pub struct Settings {
     pub group_draft: Option<GroupDraft>,
     /// The sidebar layout reset awaits confirmation.
     pub confirm_reset: bool,
+    /// Flag names being edited, per account and color.
+    pub flag_drafts: std::collections::BTreeMap<
+        (rustket_core::ServerId, rustket_core::flags::FlagColor),
+        String,
+    >,
+    /// "Remove from all" of this account's flag awaits confirmation.
+    pub confirm_flag_clear: Option<(rustket_core::ServerId, rustket_core::flags::FlagColor)>,
+    /// "Move kept threads to Favorites" awaits confirmation.
+    pub confirm_star_kept: bool,
 }
 
 impl Default for Settings {
@@ -171,6 +208,9 @@ impl Settings {
             confirm_delete: None,
             group_draft: None,
             confirm_reset: false,
+            flag_drafts: Default::default(),
+            confirm_flag_clear: None,
+            confirm_star_kept: false,
         }
     }
 
@@ -270,6 +310,7 @@ impl Settings {
             Message::SetGroupByType(v) => Self::pref(ctx, |p| p.group_by_type = v),
             Message::SetSidebarSort(s) => Self::pref(ctx, |p| p.sidebar_sort = s),
             Message::SetThreadsMode(m) => Self::pref(ctx, |p| p.sidebar_threads = m),
+            Message::SetStarredThreads(v) => Self::pref(ctx, |p| p.sidebar_starred_threads = v),
             Message::Sidebar(m) => self.update_sidebar(m, ctx),
         }
     }
@@ -411,7 +452,7 @@ impl Settings {
             ],
         ));
 
-        body = body.push(self.sidebar_card(ui));
+        body = body.push(self.sidebar_card(ui, &v.flags, v.star_kept_busy));
 
         body = body.push(section(
             t!("settings.language").into_owned(),
@@ -822,6 +863,9 @@ mod tests {
             (Message::SetThreadsMode(ThreadsMode::Following), |c| {
                 c.sidebar_threads == ThreadsMode::Following
             }),
+            (Message::SetStarredThreads(false), |c| {
+                !c.sidebar_starred_threads
+            }),
             (
                 Message::Sidebar(SidebarMessage::Layout(LayoutEdit::SetThreadsLimit(50))),
                 |c| c.sidebar_threads_limit == 50,
@@ -1045,6 +1089,216 @@ mod tests {
         assert!(!ui_state.collapsed_sections.contains(&key));
     }
 
+    fn flags_of(edits: &[rustket_core::flags::FlagEdit]) -> rustket_core::flags::Flags {
+        let mut blob = rustket_core::flags::FlagBlob::default();
+        let stored = rustket_core::flags::FlagBlob::default();
+        for e in edits {
+            blob.edit(&stored, e, 1_000, "dev").unwrap();
+        }
+        blob.view()
+    }
+
+    /// "Move kept threads to Favorites" is offered with the starred-threads
+    /// switch on and kept threads to move, and asks first.
+    #[test]
+    fn star_kept_asks_first() {
+        rust_i18n::set_locale("en");
+        let mut s = Settings::with_autostart(None);
+        let mut cfg = AppConfig::default();
+        assert!(
+            run(&mut s, &mut cfg, SidebarMessage::StarKept)
+                .effects
+                .is_empty()
+        );
+        assert!(s.confirm_star_kept);
+        let flags = flags_of(&[]);
+        let account = FlagAccount {
+            sid: rustket_core::ServerId("s".into()),
+            label: "me on s".into(),
+            flags: &flags,
+            usage: Default::default(),
+            status: crate::workspace::flags::Status::Synced,
+            kept_unstarred: 3,
+        };
+        cfg.ui.sidebar_starred_threads = true;
+        let _ = s.sidebar_card(&cfg.ui, std::slice::from_ref(&account), false);
+        let _ = s.sidebar_card(&cfg.ui, std::slice::from_ref(&account), true);
+        run(&mut s, &mut cfg, SidebarMessage::StarKeptCancel);
+        assert!(!s.confirm_star_kept);
+        run(&mut s, &mut cfg, SidebarMessage::StarKept);
+        let a = run(&mut s, &mut cfg, SidebarMessage::StarKeptConfirm);
+        assert!(matches!(a.effects.as_slice(), [Effect::StarKeptThreads]));
+        assert!(!s.confirm_star_kept);
+    }
+
+    /// A flag name is edited in place and stored on Enter or "Save" (blank:
+    /// the default name), for its account.
+    #[test]
+    fn flag_rename_flow() {
+        use rustket_core::flags::{FlagColor, FlagEdit};
+        rust_i18n::set_locale("en");
+        let mut s = Settings::with_autostart(None);
+        let mut cfg = AppConfig::default();
+        let sid = rustket_core::ServerId("s".into());
+        let a = run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::FlagNameSave(sid.clone(), FlagColor::Red),
+        );
+        assert!(a.effects.is_empty(), "nothing edited");
+        let long = "x".repeat(60);
+        run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::FlagName(sid.clone(), FlagColor::Red, long),
+        );
+        assert_eq!(
+            s.flag_drafts[&(sid.clone(), FlagColor::Red)]
+                .chars()
+                .count(),
+            rustket_core::flags::MAX_FLAG_NAME_CHARS
+        );
+        run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::FlagName(sid.clone(), FlagColor::Red, "  Urgent ".into()),
+        );
+        let flags = flags_of(&[]);
+        let account = FlagAccount {
+            sid: sid.clone(),
+            label: "me on s".into(),
+            flags: &flags,
+            usage: Default::default(),
+            status: crate::workspace::flags::Status::Pending,
+            kept_unstarred: 0,
+        };
+        let _ = s.sidebar_card(&cfg.ui, std::slice::from_ref(&account), false);
+        let a = run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::FlagNameSave(sid.clone(), FlagColor::Red),
+        );
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::SetFlag(id, FlagEdit::Rename { color: FlagColor::Red, name: Some(n) })]
+                if id == &sid && n == "Urgent"
+        ));
+        assert!(s.flag_drafts.is_empty());
+        // Blank: back to the default name.
+        run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::FlagName(sid.clone(), FlagColor::Blue, " ".into()),
+        );
+        let a = run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::FlagNameSave(sid.clone(), FlagColor::Blue),
+        );
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::SetFlag(
+                _,
+                FlagEdit::Rename {
+                    color: FlagColor::Blue,
+                    name: None
+                }
+            )]
+        ));
+    }
+
+    /// "Remove from all" asks first, then clears that color for its account.
+    #[test]
+    fn flag_clear_is_confirmed() {
+        use rustket_core::flags::{FlagColor, FlagEdit};
+        rust_i18n::set_locale("en");
+        let mut s = Settings::with_autostart(None);
+        let mut cfg = AppConfig::default();
+        let sid = rustket_core::ServerId("s".into());
+        let a = run(&mut s, &mut cfg, SidebarMessage::FlagClearConfirm);
+        assert!(a.effects.is_empty(), "not asked yet");
+        run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::FlagClear(sid.clone(), FlagColor::Green),
+        );
+        assert_eq!(s.confirm_flag_clear, Some((sid.clone(), FlagColor::Green)));
+        let flags = flags_of(&[FlagEdit::Room {
+            rid: "r".into(),
+            color: Some(FlagColor::Green),
+        }]);
+        let account = FlagAccount {
+            sid: sid.clone(),
+            label: "me on s".into(),
+            flags: &flags,
+            usage: [(FlagColor::Green, (1, 2))].into(),
+            status: crate::workspace::flags::Status::Failed("offline".into()),
+            kept_unstarred: 0,
+        };
+        let _ = s.sidebar_card(&cfg.ui, std::slice::from_ref(&account), false);
+        run(&mut s, &mut cfg, SidebarMessage::FlagClearCancel);
+        assert!(s.confirm_flag_clear.is_none());
+        run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::FlagClear(sid.clone(), FlagColor::Green),
+        );
+        let a = run(&mut s, &mut cfg, SidebarMessage::FlagClearConfirm);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::SetFlag(id, FlagEdit::ClearColor(FlagColor::Green))] if id == &sid
+        ));
+        assert!(s.confirm_flag_clear.is_none());
+        assert_eq!(
+            t!("settings.flag_clear_confirm", name = "Green"),
+            "Remove the “Green” flag from all rooms and threads on all your devices?"
+        );
+    }
+
+    /// Flag sections are listed while the active account uses their color,
+    /// under its name; moves skip the unlisted ones.
+    #[test]
+    fn flag_sections_are_listed_when_used() {
+        use rustket_core::flags::{FlagColor, FlagEdit};
+        use rustket_core::sidebar_layout::Layout;
+        rust_i18n::set_locale("en");
+        let cfg = AppConfig::default();
+        let layout = Layout::from_prefs(&cfg.ui);
+        let flag_ids = |flags: Option<&rustket_core::flags::Flags>| -> Vec<SectionId> {
+            sidebar::listed_sections(&layout, flags)
+                .into_iter()
+                .filter(|id| id.flag().is_some())
+                .cloned()
+                .collect()
+        };
+        assert!(flag_ids(None).is_empty());
+        let flags = flags_of(&[
+            FlagEdit::Room {
+                rid: "r".into(),
+                color: Some(FlagColor::Blue),
+            },
+            FlagEdit::Rename {
+                color: FlagColor::Blue,
+                name: Some("Waiting".into()),
+            },
+            FlagEdit::Rename {
+                color: FlagColor::Red,
+                name: Some("Unused".into()),
+            },
+        ]);
+        assert_eq!(flag_ids(Some(&flags)), [SectionId::Flag(FlagColor::Blue)]);
+        // Blue sits right after Favorites: its neighbours are listed ones.
+        let ids = sidebar::listed_sections(&layout, Some(&flags));
+        let i = ids
+            .iter()
+            .position(|id| **id == SectionId::Flag(FlagColor::Blue))
+            .unwrap();
+        assert_eq!(*ids[i - 1], SectionId::Builtin(SectionKind::Favorites));
+        assert!(ids[i + 1].flag().is_none());
+        let s = Settings::with_autostart(None);
+        let _ = s.sidebar_card(&cfg.ui, &[], false);
+    }
+
     /// Reset asks first; it drops groups, order, section prefs and the
     /// groups' collapse state.
     #[test]
@@ -1227,7 +1481,7 @@ mod tests {
         )));
         assert!(sidebar::has_unread_first(&SectionId::group(&empty)));
         let s = Settings::with_autostart(None);
-        let _ = s.sidebar_card(ui);
+        let _ = s.sidebar_card(ui, &[], false);
     }
 
     /// Conversations can never have rooms once groups take every room type.

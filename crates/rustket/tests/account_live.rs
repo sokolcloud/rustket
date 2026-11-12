@@ -567,6 +567,7 @@ async fn create_rooms_directory_and_open() {
                     members: vec![peer.clone()],
                     read_only: true,
                     extra_data: Some(json!({"topic": "Hello topic", "broadcast": true})),
+                    ..Default::default()
                 },
             },
         )
@@ -747,6 +748,99 @@ async fn create_rooms_directory_and_open() {
             .unwrap();
         assert!(reopened.sub.unwrap().open);
         assert!(c.subscriptions_get_one(&dm).await.unwrap().open);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn flag_store_in_the_service_room() {
+    use rocketchat::models::{FLAGS_KEY, service_room_name};
+    use rustket::workspace::flags::{PUSH_ATTEMPTS, ServiceStore};
+    use rustket_core::flags::{self, FlagBlob, FlagColor, FlagEdit, FlagStore};
+
+    fn edited(base: &FlagBlob, rid: &str, color: FlagColor, t: i64, dev: &str) -> FlagBlob {
+        let mut b = FlagBlob::default();
+        b.edit(
+            base,
+            &FlagEdit::Room {
+                rid: rid.into(),
+                color: Some(color),
+            },
+            t,
+            dev,
+        )
+        .unwrap();
+        b
+    }
+
+    with_env(|env| async move {
+        let (rest, uid, _) = env.user("flags", "Flags-Pass-1").await;
+        // Device A has no room yet: its first push creates it, hidden.
+        let a = edited(&FlagBlob::default(), "R1", FlagColor::Red, 10, "devA");
+        let mut store_a = ServiceStore::new(rest.clone(), uid.clone(), &[]);
+        assert!(store_a.read().await.unwrap().is_empty());
+        let stored = flags::push(&mut store_a, &a, PUSH_ATTEMPTS).await.unwrap();
+        assert!(stored.covers(&a));
+        let rid = store_a.rid().unwrap().to_owned();
+        env.room(&rid);
+        let room = rest.rooms_info(&rid).await.unwrap();
+        assert!(room.is_service_room_of(&uid));
+        assert_eq!(
+            room.name.as_deref(),
+            Some(service_room_name(&uid, 0).as_str())
+        );
+        let sub = rest.subscriptions_get_one(&rid).await.unwrap();
+        assert!(!sub.open, "created hidden");
+        assert!(sub.is_service_room_of(&uid));
+        let in_sub = FlagBlob::from_value(sub.service_fields().unwrap().get(FLAGS_KEY));
+        assert!(in_sub.covers(&a), "copied into the subscription");
+
+        // Device B never saw the room: creating it again finds it instead.
+        let b = edited(&FlagBlob::default(), "R2", FlagColor::Blue, 11, "devB");
+        let mut store_b = ServiceStore::new(rest.clone(), uid.clone(), &[]);
+        let stored = flags::push(&mut store_b, &b, PUSH_ATTEMPTS).await.unwrap();
+        assert_eq!(store_b.rid(), Some(rid.as_str()));
+        assert!(stored.covers(&a) && stored.covers(&b));
+
+        // Both devices push at the same time: neither entry is lost.
+        let rooms = [rid.clone()];
+        let c = edited(&stored, "R3", FlagColor::Green, 20, "devA");
+        let d = edited(&stored, "R4", FlagColor::Purple, 21, "devB");
+        let mut sa = ServiceStore::new(rest.clone(), uid.clone(), &rooms);
+        let mut sb = ServiceStore::new(rest.clone(), uid.clone(), &rooms);
+        let (ra, rb) = tokio::join!(
+            flags::push(&mut sa, &c, PUSH_ATTEMPTS),
+            flags::push(&mut sb, &d, PUSH_ATTEMPTS)
+        );
+        ra.unwrap();
+        rb.unwrap();
+        let mut check = ServiceStore::new(rest.clone(), uid.clone(), &rooms);
+        let now = check.read().await.unwrap();
+        for blob in [&a, &b, &c, &d] {
+            assert!(now.covers(blob));
+        }
+        assert_eq!(now.view().len(), 4);
+
+        // A removal is a tombstone that wins over the older flag.
+        let mut gone = FlagBlob::default();
+        gone.edit(
+            &now,
+            &FlagEdit::Room {
+                rid: "R1".into(),
+                color: None,
+            },
+            30,
+            "devA",
+        )
+        .unwrap();
+        let stored = flags::push(&mut check, &gone, PUSH_ATTEMPTS).await.unwrap();
+        assert_eq!(stored.view().room("R1"), None);
+        assert_eq!(stored.view().room("R2"), Some(FlagColor::Blue));
+
+        // Hiding again is fine; the marker and unknown keys survive writes.
+        rest.hide_service_room(&rid).await.unwrap();
+        let f = rest.read_service_fields(&rid).await.unwrap().unwrap();
+        assert!(f.is_owned_by(&uid));
     })
     .await;
 }
