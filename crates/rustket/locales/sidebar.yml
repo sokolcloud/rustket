@@ -113,6 +113,18 @@ sidebar.threads_unread_kept:
 sidebar.threads_following:
   en: "All followed threads"
   ru: "Все отслеживаемые треды"
+sidebar.menu_show_at_most:
+  en: "Show at most"
+  ru: "Показывать не больше"
+sidebar.threads_limit_none:
+  en: "Unlimited"
+  ru: "Без ограничения"
+sidebar.threads_hidden:
+  en: "+%{count}"
+  ru: "+%{count}"
+sidebar.threads_hidden_tip:
+  en: "%{count} more not shown (limit %{limit})"
+  ru: "Ещё %{count} не показано (ограничение %{limit})"
 sidebar.menu_refresh:
   en: "Refresh"
   ru: "Обновить"

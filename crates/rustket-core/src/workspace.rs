@@ -25,7 +25,7 @@ use crate::presence::Presence;
 use crate::settings::Settings;
 use crate::sidebar_layout::ThreadsMode;
 use crate::sync::{DeltaData, InitialData, RoomSync};
-use crate::thread_index::ThreadIndex;
+use crate::thread_index::{ThreadIndex, follows};
 use crate::timeline::{DeliveryState, PageTicket, Timeline, TimelineItem};
 use crate::typing::{TypingLabel, TypingState};
 use crate::uikit::UiKitStore;
@@ -341,16 +341,6 @@ enum ParentSource {
     Page,
     /// Asked for over REST: stored even when nothing refers to it yet.
     Fetched,
-}
-
-/// The user is in the thread's `replies` (author, replied, mentioned or
-/// followed explicitly): `chat.getThreadsList(type=following)`.
-fn follows(m: &Message, me: Option<&str>) -> bool {
-    me.is_some_and(|me| {
-        m.replies
-            .as_ref()
-            .is_some_and(|r| r.iter().any(|u| u == me))
-    })
 }
 
 /// `d` is known and later than `than` (known).
@@ -2078,6 +2068,19 @@ impl Workspace {
         synced_activity: Option<RcDate>,
         started: Instant,
     ) {
+        self.apply_followed_page(rid, msgs, synced_activity, started, None);
+    }
+
+    /// [`apply_followed`](Self::apply_followed) of a page of `short` threads
+    /// when the room had more (`None`: the result is complete).
+    pub fn apply_followed_page(
+        &mut self,
+        rid: &str,
+        msgs: Vec<Message>,
+        synced_activity: Option<RcDate>,
+        started: Instant,
+        short: Option<usize>,
+    ) {
         if self.thread_index.mode() != ThreadsMode::Following {
             return;
         }
@@ -2105,7 +2108,7 @@ impl Workspace {
         }
         changed |= self
             .thread_index
-            .set_followed(rid, set, synced_activity, started);
+            .set_followed(rid, set, synced_activity, started, short);
         changed |= self.evict_thread_parents();
         if changed {
             self.mark(Dirty::THREAD_INDEX);
@@ -2132,7 +2135,12 @@ impl Workspace {
             .followed
             .into_iter()
             .filter(|f| subscribed(&f.rid))
-            .map(|f| (f.rid, f.tmids.into_iter().collect(), f.synced_activity))
+            .map(|f| crate::thread_index::RestoredFollowed {
+                rid: f.rid,
+                tmids: f.tmids.into_iter().collect(),
+                synced_activity: f.synced_activity,
+                short: f.short,
+            })
             .collect();
         let synced: HashMap<String, Option<RcDate>> = t
             .parents_synced

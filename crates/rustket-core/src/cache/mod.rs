@@ -186,6 +186,9 @@ pub struct CachedFollowed {
     pub tmids: Vec<String>,
     #[serde(default)]
     pub synced_activity: Option<RcDate>,
+    /// The crawl stopped at a page while the room had more (a row limit).
+    #[serde(default)]
+    pub short: Option<crate::thread_index::ShortCrawl>,
 }
 
 impl CachedState {

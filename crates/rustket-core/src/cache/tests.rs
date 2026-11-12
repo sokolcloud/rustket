@@ -732,11 +732,13 @@ fn threads_fixture() -> CachedThreads {
                 rid: "A".into(),
                 tmids: vec!["t1".into(), "t2".into()],
                 synced_activity: Some(ts(5000)),
+                short: Some(crate::thread_index::ShortCrawl { count: 5, kept: 2 }),
             },
             CachedFollowed {
                 rid: "B".into(),
                 tmids: Vec::new(),
                 synced_activity: None,
+                short: None,
             },
         ],
         parents: vec![
@@ -919,6 +921,7 @@ fn cached_thread_workspace(mode: crate::sidebar_layout::ThreadsMode) -> Workspac
         rid: "LEFT".into(),
         tmids: vec!["t3".into()],
         synced_activity: None,
+        short: None,
     });
     threads.parents.push(thread_parent("t3", "LEFT", 1));
     assert!(ws.apply_cached(CachedState {

@@ -14,8 +14,24 @@
 //! session, and nothing is fetched while disconnected or showing the offline
 //! cache. [`plan`] picks the next request and is pure;
 //! [`SidebarThreads::tick`] runs it when its inputs changed.
+//!
+//! With a row limit ([`Cap`]) only loads that can still change the rows
+//! within the limit run. For the newest-first sort a room's `lr` bounds the
+//! activity of the threads the user replied in (followers get `lr` on each
+//! reply), so rooms go newest `lr` first and stop once the limit is filled by
+//! loaded rows newer than every remaining room's `lr`. Following a thread
+//! without replying does not set `lr`: for a room not crawled yet, the newest
+//! stored parent the user follows (e.g. a live follow) raises its bound. A
+//! follow made while live updates were missed in a room whose `lr` is older
+//! than the rows within the limit shows after "Refresh" or the thread's next
+//! reply. By room name the bound is exact (rooms in name order).
+//! Oldest-first has no such bound: loading stops once the loaded rows fill
+//! the limit. Kept threads are always loaded. A room crawled with a page
+//! smaller than [`FOLLOWED_PER_ROOM`] that had more ([`ShortCrawl`], kept in
+//! the offline cache) is crawled again when the page grows, when the crawl
+//! dropped threads (deleted, hidden) or when its set shrank since.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,9 +39,10 @@ use iced::Task;
 use rocketchat::models::{Message, Paginated, Subscription};
 use rocketchat::{Error, RcDate};
 use rustket_core::cache::{CachedFollowed, CachedParentsSynced, CachedThreads};
-use rustket_core::config::ThreadsMode;
-use rustket_core::room_list::thread_unread;
-use rustket_core::thread_index::FOLLOWED_PER_ROOM;
+use rustket_core::config::{SidebarSort, ThreadsMode, UiPrefs};
+use rustket_core::room_list::{SectionKind, display_name, thread_unread};
+use rustket_core::sidebar_layout::{SectionId, section_sort, section_unread_first};
+use rustket_core::thread_index::{FOLLOWED_PER_ROOM, FollowedRoom, ShortCrawl, follows};
 use rustket_core::workspace::{ConnectionState, RoomEntry};
 use rustket_core::{Dirty, Workspace};
 
@@ -63,6 +80,247 @@ fn retry_delay(failures: u32) -> Duration {
     Duration::from_secs(secs.min(300))
 }
 
+/// What the Threads section shows at most, which bounds the loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cap {
+    /// Most rows; 0: no limit.
+    pub limit: u32,
+    pub sort: SidebarSort,
+    pub unread_first: bool,
+    /// `ui.use_real_names` (room names order the by-name sort).
+    pub real_names: Option<bool>,
+}
+
+impl Default for Cap {
+    /// No limit.
+    fn default() -> Self {
+        Self {
+            limit: 0,
+            sort: SidebarSort::Activity,
+            unread_first: true,
+            real_names: None,
+        }
+    }
+}
+
+impl Cap {
+    pub fn from_prefs(p: &UiPrefs) -> Self {
+        let id = SectionId::Builtin(SectionKind::Threads);
+        Self {
+            limit: p.sidebar_threads_limit,
+            sort: section_sort(p, &id),
+            unread_first: section_unread_first(p, &id),
+            real_names: p.use_real_names,
+        }
+    }
+
+    fn limit(&self) -> Option<usize> {
+        (self.limit > 0).then_some(self.limit as usize)
+    }
+
+    /// Page size of a room's followed list.
+    fn followed_page(&self) -> usize {
+        self.limit()
+            .map_or(FOLLOWED_PER_ROOM, |l| l.min(FOLLOWED_PER_ROOM))
+    }
+}
+
+/// The rows the Threads section has now, to tell which rows still to load
+/// can land within the limit.
+#[derive(Debug, Default)]
+struct Bound {
+    /// `None`: no limit, everything is loaded.
+    limit: Option<usize>,
+    sort: SidebarSort,
+    unread_first: bool,
+    /// Unread rows, loaded or not.
+    unread: usize,
+    /// Activity of loaded unread / read rows, ascending.
+    tlm_unread: Vec<Option<RcDate>>,
+    tlm_read: Vec<Option<RcDate>>,
+    /// By name: `(lower-case room name, rid)` of loaded unread / read rows,
+    /// ascending, and the lower-case names of listed rooms.
+    key_unread: Vec<(String, String)>,
+    key_read: Vec<(String, String)>,
+    names: HashMap<String, String>,
+    /// Following: rooms without a followed set, with the newest activity of
+    /// stored parents the user follows (`lr` misses follows without a reply).
+    followed_hint: HashMap<String, Option<RcDate>>,
+}
+
+impl Bound {
+    fn new(ws: &Workspace, mode: ThreadsMode, cap: Cap) -> Self {
+        let idx = ws.thread_index();
+        let mut followed_hint: HashMap<String, Option<RcDate>> = HashMap::new();
+        if mode == ThreadsMode::Following {
+            let me = ws.user_id();
+            for p in idx.parents() {
+                if idx.followed(&p.rid).is_none()
+                    && p.t.as_deref() != Some("rm")
+                    && p.hidden != Some(true)
+                    && follows(p, me)
+                {
+                    let e = followed_hint.entry(p.rid.clone()).or_default();
+                    *e = (*e).max(rustket_core::thread_index::activity(p));
+                }
+            }
+        }
+        let Some(limit) = cap.limit() else {
+            return Self {
+                followed_hint,
+                ..Self::default()
+            };
+        };
+        let mut b = Self {
+            limit: Some(limit),
+            sort: cap.sort,
+            unread_first: cap.unread_first,
+            followed_hint,
+            ..Self::default()
+        };
+        if cap.sort == SidebarSort::Alphabetical {
+            let real = ws.use_real_names(cap.real_names);
+            b.names = listed(ws)
+                .map(|(e, s)| (s.rid.clone(), display_name(ws, e, real).to_lowercase()))
+                .collect();
+        }
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut loaded: Vec<(bool, &str, Option<RcDate>)> = Vec::new();
+        for (_, s) in listed(ws) {
+            for t in shown_unread(s) {
+                if !seen.insert(t) {
+                    continue;
+                }
+                b.unread += 1;
+                if let Some(p) = idx.parent(t).filter(|p| p.rid == s.rid) {
+                    loaded.push((true, &s.rid, rustket_core::thread_index::activity(p)));
+                }
+            }
+        }
+        let is_listed = |rid: &str| {
+            ws.rooms()
+                .get(rid)
+                .is_some_and(|e| e.sub.as_ref().is_some_and(|s| s.open) && !e.is_archived())
+        };
+        let read = |rid: &'_ str, tmid: &'_ str, removed_shown: bool| -> Option<Option<RcDate>> {
+            let p = idx.parent(tmid).filter(|p| p.rid == rid)?;
+            (removed_shown || p.t.as_deref() != Some("rm"))
+                .then(|| rustket_core::thread_index::activity(p))
+        };
+        if mode != ThreadsMode::Unread {
+            for (rid, tmid) in idx.kept() {
+                if is_listed(rid)
+                    && seen.insert(tmid)
+                    && let Some(tlm) = read(rid, tmid, true)
+                {
+                    loaded.push((false, rid, tlm));
+                }
+            }
+        }
+        if mode == ThreadsMode::Following {
+            for (rid, f) in idx.followed_rooms() {
+                if !is_listed(rid) {
+                    continue;
+                }
+                for t in &f.tmids {
+                    if seen.insert(t)
+                        && let Some(tlm) = read(rid, t, false)
+                    {
+                        loaded.push((false, rid, tlm));
+                    }
+                }
+            }
+        }
+        for (unread, rid, tlm) in loaded {
+            if b.sort == SidebarSort::Alphabetical {
+                let key = b.room_key(rid);
+                if unread {
+                    &mut b.key_unread
+                } else {
+                    &mut b.key_read
+                }
+                .push(key);
+            } else {
+                if unread {
+                    &mut b.tlm_unread
+                } else {
+                    &mut b.tlm_read
+                }
+                .push(tlm);
+            }
+        }
+        b.tlm_unread.sort();
+        b.tlm_read.sort();
+        b.key_unread.sort();
+        b.key_read.sort();
+        b
+    }
+
+    /// Upper bound of the activity of a room's followed threads: its `lr`,
+    /// or newer followed parents stored for a room not crawled yet.
+    fn crawl_lr(&self, s: &Subscription) -> Option<RcDate> {
+        s.lr.max(self.followed_hint.get(&s.rid).copied().flatten())
+    }
+
+    fn room_key(&self, rid: &str) -> (String, String) {
+        (
+            self.names.get(rid).cloned().unwrap_or_default(),
+            rid.to_owned(),
+        )
+    }
+
+    /// Loaded unread (or read) rows that sort before any row of room `rid`
+    /// whose activity is at most `lr`.
+    fn before(&self, unread: bool, rid: &str, lr: Option<RcDate>) -> usize {
+        let (tlms, keys) = if unread {
+            (&self.tlm_unread, &self.key_unread)
+        } else {
+            (&self.tlm_read, &self.key_read)
+        };
+        match self.sort {
+            SidebarSort::Activity => tlms.len() - tlms.partition_point(|t| *t <= lr),
+            // No bound: whatever is loaded counts.
+            SidebarSort::ActivityAsc => tlms.len(),
+            SidebarSort::Alphabetical => {
+                let k = self.room_key(rid);
+                keys.partition_point(|x| *x < k)
+            }
+        }
+    }
+
+    /// Whether a row still to load in room `rid`, with activity at most `lr`
+    /// (the room's `lr`), can land within the limit.
+    fn reaches(&self, rid: &str, lr: Option<RcDate>, unread: bool) -> bool {
+        let Some(limit) = self.limit else {
+            return true;
+        };
+        let before = match (self.unread_first, unread) {
+            (true, true) => self.before(true, rid, lr),
+            // Every unread row, loaded or not, comes first.
+            (true, false) => self.unread + self.before(false, rid, lr),
+            (false, _) => self.before(true, rid, lr) + self.before(false, rid, lr),
+        };
+        before < limit
+    }
+
+    /// Orders rooms the way the section's sort lists their threads.
+    fn room_order(
+        &self,
+        a: (Option<RcDate>, &str),
+        b: (Option<RcDate>, &str),
+    ) -> std::cmp::Ordering {
+        match self.sort {
+            SidebarSort::Activity => b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)),
+            SidebarSort::ActivityAsc => match (a.0, b.0) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (x, y) => x.is_none().cmp(&y.is_none()),
+            }
+            .then_with(|| a.1.cmp(b.1)),
+            SidebarSort::Alphabetical => self.room_key(a.1).cmp(&self.room_key(b.1)),
+        }
+    }
+}
+
 /// A request [`plan`] asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fetch {
@@ -70,10 +328,12 @@ pub enum Fetch {
     Unread { rid: String, offset: u64 },
     /// One parent (kept, or unread but missing from the list).
     Parent { rid: String, tmid: String },
-    /// A room's followed threads; `activity` is the room's `lr` now.
+    /// A room's newest `count` followed threads; `activity` is the room's
+    /// `lr` now.
     Followed {
         rid: String,
         activity: Option<RcDate>,
+        count: usize,
     },
 }
 
@@ -146,16 +406,22 @@ struct InFlight {
     /// `SidebarThreads::mode_gen` when it started: a result that arrives
     /// after a mode change is dropped.
     mode_gen: u64,
-    /// Unread pages: when the room's pass started.
+    /// Unread pages: when the room's pass started and the oldest activity
+    /// listed so far.
     pass_start: Instant,
+    floor: Option<RcDate>,
 }
 
-/// The rest of a room's unread pass (more pages wanted).
+/// The rest of a room's unread pass (more pages wanted). A pass whose
+/// next page cannot reach the rows within the limit waits (until the limit
+/// grows, or a newer unread thread starts a new pass).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Paging {
-    rid: String,
     offset: u64,
     pass_start: Instant,
+    /// Oldest activity listed so far (the list is newest first): what is
+    /// left of the room is at most this old.
+    floor: Option<RcDate>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -216,7 +482,8 @@ pub struct SidebarThreads {
     /// Rooms whose unread parents may be stale (replies while live updates
     /// were missed).
     refresh_unread: BTreeSet<String>,
-    paging: Option<Paging>,
+    /// Unfinished unread passes by room.
+    paging: BTreeMap<String, Paging>,
     /// Crawled rooms to crawl again (replies while live updates were missed).
     recrawl: BTreeSet<String>,
     /// Rooms whose crawl failed (unrecognised failures); crawled again after
@@ -230,6 +497,7 @@ pub struct SidebarThreads {
 struct TickKey {
     session: usize,
     mode: ThreadsMode,
+    cap: Cap,
     collapsed: bool,
     rooms: u64,
     settings: u64,
@@ -241,10 +509,11 @@ struct TickKey {
 }
 
 impl TickKey {
-    fn new(ws: &Workspace, session: usize, mode: ThreadsMode, collapsed: bool) -> Self {
+    fn new(ws: &Workspace, session: usize, mode: ThreadsMode, cap: Cap, collapsed: bool) -> Self {
         Self {
             session,
             mode,
+            cap,
             collapsed,
             rooms: ws.revision(Dirty::ROOMS),
             settings: ws.revision(Dirty::SETTINGS),
@@ -285,24 +554,43 @@ fn missing_in<'a>(ws: &'a Workspace, s: &'a Subscription) -> impl Iterator<Item 
     })
 }
 
+/// Threads to ask for in a room's crawl: `page`, plus what the last short
+/// crawl dropped (deleted, hidden), at most [`FOLLOWED_PER_ROOM`].
+fn crawl_count(f: Option<&FollowedRoom>, page: usize) -> usize {
+    let dropped = f
+        .and_then(|f| f.short)
+        .map_or(0, |s| s.count.saturating_sub(s.kept) as usize);
+    (page + dropped).min(FOLLOWED_PER_ROOM).max(page)
+}
+
 /// Whether a room's followed threads are to be crawled (again): not crawled,
-/// restored and not current, or re-queued.
-fn wants_crawl(ws: &Workspace, st: &SidebarThreads, rid: &str) -> bool {
-    ws.thread_index().followed(rid).is_none_or(|f| f.stale) || st.recrawl.contains(rid)
+/// restored and not current, re-queued, or a short crawl ([`ShortCrawl`])
+/// whose page is now too small or whose set shrank since (unfollowed,
+/// deleted).
+fn wants_crawl(ws: &Workspace, st: &SidebarThreads, rid: &str, page: usize) -> bool {
+    let idx = ws.thread_index();
+    let Some(f) = idx.followed(rid) else {
+        return true;
+    };
+    let short = |s: ShortCrawl| {
+        (s.count as usize) < crawl_count(Some(f), page) || idx.followed_shown(rid) < s.kept as usize
+    };
+    f.stale || st.recrawl.contains(rid) || f.short.is_some_and(short)
 }
 
 fn earliest(a: Option<Instant>, b: Instant) -> Option<Instant> {
     Some(a.map_or(b, |a| a.min(b)))
 }
 
-/// The next request, given the workspace, the Threads mode, whether the
-/// Threads section is collapsed (the Following crawl waits then) and the
-/// loader state. Order: unread pages, then single parents, then the
-/// Following crawl; a request that must wait for its pacing lets a ready
-/// one of the other kind go first.
+/// The next request, given the workspace, the Threads mode, the section's
+/// row limit and sort, whether the Threads section is collapsed (the
+/// Following crawl waits then) and the loader state. Order: unread pages,
+/// then single parents, then the Following crawl; a request that must wait
+/// for its pacing lets a ready one of the other kind go first.
 pub fn plan(
     ws: &Workspace,
     mode: ThreadsMode,
+    cap: Cap,
     threads_collapsed: bool,
     st: &SidebarThreads,
     now: Instant,
@@ -320,8 +608,10 @@ pub fn plan(
         return Next::Wait(p);
     }
     let mut wake = None;
-    let list = st.list_candidate(ws, mode, threads_collapsed, now, &mut wake);
-    let get = st.get_candidate(ws, mode, threads_collapsed, now, &mut wake);
+    let bound = Bound::new(ws, mode, cap);
+    let page = cap.followed_page();
+    let list = st.list_candidate(ws, mode, &bound, page, threads_collapsed, now, &mut wake);
+    let get = st.get_candidate(ws, mode, &bound, page, threads_collapsed, now, &mut wake);
     if let Some((f, interval)) = list {
         let at = st.last_list.map_or(now, |t| t + interval);
         if at <= now {
@@ -353,29 +643,53 @@ impl SidebarThreads {
     }
 
     /// The next list request and its pacing interval.
+    #[allow(clippy::too_many_arguments)]
     fn list_candidate(
         &self,
         ws: &Workspace,
         mode: ThreadsMode,
+        bound: &Bound,
+        page: usize,
         collapsed: bool,
         now: Instant,
         wake: &mut Option<Instant>,
     ) -> Option<(Fetch, Duration)> {
-        if let Some(p) = &self.paging
-            && ws.subscription(&p.rid).is_some()
-            && self.ready(&Key::Unread(p.rid.clone()), now, wake)
+        let mut passes: Vec<(Option<RcDate>, &str, u64)> = self
+            .paging
+            .iter()
+            .filter(|(rid, p)| ws.subscription(rid).is_some() && bound.reaches(rid, p.floor, true))
+            .map(|(rid, p)| (p.floor, rid.as_str(), p.offset))
+            .collect();
+        passes.sort_by(|a, b| bound.room_order((a.0, a.1), (b.0, b.1)));
+        if let Some((_, rid, offset)) = passes
+            .into_iter()
+            .find(|(_, rid, _)| self.ready(&Key::Unread((*rid).to_owned()), now, wake))
         {
             let f = Fetch::Unread {
-                rid: p.rid.clone(),
-                offset: p.offset,
+                rid: rid.to_owned(),
+                offset,
             };
             return Some((f, LIST_INTERVAL));
         }
-        // Rooms with unread threads to load, newest replies first.
+        // Rooms with unread threads to load that can reach the rows within
+        // the limit, in the section's order (newest replies first). A room
+        // with an unfinished pass starts a new one only for unread threads
+        // that came after it started.
         let mut rooms: Vec<(Option<RcDate>, &str)> = Vec::new();
         for (_, s) in listed(ws) {
-            let mut due = self.refresh_unread.contains(&s.rid);
+            if !bound.reaches(&s.rid, s.lr, true) {
+                continue;
+            }
+            let pass = self.paging.get(&s.rid);
+            let mut due = self.refresh_unread.contains(&s.rid) && pass.is_none();
             for t in missing_in(ws, s) {
+                if pass.is_some_and(|p| {
+                    self.missing_since
+                        .get(t)
+                        .is_none_or(|at| *at <= p.pass_start)
+                }) {
+                    continue;
+                }
                 if self.unresolved.contains(t) || self.settled.contains(t) {
                     continue;
                 }
@@ -393,7 +707,7 @@ impl SidebarThreads {
                 rooms.push((s.lr, &s.rid));
             }
         }
-        rooms.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+        rooms.sort_by(|a, b| bound.room_order(*a, *b));
         if let Some((_, rid)) = rooms
             .into_iter()
             .find(|(_, rid)| self.ready(&Key::Unread((*rid).to_owned()), now, wake))
@@ -407,19 +721,25 @@ impl SidebarThreads {
         if mode != ThreadsMode::Following || collapsed {
             return None;
         }
-        // Following crawl: rooms with thread replies first (newest first),
-        // then the others by activity.
+        // Following crawl: rooms with thread replies first (in the section's
+        // order, newest first), then the others by activity; only rooms whose
+        // followed threads can reach the rows within the limit.
         let mut queue: Vec<(bool, Option<RcDate>, &str, Option<RcDate>)> = listed(ws)
-            .filter(|(_, s)| wants_crawl(ws, self, &s.rid) && !self.crawl_failed.contains(&s.rid))
+            .filter(|(_, s)| self.crawl_due(ws, bound, page, s))
             .map(|(e, s)| {
-                let order = s.lr.or_else(|| e.last_activity());
-                (s.lr.is_some(), order, s.rid.as_str(), s.lr)
+                let upper = bound.crawl_lr(s);
+                let order = upper.or_else(|| e.last_activity());
+                (upper.is_some(), order, s.rid.as_str(), s.lr)
             })
             .collect();
         queue.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| b.1.cmp(&a.1))
-                .then_with(|| a.2.cmp(b.2))
+            b.0.cmp(&a.0).then_with(|| {
+                if a.0 {
+                    bound.room_order((a.1, a.2), (b.1, b.2))
+                } else {
+                    b.1.cmp(&a.1).then_with(|| a.2.cmp(b.2))
+                }
+            })
         });
         queue
             .into_iter()
@@ -428,6 +748,7 @@ impl SidebarThreads {
                 let f = Fetch::Followed {
                     rid: rid.to_owned(),
                     activity: lr,
+                    count: crawl_count(ws.thread_index().followed(rid), page),
                 };
                 let interval = if has_lr {
                     LIST_INTERVAL
@@ -438,14 +759,25 @@ impl SidebarThreads {
             })
     }
 
+    /// Whether a room's crawl is to run: wanted, not given up, and its
+    /// followed threads can reach the rows within the limit.
+    fn crawl_due(&self, ws: &Workspace, bound: &Bound, page: usize, s: &Subscription) -> bool {
+        wants_crawl(ws, self, &s.rid, page)
+            && !self.crawl_failed.contains(&s.rid)
+            && bound.reaches(&s.rid, bound.crawl_lr(s), false)
+    }
+
     /// The next single parent: kept threads first (rooms the user is in),
     /// then unread ones the unread list did not return. A kept thread that a
     /// list request still to run may return (the room's unread list, the
     /// room's Following crawl) waits for it: `chat.getMessage` is scarce.
+    #[allow(clippy::too_many_arguments)]
     fn get_candidate(
         &self,
         ws: &Workspace,
         mode: ThreadsMode,
+        bound: &Bound,
+        page: usize,
         collapsed: bool,
         now: Instant,
         wake: &mut Option<Instant>,
@@ -465,11 +797,11 @@ impl SidebarThreads {
             let Some(s) = listed_sub(rid) else {
                 return false;
             };
-            let unread_pass = shown_unread(s).any(|t| t == tmid) && !self.unresolved.contains(tmid);
-            let crawl = mode == ThreadsMode::Following
-                && !collapsed
-                && wants_crawl(ws, self, rid)
-                && !self.crawl_failed.contains(rid);
+            let unread_pass = shown_unread(s).any(|t| t == tmid)
+                && !self.unresolved.contains(tmid)
+                && bound.reaches(rid, self.paging.get(rid).map_or(s.lr, |p| p.floor), true);
+            let crawl =
+                mode == ThreadsMode::Following && !collapsed && self.crawl_due(ws, bound, page, s);
             unread_pass || crawl
         };
         if matches!(mode, ThreadsMode::UnreadKept | ThreadsMode::Following) {
@@ -491,6 +823,9 @@ impl SidebarThreads {
         }
         let mut found: Option<(&str, &str)> = None;
         for (_, s) in listed(ws) {
+            if !bound.reaches(&s.rid, s.lr, true) {
+                continue;
+            }
             for t in missing_in(ws, s) {
                 if self.unresolved.contains(t)
                     && wanted(t)
@@ -535,7 +870,7 @@ impl SidebarThreads {
         self.settled.clear();
         self.failed.clear();
         self.refresh_unread.clear();
-        self.paging = None;
+        self.paging.clear();
         self.recrawl.clear();
         self.crawl_failed.clear();
         self.backoff.clear();
@@ -554,7 +889,7 @@ impl SidebarThreads {
             self.settled.clear();
             self.failed.clear();
             self.refresh_unread.clear();
-            self.paging = None;
+            self.paging.clear();
             self.backoff.clear();
         }
         self.mode = mode;
@@ -611,13 +946,7 @@ impl SidebarThreads {
         if mode == ThreadsMode::Off {
             return;
         }
-        if self
-            .paging
-            .as_ref()
-            .is_some_and(|p| ws.subscription(&p.rid).is_none())
-        {
-            self.paging = None;
-        }
+        self.paging.retain(|rid, _| ws.subscription(rid).is_some());
         let missing: HashSet<&String> = listed(ws).flat_map(|(_, s)| missing_in(ws, s)).collect();
         self.missing_since.retain(|t, _| missing.contains(t));
         for t in missing {
@@ -649,6 +978,7 @@ impl SidebarThreads {
             if before.get(&s.rid).is_none_or(|lr| *lr == s.lr) {
                 continue;
             }
+            self.paging.remove(&s.rid);
             if shown_unread(s).any(|t| idx.parent(t).is_some()) {
                 self.refresh_unread.insert(s.rid.clone());
             }
@@ -660,9 +990,12 @@ impl SidebarThreads {
 
     /// Records that `f` starts now.
     fn begin(&mut self, f: &Fetch, now: Instant) {
-        let pass_start = match (f, &self.paging) {
-            (Fetch::Unread { rid, .. }, Some(p)) if &p.rid == rid => p.pass_start,
-            _ => now,
+        let (pass_start, floor) = match f {
+            Fetch::Unread { rid, offset } if *offset > 0 => self
+                .paging
+                .get(rid)
+                .map_or((now, None), |p| (p.pass_start, p.floor)),
+            _ => (now, None),
         };
         match f {
             Fetch::Parent { .. } => {
@@ -676,6 +1009,7 @@ impl SidebarThreads {
             started: now,
             mode_gen: self.mode_gen,
             pass_start,
+            floor,
         });
     }
 
@@ -686,6 +1020,7 @@ impl SidebarThreads {
         ws: &Workspace,
         session: Option<&SessionHandle>,
         mode: ThreadsMode,
+        cap: Cap,
         threads_collapsed: bool,
         now: Instant,
     ) -> Task<Msg> {
@@ -701,12 +1036,12 @@ impl SidebarThreads {
             self.reset_session();
             self.session = Some(ptr);
         }
-        if !self.needs_plan(ws, ptr, mode, threads_collapsed, now) {
+        if !self.needs_plan(ws, ptr, mode, cap, threads_collapsed, now) {
             return Task::none();
         }
         self.observe(ws, mode, now);
-        let next = plan(ws, mode, threads_collapsed, self, now);
-        self.progress = self.crawl_progress(ws, mode);
+        let next = plan(ws, mode, cap, threads_collapsed, self, now);
+        self.progress = self.crawl_progress(ws, mode, cap);
         match next {
             Next::Fetch(f) => {
                 self.due = None;
@@ -732,10 +1067,11 @@ impl SidebarThreads {
         ws: &Workspace,
         session: usize,
         mode: ThreadsMode,
+        cap: Cap,
         collapsed: bool,
         now: Instant,
     ) -> bool {
-        let key = TickKey::new(ws, session, mode, collapsed);
+        let key = TickKey::new(ws, session, mode, cap, collapsed);
         if self.tick_key == Some(key) && !self.changed && self.due.is_none_or(|d| now < d) {
             return false;
         }
@@ -838,12 +1174,18 @@ impl SidebarThreads {
         let mut out = Vec::new();
         match result {
             Done::Unread { rid, offset, res } => {
+                let floor;
                 let more = match res {
                     Ok(page) => {
                         let more = page.has_more()
                             && page.raw_len > 0
                             && offset / UNREAD_PAGE + 1 < MAX_UNREAD_PAGES;
                         let next = offset + page.raw_len as u64;
+                        floor = page
+                            .items
+                            .iter()
+                            .filter_map(rustket_core::thread_index::activity)
+                            .min();
                         ws.apply_thread_parents(page.items);
                         more.then_some(next)
                     }
@@ -857,7 +1199,7 @@ impl SidebarThreads {
                             }
                             self.settled.extend(missing);
                         }
-                        self.paging = None;
+                        self.paging.remove(&rid);
                         self.refresh_unread.remove(&rid);
                         return out;
                     }
@@ -877,14 +1219,22 @@ impl SidebarThreads {
                     .unwrap_or_default();
                 match more {
                     Some(offset) if !pending.is_empty() => {
-                        self.paging = Some(Paging {
+                        let floor = match (floor, fl.floor) {
+                            (Some(a), Some(b)) => Some(a.min(b)),
+                            (a, b) => a.or(b),
+                        }
+                        .or_else(|| ws.subscription(&rid).and_then(|s| s.lr));
+                        self.paging.insert(
                             rid,
-                            offset,
-                            pass_start: fl.pass_start,
-                        });
+                            Paging {
+                                offset,
+                                pass_start: fl.pass_start,
+                                floor,
+                            },
+                        );
                     }
                     _ => {
-                        self.paging = None;
+                        self.paging.remove(&rid);
                         self.refresh_unread.remove(&rid);
                         self.unresolved.extend(pending);
                     }
@@ -918,7 +1268,14 @@ impl SidebarThreads {
             Done::Followed { rid, activity, res } => {
                 self.recrawl.remove(&rid);
                 match res {
-                    Ok(page) => ws.apply_followed(&rid, page.items, activity, fl.started),
+                    Ok(page) => {
+                        let count = match fl.fetch {
+                            Fetch::Followed { count, .. } => count,
+                            _ => FOLLOWED_PER_ROOM,
+                        };
+                        let short = page.has_more().then_some(count);
+                        ws.apply_followed_page(&rid, page.items, activity, fl.started, short);
+                    }
                     Err(f) if classify(&f) == Class::NotAllowed => {
                         ws.apply_followed(&rid, Vec::new(), activity, fl.started);
                     }
@@ -940,25 +1297,38 @@ impl SidebarThreads {
         if let Done::Unread { rid, offset, .. } = result
             && *offset > 0
         {
-            self.paging = Some(Paging {
-                rid: rid.clone(),
-                offset: *offset,
-                pass_start: fl.pass_start,
-            });
+            self.paging.insert(
+                rid.clone(),
+                Paging {
+                    offset: *offset,
+                    pass_start: fl.pass_start,
+                    floor: fl.floor,
+                },
+            );
         }
     }
 
     /// Following crawl progress `(done, rooms)` while it runs (not while
-    /// disconnected: nothing loads then).
-    pub fn crawl_progress(&self, ws: &Workspace, mode: ThreadsMode) -> Option<(usize, usize)> {
+    /// disconnected: nothing loads then). With a row limit, rooms that
+    /// cannot reach the rows within it are not counted.
+    pub fn crawl_progress(
+        &self,
+        ws: &Workspace,
+        mode: ThreadsMode,
+        cap: Cap,
+    ) -> Option<(usize, usize)> {
         if mode != ThreadsMode::Following || *ws.connection() != ConnectionState::Connected {
             return None;
         }
+        let bound = Bound::new(ws, mode, cap);
+        let page = cap.followed_page();
         let (mut done, mut total) = (0, 0);
         for (_, s) in listed(ws) {
-            total += 1;
-            if !wants_crawl(ws, self, &s.rid) || self.crawl_failed.contains(&s.rid) {
+            if !wants_crawl(ws, self, &s.rid, page) || self.crawl_failed.contains(&s.rid) {
                 done += 1;
+                total += 1;
+            } else if bound.reaches(&s.rid, bound.crawl_lr(s), false) {
+                total += 1;
             }
         }
         (done < total).then_some((done, total))
@@ -974,6 +1344,7 @@ impl SidebarThreads {
         self.failed.clear();
         self.unresolved.clear();
         self.backoff.clear();
+        self.paging.clear();
         if self.mode == ThreadsMode::Off {
             return;
         }
@@ -1029,6 +1400,7 @@ pub fn cached_threads(ws: &Workspace, st: &SidebarThreads) -> CachedThreads {
             rid: rid.to_owned(),
             tmids: f.tmids.iter().cloned().collect(),
             synced_activity,
+            short: f.short,
         });
     }
     wanted.extend(idx.kept().map(|(_, t)| t));
@@ -1153,11 +1525,15 @@ fn request(rest: rocketchat::RestClient, epoch: u64, f: Fetch) -> Task<Msg> {
             },
             move |res| done(Done::Parent { rid, tmid, res }),
         ),
-        Fetch::Followed { rid, activity } => Task::perform(
+        Fetch::Followed {
+            rid,
+            activity,
+            count,
+        } => Task::perform(
             {
                 let rid = rid.clone();
                 async move {
-                    rest.threads_list(&rid, Some("following"), None, 0, FOLLOWED_PER_ROOM as u64)
+                    rest.threads_list(&rid, Some("following"), None, 0, count as u64)
                         .await
                         .map_err(Failure::from)
                 }
@@ -1283,9 +1659,14 @@ mod tests {
     }
 
     fn followed(rid: &str, lr: Option<i64>) -> Fetch {
+        followed_n(rid, lr, FOLLOWED_PER_ROOM)
+    }
+
+    fn followed_n(rid: &str, lr: Option<i64>, count: usize) -> Fetch {
         Fetch::Followed {
             rid: rid.into(),
             activity: lr.map(ts),
+            count,
         }
     }
 
@@ -1294,6 +1675,7 @@ mod tests {
         ws: Workspace,
         st: SidebarThreads,
         mode: ThreadsMode,
+        cap: Cap,
         collapsed: bool,
         t0: Instant,
     }
@@ -1304,6 +1686,7 @@ mod tests {
                 ws: ws(mode),
                 st: SidebarThreads::default(),
                 mode,
+                cap: Cap::default(),
                 collapsed: false,
                 t0: Instant::now(),
             }
@@ -1316,7 +1699,7 @@ mod tests {
         fn plan(&mut self, ms: u64) -> Next {
             let now = self.at(ms);
             self.st.observe(&self.ws, self.mode, now);
-            plan(&self.ws, self.mode, self.collapsed, &self.st, now)
+            plan(&self.ws, self.mode, self.cap, self.collapsed, &self.st, now)
         }
 
         /// Plans at `ms` and starts what was planned.
@@ -1423,6 +1806,328 @@ mod tests {
         assert_eq!(fx.plan(10_000), Next::Idle);
     }
 
+    fn capped(limit: u32, sort: SidebarSort) -> Cap {
+        Cap {
+            limit,
+            sort,
+            ..Cap::default()
+        }
+    }
+
+    fn unread_done(fx: &mut Fx, ms: u64, rid: &str, items: Vec<Message>) {
+        let n = items.len() as u64;
+        fx.done(
+            ms,
+            Done::Unread {
+                rid: rid.into(),
+                offset: 0,
+                res: page(items, n),
+            },
+        );
+    }
+
+    #[test]
+    fn unread_parents_load_only_up_to_the_limit() {
+        let mut fx = Fx::new(ThreadsMode::Unread);
+        fx.cap = capped(2, SidebarSort::Activity);
+        add(&mut fx.ws, "c", Some(100), &["c1"]);
+        add(&mut fx.ws, "a", Some(300), &["a1"]);
+        add(&mut fx.ws, "b", Some(200), &["b1"]);
+        // Rooms go newest `lr` first.
+        assert_eq!(fx.plan(0), Next::Wait(fx.at(1000)));
+        assert_eq!(fx.start(1000), Next::Fetch(unread("a", 0)));
+        unread_done(&mut fx, 1100, "a", vec![parent("a1", "a", 290)]);
+        assert_eq!(fx.start(3100), Next::Fetch(unread("b", 0)));
+        unread_done(&mut fx, 3200, "b", vec![parent("b1", "b", 190)]);
+        // Two loaded rows newer than c's `lr`: c1 cannot make it.
+        assert_eq!(fx.plan(10_000), Next::Idle);
+        // Lowering loads nothing; raising resumes.
+        fx.cap.limit = 1;
+        assert_eq!(fx.plan(11_000), Next::Idle);
+        fx.cap.limit = 3;
+        assert_eq!(fx.start(12_000), Next::Fetch(unread("c", 0)));
+        unread_done(&mut fx, 12_100, "c", Vec::new());
+        // Not in the list: fetched singly, within the limit too.
+        assert_eq!(fx.start(14_000), Next::Fetch(get("c", "c1")));
+    }
+
+    #[test]
+    fn single_unread_parents_respect_the_limit() {
+        let mut fx = Fx::new(ThreadsMode::Unread);
+        fx.cap = capped(1, SidebarSort::Activity);
+        add(&mut fx.ws, "a", Some(300), &["a1", "a2"]);
+        add(&mut fx.ws, "b", Some(100), &["b1"]);
+        fx.plan(0);
+        assert_eq!(fx.start(1000), Next::Fetch(unread("a", 0)));
+        unread_done(&mut fx, 1100, "a", vec![parent("a1", "a", 290)]);
+        // a2 is unresolved but its room can still reach the first row.
+        assert_eq!(fx.start(1200), Next::Fetch(get("a", "a2")));
+        fx.done(
+            1300,
+            Done::Parent {
+                rid: "a".into(),
+                tmid: "a2".into(),
+                res: Ok(Box::new(parent("a2", "a", 280))),
+            },
+        );
+        assert_eq!(fx.plan(60_000), Next::Idle);
+    }
+
+    #[test]
+    fn oldest_first_stops_once_the_limit_is_loaded() {
+        let mut fx = Fx::new(ThreadsMode::Unread);
+        fx.cap = capped(1, SidebarSort::ActivityAsc);
+        add(&mut fx.ws, "a", Some(300), &["a1"]);
+        add(&mut fx.ws, "b", Some(200), &["b1"]);
+        fx.plan(0);
+        // No bound from below: oldest `lr` first, then stop.
+        assert_eq!(fx.start(1000), Next::Fetch(unread("b", 0)));
+        unread_done(&mut fx, 1100, "b", vec![parent("b1", "b", 150)]);
+        assert_eq!(fx.plan(10_000), Next::Idle);
+        fx.cap.limit = 2;
+        assert_eq!(fx.start(11_000), Next::Fetch(unread("a", 0)));
+    }
+
+    #[test]
+    fn by_name_loads_rooms_in_name_order() {
+        let mut fx = Fx::new(ThreadsMode::Unread);
+        fx.cap = capped(1, SidebarSort::Alphabetical);
+        add(&mut fx.ws, "zz", Some(300), &["z1"]);
+        add(&mut fx.ws, "aa", Some(100), &["a1"]);
+        fx.plan(0);
+        assert_eq!(fx.start(1000), Next::Fetch(unread("aa", 0)));
+        unread_done(&mut fx, 1100, "aa", vec![parent("a1", "aa", 90)]);
+        assert_eq!(fx.plan(10_000), Next::Idle);
+    }
+
+    #[test]
+    fn an_unread_pass_waits_past_the_limit() {
+        let mut fx = Fx::new(ThreadsMode::Unread);
+        fx.cap = capped(2, SidebarSort::Activity);
+        add(&mut fx.ws, "b", Some(500), &["b1"]);
+        add(&mut fx.ws, "a", Some(360), &["x", "w", "y"]);
+        fx.ws.apply_thread_parents(vec![parent("b1", "b", 400)]);
+        fx.plan(0);
+        assert_eq!(fx.start(1000), Next::Fetch(unread("a", 0)));
+        let mut first = page(vec![parent("x", "a", 350), parent("w", "a", 340)], 150).unwrap();
+        first.raw_len = 100;
+        fx.done(
+            1100,
+            Done::Unread {
+                rid: "a".into(),
+                offset: 0,
+                res: Ok(first),
+            },
+        );
+        // b1 and x are newer than anything left in the list: y waits (and
+        // is not fetched singly).
+        assert_eq!(fx.plan(10_000), Next::Idle);
+        fx.cap.limit = 3;
+        assert_eq!(fx.start(11_000), Next::Fetch(unread("a", 100)));
+    }
+
+    #[test]
+    fn following_crawl_stops_at_the_limit() {
+        let mut fx = Fx::new(ThreadsMode::Following);
+        fx.cap = capped(2, SidebarSort::Activity);
+        add(&mut fx.ws, "quiet", None, &[]);
+        add(&mut fx.ws, "f3", Some(100), &[]);
+        add(&mut fx.ws, "f1", Some(300), &[]);
+        add(&mut fx.ws, "f2", Some(200), &[]);
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), Some((0, 4)));
+        assert_eq!(fx.start(0), Next::Fetch(followed_n("f1", Some(300), 2)));
+        fx.done(
+            100,
+            Done::Followed {
+                rid: "f1".into(),
+                activity: Some(ts(300)),
+                res: page(vec![parent("p1", "f1", 300), parent("p2", "f1", 250)], 5),
+            },
+        );
+        // Two followed threads newer than every other room's `lr`.
+        assert_eq!(fx.plan(10_000), Next::Idle);
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), None);
+        // A bigger limit crawls f1 again (it had more) with the bigger page.
+        fx.cap.limit = 3;
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), Some((0, 4)));
+        assert_eq!(
+            fx.start(11_000),
+            Next::Fetch(followed_n("f1", Some(300), 3))
+        );
+        fx.done(
+            11_100,
+            Done::Followed {
+                rid: "f1".into(),
+                activity: Some(ts(300)),
+                res: page(
+                    vec![
+                        parent("p1", "f1", 300),
+                        parent("p2", "f1", 250),
+                        parent("p3", "f1", 120),
+                    ],
+                    5,
+                ),
+            },
+        );
+        assert_eq!(
+            fx.start(13_100),
+            Next::Fetch(followed_n("f2", Some(200), 3))
+        );
+        fx.done(
+            13_200,
+            Done::Followed {
+                rid: "f2".into(),
+                activity: Some(ts(200)),
+                res: page(vec![parent("q1", "f2", 210)], 1),
+            },
+        );
+        // p1, p2, q1 are newer than f3's `lr`; the room without `lr` is
+        // skipped too.
+        assert_eq!(fx.plan(60_000), Next::Idle);
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), None);
+        // No limit: f1 (it had more) gets a full page, then the rest.
+        fx.cap.limit = 0;
+        assert_eq!(fx.start(61_000), Next::Fetch(followed("f1", Some(300))));
+        fx.done(
+            61_100,
+            Done::Followed {
+                rid: "f1".into(),
+                activity: Some(ts(300)),
+                res: page(vec![parent("p1", "f1", 300)], 1),
+            },
+        );
+        assert_eq!(fx.start(64_000), Next::Fetch(followed("f3", Some(100))));
+    }
+
+    #[test]
+    fn unread_rows_filling_the_limit_skip_the_crawl() {
+        let mut fx = Fx::new(ThreadsMode::Following);
+        fx.cap = capped(2, SidebarSort::Activity);
+        add(&mut fx.ws, "u", Some(50), &["u1", "u2"]);
+        add(&mut fx.ws, "f", Some(900), &[]);
+        fx.ws
+            .apply_thread_parents(vec![parent("u1", "u", 40), parent("u2", "u", 30)]);
+        // Unread first: both unread rows come before any followed one.
+        assert_eq!(fx.plan(0), Next::Idle);
+        fx.cap.unread_first = false;
+        assert_eq!(fx.plan(1), Next::Fetch(followed_n("f", Some(900), 2)));
+    }
+
+    fn followed_done(
+        fx: &mut Fx,
+        ms: u64,
+        rid: &str,
+        lr: Option<i64>,
+        items: Vec<Message>,
+        total: u64,
+    ) {
+        fx.done(
+            ms,
+            Done::Followed {
+                rid: rid.into(),
+                activity: lr.map(ts),
+                res: page(items, total),
+            },
+        );
+    }
+
+    #[test]
+    fn a_follow_without_a_reply_gets_an_uncrawled_room_crawled() {
+        let mut fx = Fx::new(ThreadsMode::Following);
+        fx.cap = capped(2, SidebarSort::Activity);
+        add(&mut fx.ws, "f1", Some(300), &[]);
+        add(&mut fx.ws, "r", None, &[]);
+        assert_eq!(fx.start(0), Next::Fetch(followed_n("f1", Some(300), 2)));
+        let items = vec![parent("p1", "f1", 300), parent("p2", "f1", 250)];
+        followed_done(&mut fx, 100, "f1", Some(300), items, 2);
+        assert_eq!(fx.plan(10_000), Next::Idle);
+        // "Follow" on an active thread: the parent update adds the user to
+        // `replies`, `lr` stays unset.
+        fx.ws.apply_message(parent("t", "r", 500));
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), Some((1, 2)));
+        assert_eq!(fx.start(20_000), Next::Fetch(followed_n("r", None, 2)));
+    }
+
+    #[test]
+    fn a_short_crawl_runs_again_when_its_set_shrinks() {
+        let mut fx = Fx::new(ThreadsMode::Following);
+        fx.cap = capped(2, SidebarSort::Activity);
+        add(&mut fx.ws, "r", Some(300), &[]);
+        add(&mut fx.ws, "q", Some(50), &[]);
+        assert_eq!(fx.start(0), Next::Fetch(followed_n("r", Some(300), 2)));
+        let items = vec![parent("r1", "r", 300), parent("r2", "r", 290)];
+        followed_done(&mut fx, 100, "r", Some(300), items, 5);
+        assert_eq!(fx.plan(10_000), Next::Idle);
+        // Unfollowed: r's third thread now belongs within the limit.
+        let mut r1 = parent("r1", "r", 300);
+        r1.replies = Some(Vec::new());
+        r1.updated_at = Some(ts(400));
+        fx.ws.apply_message(r1);
+        assert!(!fx.ws.thread_index().is_followed("r1"));
+        assert_eq!(fx.start(20_000), Next::Fetch(followed_n("r", Some(300), 2)));
+        let items = vec![parent("r2", "r", 290), parent("r3", "r", 280)];
+        followed_done(&mut fx, 20_100, "r", Some(300), items, 4);
+        assert_eq!(fx.plan(30_000), Next::Idle);
+    }
+
+    #[test]
+    fn a_short_crawl_that_dropped_threads_asks_for_more() {
+        let mut fx = Fx::new(ThreadsMode::Following);
+        fx.cap = capped(2, SidebarSort::Activity);
+        add(&mut fx.ws, "r", Some(300), &[]);
+        add(&mut fx.ws, "q", Some(50), &[]);
+        assert_eq!(fx.start(0), Next::Fetch(followed_n("r", Some(300), 2)));
+        let mut deleted = parent("r1", "r", 300);
+        deleted.t = Some("rm".into());
+        let items = vec![deleted.clone(), parent("r2", "r", 290)];
+        followed_done(&mut fx, 100, "r", Some(300), items, 5);
+        // The deleted parent is not a row: one more makes up for it.
+        assert_eq!(fx.start(10_000), Next::Fetch(followed_n("r", Some(300), 3)));
+        let items = vec![deleted, parent("r2", "r", 290), parent("r3", "r", 280)];
+        followed_done(&mut fx, 10_100, "r", Some(300), items, 5);
+        assert_eq!(fx.plan(20_000), Next::Idle);
+        // Lowering the limit does not crawl again.
+        fx.cap.limit = 1;
+        assert_eq!(fx.plan(30_000), Next::Idle);
+    }
+
+    #[test]
+    fn short_crawls_survive_a_restart() {
+        let mut fx = Fx::new(ThreadsMode::Following);
+        fx.cap = capped(2, SidebarSort::Activity);
+        add(&mut fx.ws, "r", Some(300), &[]);
+        assert_eq!(fx.start(0), Next::Fetch(followed_n("r", Some(300), 2)));
+        let items = vec![parent("r1", "r", 300), parent("r2", "r", 290)];
+        followed_done(&mut fx, 100, "r", Some(300), items, 12);
+        assert_eq!(fx.plan(10_000), Next::Idle);
+        let cached = cached_threads(&fx.ws, &fx.st);
+        assert_eq!(
+            cached.followed[0].short,
+            Some(ShortCrawl { count: 2, kept: 2 })
+        );
+        let subs = vec![sub("r", Some(300), &[])];
+        restart(&mut fx, subs.clone(), cached, subs);
+        // Quiet room: current after the restart, nothing to load.
+        assert!(!fx.ws.thread_index().followed("r").unwrap().stale);
+        assert_eq!(fx.plan(20_000), Next::Idle);
+        // A bigger limit crawls it again with the bigger page.
+        fx.cap.limit = 5;
+        assert_eq!(fx.start(30_000), Next::Fetch(followed_n("r", Some(300), 5)));
+    }
+
+    #[test]
+    fn kept_parents_do_not_wait_for_skipped_crawls() {
+        let mut fx = Fx::new(ThreadsMode::Following);
+        fx.cap = capped(1, SidebarSort::Activity);
+        add(&mut fx.ws, "u", Some(500), &["u1"]);
+        add(&mut fx.ws, "k", Some(10), &[]);
+        fx.ws
+            .set_thread_config(ThreadsMode::Following, [("k", "kept")]);
+        fx.ws.apply_thread_parents(vec![parent("u1", "u", 400)]);
+        // k's crawl cannot reach the row: the kept parent is fetched singly.
+        assert_eq!(fx.plan(0), Next::Fetch(get("k", "kept")));
+    }
+
     #[test]
     fn kept_parents_are_fetched_singly_and_removed_when_not_found() {
         let mut fx = Fx::new(ThreadsMode::UnreadKept);
@@ -1509,11 +2214,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["p"]
         );
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), Some((2, 4)));
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), Some((2, 4)));
         fx.ws.apply_connection(ConnectionState::Disconnected);
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), None);
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), None);
         fx.ws.apply_connection(ConnectionState::Connected);
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), Some((2, 4)));
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), Some((2, 4)));
         assert_eq!(fx.plan(1000), Next::Wait(fx.at(2000)));
         assert_eq!(fx.start(2000), Next::Fetch(followed("b", Some(10))));
         fx.done(
@@ -1536,7 +2241,7 @@ mod tests {
             },
         );
         assert!(fx.ws.thread_index().followed("quiet").is_some());
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), None);
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), None);
         assert_eq!(fx.plan(60_000), Next::Idle);
     }
 
@@ -1693,12 +2398,12 @@ mod tests {
         fx.ws
             .apply_followed("b", vec![parent("u", "b", 1500)], Some(ts(2000)), fx.t0);
         assert_eq!(fx.plan(0), Next::Idle);
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), None);
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), None);
         fx.st.refresh(&fx.ws);
         // The followed sets stay until the crawl replaces them.
         assert!(fx.ws.thread_index().followed("a").is_some());
         assert!(fx.ws.thread_index().followed("b").is_some());
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), Some((0, 2)));
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), Some((0, 2)));
         assert_eq!(fx.start(100), Next::Fetch(unread("a", 0)));
         fx.done(
             200,
@@ -1718,7 +2423,7 @@ mod tests {
             },
         );
         assert!(fx.ws.thread_index().followed("a").is_some());
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), Some((1, 2)));
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), Some((1, 2)));
         assert_eq!(fx.start(4300), Next::Fetch(followed("a", Some(1003))));
         fx.done(
             4400,
@@ -1728,7 +2433,7 @@ mod tests {
                 res: page(vec![parent("t", "a", 3000)], 1),
             },
         );
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), None);
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), None);
         assert_eq!(fx.plan(60_000), Next::Idle);
     }
 
@@ -1790,7 +2495,7 @@ mod tests {
                 res: page(Vec::new(), 0),
             },
         );
-        assert!(fx.st.unresolved.is_empty() && fx.st.paging.is_none());
+        assert!(fx.st.unresolved.is_empty() && fx.st.paging.is_empty());
         fx.mode = ThreadsMode::UnreadKept;
         fx.ws
             .set_thread_config(ThreadsMode::UnreadKept, [("a", "k")]);
@@ -1839,23 +2544,27 @@ mod tests {
         let mut fx = Fx::new(ThreadsMode::Unread);
         add(&mut fx.ws, "a", Some(10), &[]);
         let (mode, t0) = (fx.mode, fx.t0);
-        assert!(fx.st.needs_plan(&fx.ws, 1, mode, false, t0));
-        assert!(!fx.st.needs_plan(&fx.ws, 1, mode, false, fx.at(10)));
-        assert!(fx.st.needs_plan(&fx.ws, 1, mode, true, fx.at(20)));
-        assert!(fx.st.needs_plan(&fx.ws, 2, mode, true, fx.at(20)));
+        assert!(fx.st.needs_plan(&fx.ws, 1, mode, fx.cap, false, t0));
+        assert!(!fx.st.needs_plan(&fx.ws, 1, mode, fx.cap, false, fx.at(10)));
+        assert!(fx.st.needs_plan(&fx.ws, 1, mode, fx.cap, true, fx.at(20)));
+        assert!(fx.st.needs_plan(&fx.ws, 2, mode, fx.cap, true, fx.at(20)));
         add(&mut fx.ws, "b", Some(10), &["t"]);
-        assert!(fx.st.needs_plan(&fx.ws, 2, mode, true, fx.at(30)));
-        assert!(!fx.st.needs_plan(&fx.ws, 2, mode, true, fx.at(40)));
+        assert!(fx.st.needs_plan(&fx.ws, 2, mode, fx.cap, true, fx.at(30)));
+        assert!(!fx.st.needs_plan(&fx.ws, 2, mode, fx.cap, true, fx.at(40)));
         fx.st.due = Some(fx.at(1000));
-        assert!(!fx.st.needs_plan(&fx.ws, 2, mode, true, fx.at(999)));
-        assert!(fx.st.needs_plan(&fx.ws, 2, mode, true, fx.at(1000)));
+        assert!(!fx.st.needs_plan(&fx.ws, 2, mode, fx.cap, true, fx.at(999)));
+        assert!(fx.st.needs_plan(&fx.ws, 2, mode, fx.cap, true, fx.at(1000)));
         fx.st.due = None;
         let at = fx.at(1000);
         let _ = fx.st.update(Msg::Pace { at }, &mut fx.ws, at);
-        assert!(fx.st.needs_plan(&fx.ws, 2, mode, true, fx.at(1001)));
+        assert!(fx.st.needs_plan(&fx.ws, 2, mode, fx.cap, true, fx.at(1001)));
         fx.st.refresh(&fx.ws);
-        assert!(fx.st.needs_plan(&fx.ws, 2, mode, true, fx.at(1002)));
-        assert!(!fx.st.needs_plan(&fx.ws, 2, mode, true, fx.at(1003)));
+        assert!(fx.st.needs_plan(&fx.ws, 2, mode, fx.cap, true, fx.at(1002)));
+        assert!(!fx.st.needs_plan(&fx.ws, 2, mode, fx.cap, true, fx.at(1003)));
+        // A new limit or sort plans again.
+        let cap = Cap { limit: 5, ..fx.cap };
+        assert!(fx.st.needs_plan(&fx.ws, 2, mode, cap, true, fx.at(1004)));
+        assert!(!fx.st.needs_plan(&fx.ws, 2, mode, cap, true, fx.at(1005)));
     }
 
     #[test]
@@ -1906,7 +2615,7 @@ mod tests {
         }
         // Given up for now; tried again after a reconnect.
         assert_eq!(fx.plan(60_000), Next::Idle);
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), None);
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), None);
         reconnect(&mut fx, 61_000, Vec::new());
         assert_eq!(fx.start(62_000), Next::Fetch(followed("a", Some(10))));
     }
@@ -2162,6 +2871,7 @@ mod tests {
             rid: rid.into(),
             tmids: tmids.iter().map(|t| (*t).to_owned()).collect(),
             synced_activity: Some(ts(synced)),
+            short: None,
         }
     }
 
@@ -2205,7 +2915,7 @@ mod tests {
         let idx = fx.ws.thread_index();
         assert!(idx.followed("a").unwrap().tmids.contains("t"));
         assert!(idx.parent("t").is_some());
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), Some((2, 3)));
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), Some((2, 3)));
         assert_eq!(fx.start(200), Next::Fetch(followed("b", Some(2500))));
         fx.done(
             300,
@@ -2224,7 +2934,7 @@ mod tests {
                 .contains("u")
         );
         assert_eq!(fx.plan(60_000), Next::Idle);
-        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode), None);
+        assert_eq!(fx.st.crawl_progress(&fx.ws, fx.mode, fx.cap), None);
     }
 
     #[test]

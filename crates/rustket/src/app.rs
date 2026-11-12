@@ -751,6 +751,7 @@ impl App {
                 &s.workspace,
                 s.session.as_ref(),
                 mode,
+                crate::workspace::threads::Cap::from_prefs(&self.config.ui),
                 threads_collapsed,
                 Instant::now(),
             );

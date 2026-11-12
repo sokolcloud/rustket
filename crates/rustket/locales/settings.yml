@@ -251,6 +251,12 @@ settings.threads_following:
 settings.threads_following_help:
   en: "Loaded in the background, room by room; may take a few minutes on large servers."
   ru: "Загружаются в фоне по комнатам; на больших серверах это может занять несколько минут."
+settings.threads_limit:
+  en: "Threads shown at most"
+  ru: "Показывать не больше тредов"
+settings.threads_limit_help:
+  en: "Only what fits is loaded: a smaller number means less traffic and work."
+  ru: "Загружается только то, что помещается: чем меньше число, тем меньше трафика и работы."
 settings.sections:
   en: "Sections"
   ru: "Разделы"

@@ -26,13 +26,15 @@ use super::{
     sidebar_group_row_id, switch,
 };
 use crate::component::{Action, Effect};
-use crate::workspace::sidebar::sort_label;
+use crate::workspace::sidebar::{sort_label, threads_limit_label};
 
 /// Width of the per-section sort control (fits "По умолчанию (Сначала
 /// свежие ответы)" on one line).
 const SORT_WIDTH: f32 = 320.0;
 /// Width of the Threads mode control.
 const MODE_WIDTH: f32 = 360.0;
+/// Width of the thread limit control.
+const LIMIT_WIDTH: f32 = 200.0;
 
 /// The group being created (`editing: None`) or edited.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -119,6 +121,17 @@ fn threads_mode_label(m: ThreadsMode) -> String {
         ThreadsMode::Following => t!("settings.threads_following"),
     }
     .into_owned()
+}
+
+/// The offered thread limits, plus the configured one when it is another.
+fn threads_limit_choices(current: u32) -> Vec<Choice<u32>> {
+    sidebar_layout::threads_limit_choices(current)
+        .into_iter()
+        .map(|n| Choice {
+            value: n,
+            label: threads_limit_label(n),
+        })
+        .collect()
 }
 
 fn section_name(id: &SectionId, layout: &Layout) -> String {
@@ -380,7 +393,31 @@ impl Settings {
             value: ui.sidebar_threads,
             label: threads_mode_label(ui.sidebar_threads),
         };
-        let rows = vec![
+        let limit = ui.sidebar_threads_limit;
+        let limit_field = (ui.sidebar_threads != ThreadsMode::Off).then(|| {
+            field(
+                t!("settings.threads_limit").into_owned(),
+                Some(t!("settings.threads_limit_help").into_owned()),
+                pick_list(
+                    threads_limit_choices(limit),
+                    Some(Choice {
+                        value: limit,
+                        label: threads_limit_label(limit),
+                    }),
+                    |c: Choice<u32>| {
+                        SettingsMessage::Sidebar(Message::Layout(LayoutEdit::SetThreadsLimit(
+                            c.value,
+                        )))
+                    },
+                )
+                .text_size(TEXT_BODY)
+                .width(LIMIT_WIDTH)
+                .style(style::pick_list)
+                .menu_style(style::menu)
+                .into(),
+            )
+        });
+        let mut rows = vec![
             switch(
                 t!("settings.unread_on_top").into_owned(),
                 Some(t!("settings.unread_on_top_help").into_owned()),
@@ -427,13 +464,16 @@ impl Settings {
                 .menu_style(style::menu)
                 .into(),
             ),
+        ];
+        rows.extend(limit_field);
+        rows.extend([
             Element::from(
                 column![self.sections_list(ui, &layout), self.new_group(ui, &layout)]
                     .spacing(SPACE_3),
             )
             .map(SettingsMessage::Sidebar),
             self.reset_row().map(SettingsMessage::Sidebar),
-        ];
+        ]);
         container(section(t!("settings.sidebar").into_owned(), rows))
             .id(SIDEBAR_CARD)
             .into()
@@ -718,5 +758,18 @@ impl Settings {
             Some(Message::Reset)
         )]
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn threads_limit_choices_are_labelled() {
+        let c = threads_limit_choices(30);
+        assert_eq!(c.len(), 7);
+        assert_eq!(c[3].to_string(), "30");
+        assert_eq!(c[6].value, 0);
     }
 }

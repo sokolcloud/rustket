@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{SidebarSort, UiPrefs, lenient_opt, lenient_vec};
+use crate::config::{MAX_SIDEBAR_THREADS_LIMIT, SidebarSort, UiPrefs, lenient_opt, lenient_vec};
 use crate::room_list::{RoomKind, SectionKind};
 
 /// Most user-defined groups kept.
@@ -19,6 +19,19 @@ pub const MAX_GROUPS: usize = 16;
 pub const MAX_GROUP_NAME_CHARS: usize = 40;
 /// Most kept threads stored per server entry.
 pub const MAX_KEPT_THREADS: usize = 200;
+/// Thread limits the settings and the Threads header menu offer (0: none).
+pub const THREADS_LIMIT_CHOICES: [u32; 6] = [5, 10, 20, 50, 100, 0];
+
+/// [`THREADS_LIMIT_CHOICES`] plus `current` when it is another value
+/// (set in the config file), ascending with 0 (no limit) last.
+pub fn threads_limit_choices(current: u32) -> Vec<u32> {
+    let mut v = THREADS_LIMIT_CHOICES.to_vec();
+    if !v.contains(&current) {
+        v.push(current);
+        v.sort_by_key(|n| if *n == 0 { u32::MAX } else { *n });
+    }
+    v
+}
 
 const GROUP_PREFIX: &str = "group:";
 const GROUP_COLLAPSE_PREFIX: &str = "sidebar.group.";
@@ -270,6 +283,8 @@ pub struct Layout {
     /// Sections that list unread entries first.
     pub unread_first: BTreeSet<SectionId>,
     pub threads: ThreadsMode,
+    /// Most rows of the Threads section; 0 means no limit.
+    pub threads_limit: u32,
 }
 
 impl Default for Layout {
@@ -298,14 +313,8 @@ impl Layout {
         let mut sorts = BTreeMap::new();
         let mut unread_first = BTreeSet::new();
         for id in &order {
-            let prefs = p.sidebar_section_prefs.get(&id.as_config_str());
-            let sort = prefs.and_then(|s| s.sort).unwrap_or(p.sidebar_sort);
-            sorts.insert(id.clone(), sort);
-            if id == &SectionId::Builtin(SectionKind::Unread) {
-                continue;
-            }
-            let default = id == &SectionId::Builtin(SectionKind::Threads);
-            if prefs.and_then(|s| s.unread_first).unwrap_or(default) {
+            sorts.insert(id.clone(), section_sort(p, id));
+            if section_unread_first(p, id) {
                 unread_first.insert(id.clone());
             }
         }
@@ -317,6 +326,7 @@ impl Layout {
             sorts,
             unread_first,
             threads: p.sidebar_threads,
+            threads_limit: p.sidebar_threads_limit,
         }
     }
 
@@ -339,6 +349,27 @@ impl Layout {
     pub fn claimed_by(&self, ty: GroupType) -> Option<&str> {
         self.claims.get(&ty).map(String::as_str)
     }
+}
+
+/// The resolved sort of a section.
+pub fn section_sort(p: &UiPrefs, id: &SectionId) -> SidebarSort {
+    p.sidebar_section_prefs
+        .get(&id.as_config_str())
+        .and_then(|s| s.sort)
+        .unwrap_or(p.sidebar_sort)
+}
+
+/// Whether a section lists unread entries first (on for Threads by default,
+/// never for Unread).
+pub fn section_unread_first(p: &UiPrefs, id: &SectionId) -> bool {
+    if id == &SectionId::Builtin(SectionKind::Unread) {
+        return false;
+    }
+    let default = id == &SectionId::Builtin(SectionKind::Threads);
+    p.sidebar_section_prefs
+        .get(&id.as_config_str())
+        .and_then(|s| s.unread_first)
+        .unwrap_or(default)
 }
 
 fn orderable(id: &SectionId, groups: &HashSet<&str>) -> bool {
@@ -453,6 +484,8 @@ pub enum LayoutEdit {
     },
     SetDefaultSort(SidebarSort),
     SetThreadsMode(ThreadsMode),
+    /// 0 means no limit; clamped to [`MAX_SIDEBAR_THREADS_LIMIT`].
+    SetThreadsLimit(u32),
     SetUnreadOnTop(bool),
     /// Placed before the earliest section of its types (else last); takes the
     /// types away from other groups.
@@ -526,6 +559,9 @@ pub fn apply(p: &mut UiPrefs, e: LayoutEdit) -> Applied {
         }
         LayoutEdit::SetDefaultSort(s) => p.sidebar_sort = s,
         LayoutEdit::SetThreadsMode(m) => p.sidebar_threads = m,
+        LayoutEdit::SetThreadsLimit(n) => {
+            p.sidebar_threads_limit = n.min(MAX_SIDEBAR_THREADS_LIMIT);
+        }
         LayoutEdit::SetUnreadOnTop(on) => p.unread_on_top = on,
         LayoutEdit::AddGroup { name, mut types } => {
             if let Some(name) = clean_name(&name)
@@ -1080,6 +1116,31 @@ mod tests {
             p.sidebar_section_prefs.keys().collect::<Vec<_>>(),
             ["channels"]
         );
+    }
+
+    #[test]
+    fn threads_limit_choices_include_the_configured_one() {
+        assert_eq!(threads_limit_choices(20), THREADS_LIMIT_CHOICES);
+        assert_eq!(threads_limit_choices(0), THREADS_LIMIT_CHOICES);
+        assert_eq!(threads_limit_choices(30), [5, 10, 20, 30, 50, 100, 0]);
+        assert_eq!(threads_limit_choices(500), [5, 10, 20, 50, 100, 500, 0]);
+    }
+
+    #[test]
+    fn threads_limit_edit() {
+        let mut p = UiPrefs::default();
+        assert_eq!(Layout::from_prefs(&p).threads_limit, 20);
+        assert!(!apply(&mut p, LayoutEdit::SetThreadsLimit(20)).changed);
+        assert!(apply(&mut p, LayoutEdit::SetThreadsLimit(50)).changed);
+        assert_eq!(Layout::from_prefs(&p).threads_limit, 50);
+        assert_ne!(Layout::from_prefs(&p), Layout::default());
+        apply(&mut p, LayoutEdit::SetThreadsLimit(0));
+        assert_eq!(p.sidebar_threads_limit, 0);
+        apply(&mut p, LayoutEdit::SetThreadsLimit(100_000));
+        assert_eq!(p.sidebar_threads_limit, MAX_SIDEBAR_THREADS_LIMIT);
+        // Reset leaves the threads settings alone, like the mode.
+        apply(&mut p, LayoutEdit::Reset);
+        assert_eq!(p.sidebar_threads_limit, MAX_SIDEBAR_THREADS_LIMIT);
     }
 
     #[test]

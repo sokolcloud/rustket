@@ -36,6 +36,9 @@ pub struct RoomListOptions {
     /// `(rid, tmid)` of the open thread, kept in the Threads section (and in
     /// its unread block) after it was read, until another thread or room opens.
     pub kept_thread: Option<(String, String)>,
+    /// `(rid, tmid)` of the thread open in the panel: never cut by the row
+    /// limit (unlike `kept_thread` it does not change the sort).
+    pub open_thread: Option<(String, String)>,
 }
 
 impl RoomListOptions {
@@ -49,6 +52,7 @@ impl RoomListOptions {
             show_favorites: true,
             use_real_names: ws.use_real_names(prefs.use_real_names),
             kept_thread: None,
+            open_thread: None,
         }
     }
 }
@@ -64,6 +68,7 @@ impl Default for RoomListOptions {
             show_favorites: true,
             use_real_names: false,
             kept_thread: None,
+            open_thread: None,
         }
     }
 }
@@ -278,6 +283,8 @@ pub struct Section {
     pub items: Vec<RoomListItem>,
     /// Thread rows (the Threads section only).
     pub threads: Vec<ThreadListItem>,
+    /// Thread rows left out by the section's limit (`ui.sidebar_threads_limit`).
+    pub threads_hidden: usize,
 }
 
 impl Section {
@@ -689,13 +696,20 @@ pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Sect
     for id in layout.order.iter().chain([&omni]) {
         if id == &SectionId::Builtin(SectionKind::Threads) {
             if layout.threads != ThreadsMode::Off && ws.settings().threads_enabled() {
-                let threads = thread_rows(ws, opts, &q);
+                let mut threads = all_thread_rows(ws, opts, &q);
+                // A filter searches every row that is there.
+                let threads_hidden = if q.is_empty() {
+                    cap_thread_rows(&mut threads, opts)
+                } else {
+                    0
+                };
                 if !threads.is_empty() || q.is_empty() {
                     out.push(Section {
                         id: id.clone(),
                         title: None,
                         items: Vec::new(),
                         threads,
+                        threads_hidden,
                     });
                 }
             }
@@ -718,6 +732,7 @@ pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Sect
             id: id.clone(),
             items,
             threads: Vec::new(),
+            threads_hidden: 0,
         });
     }
     out
@@ -789,8 +804,43 @@ pub fn thread_unread(s: &rocketchat::models::Subscription, tmid: &str) -> Option
 /// Parents come from the thread index only; unknown ones give placeholder
 /// rows. Deleted parents are listed only while unread or kept. `q` (lower
 /// case) matches the room name and the title. Sorted by the section's sort,
-/// unread (and the open thread) first when the section lists unread first.
+/// unread (and the open thread) first when the section lists unread first,
+/// then cut to the section's limit (see [`cap_thread_rows`]).
 pub fn thread_rows(ws: &Workspace, opts: &RoomListOptions, q: &str) -> Vec<ThreadListItem> {
+    let mut rows = all_thread_rows(ws, opts, q);
+    cap_thread_rows(&mut rows, opts);
+    rows
+}
+
+/// Cuts sorted thread rows to `opts.layout.threads_limit` (0: no limit) and
+/// returns how many were cut. The open thread (`opts.open_thread`, and
+/// `opts.kept_thread`) is never cut: past the limit it takes the place of
+/// the last rows.
+pub fn cap_thread_rows(rows: &mut Vec<ThreadListItem>, opts: &RoomListOptions) -> usize {
+    let limit = opts.layout.threads_limit as usize;
+    if limit == 0 || rows.len() <= limit {
+        return 0;
+    }
+    let hidden = rows.len() - limit;
+    let mut keep: Vec<usize> = [&opts.open_thread, &opts.kept_thread]
+        .into_iter()
+        .flatten()
+        .filter_map(|(rid, tmid)| {
+            rows.iter()
+                .position(|r| &r.tmid == tmid && &r.rid == rid)
+                .filter(|i| *i >= limit)
+        })
+        .collect();
+    keep.sort_unstable();
+    keep.dedup();
+    let tail: Vec<ThreadListItem> = keep.iter().map(|i| rows[*i].clone()).collect();
+    rows.truncate(limit.saturating_sub(tail.len()));
+    rows.extend(tail);
+    hidden
+}
+
+/// [`thread_rows`] without the limit.
+pub fn all_thread_rows(ws: &Workspace, opts: &RoomListOptions, q: &str) -> Vec<ThreadListItem> {
     let mode = opts.layout.threads;
     if mode == ThreadsMode::Off || !ws.settings().threads_enabled() {
         return Vec::new();
@@ -2135,6 +2185,72 @@ mod tests {
         a.tunread_group = None;
         ws.apply_subscription(Change::Updated, a);
         assert_eq!(tmids(&thread_rows(&ws, &opts, "")), ["t1", "k"]);
+    }
+
+    #[test]
+    fn thread_rows_are_cut_to_the_limit() {
+        let mut ws = threads_ws(ThreadsMode::UnreadKept);
+        // Kept, read threads in "b": k1 newest of all, k2 oldest.
+        ws.set_thread_config(ThreadsMode::UnreadKept, [("b", "k1"), ("b", "k2")]);
+        ws.apply_thread_parents(vec![
+            parent("k1", "b", 900, "bob"),
+            parent("k2", "b", 10, "bob"),
+        ]);
+        let with = |limit: u32, unread_first: Option<bool>| RoomListOptions {
+            layout: layout(|p| {
+                p.sidebar_threads = ThreadsMode::UnreadKept;
+                p.sidebar_threads_limit = limit;
+                if let Some(on) = unread_first {
+                    p.sidebar_section_prefs.insert(
+                        "threads".into(),
+                        crate::sidebar_layout::SectionPrefs {
+                            sort: None,
+                            unread_first: Some(on),
+                        },
+                    );
+                }
+            }),
+            ..Default::default()
+        };
+        // Unread first: t1, t2, t3 (placeholder) then k1, k2.
+        assert_eq!(
+            tmids(&thread_rows(&ws, &with(0, None), "")),
+            ["t1", "t2", "t3", "k1", "k2"]
+        );
+        let opts = with(2, None);
+        assert_eq!(tmids(&thread_rows(&ws, &opts, "")), ["t1", "t2"]);
+        let s = compute(&ws, &opts, "");
+        assert_eq!((s[0].threads.len(), s[0].threads_hidden), (2, 3));
+        // Without unread first the newest kept thread comes first.
+        assert_eq!(
+            tmids(&thread_rows(&ws, &with(2, Some(false)), "")),
+            ["k1", "t1"]
+        );
+        // The open thread past the limit takes the last row (with unread
+        // first it sorts into the unread block: t1, t2, k2, t3, k1).
+        let mut open = with(2, None);
+        open.kept_thread = Some(("b".into(), "k2".into()));
+        assert_eq!(tmids(&thread_rows(&ws, &open, "")), ["t1", "k2"]);
+        let mut open = with(2, Some(false));
+        open.kept_thread = Some(("b".into(), "k2".into()));
+        assert_eq!(tmids(&thread_rows(&ws, &open, "")), ["k1", "k2"]);
+        let s = compute(&ws, &open, "");
+        assert_eq!(s[0].threads_hidden, 3);
+        // Inside the limit it stays where it is.
+        open.kept_thread = Some(("a".into(), "t1".into()));
+        assert_eq!(tmids(&thread_rows(&ws, &open, "")), ["k1", "t1"]);
+        // A read thread open in the panel (not kept: it keeps its place in
+        // the sort) is not cut either.
+        let mut open = with(2, None);
+        open.open_thread = Some(("b".into(), "k2".into()));
+        assert_eq!(tmids(&thread_rows(&ws, &open, "")), ["t1", "k2"]);
+        let s = compute(&ws, &open, "");
+        assert_eq!(s[0].threads_hidden, 3);
+        // Exactly the limit: nothing hidden; a filter searches every row.
+        let s = compute(&ws, &with(5, None), "");
+        assert_eq!((s[0].threads.len(), s[0].threads_hidden), (5, 0));
+        let s = compute(&ws, &with(1, None), "alpha");
+        assert_eq!((s[0].threads.len(), s[0].threads_hidden), (3, 0));
     }
 
     #[test]

@@ -184,6 +184,9 @@ pub struct Sidebar {
     /// `(rid, tmid)` of the open thread, kept in the Threads section after it
     /// was read until another thread or room opens.
     kept_thread: Option<(String, String)>,
+    /// `(rid, tmid)` of the thread open in the panel: never cut by the
+    /// section's row limit.
+    open_thread: Option<(String, String)>,
     /// Following crawl progress `(done, rooms)` shown in the Threads header.
     thread_progress: Option<(usize, usize)>,
 }
@@ -488,6 +491,10 @@ impl Sidebar {
         thread: Option<&str>,
         mode: rustket_core::config::ThreadsMode,
     ) {
+        self.open_thread = room
+            .zip(thread)
+            .filter(|_| mode != rustket_core::config::ThreadsMode::Off)
+            .map(|(r, t)| (r.to_owned(), t.to_owned()));
         let Some(rid) = room.filter(|_| mode != rustket_core::config::ThreadsMode::Off) else {
             self.kept_thread = None;
             return;
@@ -538,6 +545,7 @@ impl Sidebar {
         opts.kept_unread.clone_from(&self.kept_unread);
         opts.kept_unread_first.clone_from(&self.kept_unread_first);
         opts.kept_thread.clone_from(&self.kept_thread);
+        opts.open_thread.clone_from(&self.open_thread);
         let presence = ws.revision(Dirty::PRESENCE);
         let key = SectionsKey {
             filter: self.filter.clone(),
@@ -916,11 +924,14 @@ impl Sidebar {
             } else if slot >= end {
                 after += HEADER_H;
             } else {
-                let status = section
-                    .is(SectionKind::Threads)
-                    .then_some(self.thread_progress)
-                    .flatten()
-                    .map(progress_status);
+                let status = if section.is(SectionKind::Threads) {
+                    self.thread_progress.map(progress_status).or_else(|| {
+                        (section.threads_hidden > 0)
+                            .then(|| hidden_status(section.threads_hidden, layout.threads_limit))
+                    })
+                } else {
+                    None
+                };
                 let header = section_header_with(
                     section_title(section),
                     collapsed,
@@ -1070,6 +1081,24 @@ fn progress_status((done, total): (usize, usize)) -> Element<'static, Message> {
     .spacing(SPACE_1)
     .align_y(Alignment::Center);
     tooltip(content, full, TooltipPosition::Bottom)
+}
+
+/// "+N": thread rows left out by the limit, explained in a tooltip.
+fn hidden_status(hidden: usize, limit: u32) -> Element<'static, Message> {
+    let full = t!("sidebar.threads_hidden_tip", count = hidden, limit = limit).into_owned();
+    let content = iced::widget::text(t!("sidebar.threads_hidden", count = hidden).into_owned())
+        .size(rustket_ui::theme::TEXT_MICRO + 1.0)
+        .style(style::text_hint);
+    tooltip(content, full, TooltipPosition::Bottom)
+}
+
+/// "20", or "Unlimited" for 0 (a thread limit).
+pub fn threads_limit_label(n: u32) -> String {
+    if n == 0 {
+        t!("sidebar.threads_limit_none").into_owned()
+    } else {
+        n.to_string()
+    }
 }
 
 /// A row of the Threads section: the parent's text (its author's avatar),
@@ -1325,7 +1354,19 @@ fn header_menu(m: &HeaderMenu<'_>) -> Vec<MenuEntry<Message>> {
                     .into(),
             );
         }
+        entries.push(MenuEntry::Header(
+            t!("sidebar.menu_show_at_most").into_owned(),
+        ));
+        let limit = m.layout.threads_limit;
+        for n in rustket_core::sidebar_layout::threads_limit_choices(limit) {
+            entries.push(
+                MenuItem::new(threads_limit_label(n), edit(LayoutEdit::SetThreadsLimit(n)))
+                    .checked(n == limit)
+                    .into(),
+            );
+        }
         entries.extend([
+            MenuEntry::Separator,
             MenuItem::new(
                 t!("sidebar.menu_refresh"),
                 Message::Header(HeaderAct::Refresh),
@@ -2136,6 +2177,7 @@ mod tests {
             rust_i18n::set_locale("en");
             let mut fx = Fx::with_rooms(5);
             with_threads(&mut fx, 300, 0);
+            fx.prefs.sidebar_threads_limit = 0;
             fx.refresh();
             assert_eq!(threads(&fx.sidebar).len(), 300);
             BUILDS.with(|b| b.set((0, 0)));
@@ -2219,6 +2261,29 @@ mod tests {
             assert!(threads(&fx.sidebar).is_empty());
         }
 
+        /// The limit cuts the thread rows (counted in the section); changing
+        /// it recomputes the sections.
+        #[test]
+        fn thread_rows_follow_the_limit() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 8, 0);
+            fx.prefs.sidebar_threads_limit = 5;
+            fx.refresh();
+            assert_eq!(
+                threads(&fx.sidebar),
+                ["t000", "t001", "t002", "t003", "t004"]
+            );
+            assert_eq!(fx.sidebar.sections[0].threads_hidden, 3);
+            let _ = fx.view();
+            fx.prefs.sidebar_threads_limit = 0;
+            fx.refresh();
+            assert_eq!(threads(&fx.sidebar).len(), 8);
+            assert_eq!(fx.sidebar.sections[0].threads_hidden, 0);
+            assert_eq!(threads_limit_label(0), "Unlimited");
+            assert_eq!(threads_limit_label(50), "50");
+        }
+
         /// Opening a read thread that is listed anyway (kept or followed)
         /// does not move it into the unread block.
         #[test]
@@ -2240,6 +2305,22 @@ mod tests {
                 .track_active(&fx.ws, Some("r0000"), Some("t002"), &fx.prefs);
             fx.refresh();
             assert_eq!(threads(&fx.sidebar), ["t000", "t001", "t002"]);
+            // With a limit, a new unread thread does not push the open one
+            // out: it takes the last row.
+            fx.prefs.sidebar_threads_limit = 3;
+            let mut s = sub("r0000", "r0000", RoomType::Channel);
+            s.tunread = Some(vec!["t000".into(), "t003".into()]);
+            fx.ws.apply_subscription(Change::Updated, s);
+            fx.ws.apply_thread_parents(vec![parent("t003", "r0000", 3)]);
+            fx.sidebar
+                .track_active(&fx.ws, Some("r0000"), Some("t002"), &fx.prefs);
+            fx.refresh();
+            assert_eq!(threads(&fx.sidebar), ["t000", "t003", "t002"]);
+            // Its panel closed: cut like any other row.
+            fx.sidebar
+                .track_active(&fx.ws, Some("r0000"), None, &fx.prefs);
+            fx.refresh();
+            assert_eq!(threads(&fx.sidebar), ["t000", "t003", "t001"]);
         }
 
         /// Alt+Up/Down steps through rooms only, skipping the thread rows;
@@ -2760,6 +2841,45 @@ mod tests {
                     (ThreadsMode::Following, false),
                     (ThreadsMode::Off, false),
                 ]
+            );
+            // "Show at most": the offered limits, the current one checked.
+            let limits = |menu: &[MenuEntry<Message>]| -> Vec<(u32, bool)> {
+                items(menu, |m| {
+                    matches!(layout_edit(m), Some(LayoutEdit::SetThreadsLimit(_)))
+                })
+                .into_iter()
+                .map(|i| match layout_edit(&i.on_select) {
+                    Some(LayoutEdit::SetThreadsLimit(n)) => (*n, i.checked == Some(true)),
+                    _ => unreachable!(),
+                })
+                .collect()
+            };
+            assert_eq!(
+                limits(menu_of(&menus, "threads")),
+                [
+                    (5, false),
+                    (10, false),
+                    (20, true),
+                    (50, false),
+                    (100, false),
+                    (0, false),
+                ]
+            );
+            assert!(limits(menu_of(&menus, "channels")).is_empty());
+            let mut custom = fx.prefs.clone();
+            custom.sidebar_threads_limit = 30;
+            let layout = rustket_core::sidebar_layout::Layout::from_prefs(&custom);
+            let listed: Vec<(&Section, bool)> = fx.sidebar.listed_with(&fx.collapsed).collect();
+            let ids: Vec<&SectionId> = listed.iter().map(|(s, _)| &s.id).collect();
+            let menu = fx
+                .sidebar
+                .header_menu_at(listed[0].0, 0, &ids, false, &layout, &custom);
+            assert_eq!(
+                limits(&menu)
+                    .into_iter()
+                    .filter(|(_, c)| *c)
+                    .collect::<Vec<_>>(),
+                [(30, true)]
             );
             assert!(matches!(
                 fx.sidebar.update(Message::Header(HeaderAct::Refresh)),

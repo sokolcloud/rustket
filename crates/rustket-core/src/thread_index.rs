@@ -45,6 +45,29 @@ pub struct FollowedRoom {
     /// confirmed by the initial load, or the room had replies since): crawled
     /// again, shown until then.
     pub stale: bool,
+    /// The crawl stopped at a page while the room had more (`None`: the set
+    /// is complete up to [`FOLLOWED_PER_ROOM`]).
+    pub short: Option<ShortCrawl>,
+}
+
+/// A followed-set crawl that asked for `count` threads while the room had
+/// more; `kept` of them went into the set (hidden, deleted and unfollowed
+/// ones do not). Persisted with the set: a larger page later crawls again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ShortCrawl {
+    #[serde(default)]
+    pub count: u32,
+    #[serde(default)]
+    pub kept: u32,
+}
+
+/// A followed set from the offline cache.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoredFollowed {
+    pub rid: String,
+    pub tmids: BTreeSet<String>,
+    pub synced_activity: Option<RcDate>,
+    pub short: Option<ShortCrawl>,
 }
 
 /// A follow or unfollow seen live, re-applied over REST sets requested earlier.
@@ -78,6 +101,16 @@ pub struct ThreadIndex {
     /// Restored parents whose room had replies since the cache was written
     /// (listed again; shown until then).
     stale: HashSet<String>,
+}
+
+/// The user `me` is in the thread's `replies` (author, replied, mentioned or
+/// followed explicitly): `chat.getThreadsList(type=following)`.
+pub fn follows(m: &Message, me: Option<&str>) -> bool {
+    me.is_some_and(|me| {
+        m.replies
+            .as_ref()
+            .is_some_and(|r| r.iter().any(|u| u == me))
+    })
 }
 
 /// The parent's activity: last reply, else its own time.
@@ -158,6 +191,21 @@ impl ThreadIndex {
             .filter_map(|(t, at)| self.parents.get(t).map(|p| (p.rid.as_str(), *at)))
     }
 
+    /// Threads of a room's followed set that can show as rows: parent known,
+    /// in the room, not deleted.
+    pub fn followed_shown(&self, rid: &str) -> usize {
+        self.followed.get(rid).map_or(0, |f| {
+            f.tmids
+                .iter()
+                .filter(|t| {
+                    self.parents
+                        .get(*t)
+                        .is_some_and(|p| p.rid == rid && !is_removed(p))
+                })
+                .count()
+        })
+    }
+
     pub fn is_followed(&self, tmid: &str) -> bool {
         self.followed.values().any(|f| f.tmids.contains(tmid))
     }
@@ -217,7 +265,7 @@ impl ThreadIndex {
     pub(crate) fn restore(
         &mut self,
         parents: Vec<Message>,
-        followed: Vec<(String, BTreeSet<String>, Option<RcDate>)>,
+        followed: Vec<RestoredFollowed>,
         synced: impl Fn(&str) -> Option<RcDate>,
     ) -> bool {
         if !self.enabled() {
@@ -234,7 +282,13 @@ impl ThreadIndex {
         if self.mode != ThreadsMode::Following {
             return changed;
         }
-        for (rid, mut tmids, synced_activity) in followed {
+        for RestoredFollowed {
+            rid,
+            mut tmids,
+            synced_activity,
+            short,
+        } in followed
+        {
             if self.followed.contains_key(&rid) {
                 continue;
             }
@@ -246,6 +300,7 @@ impl ThreadIndex {
                     tmids,
                     synced_activity,
                     stale: true,
+                    short,
                 },
             );
             changed = true;
@@ -376,12 +431,14 @@ impl ThreadIndex {
 
     /// Replaces a room's followed set with a REST result requested at
     /// `started`, keeping follows and unfollows seen live since then.
+    /// `short`: the page size, when the room had more.
     pub(crate) fn set_followed(
         &mut self,
         rid: &str,
         tmids: BTreeSet<String>,
         synced_activity: Option<RcDate>,
         started: Instant,
+        short: Option<usize>,
     ) -> bool {
         if self.mode != ThreadsMode::Following {
             return false;
@@ -398,10 +455,15 @@ impl ThreadIndex {
         }
         set.retain(|t| !self.gone.contains(t));
         trim(&self.parents, &mut set);
+        let short = short.map(|count| ShortCrawl {
+            count: u32::try_from(count).unwrap_or(u32::MAX),
+            kept: u32::try_from(set.len()).unwrap_or(u32::MAX),
+        });
         let new = FollowedRoom {
             tmids: set,
             synced_activity,
             stale: false,
+            short,
         };
         if self.followed.get(rid) == Some(&new) {
             return false;
@@ -587,7 +649,7 @@ mod tests {
         // Before the request started: ignored.
         i.live_follow("r", "z", true, started - Duration::from_secs(1));
         let rest: BTreeSet<String> = ["a".into(), "c".into()].into();
-        assert!(i.set_followed("r", rest, Some(ts(5)), started));
+        assert!(i.set_followed("r", rest, Some(ts(5)), started, None));
         let f = i.followed("r").unwrap();
         assert_eq!(
             f.tmids.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -605,7 +667,7 @@ mod tests {
             i.put_parent(parent(&id, "r", 100 + n));
             set.insert(id);
         }
-        i.set_followed("r", set, None, Instant::now());
+        i.set_followed("r", set, None, Instant::now(), None);
         let f = i.followed("r").unwrap();
         assert_eq!(f.tmids.len(), FOLLOWED_PER_ROOM);
         assert!(!f.tmids.contains("t00") && f.tmids.contains("t24"));
@@ -620,7 +682,7 @@ mod tests {
             i.put_parent(parent(&id, "r", 100 + n));
             set.insert(id);
         }
-        i.set_followed("r", set, None, Instant::now());
+        i.set_followed("r", set, None, Instant::now(), None);
         // Stored first (as the workspace does), then followed: the newest wins.
         i.put_parent(parent("new", "r", 500));
         assert!(i.live_follow("r", "new", true, Instant::now()));
@@ -643,8 +705,8 @@ mod tests {
             set.insert(id);
         }
         let started = Instant::now();
-        assert!(i.set_followed("r", set.clone(), None, started));
-        assert!(!i.set_followed("r", set, None, started));
+        assert!(i.set_followed("r", set.clone(), None, started, None));
+        assert!(!i.set_followed("r", set, None, started, None));
     }
 
     #[test]
@@ -690,7 +752,7 @@ mod tests {
         for n in 0..=MAX_PARENTS {
             i.put_parent(parent(&format!("p{n}"), "r", n as i64 + 1));
         }
-        i.set_followed("r", ["p1".to_owned()].into(), None, Instant::now());
+        i.set_followed("r", ["p1".to_owned()].into(), None, Instant::now(), None);
         let mut referenced: HashSet<String> = ["p0".to_owned()].into();
         referenced.extend(i.followed_tmids().map(str::to_owned));
         assert!(i.needs_eviction());
@@ -706,7 +768,7 @@ mod tests {
     fn modes_drop_what_they_do_not_use() {
         let mut i = following();
         i.put_parent(parent("t", "r", 1));
-        i.set_followed("r", ["t".to_owned()].into(), None, Instant::now());
+        i.set_followed("r", ["t".to_owned()].into(), None, Instant::now(), None);
         i.set_kept([("k".to_owned(), "r".to_owned())].into());
         assert!(i.set_mode(ThreadsMode::UnreadKept));
         assert!(i.followed("r").is_none());

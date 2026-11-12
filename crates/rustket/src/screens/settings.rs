@@ -823,6 +823,14 @@ mod tests {
                 c.sidebar_threads == ThreadsMode::Following
             }),
             (
+                Message::Sidebar(SidebarMessage::Layout(LayoutEdit::SetThreadsLimit(50))),
+                |c| c.sidebar_threads_limit == 50,
+            ),
+            (
+                Message::Sidebar(SidebarMessage::Layout(LayoutEdit::SetThreadsLimit(0))),
+                |c| c.sidebar_threads_limit == 0,
+            ),
+            (
                 Message::Sidebar(SidebarMessage::Layout(LayoutEdit::Move {
                     id: SectionId::Builtin(SectionKind::Channels),
                     delta: -1,

@@ -38,6 +38,10 @@ pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 pub const IMAGE_CACHE_MB_RANGE: std::ops::RangeInclusive<u32> = 50..=20_000;
 /// Default of [`UiPrefs::image_cache_mb`].
 pub const DEFAULT_IMAGE_CACHE_MB: u32 = 500;
+/// Default of [`UiPrefs::sidebar_threads_limit`].
+pub const DEFAULT_SIDEBAR_THREADS_LIMIT: u32 = 20;
+/// Largest accepted [`UiPrefs::sidebar_threads_limit`] (0, no limit, is accepted too).
+pub const MAX_SIDEBAR_THREADS_LIMIT: u32 = 500;
 /// Largest accepted window width/height.
 const MAX_WINDOW_SIDE: u32 = 32_768;
 
@@ -338,6 +342,9 @@ pub struct UiPrefs {
     )]
     pub sidebar_section_prefs: BTreeMap<String, SectionPrefs>,
     pub sidebar_threads: ThreadsMode,
+    /// Most threads the sidebar's Threads section shows (and loads); 0 means
+    /// no limit. Clamped to [`MAX_SIDEBAR_THREADS_LIMIT`].
+    pub sidebar_threads_limit: u32,
 }
 
 impl Default for UiPrefs {
@@ -366,6 +373,7 @@ impl Default for UiPrefs {
             sidebar_groups: Vec::new(),
             sidebar_section_prefs: BTreeMap::new(),
             sidebar_threads: ThreadsMode::Off,
+            sidebar_threads_limit: DEFAULT_SIDEBAR_THREADS_LIMIT,
         }
     }
 }
@@ -461,6 +469,7 @@ const UI_KEYS: &[&str] = &[
     "sidebar_groups",
     "sidebar_section_prefs",
     "sidebar_threads",
+    "sidebar_threads_limit",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -660,6 +669,9 @@ impl AppConfig {
         }) {
             tracing::warn!("config: invalid window geometry ignored");
             self.window = None;
+        }
+        if self.ui.sidebar_threads_limit > MAX_SIDEBAR_THREADS_LIMIT {
+            self.ui.sidebar_threads_limit = MAX_SIDEBAR_THREADS_LIMIT;
         }
         crate::sidebar_layout::sanitize_prefs(&mut self.ui);
         for s in &mut self.servers {
@@ -1126,6 +1138,7 @@ mod tests {
             &mut c.ui,
             LayoutEdit::SetDefaultSort(SidebarSort::ActivityAsc),
         );
+        apply(&mut c.ui, LayoutEdit::SetThreadsLimit(50));
         c
     }
 
@@ -1137,6 +1150,7 @@ mod tests {
         let text = fs::read_to_string(dir.path().join(CONFIG_FILE)).unwrap();
         assert!(text.contains("sidebar_sort = \"activity_asc\""), "{text}");
         assert!(text.contains("sidebar_threads = \"unread_kept\""), "{text}");
+        assert!(text.contains("sidebar_threads_limit = 50"), "{text}");
         let loaded = AppConfig::load(dir.path()).unwrap();
         assert_eq!(loaded, c);
         assert_eq!(loaded.servers[0].kept_threads().count(), 1);
@@ -1222,6 +1236,39 @@ mod tests {
         assert!(text.contains("future_section"));
         let c = AppConfig::parse("[ui]\nsidebar_sort = \"activity_asc\"").unwrap();
         assert_eq!(c.ui.sidebar_sort, SidebarSort::ActivityAsc);
+    }
+
+    #[test]
+    fn sidebar_threads_limit_defaults_and_bounds() {
+        assert_eq!(
+            UiPrefs::default().sidebar_threads_limit,
+            DEFAULT_SIDEBAR_THREADS_LIMIT
+        );
+        let limit = |v: &str| {
+            AppConfig::parse(&format!(
+                "[ui]\nunread_on_top = true\nsidebar_threads_limit = {v}"
+            ))
+            .unwrap()
+            .ui
+        };
+        for (v, want) in [
+            ("0", 0),
+            ("7", 7),
+            ("9999", MAX_SIDEBAR_THREADS_LIMIT),
+            ("-3", DEFAULT_SIDEBAR_THREADS_LIMIT),
+            ("\"many\"", DEFAULT_SIDEBAR_THREADS_LIMIT),
+            ("1.5", DEFAULT_SIDEBAR_THREADS_LIMIT),
+        ] {
+            let ui = limit(v);
+            assert_eq!(ui.sidebar_threads_limit, want, "{v}");
+            assert!(ui.unread_on_top, "only that key falls back ({v})");
+        }
+        let c = AppConfig::parse("[ui]\nzoom = 1.0").unwrap();
+        assert_eq!(c.ui.sidebar_threads_limit, DEFAULT_SIDEBAR_THREADS_LIMIT);
+        let mut c = AppConfig::default();
+        c.ui.sidebar_threads_limit = 0;
+        let text = toml::to_string(&c).unwrap();
+        assert_eq!(AppConfig::parse(&text).unwrap().ui.sidebar_threads_limit, 0);
     }
 
     #[test]
