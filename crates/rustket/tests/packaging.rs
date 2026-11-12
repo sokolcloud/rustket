@@ -10,8 +10,11 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Reads a repo file with `\n` line endings (Windows checkouts get CRLF).
 fn read(rel: &str) -> String {
-    std::fs::read_to_string(root().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+    std::fs::read_to_string(root().join(rel))
+        .unwrap_or_else(|e| panic!("{rel}: {e}"))
+        .replace("\r\n", "\n")
 }
 
 #[test]
