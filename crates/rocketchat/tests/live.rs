@@ -540,6 +540,179 @@ async fn read_mark_keeps_unread_threads_unless_asked() {
     a.rooms_delete(&room.id).await.unwrap();
 }
 
+/// What the sidebar's Threads section relies on: `getThreadsList` by type,
+/// follow state in `replies`, `_updatedAt` bumped by every parent change,
+/// deleted parents kept as `t: "rm"`, and the bare not-found of `getMessage`.
+#[tokio::test]
+async fn sidebar_thread_sources() {
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let b = login(&s, "bob").await;
+    let me = a.user_id().unwrap();
+    let room = a
+        .channels_create(&CreateRoom {
+            members: vec!["bob".into()],
+            ..CreateRoom::new(unique("sidebar-threads"))
+        })
+        .await
+        .unwrap();
+    let parent = a
+        .send_message(&OutgoingMessage::new(&room.id, "sidebar parent"))
+        .await
+        .unwrap();
+    let before_reply = a.get_message(&parent.id).await.unwrap();
+    b.send_message(&OutgoingMessage::new(&room.id, "reply").in_thread(&parent.id, false))
+        .await
+        .unwrap();
+    let mut sub = a.subscriptions_get_one(&room.id).await.unwrap();
+    for _ in 0..20 {
+        if sub.tunread.iter().flatten().any(|t| t == &parent.id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        sub = a.subscriptions_get_one(&room.id).await.unwrap();
+    }
+    assert!(
+        sub.tunread.iter().flatten().any(|t| t == &parent.id),
+        "{sub:?}"
+    );
+    let ids = |p: &rocketchat::models::Paginated<rocketchat::models::Message>| {
+        p.items.iter().map(|m| m.id.clone()).collect::<Vec<_>>()
+    };
+
+    let unread = a
+        .threads_list(&room.id, Some("unread"), None, 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(ids(&unread), std::slice::from_ref(&parent.id));
+    let p = &unread.items[0];
+    assert_eq!(p.tcount, Some(1));
+    assert!(p.tlm.is_some());
+    let replies = p.replies.clone().unwrap_or_default();
+    assert!(replies.contains(&me), "the author follows: {replies:?}");
+    assert!(replies.contains(&b.user_id().unwrap()), "{replies:?}");
+    assert!(
+        p.updated_at > before_reply.updated_at,
+        "a reply bumps _updatedAt"
+    );
+    let following = a
+        .threads_list(&room.id, Some("following"), None, 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(ids(&following), std::slice::from_ref(&parent.id));
+
+    // Unfollow and follow: the parent's `replies` and `_updatedAt` change.
+    a.unfollow_message(&parent.id).await.unwrap();
+    let unfollowed = a.get_message(&parent.id).await.unwrap();
+    assert!(!unfollowed.replies.iter().flatten().any(|u| u == &me));
+    assert!(
+        unfollowed.updated_at > p.updated_at,
+        "unfollow bumps _updatedAt"
+    );
+    let following = a
+        .threads_list(&room.id, Some("following"), None, 0, 100)
+        .await
+        .unwrap();
+    assert!(following.items.is_empty(), "{:?}", ids(&following));
+    // Unfollowing also marks the thread read (`tunread` loses it).
+    let unread = a
+        .threads_list(&room.id, Some("unread"), None, 0, 100)
+        .await
+        .unwrap();
+    assert!(unread.items.is_empty(), "{:?}", ids(&unread));
+    let sub = a.subscriptions_get_one(&room.id).await.unwrap();
+    assert!(!sub.tunread.iter().flatten().any(|t| t == &parent.id));
+    a.follow_message(&parent.id).await.unwrap();
+    let followed = a.get_message(&parent.id).await.unwrap();
+    assert!(followed.replies.iter().flatten().any(|u| u == &me));
+    assert!(followed.updated_at > unfollowed.updated_at);
+    assert_eq!(
+        ids(&a
+            .threads_list(&room.id, Some("following"), None, 0, 100)
+            .await
+            .unwrap()),
+        std::slice::from_ref(&parent.id)
+    );
+
+    b.send_message(&OutgoingMessage::new(&room.id, "reply 2").in_thread(&parent.id, false))
+        .await
+        .unwrap();
+    let mut unread = Vec::new();
+    for _ in 0..20 {
+        unread = ids(&a
+            .threads_list(&room.id, Some("unread"), None, 0, 100)
+            .await
+            .unwrap());
+        if !unread.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(unread, std::slice::from_ref(&parent.id));
+    a.read_thread(&parent.id).await.unwrap();
+    let unread = a
+        .threads_list(&room.id, Some("unread"), None, 0, 100)
+        .await
+        .unwrap();
+    assert!(unread.items.is_empty(), "{:?}", ids(&unread));
+
+    // A deleted parent stays as `t: "rm"` (no delete event), still listed.
+    let before = a.get_message(&parent.id).await.unwrap();
+    a.delete_message(&room.id, &parent.id).await.unwrap();
+    let removed = a.get_message(&parent.id).await.unwrap();
+    assert_eq!(removed.t.as_deref(), Some("rm"));
+    assert!(
+        removed.updated_at > before.updated_at,
+        "deletion bumps _updatedAt"
+    );
+    assert!(removed.msg.is_empty(), "{removed:?}");
+    let all = a
+        .threads_list(&room.id, Some("following"), None, 0, 100)
+        .await
+        .unwrap();
+    assert!(
+        all.items
+            .iter()
+            .any(|m| m.id == parent.id && m.t.as_deref() == Some("rm")),
+        "{:?}",
+        all.items
+    );
+
+    // Not found: a bare `400 {"success":false}`, no error code.
+    let err = a.get_message("doesnotexist").await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Api {
+                status: 400,
+                error: None,
+                error_type: None,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    // A room the user is not in: `error-not-allowed`, not "not found".
+    let private = b
+        .groups_create(&CreateRoom::new(unique("sidebar-private")))
+        .await
+        .unwrap();
+    let hidden = b
+        .send_message(&OutgoingMessage::new(&private.id, "private"))
+        .await
+        .unwrap();
+    let err = a.get_message(&hidden.id).await.unwrap_err();
+    assert_eq!(err.api_error_code(), Some("error-not-allowed"), "{err:?}");
+    let err = a
+        .threads_list(&private.id, Some("unread"), None, 0, 100)
+        .await
+        .unwrap_err();
+    assert_eq!(err.api_error_code(), Some("error-not-allowed"), "{err:?}");
+
+    b.rooms_delete(&private.id).await.unwrap();
+    a.rooms_delete(&room.id).await.unwrap();
+}
+
 #[tokio::test]
 async fn history_pagination() {
     let Some(s) = server() else { return };

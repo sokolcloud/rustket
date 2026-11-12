@@ -35,7 +35,9 @@ use rustket_ui::widget::{BannerKind, empty_state, keyed_list, loading_placeholde
 use super::render::system;
 use super::{Action, Effect, UpdateCtx, ViewCtx};
 
-pub use actions::{Act, available as available_actions, channel_url, permalink};
+pub use actions::{
+    Act, available as available_actions, channel_url, keep_offer, kept_thread_of, permalink,
+};
 pub use interact::{Interactions, Msg as ItemMsg, Source};
 pub use viewer::{Viewer, ViewerMsg};
 

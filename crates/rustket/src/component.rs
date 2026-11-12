@@ -103,6 +103,9 @@ fn no_session() -> rocketchat::Error {
 pub enum Nav {
     /// App preferences (`screens/settings.rs`).
     Settings,
+    /// App preferences scrolled to the Sidebar card; `ungroup`: with that
+    /// sidebar group's deletion to confirm.
+    SidebarSettings { ungroup: Option<String> },
     /// Account of the active server (`screens/account.rs`).
     Account,
     /// Directory of the active server (`screens/directory.rs`).

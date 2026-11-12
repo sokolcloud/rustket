@@ -207,6 +207,13 @@ pub enum Effect {
     StartDiscussion {
         pmid: Option<String>,
     },
+    /// Keep thread `tmid` of room `rid` in the sidebar's Threads section or
+    /// remove it (a per-account list in the server's config entry).
+    KeepThread {
+        rid: String,
+        tmid: String,
+        keep: bool,
+    },
     /// Video call actions (start, join, call back, info): `crate::videoconf`.
     Call(crate::videoconf::CallAction),
     /// A request to the omnichannel part of the room (quick actions, panels);

@@ -714,3 +714,298 @@ impl CacheDb {
             .unwrap();
     }
 }
+
+// --- sidebar thread data ---------------------------------------------------------
+
+fn thread_parent(id: &str, rid: &str, tlm: i64) -> Message {
+    let mut m = msg(id, rid, 1000, "u2");
+    m.tcount = Some(1);
+    m.tlm = Some(ts(tlm));
+    m.replies = Some(vec!["u1".into()]);
+    m
+}
+
+fn threads_fixture() -> CachedThreads {
+    CachedThreads {
+        followed: vec![
+            CachedFollowed {
+                rid: "A".into(),
+                tmids: vec!["t1".into(), "t2".into()],
+                synced_activity: Some(ts(5000)),
+            },
+            CachedFollowed {
+                rid: "B".into(),
+                tmids: Vec::new(),
+                synced_activity: None,
+            },
+        ],
+        parents: vec![
+            thread_parent("t1", "A", 4000),
+            thread_parent("t2", "A", 3000),
+        ],
+        parents_synced: vec![CachedParentsSynced {
+            rid: "A".into(),
+            synced_activity: Some(ts(5000)),
+        }],
+    }
+}
+
+fn sorted(mut t: CachedThreads) -> CachedThreads {
+    t.followed.sort_by(|a, b| a.rid.cmp(&b.rid));
+    t.parents.sort_by(|a, b| a.id.cmp(&b.id));
+    t.parents_synced.sort_by(|a, b| a.rid.cmp(&b.rid));
+    t
+}
+
+#[test]
+fn thread_data_round_trip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    db.write(Batch {
+        threads: Some(threads_fixture()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(sorted(db.load_state().unwrap().threads), threads_fixture());
+    drop(db);
+    // Survives a restart; a full snapshot keeps it for rooms it still lists.
+    let mut db = open(tmp.path(), "u1");
+    assert_eq!(sorted(db.load_state().unwrap().threads), threads_fixture());
+    let mut with_b = threads_fixture();
+    with_b.parents.push(thread_parent("t5", "B", 100));
+    with_b.parents_synced.push(CachedParentsSynced {
+        rid: "B".into(),
+        synced_activity: Some(ts(100)),
+    });
+    db.write(Batch {
+        threads: Some(with_b.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(sorted(db.load_state().unwrap().threads), sorted(with_b));
+    db.write(Batch {
+        full: Some(Box::new(CachedState {
+            subscriptions: vec![sub("A", "a", RoomType::Channel)],
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
+    .unwrap();
+    let t = sorted(db.load_state().unwrap().threads);
+    let mut only_a = threads_fixture();
+    only_a.retain_rooms(|rid| rid == "A");
+    assert_eq!(only_a.followed.len(), 1);
+    assert_eq!(t, only_a, "B is no longer listed");
+    // A room that is gone takes its thread data along.
+    db.write(Batch {
+        rooms: vec![("A".into(), None, None)],
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(db.load_state().unwrap().threads.is_empty());
+    // A new set replaces the old one, writing only what changed; "clear"
+    // drops it.
+    db.write(Batch {
+        threads: Some(threads_fixture()),
+        ..Default::default()
+    })
+    .unwrap();
+    let before = db.conn_ref().total_changes();
+    db.write(Batch {
+        threads: Some(threads_fixture()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(db.conn_ref().total_changes(), before, "nothing changed");
+    let mut next = threads_fixture();
+    next.parents[0].tcount = Some(7);
+    db.write(Batch {
+        threads: Some(next),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(db.conn_ref().total_changes(), before + 1, "one parent");
+    db.write(Batch {
+        threads: Some(CachedThreads {
+            parents: vec![thread_parent("t9", "A", 1)],
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    let t = db.load_state().unwrap().threads;
+    assert!(t.followed.is_empty() && t.parents_synced.is_empty());
+    assert_eq!(t.parents.len(), 1);
+    db.clear().unwrap();
+    assert!(db.load_state().unwrap().threads.is_empty());
+}
+
+#[test]
+fn thread_parents_keep_no_e2e_plaintext() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    let mut p = decrypted("t1", "A", "top secret thread");
+    p.tcount = Some(2);
+    db.write(Batch {
+        threads: Some(CachedThreads {
+            parents: vec![p],
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    let raw: String = db
+        .conn_ref()
+        .query_row(
+            "SELECT json FROM docs WHERE kind = 'thread_parent'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!raw.contains("top secret"));
+}
+
+#[test]
+fn batches_merge_thread_data_and_full_snapshots() {
+    let mut a = Batch {
+        threads: Some(threads_fixture()),
+        ..Default::default()
+    };
+    a.merge(Batch {
+        full: Some(Box::new(CachedState {
+            subscriptions: vec![sub("B", "b", RoomType::Channel)],
+            ..Default::default()
+        })),
+        ..Default::default()
+    });
+    let t = a.threads.as_ref().unwrap();
+    assert_eq!(t.followed.len(), 1);
+    assert_eq!(t.followed[0].rid, "B");
+    assert!(t.parents.is_empty() && t.parents_synced.is_empty());
+    // A room that is gone in a later batch: its thread data of the
+    // earlier batch must not bring it back.
+    let mut a = Batch {
+        threads: Some(threads_fixture()),
+        ..Default::default()
+    };
+    a.merge(Batch {
+        rooms: vec![("A".into(), None, None)],
+        ..Default::default()
+    });
+    let t = a.threads.as_ref().unwrap();
+    assert_eq!(t.followed.len(), 1);
+    assert_eq!(t.followed[0].rid, "B");
+    assert!(t.parents.is_empty() && t.parents_synced.is_empty());
+    a.merge(Batch {
+        threads: Some(CachedThreads::default()),
+        ..Default::default()
+    });
+    assert_eq!(a.threads, Some(CachedThreads::default()));
+}
+
+/// A cached workspace in Following mode with thread data: A had a reply
+/// after its crawl (at 6000), B did not.
+fn cached_thread_workspace(mode: crate::sidebar_layout::ThreadsMode) -> Workspace {
+    let mut a = sub("A", "a", RoomType::Channel);
+    a.lr = Some(ts(5000));
+    a.tunread = Some(vec!["t2".into()]);
+    let mut b = sub("B", "b", RoomType::Channel);
+    b.lr = Some(ts(2000));
+    let mut ws = Workspace::new();
+    ws.set_thread_config(mode, []);
+    let mut threads = threads_fixture();
+    threads.followed[1].synced_activity = Some(ts(2000));
+    threads.followed.push(CachedFollowed {
+        rid: "LEFT".into(),
+        tmids: vec!["t3".into()],
+        synced_activity: None,
+    });
+    threads.parents.push(thread_parent("t3", "LEFT", 1));
+    assert!(ws.apply_cached(CachedState {
+        me: Some(me("u1", "alice")),
+        subscriptions: vec![a, b],
+        threads,
+        ..Default::default()
+    }));
+    ws
+}
+
+#[test]
+fn restored_thread_data_is_confirmed_by_the_initial_load() {
+    use crate::sidebar_layout::ThreadsMode;
+    let mut ws = cached_thread_workspace(ThreadsMode::Following);
+    let idx = ws.thread_index();
+    assert!(idx.parent("t1").is_some());
+    assert!(idx.parent("t3").is_none(), "rooms the account has not");
+    assert!(idx.followed("LEFT").is_none());
+    let a = idx.followed("A").unwrap();
+    assert!(a.stale, "not current until the initial load");
+    assert_eq!(a.tmids.len(), 2);
+    assert!(!idx.is_stale("t2"));
+
+    // The server: A had a reply at 6000 (in t2), B had none.
+    let mut a = sub("A", "a", RoomType::Channel);
+    a.lr = Some(ts(6000));
+    a.tunread = Some(vec!["t2".into()]);
+    let mut b = sub("B", "b", RoomType::Channel);
+    b.lr = Some(ts(2000));
+    ws.take_changes();
+    ws.apply_initial(crate::sync::InitialData {
+        me: me("u1", "alice"),
+        subscriptions: vec![a, b],
+        next_since: Some(ts(1)),
+        ..Default::default()
+    });
+    let idx = ws.thread_index();
+    assert!(idx.followed("A").unwrap().stale, "replies since its crawl");
+    assert!(!idx.followed("B").unwrap().stale);
+    assert!(idx.is_stale("t2") && idx.is_stale("t1"));
+    // A newer copy of a stale parent makes it current.
+    ws.apply_thread_parents(vec![thread_parent("t2", "A", 6000)]);
+    assert!(!ws.thread_index().is_stale("t2"));
+    // An identical copy too.
+    let t1 = ws.thread_index().parent("t1").unwrap().clone();
+    ws.apply_thread_parents(vec![t1]);
+    assert!(!ws.thread_index().is_stale("t1"));
+}
+
+#[test]
+fn restored_followed_sets_need_following_mode() {
+    use crate::sidebar_layout::ThreadsMode;
+    let ws = cached_thread_workspace(ThreadsMode::UnreadKept);
+    assert!(ws.thread_index().followed("A").is_none());
+    assert!(ws.thread_index().parent("t2").is_some());
+    let ws = cached_thread_workspace(ThreadsMode::Off);
+    assert!(ws.thread_index().is_empty());
+}
+
+#[test]
+fn restored_parents_are_current_up_to_their_mark() {
+    use crate::sidebar_layout::ThreadsMode;
+    // A's parents were written before a reply the cached subscription has
+    // (lr 5000): stale although the server's lr is the cached one.
+    let mut a = sub("A", "a", RoomType::Channel);
+    a.lr = Some(ts(5000));
+    let mut b = sub("B", "b", RoomType::Channel);
+    b.lr = Some(ts(2000));
+    let mut threads = threads_fixture();
+    threads.parents_synced[0].synced_activity = Some(ts(4500));
+    // B's parent has no mark: not known to be current.
+    threads.parents.push(thread_parent("t4", "B", 1500));
+    let mut ws = Workspace::new();
+    ws.set_thread_config(ThreadsMode::Unread, []);
+    assert!(ws.apply_cached(CachedState {
+        me: Some(me("u1", "alice")),
+        subscriptions: vec![a.clone(), b.clone()],
+        threads,
+        ..Default::default()
+    }));
+    ws.apply_initial(crate::sync::InitialData {
+        me: me("u1", "alice"),
+        subscriptions: vec![a, b],
+        next_since: Some(ts(1)),
+        ..Default::default()
+    });
+    let idx = ws.thread_index();
+    assert!(idx.is_stale("t1") && idx.is_stale("t2") && idx.is_stale("t4"));
+}

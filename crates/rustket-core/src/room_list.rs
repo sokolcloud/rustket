@@ -1,11 +1,13 @@
 //! Sidebar sections computed from a [`Workspace`]: grouping, sorting, display
 //! names, badges, previews and filtering. Pure; recompute when
-//! `Dirty::ROOMS | Dirty::SETTINGS | Dirty::PRESENCE | Dirty::DRAFTS` changed.
+//! `Dirty::ROOMS | Dirty::SETTINGS | Dirty::PRESENCE | Dirty::DRAFTS` changed
+//! (and `Dirty::THREAD_INDEX` while the Threads section is on).
 
 use rocketchat::RcDate;
 use rocketchat::models::{Message, RoomType, UserStatus};
 
 use crate::config::{SidebarSort, UiPrefs};
+use crate::sidebar_layout::{GroupType, Layout, SectionId, ThreadsMode};
 use crate::workspace::{RoomEntry, Workspace};
 
 /// Maximum preview length in characters.
@@ -13,7 +15,9 @@ pub const PREVIEW_MAX_CHARS: usize = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomListOptions {
-    pub sort: SidebarSort,
+    /// Section order, groups, per-section sorts (the global sort is
+    /// `layout.default_sort`).
+    pub layout: Layout,
     /// Split rooms into Teams, Discussions, Channels, Private groups, DMs;
     /// otherwise everything not in Unread/Favorites is one "Conversations" section.
     pub group_by_type: bool,
@@ -21,20 +25,30 @@ pub struct RoomListOptions {
     /// With `unread_on_top`: a room that stays in the Unread section after it
     /// was read (the open room, until another one is opened).
     pub kept_unread: Option<String>,
+    /// The open room kept only in the unread block of sections that list
+    /// unread rooms first: it had a counter or dot without counting as unread
+    /// (e.g. a mention in a room with hidden unread status), so it does not
+    /// go to the Unread section.
+    pub kept_unread_first: Option<String>,
     pub show_favorites: bool,
     /// Resolved: local override, else `UI_Use_Real_Name`.
     pub use_real_names: bool,
+    /// `(rid, tmid)` of the open thread, kept in the Threads section (and in
+    /// its unread block) after it was read, until another thread or room opens.
+    pub kept_thread: Option<(String, String)>,
 }
 
 impl RoomListOptions {
     pub fn from_prefs(prefs: &UiPrefs, ws: &Workspace) -> Self {
         Self {
-            sort: prefs.sidebar_sort,
+            layout: Layout::from_prefs(prefs),
             group_by_type: prefs.group_by_type,
             unread_on_top: prefs.unread_on_top,
             kept_unread: None,
+            kept_unread_first: None,
             show_favorites: true,
             use_real_names: ws.use_real_names(prefs.use_real_names),
+            kept_thread: None,
         }
     }
 }
@@ -42,12 +56,14 @@ impl RoomListOptions {
 impl Default for RoomListOptions {
     fn default() -> Self {
         Self {
-            sort: SidebarSort::Activity,
+            layout: Layout::default(),
             group_by_type: true,
             unread_on_top: false,
             kept_unread: None,
+            kept_unread_first: None,
             show_favorites: true,
             use_real_names: false,
+            kept_thread: None,
         }
     }
 }
@@ -56,6 +72,8 @@ impl Default for RoomListOptions {
 pub enum SectionKind {
     Unread,
     Favorites,
+    /// Unread, kept or followed threads (see `ThreadsMode`).
+    Threads,
     Teams,
     Discussions,
     Channels,
@@ -71,6 +89,7 @@ impl SectionKind {
         match self {
             Self::Unread => "sidebar.unread",
             Self::Favorites => "sidebar.favorites",
+            Self::Threads => "sidebar.threads",
             Self::Teams => "sidebar.teams",
             Self::Discussions => "sidebar.discussions",
             Self::Channels => "sidebar.channels",
@@ -184,10 +203,100 @@ pub struct RoomListItem {
     pub preview: Option<Preview>,
 }
 
+/// What a thread row shows as its title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadTitle {
+    /// Rocket.Chat's `makeThreadName`: the first line of the text, else the
+    /// first attachment's title or text, else the file name.
+    Text(String),
+    /// An end-to-end encrypted parent not decrypted (yet).
+    Encrypted,
+    /// A deleted parent (`t: "rm"`), listed while unread or kept.
+    Removed,
+    /// The parent is not loaded yet.
+    Loading,
+    /// The parent is not available (not found or hidden).
+    Unavailable,
+}
+
+impl ThreadTitle {
+    /// The i18n key of a title without text.
+    pub fn i18n_key(&self) -> Option<&'static str> {
+        match self {
+            Self::Text(_) => None,
+            Self::Encrypted => Some("preview.encrypted"),
+            Self::Removed => Some("sidebar.thread_removed"),
+            Self::Loading => Some("sidebar.thread_loading"),
+            Self::Unavailable => Some("sidebar.thread_unavailable"),
+        }
+    }
+
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// A row of the Threads section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadListItem {
+    pub rid: String,
+    pub tmid: String,
+    /// Display name of the thread's room.
+    pub room_name: String,
+    pub room_kind: RoomKind,
+    pub title: ThreadTitle,
+    /// Parent author's username.
+    pub author: Option<String>,
+    /// The parent author, else the room.
+    pub avatar: Avatar,
+    /// Last reply, else the parent's own time.
+    pub tlm: Option<RcDate>,
+    pub tcount: u64,
+    /// Unread replies: mention > group mention > plain ([`BadgeVariant::Thread`]).
+    pub unread: Option<BadgeVariant>,
+    /// Kept in the sidebar by the user.
+    pub kept: bool,
+    /// The user follows the thread (in the parent's `replies`).
+    pub following: bool,
+}
+
+impl ThreadListItem {
+    /// The parent is known (the row is not a placeholder).
+    pub fn is_loaded(&self) -> bool {
+        !matches!(self.title, ThreadTitle::Loading | ThreadTitle::Unavailable)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Section {
-    pub kind: SectionKind,
+    pub id: SectionId,
+    /// Group name; `None` for built-ins (title from the kind's i18n key).
+    pub title: Option<String>,
     pub items: Vec<RoomListItem>,
+    /// Thread rows (the Threads section only).
+    pub threads: Vec<ThreadListItem>,
+}
+
+impl Section {
+    pub fn kind(&self) -> Option<SectionKind> {
+        self.id.kind()
+    }
+
+    pub fn is(&self, k: SectionKind) -> bool {
+        self.id == SectionId::Builtin(k)
+    }
+
+    /// Number of rows (rooms and threads).
+    pub fn len(&self) -> usize {
+        self.items.len() + self.threads.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 fn other_participants(ws: &Workspace, e: &RoomEntry) -> Vec<String> {
@@ -465,36 +574,74 @@ fn matches_filter(ws: &Workspace, e: &RoomEntry, item: &RoomListItem, q: &str) -
             .any(hit)
 }
 
-fn section_for(e: &RoomEntry, item: &RoomListItem, opts: &RoomListOptions) -> SectionKind {
+/// The section a room is listed in: Unread, Favorites, Omnichannel, the group
+/// that claims its type, Conversations (not grouping by type), its type's
+/// section. Display order is `opts.layout.order`, independent of this.
+fn section_for(e: &RoomEntry, item: &RoomListItem, opts: &RoomListOptions) -> SectionId {
     if opts.unread_on_top
         && (is_unread(e) || opts.kept_unread.as_deref() == Some(item.rid.as_str()))
     {
-        return SectionKind::Unread;
+        return SectionKind::Unread.into();
     }
     if opts.show_favorites && item.favorite {
-        return SectionKind::Favorites;
+        return SectionKind::Favorites.into();
     }
-    if item.kind == RoomKind::Omnichannel {
-        return SectionKind::Omnichannel;
+    let Some(ty) = GroupType::of_room(item.kind) else {
+        return SectionKind::Omnichannel.into();
+    };
+    if let Some(g) = opts.layout.claimed_by(ty) {
+        return SectionId::group(g);
     }
     if !opts.group_by_type {
-        return SectionKind::Conversations;
+        return SectionKind::Conversations.into();
     }
-    match item.kind {
-        RoomKind::Team { .. } => SectionKind::Teams,
-        RoomKind::Discussion => SectionKind::Discussions,
-        RoomKind::Direct | RoomKind::GroupDirect => SectionKind::DirectMessages,
-        RoomKind::Private => SectionKind::PrivateGroups,
-        RoomKind::Channel => SectionKind::Channels,
-        RoomKind::Omnichannel => SectionKind::Omnichannel,
+    ty.section().into()
+}
+
+/// Ascending order with `None` after every `Some`.
+fn cmp_none_last<T: Ord>(a: &Option<T>, b: &Option<T>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.cmp(b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
     }
 }
 
-fn sort_items(items: &mut [RoomListItem], sort: SidebarSort) {
+/// Sorts by `sort`; with `unread_first` rows with a counter or dot (and the
+/// kept open room) come first.
+fn sort_items(
+    items: &mut [RoomListItem],
+    sort: SidebarSort,
+    unread_first: bool,
+    opts: &RoomListOptions,
+) {
+    sort_by_kind(items, sort);
+    if unread_first {
+        let kept = |rid: &str| {
+            opts.kept_unread.as_deref() == Some(rid)
+                || opts.kept_unread_first.as_deref() == Some(rid)
+        };
+        let read = |i: &RoomListItem| !(i.badge.count > 0 || i.badge.dot || kept(&i.rid));
+        // Stable: keeps the order of `sort` within both blocks.
+        items.sort_by_key(read);
+    }
+}
+
+fn sort_by_kind(items: &mut [RoomListItem], sort: SidebarSort) {
     match sort {
         SidebarSort::Activity => items.sort_by(|a, b| {
             b.last_activity
                 .cmp(&a.last_activity)
+                .then_with(|| {
+                    a.display_name
+                        .to_lowercase()
+                        .cmp(&b.display_name.to_lowercase())
+                })
+                .then_with(|| a.rid.cmp(&b.rid))
+        }),
+        SidebarSort::ActivityAsc => items.sort_by(|a, b| {
+            cmp_none_last(&a.last_activity, &b.last_activity)
                 .then_with(|| {
                     a.display_name
                         .to_lowercase()
@@ -511,13 +658,15 @@ fn sort_items(items: &mut [RoomListItem], sort: SidebarSort) {
     }
 }
 
-/// Sidebar sections. Rooms without a subscription, with `open == false` or
-/// archived are excluded (Rocket.Chat's `getRoomCategory`); `filter` is a case-insensitive substring over names, `fname`s and DM
-/// participants. Empty sections are omitted.
+/// Sidebar sections in `opts.layout.order`, then Omnichannel (rendered
+/// separately). Rooms without a subscription, with `open == false` or
+/// archived are excluded (Rocket.Chat's `getRoomCategory`); `filter` is a
+/// case-insensitive substring over names, `fname`s and DM participants. Each
+/// section is sorted by its own sort; empty sections are omitted, except the
+/// Threads section while it is on and nothing is filtered (see [`thread_rows`]).
 pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Section> {
     let q = filter.trim().to_lowercase();
-    let mut buckets: std::collections::BTreeMap<SectionKind, Vec<RoomListItem>> =
-        Default::default();
+    let mut buckets: std::collections::HashMap<SectionId, Vec<RoomListItem>> = Default::default();
     for e in ws.rooms().values() {
         let Some(sub) = e.sub.as_ref() else {
             continue;
@@ -534,13 +683,239 @@ pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Sect
             .or_default()
             .push(item);
     }
-    buckets
-        .into_iter()
-        .map(|(kind, mut items)| {
-            sort_items(&mut items, opts.sort);
-            Section { kind, items }
-        })
-        .collect()
+    let layout = &opts.layout;
+    let omni = SectionId::from(SectionKind::Omnichannel);
+    let mut out = Vec::new();
+    for id in layout.order.iter().chain([&omni]) {
+        if id == &SectionId::Builtin(SectionKind::Threads) {
+            if layout.threads != ThreadsMode::Off && ws.settings().threads_enabled() {
+                let threads = thread_rows(ws, opts, &q);
+                if !threads.is_empty() || q.is_empty() {
+                    out.push(Section {
+                        id: id.clone(),
+                        title: None,
+                        items: Vec::new(),
+                        threads,
+                    });
+                }
+            }
+            continue;
+        }
+        let Some(mut items) = buckets.remove(id).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        sort_items(
+            &mut items,
+            layout.sort_of(id),
+            layout.is_unread_first(id),
+            opts,
+        );
+        out.push(Section {
+            title: id
+                .group_id()
+                .and_then(|g| layout.group_name(g))
+                .map(str::to_owned),
+            id: id.clone(),
+            items,
+            threads: Vec::new(),
+        });
+    }
+    out
+}
+
+/// Rocket.Chat's `makeThreadName`, with E2E and deleted parents named.
+fn thread_title(m: &Message) -> ThreadTitle {
+    if crate::thread_index::is_removed(m) {
+        return ThreadTitle::Removed;
+    }
+    if m.is_encrypted() && !crate::e2e::shown::is_decrypted(m) {
+        return ThreadTitle::Encrypted;
+    }
+    let text = m.plain_text();
+    let first = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(truncate);
+    let att = || {
+        m.attachments
+            .as_ref()
+            .and_then(|a| a.first())
+            .and_then(|a| {
+                [&a.title, &a.text, &a.description]
+                    .into_iter()
+                    .flatten()
+                    .find(|t| !t.trim().is_empty())
+            })
+            .map(|t| truncate(t))
+    };
+    let file = || {
+        m.file
+            .as_ref()
+            .or(m.files.as_ref().and_then(|f| f.first()))
+            .map(|f| truncate(&f.name))
+    };
+    ThreadTitle::Text(first.or_else(att).or_else(file).unwrap_or_default())
+}
+
+/// Unread state of thread `tmid` in a room (`None`: read or hidden).
+/// Hidden unread status keeps only direct mentions (unless mention status is
+/// hidden too), like the room badge.
+pub fn thread_unread(s: &rocketchat::models::Subscription, tmid: &str) -> Option<BadgeVariant> {
+    let has = |v: &Option<Vec<String>>| v.as_ref().is_some_and(|v| v.iter().any(|t| t == tmid));
+    let hide_unread = s.hide_unread_status == Some(true);
+    let hide_mention = s.hide_mention_status == Some(true);
+    let mention = has(&s.tunread_user) && !hide_mention;
+    let group = has(&s.tunread_group) && !hide_mention;
+    let any = has(&s.tunread) || has(&s.tunread_user) || has(&s.tunread_group);
+    if mention {
+        Some(BadgeVariant::Mention)
+    } else if hide_unread || !any {
+        None
+    } else if group {
+        Some(BadgeVariant::GroupMention)
+    } else {
+        Some(BadgeVariant::Thread)
+    }
+}
+
+/// Rows of the Threads section (empty while it is off or threads are
+/// disabled on the server), by `opts.layout.threads`:
+/// - Unread: unread threads of listed rooms, plus the open thread
+///   (`opts.kept_thread`);
+/// - UnreadKept: also the threads kept in the sidebar;
+/// - Following: also the followed threads of crawled rooms.
+///
+/// Parents come from the thread index only; unknown ones give placeholder
+/// rows. Deleted parents are listed only while unread or kept. `q` (lower
+/// case) matches the room name and the title. Sorted by the section's sort,
+/// unread (and the open thread) first when the section lists unread first.
+pub fn thread_rows(ws: &Workspace, opts: &RoomListOptions, q: &str) -> Vec<ThreadListItem> {
+    let mode = opts.layout.threads;
+    if mode == ThreadsMode::Off || !ws.settings().threads_enabled() {
+        return Vec::new();
+    }
+    let idx = ws.thread_index();
+    let listed = |rid: &str| {
+        ws.room(rid)
+            .filter(|e| e.sub.as_ref().is_some_and(|s| s.open) && !e.is_archived())
+    };
+    let kept_open = opts.kept_thread.as_ref().map(|(_, t)| t.as_str());
+    let me = ws.user_id();
+    // tmid -> rid, deduplicated.
+    let mut wanted: std::collections::BTreeMap<&str, &str> = Default::default();
+    for e in ws.rooms().values() {
+        let Some(s) = e.sub.as_ref().filter(|_| listed(e.rid()).is_some()) else {
+            continue;
+        };
+        for v in [&s.tunread, &s.tunread_user, &s.tunread_group]
+            .into_iter()
+            .flatten()
+        {
+            for t in v {
+                if thread_unread(s, t).is_some() {
+                    wanted.insert(t, e.rid());
+                }
+            }
+        }
+    }
+    if let Some((rid, tmid)) = opts.kept_thread.as_ref() {
+        wanted.insert(tmid, rid);
+    }
+    if mode != ThreadsMode::Unread {
+        for (rid, tmid) in idx.kept() {
+            wanted.insert(tmid, rid);
+        }
+    }
+    if mode == ThreadsMode::Following {
+        for (rid, f) in idx.followed_rooms() {
+            for t in &f.tmids {
+                wanted.insert(t, rid);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (tmid, rid) in wanted {
+        let Some(e) = listed(rid) else {
+            continue;
+        };
+        let parent = idx.parent(tmid).filter(|p| p.rid == rid);
+        let unread = e.sub.as_ref().and_then(|s| thread_unread(s, tmid));
+        let kept = idx.is_kept(tmid) && mode != ThreadsMode::Unread;
+        if parent.is_some_and(crate::thread_index::is_removed)
+            && unread.is_none()
+            && !kept
+            && kept_open != Some(tmid)
+        {
+            continue;
+        }
+        let title = match parent {
+            Some(p) => thread_title(p),
+            None if idx.is_gone(tmid) => ThreadTitle::Unavailable,
+            None => ThreadTitle::Loading,
+        };
+        let room_name = display_name(ws, e, opts.use_real_names);
+        if !q.is_empty() {
+            let hit = |s: &str| s.to_lowercase().contains(q);
+            if !hit(&room_name) && !title.text().is_some_and(hit) {
+                continue;
+            }
+        }
+        let author = parent.and_then(|p| p.u.username.clone());
+        let avatar = match &author {
+            Some(u) => Avatar::User {
+                username: u.clone(),
+            },
+            None => Avatar::Room {
+                rid: rid.to_owned(),
+                etag: e.room.as_ref().and_then(|r| r.avatar_etag.clone()),
+            },
+        };
+        out.push(ThreadListItem {
+            rid: rid.to_owned(),
+            tmid: tmid.to_owned(),
+            room_name,
+            room_kind: kind_of(e),
+            title,
+            author,
+            avatar,
+            tlm: parent.and_then(crate::thread_index::activity),
+            tcount: parent.and_then(|p| p.tcount).unwrap_or(0),
+            unread,
+            kept,
+            following: me.is_some_and(|id| {
+                parent.is_some_and(|p| p.replies.iter().flatten().any(|u| u == id))
+            }),
+        });
+    }
+    sort_threads(&mut out, opts);
+    out
+}
+
+fn sort_threads(rows: &mut [ThreadListItem], opts: &RoomListOptions) {
+    let id = SectionId::Builtin(SectionKind::Threads);
+    match opts.layout.sort_of(&id) {
+        SidebarSort::Activity => {
+            rows.sort_by(|a, b| b.tlm.cmp(&a.tlm).then_with(|| a.tmid.cmp(&b.tmid)))
+        }
+        SidebarSort::ActivityAsc => {
+            rows.sort_by(|a, b| cmp_none_last(&a.tlm, &b.tlm).then_with(|| a.tmid.cmp(&b.tmid)))
+        }
+        SidebarSort::Alphabetical => rows.sort_by(|a, b| {
+            let title = |t: &ThreadListItem| t.title.text().map(str::to_lowercase);
+            a.room_name
+                .to_lowercase()
+                .cmp(&b.room_name.to_lowercase())
+                .then_with(|| a.rid.cmp(&b.rid))
+                .then_with(|| cmp_none_last(&title(a), &title(b)))
+                .then_with(|| a.tmid.cmp(&b.tmid))
+        }),
+    }
+    if opts.layout.is_unread_first(&id) {
+        let kept = opts.kept_thread.as_ref().map(|(_, t)| t.as_str());
+        // Stable: keeps the sort within both blocks.
+        rows.sort_by_key(|r| r.unread.is_none() && kept != Some(r.tmid.as_str()));
+    }
 }
 
 /// The list item of one room, whatever its sidebar visibility (hidden and
@@ -581,6 +956,7 @@ pub fn unread_totals(ws: &Workspace) -> (u64, u64) {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use crate::sidebar_layout::ThreadsMode;
     use crate::test_util::{fixture_workspace, me, msg, room, sub, ts};
     use crate::workspace::Change;
     use rocketchat::models::{FileInfo, Room, Subscription};
@@ -598,7 +974,18 @@ mod tests {
     }
 
     fn kinds(sections: &[Section]) -> Vec<SectionKind> {
-        sections.iter().map(|s| s.kind).collect()
+        sections.iter().map(|s| s.kind().unwrap()).collect()
+    }
+
+    fn layout(f: impl FnOnce(&mut UiPrefs)) -> Layout {
+        let mut p = UiPrefs::default();
+        f(&mut p);
+        crate::sidebar_layout::sanitize_prefs(&mut p);
+        Layout::from_prefs(&p)
+    }
+
+    fn sorted(sort: SidebarSort) -> Layout {
+        layout(|p| p.sidebar_sort = sort)
     }
 
     fn names(s: &Section) -> Vec<&str> {
@@ -689,12 +1076,23 @@ mod tests {
         let s = compute(
             &ws,
             &RoomListOptions {
-                sort: SidebarSort::Alphabetical,
+                layout: sorted(SidebarSort::Alphabetical),
                 ..Default::default()
             },
             "",
         );
         assert_eq!(names(&s[0]), ["alpha", "Beta", "charlie"]);
+        let mut ws = ws;
+        ws.apply_subscription(Change::Inserted, sub("n", "none", RoomType::Channel));
+        let s = compute(
+            &ws,
+            &RoomListOptions {
+                layout: sorted(SidebarSort::ActivityAsc),
+                ..Default::default()
+            },
+            "",
+        );
+        assert_eq!(names(&s[0]), ["alpha", "charlie", "Beta", "none"]);
     }
 
     #[test]
@@ -723,7 +1121,7 @@ mod tests {
             &ws,
             &RoomListOptions {
                 unread_on_top: true,
-                sort: SidebarSort::Alphabetical,
+                layout: sorted(SidebarSort::Alphabetical),
                 ..Default::default()
             },
             "",
@@ -1194,5 +1592,594 @@ mod tests {
         assert_eq!(general.badge.count, 1);
         assert_eq!(general.badge.variant, BadgeVariant::Mention);
         assert!(all.iter().any(|i| i.preview.is_some()));
+    }
+
+    fn ids(sections: &[Section]) -> Vec<String> {
+        sections.iter().map(|s| s.id.as_config_str()).collect()
+    }
+
+    fn add_group(p: &mut UiPrefs, name: &str, types: &[GroupType]) -> String {
+        use crate::sidebar_layout::{LayoutEdit, apply};
+        apply(
+            p,
+            LayoutEdit::AddGroup {
+                name: name.into(),
+                types: types.to_vec(),
+            },
+        );
+        p.sidebar_groups.last().unwrap().id.clone()
+    }
+
+    /// One room of every kind, plus a favourite channel and an omnichannel room.
+    fn mixed_ws() -> Workspace {
+        let mut team = room("t", "team", RoomType::Private);
+        team.team_main = Some(true);
+        let mut disc = room("di", "disc", RoomType::Private);
+        disc.prid = Some("c".into());
+        let mut fav = sub("f", "fav", RoomType::Channel);
+        fav.f = true;
+        ws_with(vec![
+            (sub("c", "chan", RoomType::Channel), None),
+            (sub("p", "priv", RoomType::Private), None),
+            (sub("d", "bob", RoomType::Direct), None),
+            (sub("t", "team", RoomType::Private), Some(team)),
+            (sub("di", "disc", RoomType::Private), Some(disc)),
+            (fav, None),
+            (sub("l", "visitor", RoomType::Livechat), None),
+        ])
+    }
+
+    const WORK: [GroupType; 4] = [
+        GroupType::Discussions,
+        GroupType::Channels,
+        GroupType::PrivateGroups,
+        GroupType::DirectMessages,
+    ];
+
+    #[test]
+    fn a_group_takes_the_rooms_of_its_types() {
+        let ws = mixed_ws();
+        let mut id = String::new();
+        let opts = RoomListOptions {
+            layout: layout(|p| id = add_group(p, "Work", &WORK)),
+            ..Default::default()
+        };
+        let s = compute(&ws, &opts, "");
+        let g = format!("group:{id}");
+        assert_eq!(ids(&s), ["favorites", "teams", &g, "omnichannel"]);
+        assert_eq!(s[2].title.as_deref(), Some("Work"));
+        assert_eq!(s[2].kind(), None);
+        assert_eq!(s[0].title, None);
+        let mut rids: Vec<&str> = s[2].items.iter().map(|i| i.rid.as_str()).collect();
+        rids.sort_unstable();
+        assert_eq!(rids, ["c", "d", "di", "p"]);
+        // The favourite channel stays in Favorites.
+        assert_eq!(s[0].items[0].rid, "f");
+        // An omnichannel room is never grouped.
+        assert_eq!(s[3].items[0].rid, "l");
+        assert!(s[3].is(SectionKind::Omnichannel));
+
+        // With unread on top an unread room and the kept open room go to
+        // Unread, not to the group that claims their type.
+        let mut ws = ws;
+        let mut c = sub("c", "chan", RoomType::Channel);
+        c.unread = 1;
+        ws.apply_subscription(Change::Updated, c);
+        let opts = RoomListOptions {
+            unread_on_top: true,
+            kept_unread: Some("d".into()),
+            ..opts
+        };
+        let s = compute(&ws, &opts, "");
+        assert_eq!(ids(&s), ["unread", "favorites", "teams", &g, "omnichannel"]);
+        let mut unread: Vec<&str> = s[0].items.iter().map(|i| i.rid.as_str()).collect();
+        unread.sort_unstable();
+        assert_eq!(unread, ["c", "d"]);
+        let mut rids: Vec<&str> = s[3].items.iter().map(|i| i.rid.as_str()).collect();
+        rids.sort_unstable();
+        assert_eq!(rids, ["di", "p"]);
+    }
+
+    #[test]
+    fn a_group_without_rooms_or_types_is_omitted() {
+        let ws = mixed_ws();
+        let opts = RoomListOptions {
+            layout: layout(|p| {
+                add_group(p, "Nothing", &[]);
+            }),
+            ..Default::default()
+        };
+        assert!(
+            compute(&ws, &opts, "")
+                .iter()
+                .all(|s| s.id.group_id().is_none())
+        );
+
+        // A group whose types have no rooms (no teams here).
+        let ws = ws_with(vec![(sub("c", "chan", RoomType::Channel), None)]);
+        let opts = RoomListOptions {
+            layout: layout(|p| {
+                add_group(p, "Teams", &[GroupType::Teams]);
+            }),
+            ..Default::default()
+        };
+        assert_eq!(ids(&compute(&ws, &opts, "")), ["channels"]);
+    }
+
+    #[test]
+    fn a_group_while_not_grouping_by_type() {
+        let ws = mixed_ws();
+        let mut id = String::new();
+        let opts = RoomListOptions {
+            layout: layout(|p| id = add_group(p, "People", &[GroupType::DirectMessages])),
+            group_by_type: false,
+            ..Default::default()
+        };
+        let s = compute(&ws, &opts, "");
+        let g = format!("group:{id}");
+        assert_eq!(ids(&s), ["favorites", &g, "conversations", "omnichannel"]);
+        assert_eq!(names(&s[1]), ["bob"]);
+        assert_eq!(s[2].len(), 4);
+    }
+
+    #[test]
+    fn sections_follow_the_custom_order() {
+        use crate::sidebar_layout::{LayoutEdit, apply};
+        let ws = mixed_ws();
+        let mut id = String::new();
+        let opts = RoomListOptions {
+            layout: layout(|p| {
+                id = add_group(p, "Rooms", &[GroupType::Channels, GroupType::PrivateGroups]);
+                apply(
+                    p,
+                    LayoutEdit::Move {
+                        id: SectionKind::DirectMessages.into(),
+                        delta: -100,
+                    },
+                );
+                apply(
+                    p,
+                    LayoutEdit::MoveTo {
+                        id: SectionKind::Favorites.into(),
+                        anchor: SectionId::group(&id),
+                        after: true,
+                    },
+                );
+            }),
+            ..Default::default()
+        };
+        let s = compute(&ws, &opts, "");
+        let g = format!("group:{id}");
+        assert_eq!(
+            ids(&s),
+            [
+                "direct_messages",
+                "teams",
+                "discussions",
+                &g,
+                "favorites",
+                "omnichannel"
+            ]
+        );
+    }
+
+    #[test]
+    fn per_section_sort() {
+        use crate::sidebar_layout::{LayoutEdit, apply};
+        let ws = ws_with(vec![
+            (
+                sub("a", "alpha", RoomType::Channel),
+                Some(with_lm(room("a", "alpha", RoomType::Channel), 1000)),
+            ),
+            (
+                sub("b", "Beta", RoomType::Channel),
+                Some(with_lm(room("b", "Beta", RoomType::Channel), 3000)),
+            ),
+            (sub("n", "none", RoomType::Channel), None),
+            (
+                sub("x", "xavier", RoomType::Direct),
+                Some(with_lm(room("x", "xavier", RoomType::Direct), 500)),
+            ),
+            (
+                sub("y", "yvonne", RoomType::Direct),
+                Some(with_lm(room("y", "yvonne", RoomType::Direct), 2500)),
+            ),
+        ]);
+        let set = |sort| {
+            layout(move |p| {
+                apply(
+                    p,
+                    LayoutEdit::SetSort {
+                        id: SectionKind::Channels.into(),
+                        sort: Some(sort),
+                    },
+                );
+            })
+        };
+        let opts = RoomListOptions {
+            layout: set(SidebarSort::ActivityAsc),
+            ..Default::default()
+        };
+        let s = compute(&ws, &opts, "");
+        assert_eq!(names(&s[0]), ["alpha", "Beta", "none"]);
+        // DMs keep the default (newest first).
+        assert_eq!(names(&s[1]), ["yvonne", "xavier"]);
+        let opts = RoomListOptions {
+            layout: set(SidebarSort::Alphabetical),
+            ..Default::default()
+        };
+        let s = compute(&ws, &opts, "");
+        assert_eq!(names(&s[0]), ["alpha", "Beta", "none"]);
+        assert_eq!(names(&s[1]), ["yvonne", "xavier"]);
+        let opts = RoomListOptions {
+            layout: set(SidebarSort::Activity),
+            ..Default::default()
+        };
+        assert_eq!(
+            names(&compute(&ws, &opts, "")[0]),
+            ["Beta", "alpha", "none"]
+        );
+    }
+
+    #[test]
+    fn unread_first_keeps_the_open_room_in_the_unread_block() {
+        use crate::sidebar_layout::{LayoutEdit, apply};
+        let mut u = sub("u", "unread", RoomType::Channel);
+        u.unread = 2;
+        let mut a = sub("a", "alert", RoomType::Channel);
+        a.alert = true;
+        let ws = ws_with(vec![
+            (
+                u,
+                Some(with_lm(room("u", "unread", RoomType::Channel), 1000)),
+            ),
+            (
+                a,
+                Some(with_lm(room("a", "alert", RoomType::Channel), 2000)),
+            ),
+            (
+                sub("k", "kept", RoomType::Channel),
+                Some(with_lm(room("k", "kept", RoomType::Channel), 500)),
+            ),
+            (
+                sub("r", "read", RoomType::Channel),
+                Some(with_lm(room("r", "read", RoomType::Channel), 3000)),
+            ),
+        ]);
+        let mut opts = RoomListOptions::default();
+        assert_eq!(
+            names(&compute(&ws, &opts, "")[0]),
+            ["read", "alert", "unread", "kept"]
+        );
+        opts.layout = layout(|p| {
+            apply(
+                p,
+                LayoutEdit::SetUnreadFirst {
+                    id: SectionKind::Channels.into(),
+                    on: Some(true),
+                },
+            );
+        });
+        assert_eq!(
+            names(&compute(&ws, &opts, "")[0]),
+            ["alert", "unread", "read", "kept"]
+        );
+        // The open room (read meanwhile) stays with the unread ones.
+        opts.kept_unread = Some("k".into());
+        assert_eq!(
+            names(&compute(&ws, &opts, "")[0]),
+            ["alert", "unread", "kept", "read"]
+        );
+    }
+
+    // --- Threads section ----------------------------------------------------------
+
+    fn parent(id: &str, rid: &str, tlm: i64, author: &str) -> Message {
+        let mut m = msg(id, rid, 1, author);
+        m.tcount = Some(2);
+        m.tlm = Some(ts(tlm));
+        m.replies = Some(vec![author.into()]);
+        m
+    }
+
+    fn thread_opts(mode: ThreadsMode) -> RoomListOptions {
+        RoomListOptions {
+            layout: layout(|p| p.sidebar_threads = mode),
+            ..Default::default()
+        }
+    }
+
+    fn tmids(rows: &[ThreadListItem]) -> Vec<&str> {
+        rows.iter().map(|r| r.tmid.as_str()).collect()
+    }
+
+    /// Room "a" with unread threads t1 (plain), t2 (mention), t3 (group
+    /// mention); room "b" without; parents of t1 and t2 known.
+    fn threads_ws(mode: ThreadsMode) -> Workspace {
+        let mut a = sub("a", "alpha", RoomType::Channel);
+        a.tunread = Some(vec!["t1".into(), "t2".into(), "t3".into()]);
+        a.tunread_user = Some(vec!["t2".into()]);
+        a.tunread_group = Some(vec!["t3".into()]);
+        let mut ws = ws_with(vec![(a, None), (sub("b", "beta", RoomType::Channel), None)]);
+        ws.set_thread_config(mode, []);
+        ws.apply_thread_parents(vec![
+            parent("t1", "a", 300, "bob"),
+            parent("t2", "a", 100, "carol"),
+        ]);
+        ws
+    }
+
+    #[test]
+    fn unread_threads_with_their_variants() {
+        let ws = threads_ws(ThreadsMode::Unread);
+        let opts = thread_opts(ThreadsMode::Unread);
+        let s = compute(&ws, &opts, "");
+        assert_eq!(ids(&s), ["threads", "channels"]);
+        let rows = &s[0].threads;
+        assert_eq!(s[0].len(), 3);
+        // Unread first is on by default; newest reply first; t3 is a placeholder.
+        assert_eq!(tmids(rows), ["t1", "t2", "t3"]);
+        let by = |t: &str| rows.iter().find(|r| r.tmid == t).unwrap();
+        assert_eq!(by("t1").unread, Some(BadgeVariant::Thread));
+        assert_eq!(by("t2").unread, Some(BadgeVariant::Mention));
+        assert_eq!(by("t3").unread, Some(BadgeVariant::GroupMention));
+        let t1 = by("t1");
+        assert_eq!(t1.title, ThreadTitle::Text("text t1".into()));
+        assert_eq!((t1.room_name.as_str(), t1.tcount), ("alpha", 2));
+        assert_eq!(t1.tlm, Some(ts(300)));
+        assert_eq!(
+            t1.avatar,
+            Avatar::User {
+                username: "bob".into()
+            }
+        );
+        assert!(t1.is_loaded() && !t1.kept);
+        let t3 = by("t3");
+        assert_eq!((t3.title.clone(), t3.tlm), (ThreadTitle::Loading, None));
+        assert!(matches!(t3.avatar, Avatar::Room { .. }));
+        assert!(!t3.is_loaded());
+        // Off (the default) and disabled threads: no section.
+        assert_eq!(
+            ids(&compute(&ws, &RoomListOptions::default(), "")),
+            ["channels"]
+        );
+        let mut off = ws.clone();
+        off.apply_setting(
+            Change::Updated,
+            rocketchat::models::Setting {
+                id: "Threads_enabled".into(),
+                value: serde_json::json!(false),
+                ..Default::default()
+            },
+        );
+        assert_eq!(ids(&compute(&off, &opts, "")), ["channels"]);
+        assert!(thread_rows(&off, &opts, "").is_empty());
+    }
+
+    #[test]
+    fn hidden_unread_and_mention_status() {
+        let mut ws = threads_ws(ThreadsMode::Unread);
+        let opts = thread_opts(ThreadsMode::Unread);
+        let mut a = ws.subscription("a").unwrap().clone();
+        a.hide_unread_status = Some(true);
+        ws.apply_subscription(Change::Updated, a.clone());
+        // Only the direct mention stays.
+        let rows = thread_rows(&ws, &opts, "");
+        assert_eq!(tmids(&rows), ["t2"]);
+        assert_eq!(rows[0].unread, Some(BadgeVariant::Mention));
+        a.hide_mention_status = Some(true);
+        ws.apply_subscription(Change::Updated, a.clone());
+        assert!(thread_rows(&ws, &opts, "").is_empty());
+        // Mention status hidden alone: listed as plain unread threads.
+        a.hide_unread_status = None;
+        ws.apply_subscription(Change::Updated, a);
+        let rows = thread_rows(&ws, &opts, "");
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|r| r.unread == Some(BadgeVariant::Thread)));
+    }
+
+    /// Followed: the user is among the parent's `replies`.
+    #[test]
+    fn thread_rows_know_whether_the_user_follows() {
+        let mut ws = threads_ws(ThreadsMode::Unread);
+        ws.apply_thread_parents(vec![parent("t3", "a", 50, "me")]);
+        let rows = thread_rows(&ws, &thread_opts(ThreadsMode::Unread), "");
+        let by = |t: &str| rows.iter().find(|r| r.tmid == t).unwrap();
+        assert!(by("t3").following);
+        assert!(!by("t1").following);
+    }
+
+    #[test]
+    fn the_open_thread_stays_listed_once_read() {
+        let mut ws = threads_ws(ThreadsMode::Unread);
+        let mut opts = thread_opts(ThreadsMode::Unread);
+        let mut a = ws.subscription("a").unwrap().clone();
+        a.tunread = Some(vec!["t2".into(), "t3".into()]);
+        ws.apply_subscription(Change::Updated, a);
+        assert_eq!(tmids(&thread_rows(&ws, &opts, "")), ["t2", "t3"]);
+        opts.kept_thread = Some(("a".into(), "t1".into()));
+        let rows = thread_rows(&ws, &opts, "");
+        // Read, but kept in the unread block (above the older t2).
+        assert_eq!(tmids(&rows), ["t1", "t2", "t3"]);
+        assert_eq!(rows[0].unread, None);
+        // Not in a listed room: not shown.
+        opts.kept_thread = Some(("gone".into(), "x".into()));
+        assert_eq!(thread_rows(&ws, &opts, "").len(), 2);
+    }
+
+    #[test]
+    fn kept_threads_in_subscribed_rooms_only() {
+        let mut ws = threads_ws(ThreadsMode::UnreadKept);
+        let opts = thread_opts(ThreadsMode::UnreadKept);
+        ws.set_thread_config(
+            ThreadsMode::UnreadKept,
+            [("b", "k1"), ("left", "k2"), ("a", "t1")],
+        );
+        ws.apply_thread_parents(vec![parent("k1", "b", 50, "bob")]);
+        let rows = thread_rows(&ws, &opts, "");
+        assert_eq!(tmids(&rows), ["t1", "t2", "t3", "k1"]);
+        assert!(rows[0].kept && rows[3].kept && !rows[1].kept);
+        assert_eq!(rows[3].unread, None);
+        // Unread mode ignores kept threads.
+        assert_eq!(
+            tmids(&thread_rows(&ws, &thread_opts(ThreadsMode::Unread), "")),
+            ["t1", "t2", "t3"]
+        );
+        assert!(ws.thread_index().kept_enabled());
+    }
+
+    #[test]
+    fn following_lists_the_followed_sets() {
+        let mut ws = threads_ws(ThreadsMode::Following);
+        let opts = thread_opts(ThreadsMode::Following);
+        ws.apply_followed(
+            "b",
+            vec![parent("f1", "b", 500, "me"), parent("f2", "b", 50, "bob")],
+            None,
+            std::time::Instant::now(),
+        );
+        // f2 does not list "me" in its replies: not followed.
+        let rows = thread_rows(&ws, &opts, "");
+        assert_eq!(tmids(&rows), ["t1", "t2", "t3", "f1"]);
+        // Unread first off: by latest reply only.
+        let mut opts = opts;
+        opts.layout = layout(|p| {
+            p.sidebar_threads = ThreadsMode::Following;
+            crate::sidebar_layout::apply(
+                p,
+                crate::sidebar_layout::LayoutEdit::SetUnreadFirst {
+                    id: SectionKind::Threads.into(),
+                    on: Some(false),
+                },
+            );
+        });
+        assert_eq!(
+            tmids(&thread_rows(&ws, &opts, "")),
+            ["f1", "t1", "t2", "t3"]
+        );
+    }
+
+    #[test]
+    fn thread_sorts_and_filter() {
+        let ws = threads_ws(ThreadsMode::Unread);
+        let with = |sort| {
+            let mut o = thread_opts(ThreadsMode::Unread);
+            o.layout = layout(|p| {
+                p.sidebar_threads = ThreadsMode::Unread;
+                crate::sidebar_layout::apply(
+                    p,
+                    crate::sidebar_layout::LayoutEdit::SetSort {
+                        id: SectionKind::Threads.into(),
+                        sort: Some(sort),
+                    },
+                );
+            });
+            o
+        };
+        // Oldest reply first, unknown activity last.
+        assert_eq!(
+            tmids(&thread_rows(&ws, &with(SidebarSort::ActivityAsc), "")),
+            ["t2", "t1", "t3"]
+        );
+        // By room, then title (placeholders last).
+        let mut ws2 = ws.clone();
+        let mut t2 = parent("t2", "a", 100, "carol");
+        t2.msg = "Another topic\nsecond line".into();
+        t2.updated_at = Some(ts(2));
+        ws2.apply_thread_parents(vec![t2]);
+        let rows = thread_rows(&ws2, &with(SidebarSort::Alphabetical), "");
+        assert_eq!(tmids(&rows), ["t2", "t1", "t3"]);
+        assert_eq!(rows[0].title, ThreadTitle::Text("Another topic".into()));
+        // The filter matches titles and room names.
+        let opts = thread_opts(ThreadsMode::Unread);
+        assert_eq!(tmids(&thread_rows(&ws2, &opts, "another")), ["t2"]);
+        assert_eq!(thread_rows(&ws2, &opts, "alph").len(), 3);
+        // A filter without hits drops the section; no filter keeps it empty.
+        assert_eq!(ids(&compute(&ws2, &opts, "beta")), ["channels"]);
+        let empty = ws_with(vec![(sub("c", "chan", RoomType::Channel), None)]);
+        let s = compute(&empty, &opts, "");
+        assert_eq!(ids(&s), ["threads", "channels"]);
+        assert!(s[0].is_empty());
+    }
+
+    #[test]
+    fn titles_of_encrypted_removed_and_gone_parents() {
+        let mut ws = threads_ws(ThreadsMode::UnreadKept);
+        ws.set_thread_config(ThreadsMode::UnreadKept, [("b", "k")]);
+        let opts = thread_opts(ThreadsMode::UnreadKept);
+        let mut e = parent("t1", "a", 300, "bob");
+        e.t = Some("e2e".into());
+        e.msg = "Y2lwaGVydGV4dA==".into();
+        e.updated_at = Some(ts(5));
+        let mut rm = parent("t2", "a", 100, "carol");
+        rm.t = Some("rm".into());
+        rm.msg = String::new();
+        rm.updated_at = Some(ts(5));
+        ws.apply_message(e);
+        ws.apply_message(rm);
+        ws.thread_gone("k");
+        let rows = thread_rows(&ws, &opts, "");
+        let by = |t: &str| rows.iter().find(|r| r.tmid == t).unwrap().title.clone();
+        assert_eq!(by("t1"), ThreadTitle::Encrypted);
+        assert_eq!(by("t2"), ThreadTitle::Removed);
+        assert_eq!(by("k"), ThreadTitle::Unavailable);
+        assert_eq!(by("t3"), ThreadTitle::Loading);
+        assert_eq!(
+            ThreadTitle::Removed.i18n_key(),
+            Some("sidebar.thread_removed")
+        );
+        // Once read, a removed parent is no longer listed.
+        let mut a = ws.subscription("a").unwrap().clone();
+        a.tunread = Some(vec!["t1".into()]);
+        a.tunread_user = None;
+        a.tunread_group = None;
+        ws.apply_subscription(Change::Updated, a);
+        assert_eq!(tmids(&thread_rows(&ws, &opts, "")), ["t1", "k"]);
+    }
+
+    #[test]
+    fn thread_titles_follow_make_thread_name() {
+        use rocketchat::models::MessageAttachment;
+        let mut m = msg("p", "r", 1, "bob");
+        m.msg = "\n  first line \nsecond".into();
+        assert_eq!(thread_title(&m), ThreadTitle::Text("first line".into()));
+        m.msg = String::new();
+        m.attachments = Some(vec![MessageAttachment {
+            title: Some("Report".into()),
+            ..Default::default()
+        }]);
+        assert_eq!(thread_title(&m), ThreadTitle::Text("Report".into()));
+        m.attachments = None;
+        m.file = Some(FileInfo {
+            id: "1".into(),
+            name: "cat.png".into(),
+            ..Default::default()
+        });
+        assert_eq!(thread_title(&m), ThreadTitle::Text("cat.png".into()));
+    }
+
+    #[test]
+    fn default_layout_keeps_the_old_order() {
+        let mut u = sub("u", "unread", RoomType::Channel);
+        u.unread = 1;
+        let mut ws = mixed_ws();
+        ws.apply_subscription(Change::Inserted, u);
+        let opts = RoomListOptions {
+            unread_on_top: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            ids(&compute(&ws, &opts, "")),
+            [
+                "unread",
+                "favorites",
+                "teams",
+                "discussions",
+                "channels",
+                "private_groups",
+                "direct_messages",
+                "omnichannel"
+            ]
+        );
     }
 }

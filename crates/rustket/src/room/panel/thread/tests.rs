@@ -240,6 +240,34 @@ fn parent_is_fetched_when_unknown_and_deletion_closes() {
     ));
 }
 
+/// Review: a parent copy from the sidebar's thread index (possibly restored
+/// from the offline cache and out of date) is shown but fetched again; one
+/// from the room timeline is current.
+#[test]
+fn index_parent_is_shown_but_fetched_again() {
+    let mut env = Env::new(None);
+    env.ws
+        .set_thread_config(rustket_core::config::ThreadsMode::UnreadKept, [("R1", "P")]);
+    env.ws.apply_thread_parents(vec![parent(1)]);
+    assert!(env.ws.thread_index().parent("P").is_some());
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    assert!(t.parent.is_some(), "the index copy is shown meanwhile");
+    assert!(t.parent_loading, "and fetched again");
+    let mut edited = parent(1);
+    edited.msg = "edited".into();
+    edited.updated_at = RcDate::from_millis(T0 + 10);
+    let _ = t.update(Msg::Parent(Ok(Box::new(edited))), &mut env.ctx());
+    assert_eq!(t.parent.as_ref().unwrap().message.msg, "edited");
+    t.on_close(&mut env.ws);
+    // The room timeline holds it: not fetched.
+    env.ws.apply_message(parent(1));
+    assert!(env.ws.timeline("R1").unwrap().get("P").is_some());
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    assert!(t.parent.is_some() && !t.parent_loading);
+}
+
 #[test]
 fn sending_uses_tshow_and_the_default_unchecks() {
     let mut env = Env::new(None);
@@ -887,4 +915,61 @@ fn hidden_thread_is_not_read_by_its_first_page() {
     t.set_visible(true);
     let _ = t.mark_read(&env.ctx());
     assert!(t.reading, "read once shown");
+}
+
+#[test]
+fn keep_toggle_keeps_or_removes_the_thread() {
+    use rustket_core::config::ThreadsMode;
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    let mut t = Thread::new("R1", "P");
+    // Only offered while the sidebar lists kept threads.
+    let a = t.update(Msg::ToggleKeep, &mut env.ctx());
+    assert!(a.effects.is_empty());
+    env.ws.set_thread_config(ThreadsMode::UnreadKept, []);
+    let a = t.update(Msg::ToggleKeep, &mut env.ctx());
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::KeepThread { rid, tmid, keep: true }] if rid == "R1" && tmid == "P"
+    ));
+    env.ws
+        .set_thread_config(ThreadsMode::UnreadKept, [("R1", "P")]);
+    let a = t.update(Msg::ToggleKeep, &mut env.ctx());
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::KeepThread { keep: false, .. }]
+    ));
+}
+
+/// Review: the header offered Keep in a previewed (unsubscribed) room, where
+/// a kept thread is never listed; it now matches the message menu.
+#[test]
+fn keep_toggle_needs_a_subscription_unless_already_kept() {
+    use rustket_core::config::ThreadsMode;
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(1));
+    env.ws.set_thread_config(ThreadsMode::UnreadKept, []);
+    let t = Thread::new("R1", "P");
+    let subscribed = t.header_actions(&view_ctx(&env)).len();
+    let sub = env.ws.subscription("R1").unwrap().clone();
+    env.ws
+        .apply_subscription(rustket_core::workspace::Change::Removed, sub);
+    assert!(env.ws.subscription("R1").is_none());
+    let mut t = Thread::new("R1", "P");
+    assert_eq!(
+        t.header_actions(&view_ctx(&env)).len(),
+        subscribed - 1,
+        "no keep button"
+    );
+    let a = t.update(Msg::ToggleKeep, &mut env.ctx());
+    assert!(a.effects.is_empty(), "no keep effect");
+    // A thread kept earlier can still be removed.
+    env.ws
+        .set_thread_config(ThreadsMode::UnreadKept, [("R1", "P")]);
+    assert_eq!(t.header_actions(&view_ctx(&env)).len(), subscribed);
+    let a = t.update(Msg::ToggleKeep, &mut env.ctx());
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::KeepThread { keep: false, .. }]
+    ));
 }

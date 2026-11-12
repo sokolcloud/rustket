@@ -3,6 +3,7 @@
 pub mod rail;
 pub mod sidebar;
 pub mod status_menu;
+pub mod threads;
 pub mod titlebar;
 
 use std::collections::HashMap;
@@ -35,6 +36,8 @@ pub struct ServerState {
     pub status_menu: status_menu::StatusMenu,
     /// Omnichannel state and loads (`crate::omnichannel`).
     pub omni: crate::omnichannel::Omni,
+    /// Loader of the sidebar's Threads section.
+    pub threads: threads::SidebarThreads,
     /// Open room views (currently only the active one is kept open).
     pub rooms: HashMap<String, RoomView>,
     pub active_room: Option<String>,
@@ -91,6 +94,7 @@ impl ServerState {
             sidebar: sidebar::Sidebar::default(),
             status_menu: status_menu::StatusMenu::new(),
             omni: crate::omnichannel::Omni::default(),
+            threads: threads::SidebarThreads::default(),
             rooms: HashMap::new(),
             active_room: None,
             syncing: false,
@@ -142,6 +146,7 @@ impl ServerState {
         self.uikit = crate::uikit::Local::default();
         self.sidebar = sidebar::Sidebar::default();
         self.omni.reset(&self.id);
+        self.threads.reset();
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;

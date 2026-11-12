@@ -18,7 +18,7 @@ use rocketchat::rest::{LoginRequest, LoginResult};
 use rocketchat::{Credentials, RestClient, ServerUrl};
 use rust_i18n::t;
 use rustket_core::config::{
-    AppConfig, PinnedCertificate, ServerEntry, Theme as ThemePref, TokenKind,
+    AppConfig, PinnedCertificate, SectionId, ServerEntry, Theme as ThemePref, TokenKind,
 };
 use rustket_core::room_list;
 use rustket_core::secrets::{
@@ -681,6 +681,38 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// A result of the sidebar Threads loader; drops kept threads whose
+    /// parent no longer exists from the config.
+    fn on_threads(
+        &mut self,
+        sid: ServerId,
+        epoch: u64,
+        m: crate::workspace::threads::Msg,
+    ) -> Task<Message> {
+        let Some(s) = self.servers.get_mut(&sid) else {
+            return Task::none();
+        };
+        if !s.is_current(epoch) {
+            return Task::none();
+        }
+        let mut save = false;
+        for out in s.threads.update(m, &mut s.workspace, Instant::now()) {
+            match out {
+                crate::workspace::threads::Out::Unkeep { rid, tmid } => {
+                    tracing::debug!(%rid, %tmid, "kept thread not found: removed");
+                    if let Some(e) = self.config.server_mut(&sid) {
+                        save |= e.set_thread_kept(&rid, &tmid, false);
+                    }
+                }
+            }
+        }
+        if save {
+            self.save_config()
+        } else {
+            Task::none()
+        }
+    }
+
     /// Applies pending workspace changes to derived views and fetches wanted images.
     fn after_update(&mut self) -> Task<Message> {
         let mut tasks = vec![self.sync_room_visibility()];
@@ -702,8 +734,45 @@ impl App {
                 .server(&sid)
                 .and_then(|e| e.last_room.as_deref());
             tasks.push(crate::cache::after_update(s, &self.offline, last_room));
-            s.sidebar
-                .track_active(&s.workspace, s.active_room.as_deref(), &self.config.ui);
+            // Sidebar Threads: mode and kept threads from the config, loads.
+            let mode = self.config.ui.sidebar_threads;
+            let kept = self
+                .config
+                .server(&sid)
+                .into_iter()
+                .flat_map(|e| e.kept_threads().map(|k| (k.rid.as_str(), k.tmid.as_str())));
+            s.workspace.set_thread_config(mode, kept);
+            let threads_collapsed = self.ui_state.collapsed_sections.contains(
+                SectionId::Builtin(room_list::SectionKind::Threads)
+                    .collapse_key()
+                    .as_ref(),
+            );
+            let task = s.threads.tick(
+                &s.workspace,
+                s.session.as_ref(),
+                mode,
+                threads_collapsed,
+                Instant::now(),
+            );
+            let (tsid, epoch) = (sid.clone(), s.generation);
+            tasks.push(task.map(move |m| Message::Threads(tsid.clone(), epoch, m)));
+            // Shown while it runs and the section is expanded.
+            let progress = s
+                .threads
+                .progress()
+                .filter(|_| !threads_collapsed && !s.workspace.from_cache());
+            s.sidebar.set_thread_progress(progress);
+            let active_thread = s
+                .active_room
+                .as_ref()
+                .and_then(|r| s.rooms.get(r))
+                .and_then(|rv| rv.panel.thread_tmid());
+            s.sidebar.track_active(
+                &s.workspace,
+                s.active_room.as_deref(),
+                active_thread,
+                &self.config.ui,
+            );
             s.sidebar.refresh(
                 &s.workspace,
                 &self.config.ui,
@@ -921,6 +990,7 @@ impl App {
                 Task::batch([omni, self.on_server_event(sid, ev)])
             }
             Message::Omni(sid, epoch, m) => self.on_omni(sid, epoch, m),
+            Message::Threads(sid, epoch, m) => self.on_threads(sid, epoch, m),
             Message::InitialLoaded(sid, epoch, r) => self.on_initial_loaded(sid, epoch, r),
             Message::Resynced(sid, epoch, delta, rooms) => {
                 self.on_resynced(sid, epoch, delta, rooms)
@@ -1111,6 +1181,19 @@ impl App {
                         t!("app.mark_unread_failed"),
                         e.user_text(),
                     )
+                }
+            },
+            Message::SidebarThreadDone(sid, call, r) => match r {
+                // The subscription and parent updates bring the change.
+                Ok(()) => Task::none(),
+                Err(e) => {
+                    tracing::warn!(server = %sid, ?call, error = %e, "thread call failed");
+                    let title = match call {
+                        sidebar::ThreadCall::MarkRead => t!("sidebar.thread_read_failed"),
+                        sidebar::ThreadCall::MarkRoomRead => t!("sidebar.room_read_failed"),
+                        sidebar::ThreadCall::Unfollow => t!("sidebar.thread_unfollow_failed"),
+                    };
+                    self.toast(BannerKind::Error, title, e.user_text())
                 }
             },
             Message::Modal(m) => self.on_modal(m),
@@ -1645,6 +1728,55 @@ impl App {
             sidebar::Out::Create => self.navigate(component::Nav::CreateRoom(
                 crate::dialogs::create_room::Kind::Channel,
             )),
+            sidebar::Out::OpenThread { rid, tmid } => self.go(crate::message::Go::Room {
+                sid,
+                rid,
+                tmid: Some(tmid),
+            }),
+            sidebar::Out::KeepThread { rid, tmid, keep } => {
+                self.keep_thread(&sid, &rid, &tmid, keep)
+            }
+            sidebar::Out::ThreadCall { rid, tmid, call } => {
+                let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        match call {
+                            sidebar::ThreadCall::MarkRead => rest.read_thread(&tmid).await,
+                            sidebar::ThreadCall::MarkRoomRead => {
+                                rest.subscriptions_read_with(&rid, true).await
+                            }
+                            sidebar::ThreadCall::Unfollow => rest.unfollow_message(&tmid).await,
+                        }
+                        .map_err(Failure::from)
+                    },
+                    move |r| Message::SidebarThreadDone(sid.clone(), call, r),
+                )
+            }
+            sidebar::Out::Layout(e) => {
+                let applied = rustket_core::sidebar_layout::apply(&mut self.config.ui, e);
+                let mut changed = applied.changed;
+                for key in &applied.dropped_collapse_keys {
+                    changed |= self.ui_state.collapsed_sections.remove(key);
+                }
+                if changed {
+                    self.save_config()
+                } else {
+                    Task::none()
+                }
+            }
+            sidebar::Out::RefreshThreads => {
+                s.threads.refresh(&s.workspace);
+                Task::none()
+            }
+            sidebar::Out::OpenSettings { ungroup } => {
+                self.navigate(component::Nav::SidebarSettings { ungroup })
+            }
+            sidebar::Out::ScrollBy(dy) => iced::widget::operation::scroll_by(
+                sidebar::LIST_ID,
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
+            ),
         }
     }
 
@@ -1819,6 +1951,9 @@ impl App {
                     },
                 ),
                 room::Effect::StartDiscussion { pmid } => self.start_discussion(sid, rid, pmid),
+                room::Effect::KeepThread { rid, tmid, keep } => {
+                    self.keep_thread(sid, &rid, &tmid, keep)
+                }
                 room::Effect::E2e(req) => self.on_e2e_room(sid, req),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
@@ -1828,6 +1963,21 @@ impl App {
             });
         }
         Task::batch(tasks)
+    }
+
+    /// "Keep in sidebar" / "Remove from sidebar": edits the server's kept
+    /// threads (deduped and capped) and saves only on a change; the next
+    /// `after_update` mirrors the list into the workspace.
+    fn keep_thread(&mut self, sid: &ServerId, rid: &str, tmid: &str, keep: bool) -> Task<Message> {
+        let changed = self
+            .config
+            .server_mut(sid)
+            .is_some_and(|e| e.set_thread_kept(rid, tmid, keep));
+        if changed {
+            self.save_config()
+        } else {
+            Task::none()
+        }
     }
 
     /// "Mark unread": leaves the room first (like the web client), so the
@@ -1985,6 +2135,9 @@ impl App {
                     Task::batch([self.initial_load(&sid), boot])
                 }
                 Followup::Resync { reconnected } => {
+                    // Events were dropped (or the link was down): the Threads
+                    // loader re-checks rooms with replies once the delta is in.
+                    s.threads.note_missed_live(&s.workspace);
                     let sync = self.resync(&sid);
                     let rooms = if reconnected {
                         let boot = self.uikit_bootstrap(&sid);
@@ -2047,6 +2200,7 @@ impl App {
             return Task::none();
         };
         s.syncing = true;
+        s.threads.sync_started(&s.workspace);
         let sid = sid.clone();
         let epoch = s.generation;
         Task::perform(
@@ -2077,6 +2231,7 @@ impl App {
             return Task::none();
         };
         s.syncing = true;
+        s.threads.sync_started(&s.workspace);
         let rooms: Vec<(String, rocketchat::RcDate)> = s
             .rooms
             .keys()

@@ -27,6 +27,10 @@ pub enum Act {
     StartDiscussion,
     Follow,
     Unfollow,
+    /// Keep the thread listed in the sidebar's Threads section (local, not
+    /// the server-side pin).
+    KeepInSidebar,
+    RemoveFromSidebar,
     Report,
     Delete,
 }
@@ -48,6 +52,8 @@ impl Act {
             Act::StartDiscussion => Icon::MessagesSquare,
             Act::Follow => Icon::Bell,
             Act::Unfollow => Icon::BellOff,
+            Act::KeepInSidebar => Icon::Bookmark,
+            Act::RemoveFromSidebar => Icon::BookmarkX,
             Act::Report => Icon::Flag,
             Act::Delete => Icon::Trash2,
         }
@@ -69,6 +75,8 @@ impl Act {
             Act::StartDiscussion => "room_timeline.act_start_discussion",
             Act::Follow => "room_timeline.act_follow",
             Act::Unfollow => "room_timeline.act_unfollow",
+            Act::KeepInSidebar => "sidebar.keep_thread",
+            Act::RemoveFromSidebar => "sidebar.unkeep_thread",
             Act::Report => "room_timeline.act_report",
             Act::Delete => "room_timeline.act_delete",
         };
@@ -152,6 +160,13 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
             Act::Follow
         });
     }
+    if let Some(kept) = kept_thread_of(m).and_then(|tmid| keep_offer(ws, rid, tmid)) {
+        v.push(if kept {
+            Act::RemoveFromSidebar
+        } else {
+            Act::KeepInSidebar
+        });
+    }
     if subscribed && !own && me.is_some() && !omnichannel {
         v.push(Act::Report);
     }
@@ -159,6 +174,39 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
         v.push(Act::Delete);
     }
     v
+}
+
+/// Whether threads of room `rid` can be kept in the sidebar: threads on,
+/// a sidebar Threads mode that lists kept threads, a signed-in user and no
+/// omnichannel room.
+pub fn can_keep_threads(ws: &Workspace, rid: &str) -> bool {
+    ws.settings().threads_enabled()
+        && ws.thread_index().kept_enabled()
+        && ws.user_id().is_some()
+        && !ws
+            .room(rid)
+            .is_some_and(|e| e.room_type() == RoomType::Livechat)
+}
+
+/// Whether thread `tmid` of room `rid` gets a keep/remove toggle, and if
+/// so whether it is kept now. Keeping needs a subscription (kept threads
+/// are listed only for subscribed rooms); an already kept thread can always
+/// be removed.
+pub fn keep_offer(ws: &Workspace, rid: &str, tmid: &str) -> Option<bool> {
+    if !can_keep_threads(ws, rid) {
+        return None;
+    }
+    let kept = ws.thread_index().is_kept(tmid);
+    (kept || ws.subscription(rid).is_some()).then_some(kept)
+}
+
+/// The thread "Keep in sidebar" acts on for `m`: its thread for a reply,
+/// itself for a parent with replies.
+pub fn kept_thread_of(m: &Message) -> Option<&str> {
+    match m.tmid.as_deref() {
+        Some(tmid) => Some(tmid),
+        None => m.tcount.is_some_and(|c| c > 0).then_some(m.id.as_str()),
+    }
 }
 
 /// Menu entries for `acts`, with a separator before the destructive group.
@@ -440,6 +488,86 @@ mod tests {
         let mut reply = own.clone();
         reply.tmid = Some("p".into());
         assert!(!available(&w, &reply, now()).contains(&Act::StartDiscussion));
+    }
+
+    #[test]
+    fn keep_in_sidebar_needs_a_mode_that_keeps_threads() {
+        use rustket_core::config::ThreadsMode;
+        use serde_json::json;
+        let threads = |on: bool, t: RoomType| ws(&[], &[("Threads_enabled", json!(on))], t);
+        let mut parent = msg("p", "bob");
+        parent.tcount = Some(1);
+        let mut reply = msg("a", "bob");
+        reply.tmid = Some("p".into());
+        let has = |w: &Workspace, m: &Message, a: Act| available(w, m, now()).contains(&a);
+
+        // Mode Off or Unread: never offered.
+        let mut w = threads(true, RoomType::Channel);
+        assert!(!has(&w, &parent, Act::KeepInSidebar));
+        w.set_thread_config(ThreadsMode::Unread, []);
+        assert!(!has(&w, &parent, Act::KeepInSidebar));
+        // Unread + kept: on parents with replies and on replies, not on plain
+        // messages.
+        w.set_thread_config(ThreadsMode::UnreadKept, []);
+        assert!(has(&w, &parent, Act::KeepInSidebar));
+        assert!(has(&w, &reply, Act::KeepInSidebar));
+        assert!(!has(&w, &msg("x", "bob"), Act::KeepInSidebar));
+        assert_eq!(kept_thread_of(&reply), Some("p"));
+        assert_eq!(kept_thread_of(&parent), Some("p"));
+        assert_eq!(kept_thread_of(&msg("x", "bob")), None);
+        // Kept (also through a reply): remove instead.
+        w.set_thread_config(ThreadsMode::Following, [("r1", "p")]);
+        assert!(has(&w, &parent, Act::RemoveFromSidebar));
+        assert!(has(&w, &reply, Act::RemoveFromSidebar));
+        assert!(!has(&w, &reply, Act::KeepInSidebar));
+        // Not subscribed (preview): no Keep, but a kept thread can be removed.
+        let mut other = parent.clone();
+        other.rid = "r2".into();
+        w.set_thread_config(ThreadsMode::UnreadKept, []);
+        assert!(!has(&w, &other, Act::KeepInSidebar));
+        assert_eq!(keep_offer(&w, "r2", "p"), None);
+        w.set_thread_config(ThreadsMode::UnreadKept, [("r2", "p")]);
+        assert!(has(&w, &other, Act::RemoveFromSidebar));
+        assert_eq!(keep_offer(&w, "r2", "p"), Some(true));
+        // Threads off on the server, or an omnichannel room: never offered.
+        let mut w = threads(false, RoomType::Channel);
+        w.set_thread_config(ThreadsMode::UnreadKept, []);
+        assert!(!has(&w, &parent, Act::KeepInSidebar));
+        let mut w = threads(true, RoomType::Livechat);
+        w.set_thread_config(ThreadsMode::UnreadKept, []);
+        assert!(!has(&w, &parent, Act::KeepInSidebar));
+        // Labels are this feature's own, distinct from the server pin.
+        assert!(matches!(Act::KeepInSidebar.icon(), Icon::Bookmark));
+        assert!(matches!(Act::RemoveFromSidebar.icon(), Icon::BookmarkX));
+        assert_ne!(Act::KeepInSidebar.label(), Act::Pin.label());
+    }
+
+    /// Review: timeline rows are `lazy`; their key must change with the
+    /// keep/remove entry of the context menu.
+    #[test]
+    fn row_key_follows_the_keep_entry() {
+        use crate::room::timeline::list::keep_key;
+        use rustket_core::config::ThreadsMode;
+        let mut w = ws(
+            &[],
+            &[("Threads_enabled", serde_json::json!(true))],
+            RoomType::Channel,
+        );
+        let mut reply = msg("a", "bob");
+        reply.tmid = Some("p".into());
+        let entries = |w: &Workspace| available(w, &reply, now());
+        assert_eq!(keep_key(&w, &reply), 0);
+        assert!(!entries(&w).contains(&Act::KeepInSidebar));
+        w.set_thread_config(ThreadsMode::UnreadKept, []);
+        assert_eq!(keep_key(&w, &reply), 1);
+        assert!(entries(&w).contains(&Act::KeepInSidebar));
+        w.set_thread_config(ThreadsMode::UnreadKept, [("r1", "p")]);
+        assert_eq!(keep_key(&w, &reply), 2);
+        assert!(entries(&w).contains(&Act::RemoveFromSidebar));
+        // Unrelated messages keep their key.
+        assert_eq!(keep_key(&w, &msg("x", "bob")), 0);
+        w.set_thread_config(ThreadsMode::Off, []);
+        assert_eq!(keep_key(&w, &reply), 0);
     }
 
     #[test]

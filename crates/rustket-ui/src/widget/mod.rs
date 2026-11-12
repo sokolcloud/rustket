@@ -19,6 +19,7 @@ mod misc;
 mod overlay;
 mod popover;
 mod presence;
+mod reorder;
 pub mod selectable;
 mod side_panel;
 mod sidebar;
@@ -61,10 +62,11 @@ pub use misc::{
 pub use overlay::{TOAST_WIDTH, Toast, dialog, modal, modal_keyed, toasts, toasts_with};
 pub use popover::{Placement, popover};
 pub use presence::{Presence, presence_dot};
+pub use reorder::{ReorderArea, ReorderHandle, reorder_area};
 pub use side_panel::{MIN_MAIN_WIDTH, MIN_SIDE_WIDTH, side_panel};
 pub use sidebar::{
     Density, RailIcon, RoomListItemProps, add_server_button, room_list_item, section_header,
-    workspace_rail_item,
+    section_header_with, workspace_rail_item,
 };
 pub use spinner::{empty_state, loading_placeholder, spinner, spinner_colored};
 pub use split::{HANDLE_WIDTH, split};

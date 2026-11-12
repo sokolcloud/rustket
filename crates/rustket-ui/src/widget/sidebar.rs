@@ -48,6 +48,9 @@ pub struct RoomListItemProps<Message> {
     pub typing: bool,
     pub typing_label: String,
     pub density: Density,
+    /// A dot of this kind instead of the counters, and a bold title (thread
+    /// rows: unread replies, a mention, without a count).
+    pub badge_dot: Option<BadgeKind>,
     pub on_press: Message,
 }
 
@@ -69,11 +72,15 @@ impl<Message> RoomListItemProps<Message> {
             typing: false,
             typing_label: String::new(),
             density: Density::Extended,
+            badge_dot: None,
             on_press,
         }
     }
 
     pub fn badge_kind(&self) -> Option<BadgeKind> {
+        if self.badge_dot.is_some() {
+            return self.badge_dot;
+        }
         BadgeKind::for_room(
             self.user_mentions,
             self.group_mentions,
@@ -86,7 +93,9 @@ impl<Message> RoomListItemProps<Message> {
 
 fn room_badge<'a, Message: 'a>(p: &RoomListItemProps<Message>) -> Option<Element<'a, Message>> {
     let kind = p.badge_kind()?;
-    let count = if p.unread > 0 {
+    let count = if p.badge_dot.is_some() {
+        0
+    } else if p.unread > 0 {
         p.unread
     } else {
         p.user_mentions.max(p.group_mentions)
@@ -102,7 +111,7 @@ fn room_badge<'a, Message: 'a>(p: &RoomListItemProps<Message>) -> Option<Element
 pub fn room_list_item<'a, Message: Clone + 'a>(
     p: RoomListItemProps<Message>,
 ) -> Element<'a, Message> {
-    let bold = p.unread > 0 || p.user_mentions > 0 || p.group_mentions > 0;
+    let bold = p.unread > 0 || p.user_mentions > 0 || p.group_mentions > 0 || p.badge_dot.is_some();
     let dim = p.is_muted && !bold;
     let condensed = p.density == Density::Condensed;
     let avatar_size = if condensed { 20.0 } else { 36.0 };
@@ -214,6 +223,18 @@ pub fn section_header<'a, Message: Clone + 'a>(
     count: Option<u32>,
     on_toggle: Message,
 ) -> Element<'a, Message> {
+    section_header_with(title, collapsed, count, None, on_toggle)
+}
+
+/// [`section_header`] with a trailing status (e.g. a loading indicator) at
+/// its right end.
+pub fn section_header_with<'a, Message: Clone + 'a>(
+    title: impl Into<String>,
+    collapsed: bool,
+    count: Option<u32>,
+    status: Option<Element<'a, Message>>,
+    on_toggle: Message,
+) -> Element<'a, Message> {
     let mut content = row![
         icon::sized(
             if collapsed {
@@ -236,6 +257,9 @@ pub fn section_header<'a, Message: Clone + 'a>(
                 .size(TEXT_MICRO + 1.0)
                 .style(style::text_hint),
         );
+    }
+    if let Some(status) = status {
+        content = content.push(space().width(Length::Fill)).push(status);
     }
     let header = button(content)
         .width(Length::Fill)

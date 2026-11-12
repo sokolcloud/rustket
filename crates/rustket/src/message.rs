@@ -100,6 +100,8 @@ pub enum Message {
     Calls(crate::videoconf::Message),
     /// Omnichannel controller message: server, session epoch, message.
     Omni(ServerId, u64, crate::omnichannel::Message),
+    /// Sidebar Threads loader message: server, session epoch, message.
+    Threads(ServerId, u64, crate::workspace::threads::Msg),
     /// Ctrl+K.
     OpenQuickSwitcher,
     /// Tab / Shift+Tab that no widget handled (modal dialogs cycle their own
@@ -152,6 +154,8 @@ pub enum Message {
     LoggedOut(ServerId, Result<(), String>),
     /// `subscriptions.unread` finished (the room was left before).
     MarkedUnread(ServerId, Res<()>),
+    /// A thread row's server call (mark read, unfollow) finished.
+    SidebarThreadDone(ServerId, crate::workspace::sidebar::ThreadCall, Res<()>),
     /// Current handler, whether it is Rustket, and the executable check
     /// (warnings to confirm, or why registration is refused).
     HandlerQueried(Option<String>, bool, Result<Vec<String>, String>),

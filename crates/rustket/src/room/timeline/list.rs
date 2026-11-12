@@ -243,6 +243,8 @@ struct RowKey {
     ignored: bool,
     /// Thread-parent excerpt of a `tshow` reply (`row::thread_parent_excerpt`).
     thread_parent: u64,
+    /// Keep-in-sidebar entry of the context menu: 0 none, 1 keep, 2 remove.
+    keep: u8,
 }
 
 impl Hash for RowKey {
@@ -263,7 +265,16 @@ impl Hash for RowKey {
         self.today.hash(h);
         self.ignored.hash(h);
         self.thread_parent.hash(h);
+        self.keep.hash(h);
     }
+}
+
+/// `RowKey::keep` of `m`: the context menu's keep/remove entry depends on
+/// the thread index, which no view-wide revision covers.
+pub(super) fn keep_key(ws: &Workspace, m: &RcMessage) -> u8 {
+    super::actions::kept_thread_of(m)
+        .and_then(|tmid| super::actions::keep_offer(ws, &m.rid, tmid))
+        .map_or(0, |kept| if kept { 2 } else { 1 })
 }
 
 /// `RenderState` toggle index of "show the ignored message" (the toggles
@@ -321,6 +332,7 @@ pub(crate) fn row<'a>(
             s.hash(&mut h);
             h.finish() | 1
         }),
+        keep: keep_key(env.ws, m),
     };
     let unread_before = r.unread_before;
     let now = common.now;

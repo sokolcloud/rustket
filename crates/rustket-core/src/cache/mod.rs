@@ -6,8 +6,9 @@
 //! public settings, permissions, roles, the current user (without services
 //! or E2E keys), subscriptions and rooms, custom emoji and statuses, the
 //! newest [`MESSAGES_PER_TIMELINE`] messages of recently opened rooms and
-//! threads (least recently used ones are evicted beyond a total size), and
-//! the persistent outbox (pending text messages with their client ids).
+//! threads (least recently used ones are evicted beyond a total size), the
+//! sidebar's thread data ([`CachedThreads`]) and the persistent outbox
+//! (pending text messages with their client ids).
 //!
 //! Tokens and secrets never go here (they stay in the secret store).
 //! End-to-end encrypted messages are stored as the server sent them
@@ -29,6 +30,7 @@ mod tests;
 
 use std::path::{Path, PathBuf};
 
+use rocketchat::RcDate;
 use rocketchat::models::{
     CustomEmoji, CustomUserStatus, Message, Permission, Role, Room, ServerInfo, Setting,
     Subscription, User,
@@ -135,6 +137,55 @@ pub struct CachedState {
     pub custom_statuses: Vec<CustomUserStatus>,
     /// When the state was last written (Unix ms).
     pub saved_at: Option<i64>,
+    /// The sidebar's thread data.
+    pub threads: CachedThreads,
+}
+
+/// What the sidebar's Threads section had loaded: followed sets of crawled
+/// rooms and the thread parents the section refers to. A restart crawls
+/// again only rooms with replies after `synced_activity`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CachedThreads {
+    pub followed: Vec<CachedFollowed>,
+    pub parents: Vec<Message>,
+    /// Per room with parents: up to which `lr` they are current. Parents of
+    /// a room without one are not known to be current.
+    pub parents_synced: Vec<CachedParentsSynced>,
+}
+
+impl CachedThreads {
+    pub fn is_empty(&self) -> bool {
+        self.followed.is_empty() && self.parents.is_empty() && self.parents_synced.is_empty()
+    }
+
+    /// Drops what belongs to rooms `keep` rejects.
+    pub fn retain_rooms(&mut self, keep: impl Fn(&str) -> bool) {
+        self.followed.retain(|f| keep(&f.rid));
+        self.parents.retain(|m| keep(&m.rid));
+        self.parents_synced.retain(|p| keep(&p.rid));
+    }
+}
+
+/// The thread parents of a room, current up to the room's `lr` of
+/// `synced_activity`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CachedParentsSynced {
+    #[serde(default)]
+    pub rid: String,
+    #[serde(default)]
+    pub synced_activity: Option<RcDate>,
+}
+
+/// A room's followed threads, current up to the room's `lr` of
+/// `synced_activity`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CachedFollowed {
+    #[serde(default)]
+    pub rid: String,
+    #[serde(default)]
+    pub tmids: Vec<String>,
+    #[serde(default)]
+    pub synced_activity: Option<RcDate>,
 }
 
 impl CachedState {
@@ -173,7 +224,8 @@ pub struct OutboxEntry {
 #[derive(Debug, Clone, Default)]
 pub struct Batch {
     /// Replaces every document (an initial load): rooms not in it are
-    /// forgotten together with their messages.
+    /// forgotten together with their messages and thread data. Its
+    /// `threads` are not written (see [`Self::threads`]).
     pub full: Option<Box<CachedState>>,
     pub me: Option<User>,
     pub server_info: Option<ServerInfo>,
@@ -191,6 +243,8 @@ pub struct Batch {
     pub outbox: Option<Vec<OutboxEntry>>,
     /// Names of uploads interrupted by quitting (reported on the next start).
     pub interrupted_uploads: Option<Vec<String>>,
+    /// Replaces the sidebar's thread data.
+    pub threads: Option<CachedThreads>,
 }
 
 impl Batch {
@@ -207,6 +261,7 @@ impl Batch {
             && self.timelines.is_empty()
             && self.outbox.is_none()
             && self.interrupted_uploads.is_none()
+            && self.threads.is_none()
     }
 
     /// Folds a later batch into this one (later values win).
@@ -231,6 +286,9 @@ impl Batch {
                     .collect();
                 self.timelines
                     .retain(|t| listed.contains(t.key.rid.as_str()));
+                if let Some(t) = self.threads.as_mut() {
+                    t.retain_rooms(|rid| listed.contains(rid));
+                }
             }
             self.full = later.full;
         }
@@ -246,13 +304,17 @@ impl Batch {
             custom_emoji,
             custom_statuses,
             outbox,
-            interrupted_uploads
+            interrupted_uploads,
+            threads
         );
         for r in later.rooms {
             if r.1.is_none() && r.2.is_none() {
-                // The room is gone: an earlier timeline must not bring its
-                // messages back.
+                // The room is gone: an earlier timeline or thread data must
+                // not bring its messages back.
                 self.timelines.retain(|t| t.key.rid != r.0);
+                if let Some(t) = self.threads.as_mut() {
+                    t.retain_rooms(|rid| rid != r.0);
+                }
             }
             self.rooms.retain(|(rid, _, _)| *rid != r.0);
             self.rooms.push(r);

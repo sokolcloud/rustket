@@ -16,7 +16,13 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+
+pub use crate::sidebar_layout::{
+    GroupType, KeptThread, SectionId, SectionPrefs, SidebarGroup, ThreadsMode,
+};
 
 /// Name of the configuration file inside the config directory.
 pub const CONFIG_FILE: &str = "config.toml";
@@ -119,6 +125,15 @@ pub struct ServerEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_room: Option<String>,
     pub pinned_certificates: Vec<PinnedCertificate>,
+    /// Threads the user keeps in the sidebar's Threads section, oldest first.
+    /// Entries of every account that signed in here; read them through
+    /// [`Self::kept_threads()`] (signed-in account only).
+    #[serde(
+        rename = "kept_threads",
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_vec"
+    )]
+    pub kept_threads_all_accounts: Vec<KeptThread>,
     /// Unix seconds.
     pub added_at: i64,
     pub sort_order: i32,
@@ -135,11 +150,95 @@ impl Default for ServerId {
 fn lenient_token_kind<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<TokenKind>, D::Error> {
+    lenient_opt(d)
+}
+
+/// An unknown or invalid optional value reads as `None`.
+pub(crate) fn lenient_opt<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
     let v = Option::<toml::Value>::deserialize(d)?;
     Ok(v.and_then(|v| v.try_into().ok()))
 }
 
+/// A list whose invalid elements are skipped (with a warning) instead of
+/// failing the whole list. A value that is not a list fails as usual.
+pub(crate) fn lenient_vec<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let list = Vec::<toml::Value>::deserialize(d)?;
+    Ok(list
+        .into_iter()
+        .filter_map(|v| {
+            v.try_into()
+                .map_err(|e| tracing::warn!(error = %e, "config: invalid list element ignored"))
+                .ok()
+        })
+        .collect())
+}
+
+/// A table whose invalid values are skipped (with a warning) instead of
+/// failing the whole table.
+pub(crate) fn lenient_map<'de, D, T>(d: D) -> Result<BTreeMap<String, T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let table = toml::Table::deserialize(d)?;
+    Ok(table
+        .into_iter()
+        .filter_map(|(k, v)| match v.try_into() {
+            Ok(v) => Some((k, v)),
+            Err(e) => {
+                tracing::warn!(key = %k, error = %e, "config: invalid table entry ignored");
+                None
+            }
+        })
+        .collect())
+}
+
 impl ServerEntry {
+    /// Kept threads of the signed-in account (none while signed out).
+    pub fn kept_threads(&self) -> impl Iterator<Item = &KeptThread> {
+        let uid = self.user_id.as_deref();
+        self.kept_threads_all_accounts
+            .iter()
+            .filter(move |k| uid.is_some_and(|u| k.user_id == u))
+    }
+
+    /// Keeps or un-keeps a thread for the signed-in account. Returns whether
+    /// the list changed. Bounded by [`crate::sidebar_layout::MAX_KEPT_THREADS`]
+    /// (oldest dropped first).
+    pub fn set_thread_kept(&mut self, rid: &str, tmid: &str, keep: bool) -> bool {
+        let Some(uid) = self.user_id.clone() else {
+            return false;
+        };
+        let pos = self
+            .kept_threads_all_accounts
+            .iter()
+            .position(|k| k.tmid == tmid && k.user_id == uid);
+        match (pos, keep) {
+            (Some(_), true) | (None, false) => false,
+            (Some(i), false) => {
+                self.kept_threads_all_accounts.remove(i);
+                true
+            }
+            (None, true) => {
+                self.kept_threads_all_accounts.push(KeptThread {
+                    rid: rid.to_owned(),
+                    tmid: tmid.to_owned(),
+                    user_id: uid,
+                });
+                crate::sidebar_layout::sanitize_kept_threads(&mut self.kept_threads_all_accounts);
+                true
+            }
+        }
+    }
+
     pub fn new(url: impl Into<String>, display_name: impl Into<String>) -> Self {
         Self {
             id: ServerId::new_random(),
@@ -169,11 +268,15 @@ pub enum Language {
     Ru,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarSort {
+    /// Newest activity first.
     #[default]
     Activity,
+    /// Oldest activity first; rooms without activity last.
+    #[serde(rename = "activity_asc")]
+    ActivityAsc,
     Alphabetical,
 }
 
@@ -215,6 +318,26 @@ pub struct UiPrefs {
     pub system_title_bar: bool,
     /// Size cap of the image disk cache in MiB (oldest files are evicted).
     pub image_cache_mb: u32,
+    /// Stored sidebar section order; empty means the default order. Missing
+    /// built-ins are filled in when resolved (`sidebar_layout::effective_order`).
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_vec"
+    )]
+    pub sidebar_order: Vec<SectionId>,
+    /// User-defined sidebar groups (supergroups of room types).
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_vec"
+    )]
+    pub sidebar_groups: Vec<SidebarGroup>,
+    /// Per-section overrides, keyed by the `SectionId` config string.
+    #[serde(
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "lenient_map"
+    )]
+    pub sidebar_section_prefs: BTreeMap<String, SectionPrefs>,
+    pub sidebar_threads: ThreadsMode,
 }
 
 impl Default for UiPrefs {
@@ -239,6 +362,10 @@ impl Default for UiPrefs {
             hardware_acceleration: true,
             system_title_bar: false,
             image_cache_mb: DEFAULT_IMAGE_CACHE_MB,
+            sidebar_order: Vec::new(),
+            sidebar_groups: Vec::new(),
+            sidebar_section_prefs: BTreeMap::new(),
+            sidebar_threads: ThreadsMode::Off,
         }
     }
 }
@@ -330,6 +457,10 @@ const UI_KEYS: &[&str] = &[
     "hardware_acceleration",
     "system_title_bar",
     "image_cache_mb",
+    "sidebar_order",
+    "sidebar_groups",
+    "sidebar_section_prefs",
+    "sidebar_threads",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -337,8 +468,10 @@ const SERVER_KEYS: &[&str] = &[
     "display_name",
     "user_id",
     "username",
+    "token_kind",
     "last_room",
     "pinned_certificates",
+    "kept_threads",
     "added_at",
     "sort_order",
 ];
@@ -527,6 +660,10 @@ impl AppConfig {
         }) {
             tracing::warn!("config: invalid window geometry ignored");
             self.window = None;
+        }
+        crate::sidebar_layout::sanitize_prefs(&mut self.ui);
+        for s in &mut self.servers {
+            crate::sidebar_layout::sanitize_kept_threads(&mut s.kept_threads_all_accounts);
         }
         self.recent_emoji.truncate(MAX_RECENT_EMOJI);
         let texts = std::mem::take(&mut self.recent_status_texts);
@@ -907,8 +1044,25 @@ mod tests {
         s.user_id = Some("u".into());
         s.username = Some("n".into());
         s.last_room = Some("r".into());
+        s.token_kind = Some(TokenKind::Login);
+        s.set_thread_kept("r", "t", true);
         c.add_server(s);
         c.ui.use_real_names = Some(true);
+        crate::sidebar_layout::apply(
+            &mut c.ui,
+            crate::sidebar_layout::LayoutEdit::AddGroup {
+                name: "Work".into(),
+                types: vec![GroupType::Channels],
+            },
+        );
+        c.ui.sidebar_section_prefs.insert(
+            "channels".into(),
+            SectionPrefs {
+                sort: Some(SidebarSort::Alphabetical),
+                unread_first: None,
+            },
+        );
+        assert!(!c.ui.sidebar_order.is_empty());
         c.window = Some(WindowGeometry {
             x: Some(1),
             y: Some(2),
@@ -934,6 +1088,140 @@ mod tests {
             keys(t["servers"][0].as_table().unwrap()),
             sorted(SERVER_KEYS)
         );
+    }
+
+    fn with_sidebar_layout() -> AppConfig {
+        use crate::sidebar_layout::{LayoutEdit, apply};
+        let mut c = AppConfig::default();
+        let mut s = ServerEntry::new("https://a", "A");
+        s.user_id = Some("u".into());
+        s.set_thread_kept("r1", "t1", true);
+        c.add_server(s);
+        apply(
+            &mut c.ui,
+            LayoutEdit::AddGroup {
+                name: "Work".into(),
+                types: vec![GroupType::Channels, GroupType::DirectMessages],
+            },
+        );
+        apply(
+            &mut c.ui,
+            LayoutEdit::Move {
+                id: SectionId::Builtin(crate::room_list::SectionKind::Threads),
+                delta: -2,
+            },
+        );
+        apply(
+            &mut c.ui,
+            LayoutEdit::SetSort {
+                id: SectionId::Builtin(crate::room_list::SectionKind::Teams),
+                sort: Some(SidebarSort::ActivityAsc),
+            },
+        );
+        apply(
+            &mut c.ui,
+            LayoutEdit::SetThreadsMode(ThreadsMode::UnreadKept),
+        );
+        apply(
+            &mut c.ui,
+            LayoutEdit::SetDefaultSort(SidebarSort::ActivityAsc),
+        );
+        c
+    }
+
+    #[test]
+    fn sidebar_layout_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = with_sidebar_layout();
+        c.save(dir.path()).unwrap();
+        let text = fs::read_to_string(dir.path().join(CONFIG_FILE)).unwrap();
+        assert!(text.contains("sidebar_sort = \"activity_asc\""), "{text}");
+        assert!(text.contains("sidebar_threads = \"unread_kept\""), "{text}");
+        let loaded = AppConfig::load(dir.path()).unwrap();
+        assert_eq!(loaded, c);
+        assert_eq!(loaded.servers[0].kept_threads().count(), 1);
+        // Defaults write none of the optional sidebar keys.
+        let text = toml::to_string(&AppConfig::default()).unwrap();
+        for k in ["sidebar_order", "sidebar_groups", "sidebar_section_prefs"] {
+            assert!(!text.contains(k), "{k}");
+        }
+    }
+
+    #[test]
+    fn sidebar_lists_skip_bad_elements() {
+        let c = AppConfig::parse(
+            r#"
+            [ui]
+            sidebar_sort = "weird"
+            unread_on_top = true
+            sidebar_threads = "everything"
+            sidebar_order = ["future_section", "channels", 3, "group:b"]
+            sidebar_groups = [
+                { id = "a", name = "A", types = ["teams"] },
+                5,
+                { id = "b", name = "B", types = ["channels", "omnichannel", "future"] },
+                { id = "c", name = 7 },
+            ]
+            [ui.sidebar_section_prefs]
+            channels = { sort = "weird", unread_first = true }
+            teams = { sort = "alphabetical" }
+            broken = 4
+            [[servers]]
+            id = "s"
+            user_id = "u"
+            kept_threads = [{ rid = "r", tmid = "t", user_id = "u" }, "junk"]
+            "#,
+        )
+        .unwrap();
+        let ui = &c.ui;
+        assert_eq!(
+            ui.sidebar_sort,
+            SidebarSort::Activity,
+            "only that key falls back"
+        );
+        assert!(ui.unread_on_top);
+        assert_eq!(ui.sidebar_threads, ThreadsMode::Off);
+        let groups: Vec<(&str, &[GroupType])> = ui
+            .sidebar_groups
+            .iter()
+            .map(|g| (g.id.as_str(), g.types.as_slice()))
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                ("a", &[GroupType::Teams][..]),
+                ("b", &[GroupType::Channels][..])
+            ]
+        );
+        assert_eq!(
+            ui.sidebar_order,
+            [
+                SectionId::Unknown("future_section".into()),
+                SectionId::Builtin(crate::room_list::SectionKind::Channels),
+                SectionId::group("b"),
+            ]
+        );
+        assert!(
+            !crate::sidebar_layout::effective_order(ui)
+                .iter()
+                .any(SectionId::is_unknown)
+        );
+        assert_eq!(ui.sidebar_section_prefs.len(), 2);
+        assert_eq!(ui.sidebar_section_prefs["channels"].sort, None);
+        assert_eq!(
+            ui.sidebar_section_prefs["channels"].unread_first,
+            Some(true)
+        );
+        assert_eq!(
+            ui.sidebar_section_prefs["teams"].sort,
+            Some(SidebarSort::Alphabetical)
+        );
+        assert_eq!(c.servers[0].kept_threads().count(), 1);
+        // The unknown order id survives a save.
+        let text = toml::to_string(&c).unwrap();
+        assert!(text.contains("future_section"));
+        let c = AppConfig::parse("[ui]\nsidebar_sort = \"activity_asc\"").unwrap();
+        assert_eq!(c.ui.sidebar_sort, SidebarSort::ActivityAsc);
     }
 
     #[test]

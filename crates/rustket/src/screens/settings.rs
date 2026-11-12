@@ -5,7 +5,9 @@
 use iced::widget::{button, column, container, row, text, toggler};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use rust_i18n::t;
-use rustket_core::config::{AppConfig, Density, Language, Theme as ThemePref, UiPrefs, ZOOM_RANGE};
+use rustket_core::config::{
+    AppConfig, Density, Language, SidebarSort, Theme as ThemePref, ThreadsMode, UiPrefs, ZOOM_RANGE,
+};
 use rustket_core::secrets::SecretBackend;
 use rustket_ui::style;
 use rustket_ui::theme::{
@@ -19,6 +21,40 @@ use crate::desktop::TraySupport;
 use crate::desktop::autostart::{self, Autostart};
 use crate::renderer::Renderer;
 use crate::ui_state::UiState;
+
+mod sidebar;
+
+pub use sidebar::{GroupDraft, Message as SidebarMessage};
+
+/// The Sidebar card (scrolled to by the sidebar's "Sidebar settings…").
+pub const SIDEBAR_CARD: &str = "settings-sidebar";
+/// The Storage card.
+pub const STORAGE_CARD: &str = "settings-storage";
+
+/// Container id of a group's row in the Sidebar card's section list.
+pub fn sidebar_group_row_id(group: &str) -> String {
+    format!("settings-sidebar-group-{group}")
+}
+
+fn reveal_container<M: Send + 'static>(id: iced::widget::Id) -> Task<M> {
+    crate::room::timeline::list::reveal(iced::widget::Id::new(super::page::SCROLL_ID), id, false)
+}
+
+/// Scrolls the open settings page to the Sidebar card.
+pub fn reveal_sidebar<M: Send + 'static>() -> Task<M> {
+    reveal_container(iced::widget::Id::new(SIDEBAR_CARD))
+}
+
+/// Scrolls the open settings page to a group's row in the Sidebar card
+/// (where its deletion preset by "Ungroup…" is confirmed).
+pub fn reveal_sidebar_group<M: Send + 'static>(group: &str) -> Task<M> {
+    reveal_container(iced::widget::Id::from(sidebar_group_row_id(group)))
+}
+
+/// Scrolls the open settings page to the Storage card.
+pub fn reveal_storage<M: Send + 'static>() -> Task<M> {
+    reveal_container(iced::widget::Id::new(STORAGE_CARD))
+}
 
 /// Zoom step of the −/+ buttons.
 pub const ZOOM_STEP: f32 = 0.1;
@@ -57,8 +93,20 @@ pub enum Message {
     /// Disk cache cap in MiB (`UiPrefs::image_cache_mb`).
     SetImageCacheMb(u32),
     ClearOfflineCache,
+    // Sidebar card (`settings/sidebar.rs`).
+    SetGroupByType(bool),
+    SetSidebarSort(SidebarSort),
+    SetThreadsMode(ThreadsMode),
+    /// The section list, the group editor and the layout reset.
+    Sidebar(SidebarMessage),
     OpenUrl(String),
     Close,
+}
+
+impl From<SidebarMessage> for Message {
+    fn from(m: SidebarMessage) -> Self {
+        Self::Sidebar(m)
+    }
 }
 
 /// What the settings screen may read and change.
@@ -87,6 +135,12 @@ pub struct Settings {
     /// Launch at login (`None` until read).
     pub autostart: Option<bool>,
     pub autostart_busy: bool,
+    /// Id of the sidebar group whose deletion awaits confirmation.
+    pub confirm_delete: Option<String>,
+    /// The sidebar group being created or edited.
+    pub group_draft: Option<GroupDraft>,
+    /// The sidebar layout reset awaits confirmation.
+    pub confirm_reset: bool,
 }
 
 impl Default for Settings {
@@ -114,6 +168,9 @@ impl Settings {
             autostart_at: at,
             autostart: None,
             autostart_busy: false,
+            confirm_delete: None,
+            group_draft: None,
+            confirm_reset: false,
         }
     }
 
@@ -210,6 +267,10 @@ impl Settings {
             Message::ClearOfflineCache => Action::effect(Effect::ClearOfflineCache),
             Message::OpenUrl(url) => Action::effect(Effect::OpenUrl(url)),
             Message::Close => Action::effect(Effect::Close),
+            Message::SetGroupByType(v) => Self::pref(ctx, |p| p.group_by_type = v),
+            Message::SetSidebarSort(s) => Self::pref(ctx, |p| p.sidebar_sort = s),
+            Message::SetThreadsMode(m) => Self::pref(ctx, |p| p.sidebar_threads = m),
+            Message::Sidebar(m) => self.update_sidebar(m, ctx),
         }
     }
 
@@ -323,12 +384,6 @@ impl Settings {
                     Some(Message::SetShowAvatars),
                 ),
                 switch(
-                    t!("settings.unread_on_top").into_owned(),
-                    Some(t!("settings.unread_on_top_help").into_owned()),
-                    ui.unread_on_top,
-                    Some(Message::SetUnreadOnTop),
-                ),
-                switch(
                     t!("settings.clock_24h").into_owned(),
                     None,
                     ui.clock_24h,
@@ -355,6 +410,8 @@ impl Settings {
                 ),
             ],
         ));
+
+        body = body.push(self.sidebar_card(ui));
 
         body = body.push(section(
             t!("settings.language").into_owned(),
@@ -502,34 +559,40 @@ impl Settings {
         let with_cache_row = |rows| {
             crate::cache::view::with_storage_row(v.offline_cache, Message::ClearOfflineCache, rows)
         };
-        body = body.push(section(
-            t!("settings.storage").into_owned(),
-            with_cache_row(vec![
-                row![
-                    column![
-                        text(t!("settings.image_cache")).size(TEXT_BODY),
-                        text(t!("settings.image_cache_help"))
-                            .size(TEXT_CAPTION)
-                            .style(style::text_secondary),
+        body = body.push(
+            container(section(
+                t!("settings.storage").into_owned(),
+                with_cache_row(vec![
+                    row![
+                        column![
+                            text(t!("settings.image_cache")).size(TEXT_BODY),
+                            text(t!("settings.image_cache_help"))
+                                .size(TEXT_CAPTION)
+                                .style(style::text_secondary),
+                        ]
+                        .spacing(SPACE_1)
+                        .width(Length::Fill),
+                        secondary_button(
+                            t!("settings.clear_cache"),
+                            Some(Message::ClearImageCache)
+                        ),
                     ]
-                    .spacing(SPACE_1)
-                    .width(Length::Fill),
-                    secondary_button(t!("settings.clear_cache"), Some(Message::ClearImageCache)),
-                ]
-                .spacing(SPACE_3)
-                .align_y(Alignment::Center)
-                .into(),
-                field(
-                    t!("settings.cache_limit").into_owned(),
-                    Some(cache_limit_help(ui.image_cache_mb)),
-                    segmented(
-                        &ui.image_cache_mb,
-                        cache_choices(ui.image_cache_mb),
-                        Message::SetImageCacheMb,
+                    .spacing(SPACE_3)
+                    .align_y(Alignment::Center)
+                    .into(),
+                    field(
+                        t!("settings.cache_limit").into_owned(),
+                        Some(cache_limit_help(ui.image_cache_mb)),
+                        segmented(
+                            &ui.image_cache_mb,
+                            cache_choices(ui.image_cache_mb),
+                            Message::SetImageCacheMb,
+                        ),
                     ),
-                ),
-            ]),
-        ));
+                ]),
+            ))
+            .id(STORAGE_CARD),
+        );
 
         body = body.push(section(
             t!("settings.about").into_owned(),
@@ -703,14 +766,17 @@ fn link<'a>(label: String, url: &'static str) -> Element<'a, Message> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use rustket_core::config::{GroupType, SectionId};
+    use rustket_core::room_list::SectionKind;
+    use rustket_core::sidebar_layout::LayoutEdit;
 
-    fn run(s: &mut Settings, cfg: &mut AppConfig, msg: Message) -> Action<Message> {
+    fn run(s: &mut Settings, cfg: &mut AppConfig, msg: impl Into<Message>) -> Action<Message> {
         let mut ui_state = UiState::default();
         let mut ctx = SettingsCtx {
             config: cfg,
             ui_state: &mut ui_state,
         };
-        s.update(msg, &mut ctx)
+        s.update(msg.into(), &mut ctx)
     }
 
     #[test]
@@ -749,6 +815,24 @@ mod tests {
             (Message::SetSystemTitleBar(true), |c| c.system_title_bar),
             (Message::SetSystemTitleBar(false), |c| !c.system_title_bar),
             (Message::SetImageCacheMb(1000), |c| c.image_cache_mb == 1000),
+            (Message::SetGroupByType(false), |c| !c.group_by_type),
+            (Message::SetSidebarSort(SidebarSort::ActivityAsc), |c| {
+                c.sidebar_sort == SidebarSort::ActivityAsc
+            }),
+            (Message::SetThreadsMode(ThreadsMode::Following), |c| {
+                c.sidebar_threads == ThreadsMode::Following
+            }),
+            (
+                Message::Sidebar(SidebarMessage::Layout(LayoutEdit::Move {
+                    id: SectionId::Builtin(SectionKind::Channels),
+                    delta: -1,
+                })),
+                |c| {
+                    let order = rustket_core::sidebar_layout::effective_order(c);
+                    let pos = |k| order.iter().position(|x| x == &SectionId::Builtin(k));
+                    pos(SectionKind::Channels) < pos(SectionKind::Discussions)
+                },
+            ),
         ] {
             let a = run(&mut s, &mut cfg, msg.clone());
             assert!(check(&cfg.ui), "{msg:?}");
@@ -757,6 +841,454 @@ mod tests {
                 "{msg:?}"
             );
         }
+    }
+
+    /// The deletion preset by the sidebar's "Ungroup…" happens only on
+    /// confirmation, and drops the group's collapse state.
+    #[test]
+    fn preset_group_deletion_is_confirmed() {
+        use rustket_core::sidebar_layout::{GroupType, LayoutEdit, apply};
+        let mut s = Settings::with_autostart(None);
+        let mut cfg = AppConfig::default();
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::AddGroup {
+                name: "Work".into(),
+                types: vec![GroupType::Channels],
+            },
+        );
+        let gid = cfg.ui.sidebar_groups[0].id.clone();
+        s.confirm_delete = Some(gid.clone());
+        let a = run(&mut s, &mut cfg, SidebarMessage::GroupDeleteCancel);
+        assert!(a.effects.is_empty() && s.confirm_delete.is_none());
+        assert_eq!(cfg.ui.sidebar_groups.len(), 1);
+        let a = run(&mut s, &mut cfg, SidebarMessage::GroupDeleteConfirm);
+        assert!(a.effects.is_empty(), "nothing to confirm");
+
+        s.confirm_delete = Some(gid.clone());
+        let mut ui_state = UiState::default();
+        let key = format!("sidebar.group.{gid}");
+        ui_state.collapsed_sections.insert(key.clone());
+        let mut ctx = SettingsCtx {
+            config: &mut cfg,
+            ui_state: &mut ui_state,
+        };
+        let a = s.update(SidebarMessage::GroupDeleteConfirm.into(), &mut ctx);
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert!(cfg.ui.sidebar_groups.is_empty() && s.confirm_delete.is_none());
+        assert!(!ui_state.collapsed_sections.contains(&key));
+    }
+
+    /// New → name → types → Save adds the group before its earliest type
+    /// section; Save is refused while the draft is invalid; Edit renames and
+    /// changes the types; Delete → Confirm removes it and its collapse state.
+    #[test]
+    fn sidebar_group_flow() {
+        use rustket_core::sidebar_layout::effective_order;
+        let mut s = Settings::with_autostart(None);
+        let mut cfg = AppConfig::default();
+        let mut ui_state = UiState::default();
+        let send = |s: &mut Settings, cfg: &mut AppConfig, ui: &mut UiState, m: SidebarMessage| {
+            let mut ctx = SettingsCtx {
+                config: cfg,
+                ui_state: ui,
+            };
+            s.update(m.into(), &mut ctx)
+        };
+
+        send(&mut s, &mut cfg, &mut ui_state, SidebarMessage::GroupNew);
+        assert_eq!(s.group_draft, Some(GroupDraft::default()));
+        let a = send(&mut s, &mut cfg, &mut ui_state, SidebarMessage::GroupSave);
+        assert!(a.effects.is_empty() && s.group_draft.is_some(), "no name");
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupName("  Work ".into()),
+        );
+        let a = send(&mut s, &mut cfg, &mut ui_state, SidebarMessage::GroupSave);
+        assert!(a.effects.is_empty() && s.group_draft.is_some(), "no type");
+        assert!(cfg.ui.sidebar_groups.is_empty());
+        for ty in [
+            GroupType::Channels,
+            GroupType::PrivateGroups,
+            GroupType::Teams,
+        ] {
+            send(
+                &mut s,
+                &mut cfg,
+                &mut ui_state,
+                SidebarMessage::GroupType(ty, true),
+            );
+        }
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupType(GroupType::Teams, false),
+        );
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupName("x".repeat(100)),
+        );
+        assert_eq!(
+            s.group_draft.as_ref().unwrap().name.chars().count(),
+            rustket_core::sidebar_layout::MAX_GROUP_NAME_CHARS
+        );
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupName("  Work ".into()),
+        );
+        let a = send(&mut s, &mut cfg, &mut ui_state, SidebarMessage::GroupSave);
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert!(s.group_draft.is_none());
+        let g = cfg.ui.sidebar_groups[0].clone();
+        assert_eq!(g.name, "Work");
+        assert_eq!(g.types, [GroupType::Channels, GroupType::PrivateGroups]);
+        let order = effective_order(&cfg.ui);
+        let gpos = order.iter().position(|x| x == &SectionId::group(&g.id));
+        let cpos = order
+            .iter()
+            .position(|x| x == &SectionId::Builtin(SectionKind::Channels));
+        assert_eq!(gpos.map(|p| p + 1), cpos, "{order:?}");
+
+        // Edit: rename and move the types; an edited group may end up empty.
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupEdit(g.id.clone()),
+        );
+        let d = s.group_draft.clone().unwrap();
+        assert_eq!(d.editing.as_deref(), Some(g.id.as_str()));
+        assert_eq!(d.types.len(), 2);
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupName("Job".into()),
+        );
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupType(GroupType::Channels, false),
+        );
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupType(GroupType::PrivateGroups, false),
+        );
+        let a = send(&mut s, &mut cfg, &mut ui_state, SidebarMessage::GroupSave);
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert_eq!(cfg.ui.sidebar_groups[0].name, "Job");
+        assert!(cfg.ui.sidebar_groups[0].types.is_empty());
+        // Saving an unchanged draft writes nothing.
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupEdit(g.id.clone()),
+        );
+        let a = send(&mut s, &mut cfg, &mut ui_state, SidebarMessage::GroupSave);
+        assert!(a.effects.is_empty());
+        // Cancel drops the draft.
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupEdit(g.id.clone()),
+        );
+        send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupName("Nope".into()),
+        );
+        send(&mut s, &mut cfg, &mut ui_state, SidebarMessage::GroupCancel);
+        assert!(s.group_draft.is_none());
+        assert_eq!(cfg.ui.sidebar_groups[0].name, "Job");
+
+        // Delete asks first, then removes the group and its collapse state.
+        let key = format!("sidebar.group.{}", g.id);
+        ui_state.collapsed_sections.insert(key.clone());
+        let a = send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupDelete(g.id.clone()),
+        );
+        assert!(a.effects.is_empty() && cfg.ui.sidebar_groups.len() == 1);
+        assert_eq!(s.confirm_delete.as_deref(), Some(g.id.as_str()));
+        let a = send(
+            &mut s,
+            &mut cfg,
+            &mut ui_state,
+            SidebarMessage::GroupDeleteConfirm,
+        );
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert!(cfg.ui.sidebar_groups.is_empty());
+        assert!(!effective_order(&cfg.ui).contains(&SectionId::group(&g.id)));
+        assert!(!ui_state.collapsed_sections.contains(&key));
+    }
+
+    /// Reset asks first; it drops groups, order, section prefs and the
+    /// groups' collapse state.
+    #[test]
+    fn sidebar_reset_is_confirmed() {
+        use rustket_core::sidebar_layout::apply;
+        let mut s = Settings::with_autostart(None);
+        let mut cfg = AppConfig::default();
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::AddGroup {
+                name: "Work".into(),
+                types: vec![GroupType::Channels],
+            },
+        );
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::SetSort {
+                id: SectionId::Builtin(SectionKind::Teams),
+                sort: Some(SidebarSort::Alphabetical),
+            },
+        );
+        let key = format!("sidebar.group.{}", cfg.ui.sidebar_groups[0].id);
+        let a = run(&mut s, &mut cfg, SidebarMessage::ResetConfirm);
+        assert!(a.effects.is_empty(), "not asked yet");
+        assert_eq!(cfg.ui.sidebar_groups.len(), 1);
+        run(&mut s, &mut cfg, SidebarMessage::Reset);
+        assert!(s.confirm_reset);
+        run(&mut s, &mut cfg, SidebarMessage::ResetCancel);
+        assert!(!s.confirm_reset && cfg.ui.sidebar_groups.len() == 1);
+
+        run(&mut s, &mut cfg, SidebarMessage::Reset);
+        let mut ui_state = UiState::default();
+        ui_state.collapsed_sections.insert(key.clone());
+        let mut ctx = SettingsCtx {
+            config: &mut cfg,
+            ui_state: &mut ui_state,
+        };
+        let a = s.update(SidebarMessage::ResetConfirm.into(), &mut ctx);
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert!(!s.confirm_reset);
+        assert!(cfg.ui.sidebar_groups.is_empty() && cfg.ui.sidebar_section_prefs.is_empty());
+        assert!(!ui_state.collapsed_sections.contains(&key));
+    }
+
+    /// Per-section sort and unread first go through the reducer; setting
+    /// unread first back to its default stores no override.
+    #[test]
+    fn section_sort_and_unread_first() {
+        let mut s = Settings::with_autostart(None);
+        let mut cfg = AppConfig::default();
+        let threads = SectionId::Builtin(SectionKind::Threads);
+        let a = run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::Layout(LayoutEdit::SetSort {
+                id: threads.clone(),
+                sort: Some(SidebarSort::Alphabetical),
+            }),
+        );
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert_eq!(
+            cfg.ui.sidebar_section_prefs["threads"].sort,
+            Some(SidebarSort::Alphabetical)
+        );
+        let a = run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::Layout(LayoutEdit::SetSort {
+                id: threads.clone(),
+                sort: Some(SidebarSort::Alphabetical),
+            }),
+        );
+        assert!(a.effects.is_empty(), "unchanged");
+        run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::Layout(LayoutEdit::SetSort {
+                id: threads.clone(),
+                sort: None,
+            }),
+        );
+        assert!(cfg.ui.sidebar_section_prefs.is_empty());
+
+        // Threads default to unread first: off stores `false`, on again
+        // drops the override.
+        let unread_first = |cfg: &AppConfig, key: &str| {
+            cfg.ui
+                .sidebar_section_prefs
+                .get(key)
+                .and_then(|p| p.unread_first)
+        };
+        let a = run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::SetUnreadFirst(threads.clone(), false),
+        );
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert_eq!(unread_first(&cfg, "threads"), Some(false));
+        run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::SetUnreadFirst(threads.clone(), true),
+        );
+        assert_eq!(unread_first(&cfg, "threads"), None);
+        assert!(cfg.ui.sidebar_section_prefs.is_empty());
+        // Other sections default to off.
+        let channels = SectionId::Builtin(SectionKind::Channels);
+        run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::SetUnreadFirst(channels.clone(), true),
+        );
+        assert_eq!(unread_first(&cfg, "channels"), Some(true));
+        let a = run(
+            &mut s,
+            &mut cfg,
+            SidebarMessage::SetUnreadFirst(channels.clone(), false),
+        );
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert!(cfg.ui.sidebar_section_prefs.is_empty());
+    }
+
+    /// The Sidebar card's captions: claimed built-ins, unused sections,
+    /// type-less groups; Unread has no "Unread first".
+    #[test]
+    fn sidebar_card_captions() {
+        use rustket_core::sidebar_layout::{Layout, apply};
+        rust_i18n::set_locale("en");
+        let mut cfg = AppConfig::default();
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::AddGroup {
+                name: "Work".into(),
+                types: vec![GroupType::Channels],
+            },
+        );
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::AddGroup {
+                name: "Empty".into(),
+                types: vec![GroupType::Teams],
+            },
+        );
+        let empty = cfg.ui.sidebar_groups[1].id.clone();
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::SetGroupType {
+                id: empty.clone(),
+                ty: GroupType::Teams,
+                on: false,
+            },
+        );
+        let ui = &cfg.ui;
+        let layout = Layout::from_prefs(ui);
+        let cap = |id: SectionId| sidebar::section_caption(&id, ui, &layout);
+        assert_eq!(
+            cap(SectionId::Builtin(SectionKind::Channels)),
+            (Some("In “Work”".to_owned()), true)
+        );
+        assert_eq!(cap(SectionId::Builtin(SectionKind::Teams)), (None, false));
+        assert_eq!(
+            cap(SectionId::Builtin(SectionKind::Conversations))
+                .0
+                .as_deref(),
+            Some("Used only while grouping by type is off")
+        );
+        assert_eq!(
+            cap(SectionId::group(&empty)).0.as_deref(),
+            Some("No room types")
+        );
+        assert_eq!(
+            cap(SectionId::Builtin(SectionKind::Threads)).0.as_deref(),
+            Some("Off")
+        );
+        assert!(!sidebar::has_unread_first(&SectionId::Builtin(
+            SectionKind::Unread
+        )));
+        assert!(sidebar::has_unread_first(&SectionId::Builtin(
+            SectionKind::Threads
+        )));
+        assert!(sidebar::has_unread_first(&SectionId::group(&empty)));
+        let s = Settings::with_autostart(None);
+        let _ = s.sidebar_card(ui);
+    }
+
+    /// Conversations can never have rooms once groups take every room type.
+    #[test]
+    fn conversations_claimed_when_groups_take_every_type() {
+        use rustket_core::sidebar_layout::{Layout, apply};
+        rust_i18n::set_locale("en");
+        let conv = SectionId::Builtin(SectionKind::Conversations);
+        let mut cfg = AppConfig::default();
+        cfg.ui.group_by_type = false;
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::AddGroup {
+                name: "All".into(),
+                types: GroupType::ALL[..4].to_vec(),
+            },
+        );
+        let cap = |ui: &UiPrefs| sidebar::section_caption(&conv, ui, &Layout::from_prefs(ui));
+        assert_eq!(cap(&cfg.ui), (None, false));
+        let all = cfg.ui.sidebar_groups[0].id.clone();
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::SetGroupType {
+                id: all.clone(),
+                ty: GroupType::DirectMessages,
+                on: true,
+            },
+        );
+        assert_eq!(cap(&cfg.ui), (Some("In “All”".to_owned()), true));
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::AddGroup {
+                name: "People".into(),
+                types: vec![GroupType::DirectMessages],
+            },
+        );
+        assert_eq!(cap(&cfg.ui), (Some("Taken by groups".to_owned()), true));
+    }
+
+    /// The group editor names the group a checked type moves from, or the
+    /// one holding an unchecked type; the edited group's own types have none.
+    #[test]
+    fn group_editor_type_captions() {
+        use rustket_core::sidebar_layout::{Layout, apply};
+        rust_i18n::set_locale("en");
+        let mut cfg = AppConfig::default();
+        apply(
+            &mut cfg.ui,
+            LayoutEdit::AddGroup {
+                name: "Work".into(),
+                types: vec![GroupType::Channels, GroupType::Teams],
+            },
+        );
+        let work = cfg.ui.sidebar_groups[0].id.clone();
+        let layout = Layout::from_prefs(&cfg.ui);
+        let mut d = GroupDraft {
+            types: [GroupType::Channels].into(),
+            ..GroupDraft::default()
+        };
+        let cap = |d: &GroupDraft, ty| sidebar::type_caption(&layout, d, ty);
+        assert_eq!(
+            cap(&d, GroupType::Channels).as_deref(),
+            Some("moves from “Work”")
+        );
+        assert_eq!(cap(&d, GroupType::Teams).as_deref(), Some("In “Work”"));
+        assert_eq!(cap(&d, GroupType::DirectMessages), None);
+        d.editing = Some(work);
+        assert_eq!(cap(&d, GroupType::Channels), None);
+        assert_eq!(cap(&d, GroupType::Teams), None);
     }
 
     /// Storage: the disk cache cap choices keep a value set in the file.

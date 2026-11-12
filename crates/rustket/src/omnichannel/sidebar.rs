@@ -170,10 +170,7 @@ pub fn push_groups<'a>(
     if !shown(ctx.server_id) {
         return list;
     }
-    for s in sections
-        .iter()
-        .filter(|s| s.kind == SectionKind::Omnichannel)
-    {
+    for s in sections.iter().filter(|s| s.is(SectionKind::Omnichannel)) {
         for g in split_groups(ctx.workspace, s) {
             list = push_group(list, g, ctx, filter, row);
         }
@@ -193,7 +190,7 @@ pub fn step_order<'a>(
     let mut out = Vec::new();
     let (omni, rest): (Vec<&Section>, Vec<&Section>) = sections
         .iter()
-        .partition(|s| s.kind == SectionKind::Omnichannel);
+        .partition(|s| s.is(SectionKind::Omnichannel));
     if shown(sid) {
         for s in omni {
             for g in split_groups(ws, s) {
@@ -204,7 +201,7 @@ pub fn step_order<'a>(
         }
     }
     for s in rest {
-        if !collapsed.contains(s.kind.i18n_key()) {
+        if !collapsed.contains(s.id.collapse_key().as_ref()) {
             out.extend(s.items.iter());
         }
     }

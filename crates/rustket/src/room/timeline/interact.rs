@@ -328,6 +328,14 @@ impl Interactions {
             // The app leaves the room first, like the web client.
             Act::MarkUnread => Action::effect(Effect::MarkUnread(mid)),
             Act::StartDiscussion => Action::effect(Effect::StartDiscussion { pmid: Some(mid) }),
+            Act::KeepInSidebar | Act::RemoveFromSidebar => match actions::kept_thread_of(&m) {
+                Some(tmid) => Action::effect(Effect::KeepThread {
+                    rid: m.rid.clone(),
+                    tmid: tmid.to_owned(),
+                    keep: act == Act::KeepInSidebar,
+                }),
+                None => Action::none(),
+            },
             Act::CopyText => Action::task(iced::clipboard::write(render::plain_text(&m)))
                 .with(toast_ok(t!("room_timeline.copied").into_owned())),
             Act::CopyLink => Action::task(iced::clipboard::write(actions::permalink(
@@ -481,5 +489,75 @@ mod tests {
         assert!(matches!(a.effects.as_slice(), [Effect::OpenRoom(r)] if r == "d1"));
         assert!(ctx.workspace.room("d1").is_some());
         assert!(ctx.workspace.subscription("d1").is_none());
+    }
+
+    #[test]
+    fn keep_in_sidebar_on_a_reply_keeps_its_thread() {
+        use rocketchat::models::{Room, RoomType, Setting, Subscription, User};
+        use rustket_core::config::ThreadsMode;
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let sid = rustket_core::ServerId("s".into());
+        let url = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let ts = RcDate::from_millis(1_800_000_000_000);
+        let mut ws = Workspace::new();
+        ws.apply_initial(rustket_core::sync::InitialData {
+            me: User {
+                id: "me".into(),
+                username: Some("me".into()),
+                ..Default::default()
+            },
+            subscriptions: vec![Subscription {
+                id: "s1".into(),
+                rid: "r".into(),
+                name: "dev".into(),
+                t: RoomType::Channel,
+                open: true,
+                updated_at: ts,
+                ..Default::default()
+            }],
+            rooms: vec![Room {
+                id: "r".into(),
+                t: RoomType::Channel,
+                name: Some("dev".into()),
+                updated_at: ts,
+                ..Default::default()
+            }],
+            settings: vec![Setting {
+                id: "Threads_enabled".into(),
+                value: json!(true),
+                ..Default::default()
+            }],
+            next_since: ts,
+            ..Default::default()
+        });
+        ws.set_thread_config(ThreadsMode::UnreadKept, []);
+        ws.open_thread("r", "p");
+        ws.apply_message(reply("a", "p"));
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "r",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let mut i = Interactions::new(Source::Thread("p".into()));
+        let a = i.update(Msg::Act("a".into(), Act::KeepInSidebar), &mut ctx);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::KeepThread { rid, tmid, keep: true }] if rid == "r" && tmid == "p"
+        ));
+        // Not offered (already kept): refused with a toast, no effect.
+        ctx.workspace
+            .set_thread_config(ThreadsMode::UnreadKept, [("r", "p")]);
+        let a = i.update(Msg::Act("a".into(), Act::KeepInSidebar), &mut ctx);
+        assert!(matches!(a.effects.as_slice(), [Effect::Toast(..)]));
+        let a = i.update(Msg::Act("a".into(), Act::RemoveFromSidebar), &mut ctx);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::KeepThread { tmid, keep: false, .. }] if tmid == "p"
+        ));
     }
 }

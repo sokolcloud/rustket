@@ -20,6 +20,120 @@ sidebar.unread:
 sidebar.favorites:
   en: "Favorites"
   ru: "Избранное"
+sidebar.threads:
+  en: "Threads"
+  ru: "Треды"
+sidebar.thread_loading:
+  en: "Loading…"
+  ru: "Загрузка…"
+sidebar.thread_removed:
+  en: "Message removed"
+  ru: "Сообщение удалено"
+sidebar.thread_unavailable:
+  en: "Message unavailable"
+  ru: "Сообщение недоступно"
+sidebar.thread_subtitle:
+  en: "%{room} · %{replies}"
+  ru: "%{room} · %{replies}"
+sidebar.thread_replies:
+  en: "Replies: %{count}"
+  ru: "Ответов: %{count}"
+sidebar.thread_in_room:
+  en: "%{room} › %{title}"
+  ru: "%{room} › %{title}"
+sidebar.threads_loading_progress:
+  en: "Loading followed threads… %{done}/%{total}"
+  ru: "Загрузка отслеживаемых тредов… %{done}/%{total}"
+sidebar.thread_open_room:
+  en: "Open room"
+  ru: "Открыть комнату"
+sidebar.thread_mark_read:
+  en: "Mark as read"
+  ru: "Отметить прочитанным"
+sidebar.thread_mark_room_read:
+  en: "Mark room as read"
+  ru: "Отметить комнату прочитанной"
+sidebar.keep_thread:
+  en: "Keep in sidebar"
+  ru: "Оставить в боковой панели"
+sidebar.unkeep_thread:
+  en: "Remove from sidebar"
+  ru: "Убрать из боковой панели"
+sidebar.thread_read_failed:
+  en: "Couldn't mark the thread as read"
+  ru: "Не удалось отметить тред прочитанным"
+sidebar.room_read_failed:
+  en: "Couldn't mark the room as read"
+  ru: "Не удалось отметить комнату прочитанной"
+sidebar.thread_unfollow_failed:
+  en: "Couldn't unfollow the thread"
+  ru: "Не удалось перестать следить за тредом"
+sidebar.menu_move_up:
+  en: "Move up"
+  ru: "Переместить выше"
+sidebar.menu_move_down:
+  en: "Move down"
+  ru: "Переместить ниже"
+sidebar.menu_sort:
+  en: "Sort"
+  ru: "Сортировка"
+sidebar.sort_newest:
+  en: "Newest first"
+  ru: "Сначала новые"
+sidebar.sort_oldest:
+  en: "Oldest first"
+  ru: "Сначала старые"
+sidebar.sort_alpha:
+  en: "A–Z"
+  ru: "По алфавиту"
+sidebar.sort_reply_newest:
+  en: "Latest reply first"
+  ru: "Сначала свежие ответы"
+sidebar.sort_reply_oldest:
+  en: "Oldest reply first"
+  ru: "Сначала давние ответы"
+sidebar.sort_by_room:
+  en: "By room"
+  ru: "По комнате"
+sidebar.sort_default:
+  en: "Default (%{sort})"
+  ru: "По умолчанию (%{sort})"
+sidebar.menu_unread_first:
+  en: "Unread first"
+  ru: "Непрочитанные сверху"
+sidebar.menu_show:
+  en: "Show"
+  ru: "Показывать"
+sidebar.threads_unread:
+  en: "Unread threads"
+  ru: "Непрочитанные треды"
+sidebar.threads_unread_kept:
+  en: "Unread and kept threads"
+  ru: "Непрочитанные и оставленные"
+sidebar.threads_following:
+  en: "All followed threads"
+  ru: "Все отслеживаемые треды"
+sidebar.menu_refresh:
+  en: "Refresh"
+  ru: "Обновить"
+sidebar.menu_hide_threads:
+  en: "Hide threads"
+  ru: "Скрыть треды"
+sidebar.menu_hide_unread:
+  en: "Hide this group"
+  ru: "Скрыть эту группу"
+sidebar.menu_ungroup:
+  en: "Ungroup…"
+  ru: "Расформировать группу…"
+sidebar.menu_collapse:
+  en: "Collapse"
+  ru: "Свернуть"
+sidebar.menu_expand:
+  en: "Expand"
+  ru: "Развернуть"
+sidebar.menu_settings:
+  en: "Sidebar settings…"
+  ru: "Настройки боковой панели…"
 sidebar.teams:
   en: "Teams"
   ru: "Команды"

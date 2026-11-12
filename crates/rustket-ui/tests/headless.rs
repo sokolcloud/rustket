@@ -29,6 +29,9 @@ enum M {
     Input(String),
     Scrolled,
     Noop,
+    Toggle(u64),
+    Reorder(u64, Option<u64>),
+    AutoScroll(f32),
 }
 
 struct NoClip;
@@ -163,6 +166,49 @@ fn scroll_offsets(ui: &mut Ui<'_>, r: &iced::Renderer) -> Vec<Vector> {
     let mut probe = Probe(Vec::new());
     ui.operate(r, &mut probe);
     probe.0
+}
+
+/// Scrolls every scrollable by `dy`.
+fn scroll_by(ui: &mut Ui<'_>, r: &iced::Renderer, dy: f32) {
+    struct ScrollBy(f32);
+    impl Operation for ScrollBy {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<()>)) {
+            operate(self);
+        }
+
+        fn scrollable(
+            &mut self,
+            _id: Option<&Id>,
+            bounds: Rectangle,
+            content_bounds: Rectangle,
+            _translation: Vector,
+            state: &mut dyn widget::operation::Scrollable,
+        ) {
+            let offset = widget::operation::scrollable::AbsoluteOffset { x: 0.0, y: self.0 };
+            state.scroll_by(offset, bounds, content_bounds);
+        }
+    }
+    ui.operate(r, &mut ScrollBy(dy));
+}
+
+/// RGBA of the pixel at `p` in what was drawn last.
+fn pixel(r: &mut iced::Renderer, p: Point) -> [u8; 4] {
+    let shot = r.screenshot(
+        Size::new(SIZE.width as u32, SIZE.height as u32),
+        1.0,
+        Color::WHITE,
+    );
+    let i = (p.y as usize * SIZE.width as usize + p.x as usize) * 4;
+    [shot[i], shot[i + 1], shot[i + 2], shot[i + 3]]
+}
+
+fn auto_scrolls(msgs: &[M]) -> Vec<f32> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            M::AutoScroll(dy) => Some(*dy),
+            _ => None,
+        })
+        .collect()
 }
 
 fn is_focused(ui: &mut Ui<'_>, r: &iced::Renderer, id: Id) -> bool {
@@ -610,6 +656,47 @@ fn menu_width_fits_long_labels() {
     );
     let huge: Vec<w::MenuEntry<M>> = vec![w::MenuItem::new("x".repeat(200), M::Item).into()];
     assert_eq!(w::menu_width(&huge), w::MENU_MAX_WIDTH);
+}
+
+/// Check marks take the leading icon slot that `menu_width` already counts,
+/// and checked items select like any other.
+#[test]
+fn checkable_menu_items() {
+    load_fonts();
+    let plain: Vec<w::MenuEntry<M>> = vec![
+        w::MenuItem::new("Newest first", M::Close(1)).into(),
+        w::MenuItem::new("Oldest first", M::Close(2)).into(),
+    ];
+    let checkable: Vec<w::MenuEntry<M>> = vec![
+        w::MenuItem::new("Newest first", M::Close(1))
+            .checked(true)
+            .into(),
+        w::MenuItem::new("Oldest first", M::Close(2))
+            .checked(false)
+            .into(),
+    ];
+    assert_eq!(w::menu_width(&plain), w::menu_width(&checkable));
+    let mut r = renderer();
+    let view = |entries: &[w::MenuEntry<M>]| -> Element<'_, M> {
+        column![w::popover_menu(
+            button(text("T")).width(30).height(30).on_press(M::Trig),
+            entries,
+            true,
+            M::Dismiss,
+            w::Placement::BelowStart,
+        )]
+        .into()
+    };
+    let mut ui = UserInterface::build(view(&checkable), SIZE, Cache::default(), &mut r);
+    let away = Point::new(700.0, 500.0);
+    use keyboard::key::Named;
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[key(Named::ArrowDown, false), key(Named::Enter, false)],
+        away,
+    );
+    assert_eq!(msgs, vec![M::Close(1)]);
 }
 
 #[test]
@@ -1139,4 +1226,371 @@ fn arrow_keys_only_act_for_the_focused_field() {
         at,
     );
     assert_eq!(msgs, vec![M::Close(1), M::Close(0)]);
+}
+
+const DRAG_HEADER_H: f32 = 27.0;
+const DRAG_ROW_H: f32 = 40.0;
+
+/// Sections `keys` (a header button and `rows` rows each) in a reorder area,
+/// in a 300 px wide scrollable of `height` placed `top` px down; free space
+/// to its right.
+fn reorder_list(keys: &[u64], rows: usize, top: f32, height: f32) -> Element<'static, M> {
+    let mut col = column![].spacing(0);
+    let mut handles = Vec::new();
+    let mut y = 0.0;
+    for &k in keys {
+        handles.push((k, y, DRAG_HEADER_H));
+        let header = button(text(format!("S{k}")))
+            .width(Length::Fill)
+            .height(DRAG_HEADER_H)
+            .on_press(M::Toggle(k));
+        col = col.push(w::context_menu(
+            header,
+            vec![w::MenuItem::new("Menu", M::Close(k)).into()],
+        ));
+        for _ in 0..rows {
+            col = col.push(
+                button(text("row"))
+                    .width(Length::Fill)
+                    .height(DRAG_ROW_H)
+                    .on_press(M::Item),
+            );
+        }
+        y += DRAG_HEADER_H + rows as f32 * DRAG_ROW_H;
+    }
+    let area = w::reorder_area(col, handles, M::Reorder).on_auto_scroll(M::AutoScroll);
+    column![
+        space().height(top),
+        iced::widget::row![
+            container(scrollable(area)).width(300).height(height),
+            space().width(Length::Fill),
+        ],
+    ]
+    .into()
+}
+
+/// Screen y of the centre of header `i` (sections with `rows` rows, list at `top`).
+fn header_y(i: usize, rows: usize, top: f32) -> f32 {
+    top + i as f32 * (DRAG_HEADER_H + rows as f32 * DRAG_ROW_H) + DRAG_HEADER_H / 2.0
+}
+
+fn reorders(msgs: &[M]) -> Vec<M> {
+    msgs.iter()
+        .filter(|m| matches!(m, M::Reorder(..) | M::Toggle(_)))
+        .cloned()
+        .collect()
+}
+
+/// Presses at `from`, moves to each of `path`, releases at the last point;
+/// returns the toggles and reorders.
+fn drag_path(ui: &mut Ui<'_>, r: &mut iced::Renderer, from: Point, path: &[Point]) -> Vec<M> {
+    let mut all = Vec::new();
+    let (msgs, _) = step(ui, r, &[moved(from), press()], from);
+    all.extend(msgs);
+    let mut at = from;
+    for &p in path {
+        let (msgs, _) = step(ui, r, &[moved(p)], p);
+        all.extend(msgs);
+        at = p;
+    }
+    let (msgs, _) = step(ui, r, &[release()], at);
+    all.extend(msgs);
+    reorders(&all)
+}
+
+#[test]
+fn reorder_click_toggles_and_drag_reorders() {
+    let mut r = renderer();
+    let mut ui = UserInterface::build(
+        reorder_list(&[1, 2, 3], 2, 0.0, 600.0),
+        SIZE,
+        Cache::default(),
+        &mut r,
+    );
+    let x = 100.0;
+    let h0 = Point::new(x, header_y(0, 2, 0.0));
+    // A small move is still a click.
+    let msgs = drag_path(&mut ui, &mut r, h0, &[Point::new(x, h0.y + 3.0)]);
+    assert_eq!(msgs, vec![M::Toggle(1)]);
+    // Just below the second header's centre: before the third.
+    let h1 = header_y(1, 2, 0.0);
+    let msgs = drag_path(&mut ui, &mut r, h0, &[Point::new(x, h1 + 5.0)]);
+    assert_eq!(msgs, vec![M::Reorder(1, Some(3))]);
+    // Over a long section's rows: after it (here the end).
+    let msgs = drag_path(
+        &mut ui,
+        &mut r,
+        h0,
+        &[Point::new(x, header_y(2, 2, 0.0) + 50.0)],
+    );
+    assert_eq!(msgs, vec![M::Reorder(1, None)]);
+    // Upwards.
+    let h2 = Point::new(x, header_y(2, 2, 0.0));
+    let msgs = drag_path(&mut ui, &mut r, h2, &[Point::new(x, h0.y - 5.0)]);
+    assert_eq!(msgs, vec![M::Reorder(3, Some(1))]);
+    // Grabbing while dragging, and hover styles are not shown: the hovered
+    // second header looks as when the cursor is away.
+    let probe = Point::new(250.0, h1);
+    let away = Point::new(500.0, h1);
+    step(&mut ui, &mut r, &[moved(away), redraw()], away);
+    let plain = pixel(&mut r, probe);
+    let p = Point::new(x, h1);
+    step(&mut ui, &mut r, &[moved(p), redraw()], p);
+    assert_ne!(pixel(&mut r, probe), plain, "hover is visible when idle");
+    step(&mut ui, &mut r, &[moved(h0), press()], h0);
+    let (_, interaction) = step(&mut ui, &mut r, &[moved(p), redraw()], p);
+    assert_eq!(interaction, mouse::Interaction::Grabbing);
+    assert_eq!(pixel(&mut r, probe), plain);
+    step(&mut ui, &mut r, &[release()], p);
+    let (_, interaction) = step(&mut ui, &mut r, &[moved(p)], p);
+    assert_ne!(interaction, mouse::Interaction::Grabbing);
+}
+
+#[test]
+fn reorder_release_over_own_slot_or_outside_does_nothing() {
+    let mut r = renderer();
+    let mut ui = UserInterface::build(
+        reorder_list(&[1, 2, 3], 2, 0.0, 600.0),
+        SIZE,
+        Cache::default(),
+        &mut r,
+    );
+    let x = 100.0;
+    let h1 = Point::new(x, header_y(1, 2, 0.0));
+    // Over its own rows and just above itself: both its own slots.
+    for to in [h1.y + 60.0, h1.y - 30.0] {
+        let msgs = drag_path(&mut ui, &mut r, h1, &[Point::new(x, to)]);
+        assert!(msgs.is_empty(), "{to}: {msgs:?}");
+    }
+    // Released beside the list: the drag ends without a drop.
+    let msgs = drag_path(
+        &mut ui,
+        &mut r,
+        h1,
+        &[Point::new(x, 10.0), Point::new(500.0, 10.0)],
+    );
+    assert!(msgs.is_empty(), "{msgs:?}");
+    let back = Point::new(x, 300.0);
+    let (msgs, interaction) = step(&mut ui, &mut r, &[moved(back), release()], back);
+    assert!(reorders(&msgs).is_empty(), "drag ended: {msgs:?}");
+    assert_ne!(interaction, mouse::Interaction::Grabbing);
+    // Clicks work again.
+    let msgs = drag_path(&mut ui, &mut r, h1, &[]);
+    assert_eq!(msgs, vec![M::Toggle(2)]);
+}
+
+#[test]
+fn reorder_cancels_on_escape_other_presses_and_unfocus() {
+    let mut r = renderer();
+    let mut ui = UserInterface::build(
+        reorder_list(&[1, 2, 3], 2, 0.0, 600.0),
+        SIZE,
+        Cache::default(),
+        &mut r,
+    );
+    use keyboard::key::Named;
+    let x = 100.0;
+    let h0 = Point::new(x, header_y(0, 2, 0.0));
+    let to = Point::new(x, header_y(2, 2, 0.0) + 5.0);
+    let unfocused = Event::Window(window::Event::Unfocused);
+    for cancel in [escape(), right_press(), unfocused] {
+        step(&mut ui, &mut r, &[moved(h0), press()], h0);
+        let (msgs, _) = step(&mut ui, &mut r, &[moved(to), cancel.clone()], to);
+        let (later, interaction) = step(&mut ui, &mut r, &[release()], to);
+        assert!(
+            reorders(&msgs).is_empty() && reorders(&later).is_empty(),
+            "{cancel:?}: {msgs:?} {later:?}"
+        );
+        assert_ne!(interaction, mouse::Interaction::Grabbing, "{cancel:?}");
+        // No context menu opened mid-drag.
+        let (msgs, _) = step(
+            &mut ui,
+            &mut r,
+            &[key(Named::ArrowDown, false), key(Named::Enter, false)],
+            to,
+        );
+        assert!(msgs.is_empty(), "{cancel:?}: {msgs:?}");
+    }
+    // The header still clicks afterwards.
+    assert_eq!(drag_path(&mut ui, &mut r, h0, &[]), vec![M::Toggle(1)]);
+}
+
+#[test]
+fn reorder_passes_right_presses_to_the_context_menu() {
+    use keyboard::key::Named;
+    let mut r = renderer();
+    let mut ui = UserInterface::build(
+        reorder_list(&[1, 2, 3], 2, 0.0, 600.0),
+        SIZE,
+        Cache::default(),
+        &mut r,
+    );
+    let h1 = Point::new(100.0, header_y(1, 2, 0.0));
+    step(&mut ui, &mut r, &[moved(h1), right_press()], h1);
+    let (msgs, _) = step(
+        &mut ui,
+        &mut r,
+        &[key(Named::ArrowDown, false), key(Named::Enter, false)],
+        h1,
+    );
+    assert_eq!(msgs, vec![M::Close(2)]);
+}
+
+/// The dragged section and the drop target are found by key: sections
+/// that appear or vanish mid-drag do not shift them.
+#[test]
+fn reorder_survives_handles_changing_mid_drag() {
+    let mut r = renderer();
+    let x = 100.0;
+    let build = |ui: Option<Ui<'_>>, keys: &[u64], r: &mut iced::Renderer| {
+        let cache = ui.map(Ui::into_cache).unwrap_or_default();
+        UserInterface::build(reorder_list(keys, 2, 0.0, 600.0), SIZE, cache, r)
+    };
+    let mut ui = build(None, &[1, 2, 3], &mut r);
+    let h0 = Point::new(x, header_y(0, 2, 0.0));
+    step(&mut ui, &mut r, &[moved(h0), press()], h0);
+    let p = Point::new(x, header_y(1, 2, 0.0) + 5.0);
+    step(&mut ui, &mut r, &[moved(p)], p);
+    // Section 2 vanished: 3 is now the second header.
+    let mut ui = build(Some(ui), &[1, 3], &mut r);
+    let p = Point::new(x, header_y(1, 2, 0.0) - 5.0);
+    step(&mut ui, &mut r, &[moved(p)], p);
+    let (msgs, _) = step(&mut ui, &mut r, &[release()], p);
+    assert!(reorders(&msgs).is_empty(), "own slot: {msgs:?}");
+    // A new section above: the drop still names keys.
+    let mut ui = build(Some(ui), &[1, 3], &mut r);
+    step(&mut ui, &mut r, &[moved(h0), press()], h0);
+    let p = Point::new(x, header_y(1, 2, 0.0) + 5.0);
+    step(&mut ui, &mut r, &[moved(p)], p);
+    let mut ui = build(Some(ui), &[4, 1, 3], &mut r);
+    let p = Point::new(x, header_y(2, 2, 0.0) + 5.0);
+    let (msgs, _) = step(&mut ui, &mut r, &[moved(p), release()], p);
+    assert_eq!(reorders(&msgs), vec![M::Reorder(1, None)]);
+    // The dragged section vanished: no drop.
+    let mut ui = build(Some(ui), &[1, 3], &mut r);
+    step(&mut ui, &mut r, &[moved(h0), press()], h0);
+    let p = Point::new(x, header_y(1, 2, 0.0) + 5.0);
+    step(&mut ui, &mut r, &[moved(p)], p);
+    let mut ui = build(Some(ui), &[3], &mut r);
+    let (msgs, interaction) = step(&mut ui, &mut r, &[moved(h0), release()], h0);
+    assert!(reorders(&msgs).is_empty(), "{msgs:?}");
+    assert_ne!(interaction, mouse::Interaction::Grabbing);
+}
+
+/// In a scrolled list the cursor may leave the scrollable: positions stay
+/// in content coordinates and the list auto-scrolls (throttled).
+#[test]
+fn reorder_in_a_scrolled_list_beyond_its_bounds() {
+    let mut r = renderer();
+    let keys = [1, 2, 3, 4, 5, 6];
+    let (top, height, rows) = (100.0, 150.0, 1);
+    let mut ui = UserInterface::build(
+        reorder_list(&keys, rows, top, height),
+        SIZE,
+        Cache::default(),
+        &mut r,
+    );
+    let x = 100.0;
+    let over = Point::new(x, top + 50.0);
+    step(&mut ui, &mut r, &[moved(over), wheel(-4.0)], over);
+    let t = scroll_offsets(&mut ui, &r)[0].y;
+    let last = header_y(5, rows, top) - t;
+    assert!(last > top && last < top + height, "offset {t}");
+    // Drag the last header above the list.
+    let from = Point::new(x, last);
+    step(&mut ui, &mut r, &[moved(from), press()], from);
+    let above = Point::new(x, top - 50.0);
+    let before = Instant::now();
+    let (msgs, interaction) = step(&mut ui, &mut r, &[moved(above)], above);
+    assert_eq!(interaction, mouse::Interaction::Grabbing);
+    assert!(
+        matches!(auto_scrolls(&msgs)[..], [dy] if dy < 0.0),
+        "{msgs:?}"
+    );
+    let redraw_in = |ms: u64| {
+        Event::Window(window::Event::RedrawRequested(
+            before + Duration::from_millis(ms),
+        ))
+    };
+    // Throttled; and a scroll that did not move the list is not repeated.
+    let (msgs, _) = step(&mut ui, &mut r, &[redraw_in(0)], above);
+    assert!(msgs.is_empty(), "{msgs:?}");
+    let (msgs, _) = step(&mut ui, &mut r, &[redraw_in(200)], above);
+    assert!(msgs.is_empty(), "{msgs:?}");
+    // Once the list moved, the next tick scrolls again, also after the
+    // cursor briefly left the edge zone.
+    scroll_by(&mut ui, &r, -10.0);
+    let (msgs, _) = step(&mut ui, &mut r, &[redraw_in(400)], above);
+    assert!(
+        matches!(auto_scrolls(&msgs)[..], [dy] if dy < 0.0),
+        "{msgs:?}"
+    );
+    scroll_by(&mut ui, &r, -10.0);
+    let mid = Point::new(x, top + height / 2.0);
+    let (msgs, _) = step(&mut ui, &mut r, &[moved(mid)], mid);
+    assert!(msgs.is_empty(), "{msgs:?}");
+    let (msgs, _) = step(&mut ui, &mut r, &[redraw_in(410)], above);
+    assert!(msgs.is_empty(), "within the tick: {msgs:?}");
+    let (msgs, _) = step(&mut ui, &mut r, &[redraw_in(600)], above);
+    assert!(
+        matches!(auto_scrolls(&msgs)[..], [dy] if dy < 0.0),
+        "{msgs:?}"
+    );
+    let t = scroll_offsets(&mut ui, &r)[0].y;
+    // The slot follows the content y of the levitating cursor.
+    let rel = above.y - top + t;
+    let section = DRAG_HEADER_H + rows as f32 * DRAG_ROW_H;
+    let slot = (0..keys.len())
+        .filter(|i| *i as f32 * section + DRAG_HEADER_H / 2.0 < rel)
+        .count();
+    assert!(slot < 5, "{slot}");
+    let (msgs, _) = step(&mut ui, &mut r, &[release()], above);
+    assert_eq!(reorders(&msgs), vec![M::Reorder(6, Some(keys[slot]))]);
+    // Wheel scrolling still reaches the scrollable during a drag.
+    let first = Point::new(x, header_y(4, rows, top) - t);
+    step(&mut ui, &mut r, &[moved(first), press()], first);
+    let p = Point::new(x, first.y + 20.0);
+    step(&mut ui, &mut r, &[moved(p), wheel(1.0)], p);
+    assert!(scroll_offsets(&mut ui, &r)[0].y < t, "wheel scrolled up");
+    step(&mut ui, &mut r, &[escape()], p);
+}
+
+/// A drag that starts in an edge zone does not auto-scroll until the cursor
+/// heads for that edge.
+#[test]
+fn reorder_auto_scroll_waits_for_the_cursor_to_head_for_the_edge() {
+    let mut r = renderer();
+    let keys = [1, 2, 3, 4, 5, 6];
+    let (top, height, rows) = (100.0, 150.0, 1);
+    let mut ui = UserInterface::build(
+        reorder_list(&keys, rows, top, height),
+        SIZE,
+        Cache::default(),
+        &mut r,
+    );
+    let x = 100.0;
+    let section = DRAG_HEADER_H + rows as f32 * DRAG_ROW_H;
+    // The third header at the top of the viewport.
+    scroll_by(&mut ui, &r, 2.0 * section);
+    assert_eq!(scroll_offsets(&mut ui, &r)[0].y, 2.0 * section);
+    let from = Point::new(x, top + DRAG_HEADER_H / 2.0);
+    step(&mut ui, &mut r, &[moved(from), press()], from);
+    // Away from the top edge, still in its zone.
+    let down = Point::new(x, from.y + 8.0);
+    let (msgs, interaction) = step(&mut ui, &mut r, &[moved(down)], down);
+    assert_eq!(interaction, mouse::Interaction::Grabbing);
+    assert!(msgs.is_empty(), "{msgs:?}");
+    let later = Event::Window(window::Event::RedrawRequested(
+        Instant::now() + Duration::from_millis(200),
+    ));
+    let (msgs, _) = step(&mut ui, &mut r, &[later], down);
+    assert!(msgs.is_empty(), "{msgs:?}");
+    // Towards the top edge: scrolls up.
+    let up = Point::new(x, top + 2.0);
+    let (msgs, _) = step(&mut ui, &mut r, &[moved(up)], up);
+    assert!(
+        matches!(auto_scrolls(&msgs)[..], [dy] if dy < 0.0),
+        "{msgs:?}"
+    );
+    step(&mut ui, &mut r, &[escape()], up);
 }

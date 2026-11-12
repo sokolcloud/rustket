@@ -8,6 +8,9 @@ use rustket_ui::style;
 use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_4, SPACE_6, TEXT_TITLE};
 use rustket_ui::widget::{divider, empty_state, icon_button};
 
+/// The page body's scrollable.
+pub const SCROLL_ID: &str = "page-scroll";
+
 /// Title bar with a close button above `body`.
 pub fn page<'a, M: Clone + 'a>(title: String, body: Element<'a, M>, on_close: M) -> Element<'a, M> {
     container(
@@ -23,6 +26,7 @@ pub fn page<'a, M: Clone + 'a>(title: String, body: Element<'a, M>, on_close: M)
             .padding([SPACE_4, SPACE_6]),
             divider(),
             scrollable(container(body).padding(SPACE_6).width(Length::Fill))
+                .id(SCROLL_ID)
                 .height(Length::Fill)
                 .style(style::scrollable),
         ]

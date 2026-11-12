@@ -11,7 +11,10 @@
 //! - Writing: only data the server delivered in this session (after the
 //!   initial load) is written: documents of changed areas, room entries of
 //!   changed rooms and the newest messages of loaded timelines; the storage
-//!   layer keeps E2E messages as ciphertext only.
+//!   layer keeps E2E messages as ciphertext only. The sidebar's thread data
+//!   (followed sets, parents rows refer to) is written at most every
+//!   minute and when quitting; after a restart only rooms with replies
+//!   since are loaded again (`workspace::threads`).
 //! - Offline reading: while the server is unreachable (or the cache is
 //!   shown), an opened room or thread without its first page gets its
 //!   cached messages (`Workspace::seed_cached_messages`); the first page from
@@ -36,7 +39,7 @@ pub mod view;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iced::Task;
 use iced::futures::{SinkExt, Stream};
@@ -64,6 +67,9 @@ const QUIT_FLUSH: Duration = Duration::from_secs(2);
 /// How far before a message's local time deletions are looked up (clock
 /// differences between the client and the server).
 const DELETED_LOOKBACK_MS: i64 = 15 * 60 * 1000;
+/// Minimum time between two writes of the sidebar's thread data (it changes
+/// with every thread parent update; quitting writes it too).
+const THREADS_WRITE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// A timeline instance (see `Timeline::epoch`).
 type Epoch = (u64, u64);
@@ -138,6 +144,10 @@ pub struct ServerCache {
     queued: HashSet<String>,
     /// Outbox ids being sent by this module.
     sending: HashSet<String>,
+    /// The `THREAD_INDEX` revision last written.
+    threads_rev: Option<u64>,
+    /// When the thread data was last written.
+    threads_written: Option<Instant>,
 }
 
 impl ServerCache {
@@ -273,12 +283,38 @@ pub fn after_update(
         let full = std::mem::take(&mut s.cache.needs_full);
         collect_documents(&s.workspace, full, &mut batch);
         collect_timelines(&s.workspace, &mut s.cache, full, &mut batch);
+        collect_threads(s, full, Instant::now(), &mut batch);
     }
     collect_outbox(s, &mut batch);
     handle.write(batch);
     let seeds = ask_seeds(s, &handle);
     let sends = send_queued(s);
     Task::batch([seeds, sends])
+}
+
+/// The sidebar's thread data (once the workspace is live) when it changed,
+/// at most every [`THREADS_WRITE_INTERVAL`] (right away with a full write).
+/// Changes are seen by revision: they may be marked after this pass took
+/// the workspace's pending changes (the thread config is applied later).
+fn collect_threads(s: &mut ServerState, full: bool, now: Instant, batch: &mut Batch) {
+    if !live(&s.workspace) {
+        return;
+    }
+    let rev = s.workspace.revision(Dirty::THREAD_INDEX);
+    let changed = s.cache.threads_rev != Some(rev);
+    let due = s
+        .cache
+        .threads_written
+        .is_none_or(|t| now.duration_since(t) >= THREADS_WRITE_INTERVAL);
+    if !full && !(changed && due) {
+        return;
+    }
+    s.cache.threads_rev = Some(rev);
+    s.cache.threads_written = Some(now);
+    batch.threads = Some(crate::workspace::threads::cached_threads(
+        &s.workspace,
+        &s.threads,
+    ));
 }
 
 fn full_state(ws: &Workspace) -> CachedState {
@@ -298,6 +334,8 @@ fn full_state(ws: &Workspace) -> CachedState {
         custom_emoji: ws.emoji().custom().cloned().collect(),
         custom_statuses: ws.custom_statuses().cloned().collect(),
         saved_at: None,
+        // Written separately (`collect_threads`).
+        threads: Default::default(),
     }
 }
 
@@ -970,18 +1008,26 @@ pub fn size_task(app: &App) -> Task<Message> {
     )
 }
 
+/// What quitting writes: running uploads and the latest thread data (data
+/// kept current live is current now).
+fn quit_batch(s: &ServerState) -> Batch {
+    let names = crate::room::upload::running_names(s.id.as_str());
+    let threads = live(&s.workspace)
+        .then(|| crate::workspace::threads::cached_threads(&s.workspace, &s.threads));
+    Batch {
+        interrupted_uploads: (!names.is_empty()).then_some(names),
+        threads,
+        ..Default::default()
+    }
+}
+
 /// The app quits: running uploads are recorded (reported on the next
-/// start) and queued writes are flushed (bounded wait).
+/// start), the thread data is written and queued writes are flushed
+/// (bounded wait).
 pub fn on_quit(app: &App) {
     for s in app.servers.values() {
         let Some(h) = &s.cache.handle else { continue };
-        let names = crate::room::upload::running_names(s.id.as_str());
-        if !names.is_empty() {
-            h.write(Batch {
-                interrupted_uploads: Some(names),
-                ..Default::default()
-            });
-        }
+        h.write(quit_batch(s));
         if !h.flush_blocking(QUIT_FLUSH) {
             tracing::warn!(server = %s.id, "offline cache not flushed before quitting");
         }
@@ -1095,6 +1141,103 @@ mod tests {
             enc: None,
             check_deleted,
         }
+    }
+
+    fn thread_server() -> ServerState {
+        let entry = rustket_core::config::ServerEntry {
+            id: rustket_core::ServerId("s-cache-threads".into()),
+            url: "http://localhost:3000".into(),
+            ..Default::default()
+        };
+        let mut s = ServerState::from_entry(&entry).unwrap();
+        s.workspace
+            .set_thread_config(rustket_core::config::ThreadsMode::UnreadKept, [("a", "k")]);
+        s
+    }
+
+    fn go_live(s: &mut ServerState) {
+        s.workspace.apply_initial(rustket_core::sync::InitialData {
+            me: rocketchat::models::User {
+                id: "me".into(),
+                username: Some("me".into()),
+                ..Default::default()
+            },
+            subscriptions: vec![rocketchat::models::Subscription {
+                id: "sub-a".into(),
+                rid: "a".into(),
+                name: "a".into(),
+                open: true,
+                lr: RcDate::from_millis(10),
+                ..Default::default()
+            }],
+            next_since: RcDate::from_millis(1),
+            ..Default::default()
+        });
+    }
+
+    fn thread_parent(id: &str, tcount: u64) -> RcMessage {
+        RcMessage {
+            id: id.into(),
+            rid: "a".into(),
+            ts: RcDate::from_millis(1),
+            tlm: RcDate::from_millis(10),
+            tcount: Some(tcount),
+            replies: Some(vec!["me".into()]),
+            updated_at: RcDate::from_millis(tcount as i64),
+            ..Default::default()
+        }
+    }
+
+    fn collect(
+        s: &mut ServerState,
+        full: bool,
+        at: Instant,
+    ) -> Option<rustket_core::cache::CachedThreads> {
+        let mut batch = Batch::default();
+        collect_threads(s, full, at, &mut batch);
+        batch.threads
+    }
+
+    #[test]
+    fn thread_data_is_written_live_and_throttled() {
+        let mut s = thread_server();
+        let t0 = Instant::now();
+        let min = |m: u64| t0 + Duration::from_secs(m * 60);
+        assert!(collect(&mut s, true, t0).is_none(), "not live yet");
+        go_live(&mut s);
+        assert!(collect(&mut s, false, t0).is_some(), "first live pass");
+        assert!(collect(&mut s, false, min(5)).is_none(), "nothing changed");
+        s.workspace
+            .apply_thread_parents(vec![thread_parent("k", 1)]);
+        let at = min(5);
+        assert_eq!(collect(&mut s, false, at).unwrap().parents.len(), 1);
+        s.workspace
+            .apply_thread_parents(vec![thread_parent("k", 2)]);
+        assert!(collect(&mut s, false, at).is_none(), "throttled");
+        assert!(collect(&mut s, true, at).is_some(), "a full write");
+        // A change marked after this pass took the pending changes (the
+        // thread config is applied after the cache pass) is still seen.
+        s.workspace.take_changes();
+        s.workspace.set_thread_config(
+            rustket_core::config::ThreadsMode::UnreadKept,
+            [("a", "k"), ("a", "k2")],
+        );
+        s.workspace.take_changes();
+        assert!(collect(&mut s, false, min(7)).is_some());
+        assert!(collect(&mut s, false, min(9)).is_none());
+    }
+
+    #[test]
+    fn quitting_writes_the_thread_data_once_live() {
+        let mut s = thread_server();
+        assert!(quit_batch(&s).threads.is_none());
+        go_live(&mut s);
+        s.workspace
+            .apply_thread_parents(vec![thread_parent("k", 1)]);
+        let b = quit_batch(&s);
+        let t = b.threads.unwrap();
+        assert_eq!(t.parents.len(), 1);
+        assert!(b.interrupted_uploads.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread")]

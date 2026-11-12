@@ -77,24 +77,42 @@ impl App {
     pub(super) fn navigate(&mut self, nav: Nav) -> Task<Message> {
         let leaves = matches!(
             nav,
-            Nav::Settings | Nav::Workspace | Nav::Account | Nav::Directory | Nav::Admin
+            Nav::Settings
+                | Nav::SidebarSettings { .. }
+                | Nav::Workspace
+                | Nav::Account
+                | Nav::Directory
+                | Nav::Admin
         );
         if leaves && !self.may_leave(Message::Go(Go::Nav(nav.clone()))) {
             return Task::none();
         }
         let sid = self.active.clone();
         match (nav, sid) {
-            (Nav::Settings, _) => {
+            (nav @ (Nav::Settings | Nav::SidebarSettings { .. }), _) => {
                 // The real autostart location only with real desktop integration.
                 let at = self
                     .desktop
                     .is_enabled()
                     .then(crate::desktop::autostart::Autostart::system)
                     .flatten();
-                let screen = settings::Settings::with_autostart(at);
+                let mut screen = settings::Settings::with_autostart(at);
                 let load = screen.load().map(Message::Settings);
+                let reveal = match nav {
+                    Nav::SidebarSettings { ungroup } => {
+                        // The confirmation is in the group's row, far below
+                        // the card's top.
+                        let task = match &ungroup {
+                            Some(g) => settings::reveal_sidebar_group(g),
+                            None => settings::reveal_sidebar(),
+                        };
+                        screen.confirm_delete = ungroup;
+                        task
+                    }
+                    _ => Task::none(),
+                };
                 self.screen = Screen::Settings(Box::new(screen));
-                Task::batch([load, crate::cache::size_task(self)])
+                Task::batch([load, crate::cache::size_task(self), reveal])
             }
             (Nav::Workspace, _) => {
                 self.screen = if self.servers.is_empty() {

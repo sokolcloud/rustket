@@ -160,7 +160,7 @@ pub fn queue_section(
 /// "Chats in progress" and "On hold" (empty groups omitted). Other sections are
 /// ignored.
 pub fn split_section(ws: &Workspace, section: &Section) -> Vec<OmnichannelSection> {
-    if section.kind != SectionKind::Omnichannel {
+    if !section.is(SectionKind::Omnichannel) {
         return Vec::new();
     }
     let (mut open, mut hold) = (Vec::new(), Vec::new());
@@ -295,7 +295,7 @@ mod tests {
         );
         assert!(decor(ws.room("l1").unwrap(), true, "2026-11").over_mac);
         // The existing grouping is untouched.
-        assert!(base.iter().any(|s| s.kind == SectionKind::Omnichannel));
+        assert!(base.iter().any(|s| s.is(SectionKind::Omnichannel)));
         assert_eq!(
             OmnichannelSectionKind::OnHold.i18n_key(),
             "sidebar.omnichannel_on_hold"
