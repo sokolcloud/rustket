@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cap on the sidebar Threads section (5, 10, 20, 50, 100 or unlimited,
   20 by default), in Settings and the Threads header menu. Background
   loading stops once the cap is filled.
+- Threads whose parent message you starred are listed in Favorites, in every
+  Threads mode; star and unstar them from thread rows and the thread panel.
+- Colored flags on rooms and threads: one of six colors with your own names,
+  each used color gets its own sidebar section. Set them from the new room
+  context menu in the sidebar, the room header menu, thread rows or the thread
+  panel. Flags sync between your devices through a hidden private group on
+  the server.
 
 ## [0.2.2] - 2026-11-12
 
