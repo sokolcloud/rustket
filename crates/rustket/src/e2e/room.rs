@@ -173,6 +173,7 @@ pub fn menu_entries_with<M>(ws: &Workspace, rid: &str, f: fn(Msg) -> M) -> Vec<M
                 danger: i.danger,
                 disabled: i.disabled,
                 checked: i.checked,
+                swatch: i.swatch,
                 on_select: f(i.on_select),
             }),
             MenuEntry::Header(h) => MenuEntry::Header(h),

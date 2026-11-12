@@ -12,7 +12,8 @@
 //! `Check`, `CheckCheck`, `ChevronDown`/`Right`/`Left`/`Up`, `Plus`, `LogOut`, `Globe`,
 //! `Shield`, `Key`, `Video`, `Phone`, `Mic`, `Image`, `File`, `Download`,
 //! `ExternalLink`, `Eye`, `EyeOff`, `Info`, `TriangleAlert`, `RefreshCw`, `House`,
-//! `Inbox`, `List`, `Funnel`, `Sun`, `Moon`, `Menu`, `ArrowDown`, `LoaderCircle`.
+//! `Inbox`, `List`, `Funnel`, `Sun`, `Moon`, `Menu`, `ArrowDown`, `LoaderCircle`,
+//! `Flag`, `FlagOff`.
 
 use iced::Font;
 use iced::alignment;
@@ -109,6 +110,8 @@ pub const APP_ICONS: &[Icon] = &[
     Icon::LoaderCircle,
     Icon::Minus,
     Icon::Square,
+    Icon::Flag,
+    Icon::FlagOff,
 ];
 
 #[cfg(test)]

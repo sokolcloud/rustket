@@ -12,6 +12,7 @@ pub mod cache;
 pub mod config;
 pub mod e2e;
 pub mod emoji;
+pub mod flags;
 pub mod notify;
 pub mod omnichannel;
 pub mod permissions;

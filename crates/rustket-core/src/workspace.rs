@@ -21,6 +21,7 @@ use rocketchat::models::{
 use rocketchat::rest::HistoryCursor;
 
 use crate::emoji::EmojiRegistry;
+use crate::flags::{FlagBlob, FlagColor, Flags};
 use crate::presence::Presence;
 use crate::settings::Settings;
 use crate::sidebar_layout::ThreadsMode;
@@ -62,8 +63,11 @@ impl Dirty {
     pub const SYNC: Self = Self(1 << 14);
     /// Thread parents, followed sets or kept threads (sidebar Threads section).
     pub const THREAD_INDEX: Self = Self(1 << 15);
-    pub const ALL: Self = Self((1 << 16) - 1);
-    const BITS: usize = 16;
+    /// Synced flags: the stored blob, the pending overlay or the effective
+    /// flags (see [`Workspace::flags`]).
+    pub const FLAGS: Self = Self(1 << 16);
+    pub const ALL: Self = Self((1 << 17) - 1);
+    const BITS: usize = 17;
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -198,6 +202,17 @@ impl RoomEntry {
         self.room.as_ref().and_then(|r| r.encrypted) == Some(true)
     }
 
+    /// The user's own Rustket service room (see
+    /// `rocketchat::models::is_own_service_room`; the subscription names the
+    /// user): never listed, searched or counted. Rooms anyone else marked
+    /// are ordinary rooms.
+    pub fn is_service_room(&self) -> bool {
+        match (&self.sub, &self.room) {
+            (Some(s), Some(r)) => rocketchat::models::is_own_service_room(s, r, &s.u.id),
+            _ => false,
+        }
+    }
+
     /// Activity time for sorting, as Rocket.Chat's `SubscriptionsCachedStore`
     /// computes `lm`: `max(sub.lr, room.lm || sub.ts || room.ts)` (thread replies
     /// set `lr` without touching `room.lm`). `lastMessage.ts` stands in for a
@@ -262,6 +277,18 @@ pub struct Workspace {
     cached_rooms: HashSet<String>,
     /// Thread parents and followed sets for the sidebar's Threads section.
     thread_index: ThreadIndex,
+    /// The "starred threads in Favorites" switch as last set (the server
+    /// settings gate it).
+    starred_threads: bool,
+    /// The flags blob of the user's service rooms (merged when there are
+    /// several).
+    flag_blob: FlagBlob,
+    /// This device's flag edits not known to be stored yet.
+    flag_overlay: FlagBlob,
+    /// `flag_blob` merged with `flag_overlay`.
+    flags: Flags,
+    /// The user's own service rooms, primary first.
+    service_rooms: Vec<String>,
 }
 
 /// When a realtime event touched something.
@@ -325,6 +352,11 @@ impl RealtimeMarks {
 /// created (not an edit, reaction or thread-counter update of an old message).
 const NEW_MESSAGE_WINDOW_MS: i64 = 2_000;
 
+/// `m` is a thread parent (with replies) the user `me` starred.
+fn starred_parent(m: &Message, me: Option<&str>) -> bool {
+    m.tcount.unwrap_or(0) > 0 && me.is_some_and(|me| m.is_starred_by(me))
+}
+
 /// `new` is an older version than `old` (both known).
 fn is_older(new: Option<RcDate>, old: Option<RcDate>) -> bool {
     matches!((new, old), (Some(n), Some(o)) if n < o)
@@ -341,6 +373,9 @@ enum ParentSource {
     Page,
     /// Asked for over REST: stored even when nothing refers to it yet.
     Fetched,
+    /// The offline cache: like `Page`, but its star state may be stale and
+    /// is not applied.
+    Cached,
 }
 
 /// `d` is known and later than `than` (known).
@@ -367,6 +402,11 @@ impl Workspace {
     fn mark_room(&mut self, rid: &str) {
         self.mark(Dirty::ROOMS);
         self.changes.rooms.insert(rid.to_owned());
+        if self.service_rooms.iter().any(|r| r == rid)
+            || self.rooms.get(rid).is_some_and(RoomEntry::is_service_room)
+        {
+            self.refresh_flags();
+        }
     }
 
     fn mark_timeline(&mut self, rid: &str) {
@@ -654,6 +694,8 @@ impl Workspace {
         if self.thread_index.confirm_restored(lr) {
             self.mark(Dirty::THREAD_INDEX);
         }
+        // Service rooms the snapshot dropped.
+        self.refresh_flags();
         self.realtime.snapshot_applied();
         self.changes.rooms.extend(self.rooms.keys().cloned());
         self.mark(Dirty::ALL);
@@ -723,6 +765,11 @@ impl Workspace {
             self.rooms.entry(rid.clone()).or_default().room = Some(r);
             self.cached_rooms.insert(rid);
         }
+        // Flagged threads are pinned before the threads are restored.
+        self.refresh_flags();
+        // The settings may have come with the cache: stars are restored
+        // only while pins are on.
+        self.apply_starred_threads();
         self.restore_threads(threads);
         self.from_cache = true;
         self.changes.rooms.extend(self.rooms.keys().cloned());
@@ -759,7 +806,7 @@ impl Workspace {
             }
             Some(tmid) => {
                 if let Some(p) = parent.as_ref().filter(|p| p.id == tmid && p.rid == rid) {
-                    self.index_parents(std::slice::from_ref(p));
+                    self.index_parents_from(std::slice::from_ref(p), ParentSource::Cached);
                 }
                 let changed = self
                     .threads
@@ -940,8 +987,12 @@ impl Workspace {
             self.mark(Dirty::PRESENCE);
         }
         if self.me.as_ref() != Some(&me) {
+            let new_user = self.user_id() != Some(me.id.as_str());
             self.me = Some(me);
             self.mark(Dirty::ME);
+            if new_user {
+                self.refresh_flags();
+            }
         }
     }
 
@@ -1019,8 +1070,12 @@ impl Workspace {
             self.mark(Dirty::PRESENCE);
         }
         if self.me.as_ref() != Some(&me) {
+            let new_user = self.user_id() != Some(me.id.as_str());
             self.me = Some(me);
             self.mark(Dirty::ME);
+            if new_user {
+                self.refresh_flags();
+            }
         }
     }
 
@@ -1736,7 +1791,7 @@ impl Workspace {
             .as_ref()
             .map(|ms| ms.iter().map(|m| m.id.clone()).collect())
             .unwrap_or_default();
-        let parents: Vec<Message> = if self.thread_index.enabled() {
+        let parents: Vec<Message> = if self.thread_index.indexing() {
             result
                 .as_ref()
                 .map(|ms| {
@@ -2014,6 +2069,102 @@ impl Workspace {
         &self.drafts
     }
 
+    // --- flags -------------------------------------------------------------------------
+
+    /// The effective flags: the stored blob with this device's pending edits.
+    pub fn flags(&self) -> &Flags {
+        &self.flags
+    }
+
+    pub fn room_flag(&self, rid: &str) -> Option<FlagColor> {
+        self.flags.room(rid)
+    }
+
+    pub fn thread_flag(&self, tmid: &str) -> Option<FlagColor> {
+        self.flags.thread(tmid)
+    }
+
+    /// The flags blob of the user's service rooms, as the subscriptions
+    /// last showed it (live and from the offline cache).
+    pub fn flag_blob(&self) -> &FlagBlob {
+        &self.flag_blob
+    }
+
+    /// The pending edits set with [`Self::set_flag_overlay`].
+    pub fn flag_overlay(&self) -> &FlagBlob {
+        &self.flag_overlay
+    }
+
+    /// This device's flag edits not known to be stored yet (shown right
+    /// away). Entries the stored blob already holds change nothing, so the
+    /// overlay can be pruned at any time.
+    pub fn set_flag_overlay(&mut self, overlay: FlagBlob) {
+        if self.flag_overlay == overlay {
+            return;
+        }
+        self.flag_overlay = overlay;
+        self.mark(Dirty::FLAGS);
+        self.update_flags();
+    }
+
+    /// The user's own service rooms (strictly: a private group the user
+    /// created and alone is in, whose marker names the user), the primary
+    /// one first.
+    pub fn service_rooms(&self) -> &[String] {
+        &self.service_rooms
+    }
+
+    /// Whether `rid` is the user's own service room (see
+    /// [`RoomEntry::is_service_room`]).
+    pub fn is_service_room(&self, rid: &str) -> bool {
+        self.rooms.get(rid).is_some_and(RoomEntry::is_service_room)
+    }
+
+    /// Reads the flags blob from the user's service rooms.
+    fn refresh_flags(&mut self) {
+        let (rids, blob) = match self.me.as_ref().map(|m| m.id.as_str()) {
+            Some(uid) => {
+                let subs = rocketchat::models::service_subscriptions(
+                    self.rooms
+                        .values()
+                        .filter_map(|e| e.sub.as_ref().zip(e.room.as_ref())),
+                    uid,
+                );
+                let mut blob = FlagBlob::default();
+                for s in &subs {
+                    if let Some(f) = s.service_fields() {
+                        blob.merge(&FlagBlob::from_value(f.get(rocketchat::models::FLAGS_KEY)));
+                    }
+                }
+                (subs.into_iter().map(|s| s.rid.clone()).collect(), blob)
+            }
+            None => (Vec::new(), FlagBlob::default()),
+        };
+        self.service_rooms = rids;
+        if self.flag_blob != blob {
+            self.flag_blob = blob;
+            self.mark(Dirty::FLAGS);
+            self.update_flags();
+        }
+    }
+
+    /// Recomputes the effective flags and the pinned flagged threads.
+    fn update_flags(&mut self) {
+        let flags = self.flag_blob.merged(&self.flag_overlay).view();
+        if flags == self.flags {
+            return;
+        }
+        let flagged = flags
+            .threads()
+            .map(|(rid, tmid, _)| (tmid.to_owned(), rid.to_owned()))
+            .collect();
+        self.flags = flags;
+        self.mark(Dirty::FLAGS);
+        if self.thread_index.set_flagged(flagged) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
     // --- sidebar threads -------------------------------------------------------------
 
     /// Thread parents and followed sets behind the sidebar's Threads section.
@@ -2040,11 +2191,114 @@ impl Workspace {
         }
     }
 
-    /// Thread parents fetched over REST (unread or kept threads, a single
-    /// `chat.getMessage`). Hidden ones are gone; older copies than the stored
-    /// ones are ignored.
+    /// Mirrors the "starred threads in Favorites" switch. Tracking runs only
+    /// while it is on and the server allows starring and threads; call it on
+    /// every update (the server settings may change).
+    pub fn set_starred_threads(&mut self, on: bool) {
+        self.starred_threads = on;
+        self.apply_starred_threads();
+    }
+
+    fn apply_starred_threads(&mut self) {
+        let on = self.starred_threads
+            && self.settings.allow_starring()
+            && self.settings.threads_enabled();
+        if self.thread_index.set_pins(on) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// The user starred or unstarred the parent of thread `tmid`: applied
+    /// right away (the realtime echo confirms it; revert on error).
+    pub fn set_thread_starred(&mut self, rid: &str, tmid: &str, on: bool) {
+        if self.thread_index.set_starred(rid, tmid, on, Instant::now()) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// A page of a `chat.getStarredMessages` scan of `rid` requested at
+    /// `started`: thread parents are indexed (their star state applies unless
+    /// it changed since `started`). Returns the starred thread parents of the
+    /// page (collect them over every page for
+    /// [`finish_starred_scan`](Self::finish_starred_scan)).
+    pub fn apply_starred_page(
+        &mut self,
+        rid: &str,
+        msgs: Vec<Message>,
+        started: Instant,
+    ) -> Vec<String> {
+        if !self.thread_index.pins_enabled() {
+            return Vec::new();
+        }
+        let me = self.user_id().map(str::to_owned);
+        let mut found = Vec::new();
+        let mut changed = false;
+        for m in msgs {
+            if m.rid != rid
+                || m.tmid.is_some()
+                || (m.tcount.unwrap_or(0) == 0 && self.thread_index.parent(&m.id).is_none())
+            {
+                continue;
+            }
+            // A newer stored copy (or a hide or deletion seen since) decides.
+            let current = if self.thread_index.has_newer(&m) {
+                self.thread_index.parent(&m.id)
+            } else {
+                Some(&m)
+            };
+            if current.is_some_and(|c| c.hidden != Some(true) && starred_parent(c, me.as_deref())) {
+                found.push(m.id.clone());
+            }
+            // A star change seen since the scan started wins over its copy.
+            let source = if self.thread_index.star_changed_since(&m.id, started) {
+                ParentSource::Cached
+            } else {
+                ParentSource::Fetched
+            };
+            changed |= self.index_parent(m, source);
+        }
+        changed |= self.evict_thread_parents();
+        if changed {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+        found
+    }
+
+    /// A complete `chat.getStarredMessages` scan of `rid`, requested at
+    /// `started` while the room's last message was `lm`: `found` (from
+    /// [`apply_starred_page`](Self::apply_starred_page)) replaces the room's
+    /// starred threads, keeping star changes applied since `started`.
+    pub fn finish_starred_scan(
+        &mut self,
+        rid: &str,
+        found: impl IntoIterator<Item = String>,
+        started: Instant,
+        lm: Option<RcDate>,
+    ) {
+        let scan = crate::thread_index::StarredScan {
+            scanned_at: Some(RcDate::now()),
+            lm,
+        };
+        if self
+            .thread_index
+            .finish_starred_scan(rid, found.into_iter().collect(), started, scan)
+        {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// Forgets a room's starred scan (scanned again).
+    pub fn forget_starred_scan(&mut self, rid: &str) {
+        if self.thread_index.forget_starred_scan(rid) {
+            self.mark(Dirty::THREAD_INDEX);
+        }
+    }
+
+    /// Thread parents fetched over REST (unread, kept or starred threads, a
+    /// single `chat.getMessage`). Hidden ones are gone; older copies than the
+    /// stored ones are ignored.
     pub fn apply_thread_parents(&mut self, msgs: Vec<Message>) {
-        if !self.thread_index.enabled() {
+        if !self.thread_index.indexing() {
             return;
         }
         let mut changed = false;
@@ -2115,9 +2369,13 @@ impl Workspace {
         }
     }
 
-    /// The parent of `tmid` is not available (not found): its rows show it.
+    /// The parent of `tmid` is not available (not found): its rows show it;
+    /// it is no longer starred. Flags stay (only the user clears them: a
+    /// transient error here must not remove them on every device).
     pub fn thread_gone(&mut self, tmid: &str) {
-        if self.thread_index.enabled() && self.thread_index.mark_gone(tmid) {
+        if self.thread_index.indexing()
+            && self.thread_index.mark_gone_unstarred(tmid, Instant::now())
+        {
             self.mark(Dirty::THREAD_INDEX);
         }
     }
@@ -2142,6 +2400,19 @@ impl Workspace {
                 short: f.short,
             })
             .collect();
+        let starred: Vec<_> = t
+            .starred
+            .into_iter()
+            .filter(|s| subscribed(&s.rid))
+            .map(|s| crate::thread_index::RestoredStarred {
+                scan: s.scanned_at.map(|at| crate::thread_index::StarredScan {
+                    scanned_at: Some(at),
+                    lm: s.scanned_lm,
+                }),
+                rid: s.rid,
+                tmids: s.tmids.into_iter().collect(),
+            })
+            .collect();
         let synced: HashMap<String, Option<RcDate>> = t
             .parents_synced
             .into_iter()
@@ -2149,7 +2420,10 @@ impl Workspace {
             .collect();
         // A room without a mark: not known to be current.
         let synced = |rid: &str| synced.get(rid).copied().flatten();
-        if self.thread_index.restore(parents, followed, synced) {
+        if self
+            .thread_index
+            .restore(parents, followed, starred, synced)
+        {
             self.mark(Dirty::THREAD_INDEX);
         }
     }
@@ -2177,17 +2451,47 @@ impl Workspace {
         })
     }
 
-    /// A row source refers to `m` (as a parent): stored already, kept, unread,
-    /// its thread is open, or (Following) the user follows it.
+    /// A row source refers to `m` (as a parent): stored already, starred
+    /// (pins on), or with the Threads section on: kept, unread, its thread
+    /// is open, or (Following) the user follows it.
     fn thread_relevant(&self, m: &Message) -> bool {
         let idx = &self.thread_index;
         idx.parent(&m.id).is_some()
-            || idx.is_kept(&m.id)
-            || self.threads.contains_key(&m.id)
-            || self.is_unread_thread(&m.rid, &m.id)
-            || (idx.mode() == ThreadsMode::Following
-                && self.subscription(&m.rid).is_some()
-                && follows(m, self.user_id()))
+            || idx.is_pinned(&m.id)
+            || (idx.pins_enabled() && starred_parent(m, self.user_id()))
+            || (idx.enabled()
+                && (idx.is_kept(&m.id)
+                    || self.threads.contains_key(&m.id)
+                    || self.is_unread_thread(&m.rid, &m.id)
+                    || (idx.mode() == ThreadsMode::Following
+                        && self.subscription(&m.rid).is_some()
+                        && follows(m, self.user_id()))))
+    }
+
+    /// Applies the star state of a parent copy (pins on, own uid only; the
+    /// `starred` array of realtime copies lists every member's stars).
+    /// Returns whether it changed, and whether a live copy confirmed a
+    /// recent change instead.
+    fn note_star(&mut self, m: &Message, live: bool) -> (bool, bool) {
+        let Some(me) = self.user_id() else {
+            return (false, false);
+        };
+        let on = starred_parent(m, Some(me));
+        let now = Instant::now();
+        if self.thread_index.set_starred(&m.rid, &m.id, on, now) {
+            return (true, false);
+        }
+        (
+            false,
+            live && self.thread_index.confirm_star(&m.id, on, now),
+        )
+    }
+
+    /// With the Threads section off, a parent that is not pinned is not kept.
+    fn drop_unpinned_parent(&mut self, tmid: &str) -> bool {
+        !self.thread_index.enabled()
+            && !self.thread_index.is_pinned(tmid)
+            && self.thread_index.drop_parent(tmid)
     }
 
     /// Stores, updates or drops a parent (see [`ParentSource`]). Returns
@@ -2196,21 +2500,28 @@ impl Workspace {
         let live = source == ParentSource::Live;
         if m.hidden == Some(true) {
             self.thread_index.tombstone(&m);
-            return self.thread_index.mark_gone(&m.id);
+            return self.thread_index.mark_gone_unstarred(&m.id, Instant::now());
         }
         if self.thread_index.has_newer(&m) {
             return false;
         }
+        let (star, confirmed) = if source == ParentSource::Cached {
+            (false, false)
+        } else {
+            self.note_star(&m, live)
+        };
         if crate::thread_index::is_removed(&m) {
-            let mut changed = self.thread_index.unfollow(&m.id);
+            let mut changed = star | self.thread_index.unfollow(&m.id);
             if live {
                 changed |= self
                     .thread_index
                     .live_follow(&m.rid, &m.id, false, Instant::now());
             }
-            let shown = self.thread_index.is_kept(&m.id)
-                || self.threads.contains_key(&m.id)
-                || self.is_unread_thread(&m.rid, &m.id);
+            let shown = self.thread_index.is_pinned(&m.id)
+                || (self.thread_index.enabled()
+                    && (self.thread_index.is_kept(&m.id)
+                        || self.threads.contains_key(&m.id)
+                        || self.is_unread_thread(&m.rid, &m.id)));
             changed |= if shown {
                 self.thread_index.put_parent(m)
             } else {
@@ -2222,10 +2533,20 @@ impl Workspace {
         // Every live follow state counts: a crawl may be in flight for the room.
         let follow = (live && self.subscription(&m.rid).is_some())
             .then(|| (m.rid.clone(), m.id.clone(), follows(&m, self.user_id())));
-        let mut changed = false;
+        let mut changed = star;
+        // A star change (or its echo) of a parent that is not stored: older
+        // copies must not undo it.
+        let star_copy = (star || confirmed).then(|| m.clone());
         // Stored first: trimming the followed set ranks by the stored activity.
         if source == ParentSource::Fetched || self.thread_relevant(&m) {
+            let id = m.id.clone();
             changed |= self.thread_index.put_parent(m);
+            changed |= self.drop_unpinned_parent(&id);
+        }
+        if let Some(c) = star_copy
+            && self.thread_index.parent(&c.id).is_none()
+        {
+            self.thread_index.tombstone(&c);
         }
         if let Some((rid, tmid, follows)) = follow {
             changed |= self
@@ -2237,12 +2558,16 @@ impl Workspace {
 
     /// Parents from a page or an open thread (relevant ones only).
     fn index_parents(&mut self, msgs: &[Message]) {
-        if !self.thread_index.enabled() {
+        self.index_parents_from(msgs, ParentSource::Page);
+    }
+
+    fn index_parents_from(&mut self, msgs: &[Message], source: ParentSource) {
+        if !self.thread_index.indexing() {
             return;
         }
         let mut changed = false;
         for m in msgs.iter().filter(|m| m.tmid.is_none()) {
-            changed |= self.index_parent(m.clone(), ParentSource::Page);
+            changed |= self.index_parent(m.clone(), source);
         }
         changed |= self.evict_thread_parents();
         if changed {
@@ -2253,7 +2578,7 @@ impl Workspace {
     /// The realtime / sync hook: parent updates (counters, follows, deletion
     /// as `t: "rm"`, hiding) and replies (parent activity).
     fn index_message(&mut self, m: &Message) {
-        if !self.thread_index.enabled() {
+        if !self.thread_index.indexing() {
             return;
         }
         let changed = match m.tmid.as_deref() {
@@ -2264,11 +2589,12 @@ impl Workspace {
             }
             None if m.hidden == Some(true) => {
                 let known = self.thread_index.parent(&m.id).is_some()
-                    || self.thread_index.is_followed(&m.id);
+                    || self.thread_index.is_followed(&m.id)
+                    || self.thread_index.is_pinned(&m.id);
                 if known || m.tcount.is_some() {
                     self.thread_index.tombstone(m);
                 }
-                known && self.thread_index.mark_gone(&m.id)
+                known && self.thread_index.mark_gone_unstarred(&m.id, Instant::now())
             }
             None => {
                 let parent = m.tcount.is_some()
@@ -2300,6 +2626,7 @@ impl Workspace {
         }
         let mut referenced: HashSet<String> = self.threads.keys().cloned().collect();
         referenced.extend(self.thread_index.kept().map(|(_, t)| t.to_owned()));
+        referenced.extend(self.thread_index.pinned().map(|(_, t)| t.to_owned()));
         referenced.extend(self.thread_index.followed_tmids().map(str::to_owned));
         for s in self.rooms.values().filter_map(|e| e.sub.as_ref()) {
             for v in [&s.tunread, &s.tunread_user, &s.tunread_group]
@@ -3062,6 +3389,167 @@ mod tests {
         assert!(ws.thread_index().is_empty());
         assert!(!ws.take_changes().areas.contains(Dirty::THREAD_INDEX));
         assert!(Dirty::ALL.contains(Dirty::THREAD_INDEX));
+    }
+
+    fn starred(mut m: Message, by: &[&str]) -> Message {
+        m.starred = Some(
+            by.iter()
+                .map(|u| rocketchat::models::IdRef {
+                    id: (*u).to_owned(),
+                })
+                .collect(),
+        );
+        m
+    }
+
+    fn starred_tmids(ws: &Workspace) -> Vec<&str> {
+        ws.thread_index().starred().map(|(_, t)| t).collect()
+    }
+
+    #[test]
+    fn starred_parents_are_tracked_with_threads_off() {
+        let mut ws = threads_ws(ThreadsMode::Off);
+        ws.set_starred_threads(true);
+        assert!(ws.take_changes().areas.contains(Dirty::THREAD_INDEX));
+        // Someone else's star (realtime copies list every member's stars).
+        ws.apply_message(starred(thread_parent("o", "r", 10, &[], 10), &["bob"]));
+        // A starred message without replies is not a thread.
+        let mut plain = starred(msg("p", "r", 5, "bob"), &["me"]);
+        plain.updated_at = Some(ts(5));
+        ws.apply_message(plain);
+        assert!(ws.thread_index().is_empty());
+        ws.apply_message(starred(
+            thread_parent("s", "r", 10, &[], 10),
+            &["bob", "me"],
+        ));
+        assert_eq!(starred_tmids(&ws), ["s"]);
+        assert!(ws.thread_index().parent("s").is_some());
+        // A reply bumps its activity.
+        let mut reply = msg("x", "r", 40, "bob");
+        reply.tmid = Some("s".into());
+        ws.apply_message(reply);
+        assert_eq!(ws.thread_index().parent("s").unwrap().tlm, Some(ts(40)));
+        // Unstarred: dropped (nothing else needs it with Threads off).
+        ws.apply_message(starred(thread_parent("s", "r", 40, &[], 50), &[]));
+        assert!(starred_tmids(&ws).is_empty());
+        assert!(ws.thread_index().is_empty());
+        // An older copy (read before the unstar) does not star it again.
+        ws.set_thread_starred("r", "s", true);
+        ws.apply_message(starred(thread_parent("s", "r", 40, &[], 60), &[]));
+        ws.apply_thread_parents(vec![starred(thread_parent("s", "r", 40, &[], 55), &["me"])]);
+        assert!(starred_tmids(&ws).is_empty());
+        // Starring a parent shown elsewhere keeps it when Threads go off.
+        let mut ws = threads_ws(ThreadsMode::Following);
+        ws.set_starred_threads(true);
+        ws.apply_message(starred(thread_parent("a", "r", 10, &["me"], 10), &["me"]));
+        ws.apply_message(thread_parent("b", "r", 10, &["me"], 10));
+        ws.set_thread_config(ThreadsMode::Off, []);
+        assert!(ws.thread_index().parent("a").is_some());
+        assert!(ws.thread_index().parent("b").is_none());
+    }
+
+    /// A scan requested after an own (un)star but read on the server before
+    /// it does not undo it once the echo confirmed it.
+    #[test]
+    fn star_echoes_outlast_scans_read_before_them() {
+        for mode in [ThreadsMode::Off, ThreadsMode::Following] {
+            let mut ws = threads_ws(mode);
+            ws.set_starred_threads(true);
+            // Starred, its parent not loaded (e.g. known from a scan).
+            ws.set_thread_starred("r", "x", true);
+            assert_eq!(starred_tmids(&ws), ["x"]);
+            // Unstarred from the panel, then a scan starts, then the echo.
+            ws.set_thread_starred("r", "x", false);
+            let started = Instant::now();
+            ws.apply_message(starred(thread_parent("x", "r", 10, &[], 20), &[]));
+            assert!(starred_tmids(&ws).is_empty(), "{mode:?}");
+            // The page was read before the unstar write.
+            let stale = vec![starred(thread_parent("x", "r", 10, &[], 10), &["me"])];
+            let found = ws.apply_starred_page("r", stale, started);
+            ws.finish_starred_scan("r", found, started, Some(ts(10)));
+            assert!(starred_tmids(&ws).is_empty(), "{mode:?}");
+
+            // The mirror case: starred, scan started, echo, stale page.
+            ws.set_thread_starred("r", "x", true);
+            let started = Instant::now();
+            ws.apply_message(starred(thread_parent("x", "r", 10, &[], 30), &["me"]));
+            let stale = vec![starred(thread_parent("x", "r", 10, &[], 20), &[])];
+            let found = ws.apply_starred_page("r", stale, started);
+            ws.finish_starred_scan("r", found, started, Some(ts(10)));
+            assert_eq!(starred_tmids(&ws), ["x"], "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn starred_threads_need_starring_and_threads_on_the_server() {
+        for id in ["Message_AllowStarring", "Threads_enabled"] {
+            let mut ws = threads_ws(ThreadsMode::Off);
+            ws.apply_setting(
+                Change::Updated,
+                Setting {
+                    id: id.into(),
+                    value: serde_json::json!(false),
+                    ..Default::default()
+                },
+            );
+            ws.set_starred_threads(true);
+            assert!(!ws.thread_index().indexing(), "{id}");
+            ws.apply_message(starred(thread_parent("s", "r", 10, &[], 10), &["me"]));
+            assert!(ws.thread_index().is_empty(), "{id}");
+        }
+        let mut ws = threads_ws(ThreadsMode::Off);
+        ws.set_starred_threads(false);
+        ws.apply_message(starred(thread_parent("s", "r", 10, &[], 10), &["me"]));
+        assert!(ws.thread_index().is_empty());
+    }
+
+    #[test]
+    fn starred_scans_and_gone_parents() {
+        let mut ws = threads_ws(ThreadsMode::Off);
+        ws.set_starred_threads(true);
+        ws.set_thread_starred("r", "old", true);
+        let started = Instant::now();
+        let page = vec![
+            starred(thread_parent("a", "r", 10, &[], 10), &["me"]),
+            // Starred, but not a thread: ignored.
+            starred(msg("m", "r", 5, "bob"), &["me"]),
+            // Another room's message: ignored.
+            starred(thread_parent("z", "other", 10, &[], 10), &["me"]),
+        ];
+        let found = ws.apply_starred_page("r", page, started);
+        assert_eq!(found, ["a"]);
+        assert_eq!(
+            starred_tmids(&ws),
+            ["a", "old"],
+            "shown before the scan ends"
+        );
+        ws.finish_starred_scan("r", found, started, Some(ts(10)));
+        assert_eq!(starred_tmids(&ws), ["a"]);
+        let scan = ws.thread_index().starred_scan("r").unwrap();
+        assert_eq!(scan.lm, Some(ts(10)));
+        assert!(scan.scanned_at.is_some());
+        assert!(ws.thread_index().parent("a").is_some());
+        assert!(ws.thread_index().parent("m").is_none());
+        // Not found: no longer starred.
+        ws.thread_gone("a");
+        assert!(starred_tmids(&ws).is_empty());
+        // Hidden: no longer starred.
+        ws.set_thread_starred("r", "h", true);
+        let mut h = thread_parent("h", "r", 10, &[], 10);
+        h.hidden = Some(true);
+        ws.apply_message(h);
+        assert!(starred_tmids(&ws).is_empty());
+        // Deleted with replies (`t: "rm"`): stays while starred.
+        let mut rm = starred(thread_parent("d", "r", 10, &[], 10), &["me"]);
+        rm.t = Some("rm".into());
+        ws.apply_message(rm);
+        assert_eq!(starred_tmids(&ws), ["d"]);
+        assert!(ws.thread_index().parent("d").is_some());
+        ws.forget_starred_scan("r");
+        assert!(ws.thread_index().starred_scan("r").is_none());
+        // Logging out forgets them.
+        ws.apply_logged_out();
+        assert!(starred_tmids(&ws).is_empty());
     }
 
     #[test]

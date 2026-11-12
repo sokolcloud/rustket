@@ -730,3 +730,28 @@ fn room_join_code_flag() {
     let r: Room = serde_json::from_str(r#"{"_id":"r","t":"c"}"#).unwrap();
     assert_eq!(r.join_code_required, None);
 }
+
+#[test]
+fn service_room_fields() {
+    let uid = "Er3h8XYKahaopbSA7";
+    let sub: Subscription = get("subscriptions_get_one_service", "subscription");
+    assert!(!sub.open);
+    assert!(sub.is_service_room_of(uid));
+    let fields = sub.service_fields().unwrap();
+    assert_eq!(
+        fields.get(FLAGS_KEY).unwrap()["names"]["red"]["n"],
+        "Срочно"
+    );
+
+    let mut room: Room = get("groups_set_custom_fields", "group");
+    assert!(room.is_service_room_of(uid));
+    assert_eq!(room.service_fields(), Some(fields));
+    assert!(!room.is_service_room_of("someone-else"));
+    assert_eq!(service_subscriptions([(&sub, &room)], uid).len(), 1);
+    room.users_count = Some(2);
+    assert!(!room.is_service_room_of(uid));
+    assert!(service_subscriptions([(&sub, &room)], uid).is_empty());
+    room.users_count = Some(1);
+    room.id = "other".into();
+    assert!(service_subscriptions([(&sub, &room)], uid).is_empty());
+}

@@ -141,9 +141,9 @@ pub struct CachedState {
     pub threads: CachedThreads,
 }
 
-/// What the sidebar's Threads section had loaded: followed sets of crawled
-/// rooms and the thread parents the section refers to. A restart crawls
-/// again only rooms with replies after `synced_activity`.
+/// What the sidebar's thread rows had loaded: followed sets of crawled
+/// rooms, starred threads and the thread parents the rows refer to. A
+/// restart crawls again only rooms with replies after `synced_activity`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CachedThreads {
     pub followed: Vec<CachedFollowed>,
@@ -151,11 +151,16 @@ pub struct CachedThreads {
     /// Per room with parents: up to which `lr` they are current. Parents of
     /// a room without one are not known to be current.
     pub parents_synced: Vec<CachedParentsSynced>,
+    /// Per room with starred threads or a starred-messages scan.
+    pub starred: Vec<CachedStarred>,
 }
 
 impl CachedThreads {
     pub fn is_empty(&self) -> bool {
-        self.followed.is_empty() && self.parents.is_empty() && self.parents_synced.is_empty()
+        self.followed.is_empty()
+            && self.parents.is_empty()
+            && self.parents_synced.is_empty()
+            && self.starred.is_empty()
     }
 
     /// Drops what belongs to rooms `keep` rejects.
@@ -163,7 +168,25 @@ impl CachedThreads {
         self.followed.retain(|f| keep(&f.rid));
         self.parents.retain(|m| keep(&m.rid));
         self.parents_synced.retain(|p| keep(&p.rid));
+        self.starred.retain(|s| keep(&s.rid));
     }
+}
+
+/// A room's starred threads (parents the user starred), with its last
+/// starred-messages scan.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CachedStarred {
+    #[serde(default)]
+    pub rid: String,
+    #[serde(default)]
+    pub tmids: Vec<String>,
+    /// When the room was last scanned (`None`: never; the tmids were seen
+    /// in parent copies).
+    #[serde(default)]
+    pub scanned_at: Option<RcDate>,
+    /// The room's `lm` when the scan started.
+    #[serde(default)]
+    pub scanned_lm: Option<RcDate>,
 }
 
 /// The thread parents of a room, current up to the room's `lr` of

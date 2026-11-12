@@ -234,6 +234,15 @@ impl Error {
         }
     }
 
+    /// A room with that name already exists (`channels.create` /
+    /// `groups.create`), possibly archived.
+    pub fn is_duplicate_room_name(&self) -> bool {
+        matches!(
+            self.api_error_code(),
+            Some("error-duplicate-channel-name" | "error-archived-duplicate-name")
+        )
+    }
+
     pub fn is_unauthorized(&self) -> bool {
         matches!(self, Error::Unauthorized { .. })
     }
@@ -426,6 +435,10 @@ mod tests {
         let b = br#"{"success":false,"error":"The required \"roomId\" param provided does not match any channel [error-room-not-found]","errorType":"error-room-not-found"}"#;
         let e = Error::from_response(400, None, b);
         assert_eq!(e.api_error_code(), Some("error-room-not-found"));
+        assert!(!e.is_duplicate_room_name());
+        // groups.create with a taken name (8.9.1).
+        let b = br#"{"success":false,"error":"A channel with name 'x' exists [error-duplicate-channel-name]","errorType":"error-duplicate-channel-name","details":{"function":"RocketChat.getValidRoomName","channel_name":"x"}}"#;
+        assert!(Error::from_response(400, None, b).is_duplicate_room_name());
         let b = br#"{"status":"error","message":"Something broke"}"#;
         match Error::from_response(500, None, b) {
             Error::Api { message, error, .. } => {

@@ -138,9 +138,26 @@ pub struct ServerEntry {
         deserialize_with = "lenient_vec"
     )]
     pub kept_threads_all_accounts: Vec<KeptThread>,
+    /// Flag edits not known to be stored on the server yet (see
+    /// [`crate::flags`]), per account; read them through
+    /// [`Self::pending_flags()`].
+    #[serde(
+        rename = "pending_flags",
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_vec"
+    )]
+    pub pending_flags_all_accounts: Vec<PendingFlags>,
     /// Unix seconds.
     pub added_at: i64,
     pub sort_order: i32,
+}
+
+/// An account's pending flag edits: a [`crate::flags::FlagBlob`] as JSON
+/// (TOML has no `null` for its tombstones).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingFlags {
+    pub user_id: String,
+    pub blob: String,
 }
 
 impl Default for ServerId {
@@ -238,6 +255,50 @@ impl ServerEntry {
                     user_id: uid,
                 });
                 crate::sidebar_layout::sanitize_kept_threads(&mut self.kept_threads_all_accounts);
+                true
+            }
+        }
+    }
+
+    /// Pending flag edits of `uid` (empty when there are none or they do
+    /// not parse).
+    pub fn pending_flags(&self, uid: &str) -> crate::flags::FlagBlob {
+        self.pending_flags_all_accounts
+            .iter()
+            .find(|p| p.user_id == uid)
+            .and_then(|p| serde_json::from_str::<serde_json::Value>(&p.blob).ok())
+            .map(|v| crate::flags::FlagBlob::from_value(Some(&v)))
+            .unwrap_or_default()
+    }
+
+    /// Stores the pending flag edits of `uid` (an empty blob removes them).
+    /// Returns whether the entry changed.
+    pub fn set_pending_flags(&mut self, uid: &str, blob: &crate::flags::FlagBlob) -> bool {
+        let pos = self
+            .pending_flags_all_accounts
+            .iter()
+            .position(|p| p.user_id == uid);
+        if blob.is_empty() {
+            return match pos {
+                Some(i) => {
+                    self.pending_flags_all_accounts.remove(i);
+                    true
+                }
+                None => false,
+            };
+        }
+        let json = blob.to_value().to_string();
+        match pos {
+            Some(i) if self.pending_flags_all_accounts[i].blob == json => false,
+            Some(i) => {
+                self.pending_flags_all_accounts[i].blob = json;
+                true
+            }
+            None => {
+                self.pending_flags_all_accounts.push(PendingFlags {
+                    user_id: uid.to_owned(),
+                    blob: json,
+                });
                 true
             }
         }
@@ -345,6 +406,9 @@ pub struct UiPrefs {
     /// Most threads the sidebar's Threads section shows (and loads); 0 means
     /// no limit. Clamped to [`MAX_SIDEBAR_THREADS_LIMIT`].
     pub sidebar_threads_limit: u32,
+    /// Threads whose parent message the user starred show in Favorites
+    /// (whatever the Threads mode is).
+    pub sidebar_starred_threads: bool,
 }
 
 impl Default for UiPrefs {
@@ -374,6 +438,7 @@ impl Default for UiPrefs {
             sidebar_section_prefs: BTreeMap::new(),
             sidebar_threads: ThreadsMode::Off,
             sidebar_threads_limit: DEFAULT_SIDEBAR_THREADS_LIMIT,
+            sidebar_starred_threads: true,
         }
     }
 }
@@ -416,6 +481,13 @@ pub struct AppConfig {
     pub recent_status_texts: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowGeometry>,
+    /// This installation's id, set on first use ([`Self::ensure_device_id`]):
+    /// tells its synced flag edits from other devices' (`crate::flags::Stamp`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_opt"
+    )]
+    pub device_id: Option<String>,
     #[serde(skip)]
     unknown: Unknown,
 }
@@ -430,6 +502,7 @@ impl Default for AppConfig {
             recent_emoji: Vec::new(),
             recent_status_texts: Vec::new(),
             window: None,
+            device_id: None,
             unknown: Unknown::default(),
         }
     }
@@ -444,6 +517,7 @@ const APP_KEYS: &[&str] = &[
     "recent_emoji",
     "recent_status_texts",
     "window",
+    "device_id",
 ];
 const UI_KEYS: &[&str] = &[
     "theme",
@@ -470,6 +544,7 @@ const UI_KEYS: &[&str] = &[
     "sidebar_section_prefs",
     "sidebar_threads",
     "sidebar_threads_limit",
+    "sidebar_starred_threads",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -481,6 +556,7 @@ const SERVER_KEYS: &[&str] = &[
     "last_room",
     "pinned_certificates",
     "kept_threads",
+    "pending_flags",
     "added_at",
     "sort_order",
 ];
@@ -624,6 +700,11 @@ impl AppConfig {
             .get("active_server")
             .and_then(toml::Value::as_str)
             .map(|s| ServerId(s.to_owned()));
+        cfg.device_id = doc
+            .get("device_id")
+            .and_then(toml::Value::as_str)
+            .filter(|d| crate::flags::valid_id(d))
+            .map(str::to_owned);
         if let Some(t) = doc.get("ui").and_then(toml::Value::as_table) {
             cfg.ui = lenient(t, "ui");
         }
@@ -739,6 +820,19 @@ impl AppConfig {
         let text = toml::to_string_pretty(&out)?;
         fs::create_dir_all(dir).map_err(io_err(dir))?;
         write_atomic(&dir.join(CONFIG_FILE), text.as_bytes())
+    }
+
+    /// This installation's device id, created on first use. Returns it and
+    /// whether it was just created (the config needs saving).
+    pub fn ensure_device_id(&mut self) -> (String, bool) {
+        match &self.device_id {
+            Some(d) if crate::flags::valid_id(d) => (d.clone(), false),
+            _ => {
+                let d = rocketchat::ids::random_id();
+                self.device_id = Some(d.clone());
+                (d, true)
+            }
+        }
     }
 
     pub fn server(&self, id: &ServerId) -> Option<&ServerEntry> {
@@ -1058,7 +1152,21 @@ mod tests {
         s.last_room = Some("r".into());
         s.token_kind = Some(TokenKind::Login);
         s.set_thread_kept("r", "t", true);
+        let mut pending = crate::flags::FlagBlob::default();
+        pending
+            .edit(
+                &crate::flags::FlagBlob::default(),
+                &crate::flags::FlagEdit::Room {
+                    rid: "r".into(),
+                    color: Some(crate::flags::FlagColor::Red),
+                },
+                1,
+                "d",
+            )
+            .unwrap();
+        s.set_pending_flags("u", &pending);
         c.add_server(s);
+        c.ensure_device_id();
         c.ui.use_real_names = Some(true);
         crate::sidebar_layout::apply(
             &mut c.ui,
@@ -1100,6 +1208,53 @@ mod tests {
             keys(t["servers"][0].as_table().unwrap()),
             sorted(SERVER_KEYS)
         );
+    }
+
+    #[test]
+    fn pending_flags_are_per_account_and_survive_a_save() {
+        use crate::flags::{FlagBlob, FlagColor, FlagEdit};
+        let mut s = ServerEntry::new("https://a", "A");
+        let mut b = FlagBlob::default();
+        let room = |c| FlagEdit::Room {
+            rid: "r1".into(),
+            color: c,
+        };
+        b.edit(&FlagBlob::default(), &room(Some(FlagColor::Blue)), 5, "d")
+            .unwrap();
+        // A removal is a tombstone (null), which TOML cannot hold directly.
+        let mut gone = FlagBlob::default();
+        gone.edit(&b, &room(None), 6, "d").unwrap();
+        assert!(s.set_pending_flags("u1", &b));
+        assert!(!s.set_pending_flags("u1", &b));
+        assert!(s.set_pending_flags("u2", &gone));
+        let mut c = AppConfig::default();
+        c.add_server(s);
+        let (dev, created) = c.ensure_device_id();
+        assert!(created && crate::flags::valid_id(&dev));
+        assert_eq!(c.ensure_device_id(), (dev.clone(), false));
+        let text = toml::to_string(&c).unwrap();
+        let mut c = AppConfig::parse(&text).unwrap();
+        assert_eq!(c.device_id.as_deref(), Some(dev.as_str()));
+        let s = &mut c.servers[0];
+        assert_eq!(s.pending_flags("u1").to_value(), b.to_value());
+        assert_eq!(s.pending_flags("u2").to_value(), gone.to_value());
+        assert!(s.pending_flags("u2").view().room("r1").is_none());
+        assert!(s.pending_flags("u3").is_empty());
+        assert!(s.set_pending_flags("u1", &FlagBlob::default()));
+        assert!(!s.set_pending_flags("u1", &FlagBlob::default()));
+        assert_eq!(s.pending_flags_all_accounts.len(), 1);
+        // Junk entries and an unparsable blob are ignored.
+        let c = AppConfig::parse(
+            r#"
+            device_id = 5
+            [[servers]]
+            id = "s"
+            pending_flags = [{ user_id = "u", blob = "not json" }, "junk"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.device_id, None);
+        assert!(c.servers[0].pending_flags("u").is_empty());
     }
 
     fn with_sidebar_layout() -> AppConfig {
@@ -1236,6 +1391,18 @@ mod tests {
         assert!(text.contains("future_section"));
         let c = AppConfig::parse("[ui]\nsidebar_sort = \"activity_asc\"").unwrap();
         assert_eq!(c.ui.sidebar_sort, SidebarSort::ActivityAsc);
+    }
+
+    #[test]
+    fn sidebar_starred_threads_defaults_on() {
+        assert!(UiPrefs::default().sidebar_starred_threads);
+        let c = AppConfig::parse("[ui]\nunread_on_top = true").unwrap();
+        assert!(c.ui.sidebar_starred_threads);
+        let mut c = AppConfig::default();
+        c.ui.sidebar_starred_threads = false;
+        let text = toml::to_string(&c).unwrap();
+        assert!(text.contains("sidebar_starred_threads = false"), "{text}");
+        assert!(!AppConfig::parse(&text).unwrap().ui.sidebar_starred_threads);
     }
 
     #[test]

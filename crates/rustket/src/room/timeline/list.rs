@@ -269,12 +269,15 @@ impl Hash for RowKey {
     }
 }
 
-/// `RowKey::keep` of `m`: the context menu's keep/remove entry depends on
-/// the thread index, which no view-wide revision covers.
+/// `RowKey::keep` of `m`: the context menu's keep/remove and thread star
+/// entries depend on the thread index, which no view-wide revision covers.
 pub(super) fn keep_key(ws: &Workspace, m: &RcMessage) -> u8 {
-    super::actions::kept_thread_of(m)
-        .and_then(|tmid| super::actions::keep_offer(ws, &m.rid, tmid))
-        .map_or(0, |kept| if kept { 2 } else { 1 })
+    let state = |on: Option<bool>| on.map_or(0, |on| if on { 2 } else { 1 });
+    let keep = state(
+        super::actions::kept_thread_of(m)
+            .and_then(|tmid| super::actions::keep_offer(ws, &m.rid, tmid)),
+    );
+    keep + 3 * state(super::actions::star_thread_offer(ws, m))
 }
 
 /// `RenderState` toggle index of "show the ignored message" (the toggles

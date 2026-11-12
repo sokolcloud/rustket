@@ -1,6 +1,7 @@
 //! Application state, update and subscriptions (`view` is in `app/view.rs`).
 
 mod components;
+mod star_kept;
 mod uikit;
 mod view;
 #[cfg(test)]
@@ -170,6 +171,8 @@ pub struct App {
     pub decorated: bool,
     /// Offline cache (`crate::cache`).
     pub offline: crate::cache::Caches,
+    /// "Move kept threads to Favorites" in progress.
+    star_kept: star_kept::StarKept,
 }
 
 fn notice_text(n: &SecretNotice) -> String {
@@ -317,6 +320,7 @@ impl App {
             titlebar: Default::default(),
             decorated,
             offline: crate::cache::Caches::new(flags.offline_cache.clone()),
+            star_kept: Default::default(),
         };
         let wanted: Vec<(ServerId, String)> = app
             .config
@@ -713,6 +717,61 @@ impl App {
         }
     }
 
+    /// A result of the flag sync; tells the user when it gave up.
+    fn on_flags(
+        &mut self,
+        sid: ServerId,
+        epoch: u64,
+        m: crate::workspace::flags::Msg,
+    ) -> Task<Message> {
+        let Some(s) = self.servers.get_mut(&sid) else {
+            return Task::none();
+        };
+        if !s.is_current(epoch) {
+            return Task::none();
+        }
+        let outs = s.flags.update(m, Instant::now());
+        let tasks: Vec<_> = outs
+            .into_iter()
+            .map(|out| match out {
+                crate::workspace::flags::Out::Failed(f) => self.toast(
+                    BannerKind::Error,
+                    t!("sidebar.flags_sync_failed"),
+                    f.user_text(),
+                ),
+            })
+            .collect();
+        Task::batch(tasks)
+    }
+
+    /// Applies a flag edit of the user: shown at once, stored on the server
+    /// by the flag sync (`after_update` persists it until then).
+    fn set_flag(&mut self, sid: &ServerId, edit: rustket_core::flags::FlagEdit) -> Task<Message> {
+        let (device, created) = self.config.ensure_device_id();
+        let save = if created {
+            self.save_config()
+        } else {
+            Task::none()
+        };
+        let Some(s) = self.servers.get_mut(sid) else {
+            return save;
+        };
+        match s
+            .flags
+            .edit(&mut s.workspace, &edit, &device, Instant::now())
+        {
+            Ok(_) => save,
+            Err(e) => {
+                tracing::warn!(server = %sid, error = %e, "flag edit refused");
+                let title = match e {
+                    rustket_core::flags::FlagError::Full => t!("sidebar.flags_full"),
+                    rustket_core::flags::FlagError::InvalidId => t!("sidebar.flag_failed"),
+                };
+                Task::batch([save, self.toast(BannerKind::Error, title, String::new())])
+            }
+        }
+    }
+
     /// Applies pending workspace changes to derived views and fetches wanted images.
     fn after_update(&mut self) -> Task<Message> {
         let mut tasks = vec![self.sync_room_visibility()];
@@ -722,6 +781,7 @@ impl App {
         let active = self.active.clone();
         let sids: Vec<ServerId> = self.servers.keys().cloned().collect();
         let mut effects = Vec::new();
+        let mut save_flags = false;
         for sid in sids {
             let Some(s) = self.servers.get_mut(&sid) else {
                 continue;
@@ -742,6 +802,26 @@ impl App {
                 .into_iter()
                 .flat_map(|e| e.kept_threads().map(|k| (k.rid.as_str(), k.tmid.as_str())));
             s.workspace.set_thread_config(mode, kept);
+            s.workspace
+                .set_starred_threads(self.config.ui.sidebar_starred_threads);
+            // Flags: the account's pending edits, pushes, persisting them.
+            let entry = self.config.server(&sid);
+            let uid = entry
+                .and_then(|e| e.user_id.as_deref())
+                .filter(|_| s.is_logged_in());
+            s.flags.follow_account(uid, |u| {
+                entry.map(|e| e.pending_flags(u)).unwrap_or_default()
+            });
+            let task = s
+                .flags
+                .tick(&mut s.workspace, s.session.as_ref(), Instant::now());
+            let (fsid, epoch) = (sid.clone(), s.generation);
+            tasks.push(task.map(move |m| Message::Flags(fsid.clone(), epoch, m)));
+            if let Some((uid, blob)) = s.flags.take_save()
+                && let Some(e) = self.config.server_mut(&sid)
+            {
+                save_flags |= e.set_pending_flags(&uid, &blob);
+            }
             let threads_collapsed = self.ui_state.collapsed_sections.contains(
                 SectionId::Builtin(room_list::SectionKind::Threads)
                     .collapse_key()
@@ -858,6 +938,9 @@ impl App {
         self.images.set_working_set(working);
         tasks.push(self.fetch_images());
         tasks.push(crate::videoconf::fetch_wanted(self));
+        if save_flags {
+            tasks.push(self.save_config());
+        }
         Task::batch(tasks)
     }
 
@@ -992,6 +1075,8 @@ impl App {
             }
             Message::Omni(sid, epoch, m) => self.on_omni(sid, epoch, m),
             Message::Threads(sid, epoch, m) => self.on_threads(sid, epoch, m),
+            Message::Flags(sid, epoch, m) => self.on_flags(sid, epoch, m),
+            Message::SetFlag(sid, edit) => self.set_flag(&sid, edit),
             Message::InitialLoaded(sid, epoch, r) => self.on_initial_loaded(sid, epoch, r),
             Message::Resynced(sid, epoch, delta, rooms) => {
                 self.on_resynced(sid, epoch, delta, rooms)
@@ -1181,6 +1266,50 @@ impl App {
                         BannerKind::Error,
                         t!("app.mark_unread_failed"),
                         e.user_text(),
+                    )
+                }
+            },
+            Message::StarKeptNext => self.on_star_kept_next(),
+            Message::ThreadStarred {
+                sid,
+                epoch,
+                rid,
+                tmid,
+                on,
+                queued,
+                result,
+            } => match result {
+                // The parent's realtime update confirms it.
+                Ok(()) => Task::none(),
+                Err(e) => {
+                    tracing::warn!(server = %sid, %rid, %tmid, on, error = %e, "thread star failed");
+                    if let Some(s) = self.servers.get_mut(&sid)
+                        && s.is_current(epoch)
+                    {
+                        s.workspace.set_thread_starred(&rid, &tmid, !on);
+                    }
+                    if queued {
+                        self.star_kept_failed(sid, rid, tmid, &e);
+                        return Task::none();
+                    }
+                    let title = if on {
+                        t!("sidebar.star_thread_failed")
+                    } else {
+                        t!("sidebar.unstar_thread_failed")
+                    };
+                    self.toast(BannerKind::Error, title, e.user_text())
+                }
+            },
+            Message::SidebarFavoriteDone(sid, on, r) => match r {
+                // The subscription update moves the row.
+                Ok(()) => Task::none(),
+                Err(e) => {
+                    tracing::warn!(server = %sid, error = %e, "rooms.favorite failed");
+                    let title = crate::room::panel::common::RoomAction::Favorite(on).label();
+                    self.toast(
+                        BannerKind::Error,
+                        title,
+                        crate::room::panel::common::failure_text(&e),
                     )
                 }
             },
@@ -1737,6 +1866,7 @@ impl App {
             sidebar::Out::KeepThread { rid, tmid, keep } => {
                 self.keep_thread(&sid, &rid, &tmid, keep)
             }
+            sidebar::Out::StarThread { rid, tmid, on } => self.star_thread(&sid, rid, tmid, on),
             sidebar::Out::ThreadCall { rid, tmid, call } => {
                 let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
                     return Task::none();
@@ -1755,6 +1885,16 @@ impl App {
                     move |r| Message::SidebarThreadDone(sid.clone(), call, r),
                 )
             }
+            sidebar::Out::Favorite { rid, on } => {
+                let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move { rest.rooms_favorite(&rid, on).await.map_err(Failure::from) },
+                    move |r| Message::SidebarFavoriteDone(sid.clone(), on, r),
+                )
+            }
+            sidebar::Out::Flag(edit) => self.set_flag(&sid, edit),
             sidebar::Out::Layout(e) => {
                 let applied = rustket_core::sidebar_layout::apply(&mut self.config.ui, e);
                 let mut changed = applied.changed;
@@ -1771,8 +1911,12 @@ impl App {
                 s.threads.refresh(&s.workspace);
                 Task::none()
             }
-            sidebar::Out::OpenSettings { ungroup } => {
-                self.navigate(component::Nav::SidebarSettings { ungroup })
+            sidebar::Out::RefreshStarred => {
+                s.threads.refresh_starred(&s.workspace);
+                Task::none()
+            }
+            sidebar::Out::OpenSettings { ungroup, flag } => {
+                self.navigate(component::Nav::SidebarSettings { ungroup, flag })
             }
             sidebar::Out::ScrollBy(dy) => iced::widget::operation::scroll_by(
                 sidebar::LIST_ID,
@@ -1955,6 +2099,8 @@ impl App {
                 room::Effect::KeepThread { rid, tmid, keep } => {
                     self.keep_thread(sid, &rid, &tmid, keep)
                 }
+                room::Effect::StarThread { rid, tmid, on } => self.star_thread(sid, rid, tmid, on),
+                room::Effect::SetFlag(edit) => self.set_flag(sid, edit),
                 room::Effect::E2e(req) => self.on_e2e_room(sid, req),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
@@ -1979,6 +2125,58 @@ impl App {
         } else {
             Task::none()
         }
+    }
+
+    /// Stars or unstars the parent of thread `tmid`: the sidebar shows the
+    /// change right away, the realtime echo confirms it, a failure reverts it.
+    fn star_thread(
+        &mut self,
+        sid: &ServerId,
+        rid: String,
+        tmid: String,
+        on: bool,
+    ) -> Task<Message> {
+        self.star_thread_call(sid, rid, tmid, on, false)
+    }
+
+    /// [`Self::star_thread`]; `queued`: for "Move kept threads to
+    /// Favorites" (`star_kept`), whose failures are reported together.
+    fn star_thread_call(
+        &mut self,
+        sid: &ServerId,
+        rid: String,
+        tmid: String,
+        on: bool,
+        queued: bool,
+    ) -> Task<Message> {
+        let Some(s) = self.servers.get_mut(sid) else {
+            return Task::none();
+        };
+        let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
+            return Task::none();
+        };
+        s.workspace.set_thread_starred(&rid, &tmid, on);
+        let (sid, epoch) = (sid.clone(), s.generation);
+        let call_tmid = tmid.clone();
+        Task::perform(
+            async move {
+                if on {
+                    rest.star_message(&call_tmid).await
+                } else {
+                    rest.unstar_message(&call_tmid).await
+                }
+                .map_err(Failure::from)
+            },
+            move |r| Message::ThreadStarred {
+                sid: sid.clone(),
+                epoch,
+                rid: rid.clone(),
+                tmid: tmid.clone(),
+                on,
+                queued,
+                result: r,
+            },
+        )
     }
 
     /// "Mark unread": leaves the room first (like the web client), so the

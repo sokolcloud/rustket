@@ -33,6 +33,9 @@ pub struct MenuItem<Message> {
     /// `Some`: a choice or toggle; `Some(true)` shows a check mark. A menu
     /// with any such item gives every item a leading slot of the same width.
     pub checked: Option<bool>,
+    /// Flag colour (palette index of [`Tokens::flag`](crate::theme::Tokens::flag))
+    /// drawn as a swatch before the label, after the check slot.
+    pub swatch: Option<usize>,
     pub on_select: Message,
 }
 
@@ -45,6 +48,7 @@ impl<Message> MenuItem<Message> {
             danger: false,
             disabled: false,
             checked: None,
+            swatch: None,
             on_select,
         }
     }
@@ -73,7 +77,15 @@ impl<Message> MenuItem<Message> {
         self.checked = Some(checked);
         self
     }
+
+    pub fn swatch(mut self, index: usize) -> Self {
+        self.swatch = Some(index);
+        self
+    }
 }
+
+/// Size of a menu item's flag swatch.
+const SWATCH: f32 = 10.0;
 
 #[derive(Debug, Clone)]
 pub enum MenuEntry<Message> {
@@ -105,7 +117,16 @@ pub fn menu_width<Message>(entries: &[MenuEntry<Message>]) -> f32 {
                 let hint = item.hint.as_deref().map_or(0.0, |h| {
                     SPACE_3 + super::ellipsis::natural_width(h, TEXT_CAPTION, DEFAULT_FONT)
                 });
-                Some(super::ellipsis::natural_width(&item.label, TEXT_BODY, DEFAULT_FONT) + hint)
+                let swatch = if item.swatch.is_some() {
+                    SWATCH + SPACE_3
+                } else {
+                    0.0
+                };
+                Some(
+                    super::ellipsis::natural_width(&item.label, TEXT_BODY, DEFAULT_FONT)
+                        + hint
+                        + swatch,
+                )
             }
             MenuEntry::Header(h) => Some(super::ellipsis::natural_width(
                 h,
@@ -155,6 +176,9 @@ pub fn menu_panel<'a, Message: Clone + 'a>(entries: &[MenuEntry<Message>]) -> El
                     (None, true) => content.push(space().width(16)),
                     (None, false) => content.push(space().width(0)),
                 };
+                if let Some(index) = item.swatch {
+                    content = content.push(super::flag::flag_swatch(index, SWATCH));
+                }
                 content = content.push(ellipsis(item.label.clone()).size(TEXT_BODY));
                 if let Some(hint) = &item.hint {
                     content = content.push(

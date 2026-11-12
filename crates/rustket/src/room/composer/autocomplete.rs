@@ -215,7 +215,7 @@ pub fn match_rooms(ws: &Workspace, query: &str) -> Vec<Item> {
         .rooms()
         .values()
         .filter(|e| matches!(e.room_type(), RoomType::Channel | RoomType::Private))
-        .filter(|e| !e.is_discussion())
+        .filter(|e| !e.is_discussion() && !e.is_service_room())
         .filter_map(|e| {
             let name = e.name();
             if name.is_empty() {

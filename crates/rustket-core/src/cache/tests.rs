@@ -749,6 +749,12 @@ fn threads_fixture() -> CachedThreads {
             rid: "A".into(),
             synced_activity: Some(ts(5000)),
         }],
+        starred: vec![CachedStarred {
+            rid: "A".into(),
+            tmids: vec!["t1".into()],
+            scanned_at: Some(ts(5100)),
+            scanned_lm: Some(ts(4900)),
+        }],
     }
 }
 
@@ -756,6 +762,7 @@ fn sorted(mut t: CachedThreads) -> CachedThreads {
     t.followed.sort_by(|a, b| a.rid.cmp(&b.rid));
     t.parents.sort_by(|a, b| a.id.cmp(&b.id));
     t.parents_synced.sort_by(|a, b| a.rid.cmp(&b.rid));
+    t.starred.sort_by(|a, b| a.rid.cmp(&b.rid));
     t
 }
 
@@ -778,6 +785,12 @@ fn thread_data_round_trip() {
     with_b.parents_synced.push(CachedParentsSynced {
         rid: "B".into(),
         synced_activity: Some(ts(100)),
+    });
+    with_b.starred.push(CachedStarred {
+        rid: "B".into(),
+        tmids: vec!["t5".into()],
+        scanned_at: None,
+        scanned_lm: None,
     });
     db.write(Batch {
         threads: Some(with_b.clone()),
@@ -980,6 +993,86 @@ fn restored_followed_sets_need_following_mode() {
     assert!(ws.thread_index().parent("t2").is_some());
     let ws = cached_thread_workspace(ThreadsMode::Off);
     assert!(ws.thread_index().is_empty());
+}
+
+#[test]
+fn restored_starred_threads_with_threads_off() {
+    use crate::sidebar_layout::ThreadsMode;
+    let cached = |pins: bool| {
+        let mut ws = Workspace::new();
+        ws.set_thread_config(ThreadsMode::Off, []);
+        ws.set_starred_threads(pins);
+        let mut threads = threads_fixture();
+        threads.starred.push(CachedStarred {
+            rid: "LEFT".into(),
+            tmids: vec!["t3".into()],
+            scanned_at: None,
+            scanned_lm: None,
+        });
+        assert!(ws.apply_cached(CachedState {
+            me: Some(me("u1", "alice")),
+            subscriptions: vec![sub("A", "a", RoomType::Channel)],
+            threads,
+            ..Default::default()
+        }));
+        ws
+    };
+    let ws = cached(true);
+    let idx = ws.thread_index();
+    assert_eq!(idx.starred().collect::<Vec<_>>(), [("A", "t1")]);
+    assert!(idx.parent("t1").is_some() && idx.parent("t2").is_none());
+    assert_eq!(idx.starred_scan("A").unwrap().lm, Some(ts(4900)));
+    assert!(idx.starred_scan("LEFT").is_none());
+    let ws = cached(false);
+    assert!(ws.thread_index().is_empty());
+    assert_eq!(ws.thread_index().starred().count(), 0);
+    // The cached settings disallow starring: nothing is restored.
+    let mut ws = Workspace::new();
+    ws.set_thread_config(ThreadsMode::Off, []);
+    ws.set_starred_threads(true);
+    assert!(ws.thread_index().pins_enabled());
+    assert!(ws.apply_cached(CachedState {
+        me: Some(me("u1", "alice")),
+        settings: vec![Setting {
+            id: "Message_AllowStarring".into(),
+            value: json!(false),
+            ..Default::default()
+        }],
+        subscriptions: vec![sub("A", "a", RoomType::Channel)],
+        threads: threads_fixture(),
+        ..Default::default()
+    }));
+    assert!(!ws.thread_index().pins_enabled());
+    assert_eq!(ws.thread_index().starred().count(), 0);
+}
+
+#[test]
+fn restored_flags_pin_their_threads() {
+    use crate::sidebar_layout::ThreadsMode;
+    let mut svc = sub("SVC", "rustket-sync-u1", RoomType::Private);
+    svc.u.id = "u1".into();
+    svc.open = false;
+    svc.roles = Some(vec!["owner".into()]);
+    let mut fields = rocketchat::models::ServiceFields::new("u1");
+    fields.set(
+        rocketchat::models::FLAGS_KEY,
+        json!({ "threads": { "t2": { "c": "red", "rid": "A", "t": 1 } } }),
+    );
+    svc.custom_fields = Some(fields.to_custom_fields());
+    let mut ws = Workspace::new();
+    ws.set_thread_config(ThreadsMode::Off, []);
+    assert!(ws.apply_cached(CachedState {
+        me: Some(me("u1", "alice")),
+        rooms: vec![crate::test_util::service_room(&svc, "u1", 1)],
+        subscriptions: vec![sub("A", "a", RoomType::Channel), svc],
+        threads: threads_fixture(),
+        ..Default::default()
+    }));
+    assert_eq!(ws.service_rooms(), ["SVC"]);
+    assert_eq!(ws.thread_flag("t2"), Some(crate::flags::FlagColor::Red));
+    let idx = ws.thread_index();
+    assert!(idx.is_flagged("t2") && !idx.pins_enabled());
+    assert!(idx.parent("t2").is_some() && idx.parent("t1").is_none());
 }
 
 #[test]

@@ -214,6 +214,16 @@ pub enum Effect {
         tmid: String,
         keep: bool,
     },
+    /// Star or unstar the parent of thread `tmid` (its row in the sidebar's
+    /// Favorites follows right away).
+    StarThread {
+        rid: String,
+        tmid: String,
+        on: bool,
+    },
+    /// Set or remove the flag of this room or one of its threads (the app's
+    /// flag sync stores it).
+    SetFlag(rustket_core::flags::FlagEdit),
     /// Video call actions (start, join, call back, info): `crate::videoconf`.
     Call(crate::videoconf::CallAction),
     /// A request to the omnichannel part of the room (quick actions, panels);

@@ -7,6 +7,7 @@ mod badge;
 mod button;
 mod ellipsis;
 mod feedback;
+mod flag;
 mod focus_ring;
 mod header;
 mod hover_box;
@@ -39,6 +40,7 @@ pub use button::{
 };
 pub use ellipsis::{Ellipsis, ellipsis, sanitize_bidi};
 pub use feedback::{BannerKind, banner, status_strip};
+pub use flag::{FlagMark, flag_glyph, flag_mark, flag_swatch};
 pub use focus_ring::{
     FOCUS_RING_WIDTH, FocusRegion, FocusRing, draw_ring, focus_region, focus_ring, focus_within,
     ring_colors,
@@ -66,7 +68,7 @@ pub use reorder::{ReorderArea, ReorderHandle, reorder_area};
 pub use side_panel::{MIN_MAIN_WIDTH, MIN_SIDE_WIDTH, side_panel};
 pub use sidebar::{
     Density, RailIcon, RoomListItemProps, add_server_button, room_list_item, section_header,
-    section_header_with, workspace_rail_item,
+    section_header_full, section_header_with, workspace_rail_item,
 };
 pub use spinner::{empty_state, loading_placeholder, spinner, spinner_colored};
 pub use split::{HANDLE_WIDTH, split};

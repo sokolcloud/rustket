@@ -104,8 +104,11 @@ pub enum Nav {
     /// App preferences (`screens/settings.rs`).
     Settings,
     /// App preferences scrolled to the Sidebar card; `ungroup`: with that
-    /// sidebar group's deletion to confirm.
-    SidebarSettings { ungroup: Option<String> },
+    /// sidebar group's deletion to confirm; `flag`: at that flag's name.
+    SidebarSettings {
+        ungroup: Option<String>,
+        flag: Option<rustket_core::flags::FlagColor>,
+    },
     /// Account of the active server (`screens/account.rs`).
     Account,
     /// Directory of the active server (`screens/directory.rs`).
@@ -156,6 +159,10 @@ pub enum Effect {
     RecentStatusTexts(Vec<String>),
     /// A UIKit interaction (app action button of the user menu).
     UiKit(Box<crate::uikit::UiKitMsg>),
+    /// A flag edit for the account of server `ServerId` (Settings).
+    SetFlag(rustket_core::ServerId, rustket_core::flags::FlagEdit),
+    /// Star the parents of the signed-in accounts' kept threads (Settings).
+    StarKeptThreads,
 }
 
 /// Result of an app-level component `update`.

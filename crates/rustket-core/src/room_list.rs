@@ -1,13 +1,15 @@
 //! Sidebar sections computed from a [`Workspace`]: grouping, sorting, display
 //! names, badges, previews and filtering. Pure; recompute when
 //! `Dirty::ROOMS | Dirty::SETTINGS | Dirty::PRESENCE | Dirty::DRAFTS` changed
-//! (and `Dirty::THREAD_INDEX` while the Threads section is on).
+//! (and `Dirty::THREAD_INDEX` while the thread index is in use, see
+//! `ThreadIndex::indexing`).
 
 use rocketchat::RcDate;
 use rocketchat::models::{Message, RoomType, UserStatus};
 
 use crate::config::{SidebarSort, UiPrefs};
-use crate::sidebar_layout::{GroupType, Layout, SectionId, ThreadsMode};
+use crate::flags::FlagColor;
+use crate::sidebar_layout::{GroupType, Layout, MAX_STARRED_THREADS, SectionId, ThreadsMode};
 use crate::workspace::{RoomEntry, Workspace};
 
 /// Maximum preview length in characters.
@@ -39,6 +41,9 @@ pub struct RoomListOptions {
     /// `(rid, tmid)` of the thread open in the panel: never cut by the row
     /// limit (unlike `kept_thread` it does not change the sort).
     pub open_thread: Option<(String, String)>,
+    /// Threads whose parent the user starred show in Favorites (when the
+    /// server allows starring and threads), not in Threads.
+    pub starred_threads: bool,
 }
 
 impl RoomListOptions {
@@ -53,6 +58,7 @@ impl RoomListOptions {
             use_real_names: ws.use_real_names(prefs.use_real_names),
             kept_thread: None,
             open_thread: None,
+            starred_threads: prefs.sidebar_starred_threads,
         }
     }
 }
@@ -69,6 +75,7 @@ impl Default for RoomListOptions {
             use_real_names: false,
             kept_thread: None,
             open_thread: None,
+            starred_threads: true,
         }
     }
 }
@@ -196,6 +203,8 @@ pub struct RoomListItem {
     pub avatar: Avatar,
     pub badge: Badge,
     pub favorite: bool,
+    /// The room's flag (never on omnichannel rooms).
+    pub flag: Option<FlagColor>,
     /// `disableNotifications`.
     pub muted: bool,
     pub read_only: bool,
@@ -244,7 +253,7 @@ impl ThreadTitle {
     }
 }
 
-/// A row of the Threads section.
+/// A thread row (the Threads section, starred threads in Favorites).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThreadListItem {
     pub rid: String,
@@ -266,6 +275,10 @@ pub struct ThreadListItem {
     pub kept: bool,
     /// The user follows the thread (in the parent's `replies`).
     pub following: bool,
+    /// The user starred the parent (tracked while starred threads are on).
+    pub starred: bool,
+    /// The thread's flag (never in omnichannel rooms).
+    pub flag: Option<FlagColor>,
 }
 
 impl ThreadListItem {
@@ -278,12 +291,16 @@ impl ThreadListItem {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Section {
     pub id: SectionId,
-    /// Group name; `None` for built-ins (title from the kind's i18n key).
+    /// Group name, or the user's name of a flag; `None` otherwise (title
+    /// from [`SectionId::i18n_key`]).
     pub title: Option<String>,
+    /// Room rows; listed before the thread rows.
     pub items: Vec<RoomListItem>,
-    /// Thread rows (the Threads section only).
+    /// Thread rows (Threads; starred threads in Favorites; flagged threads
+    /// in flag sections).
     pub threads: Vec<ThreadListItem>,
-    /// Thread rows left out by the section's limit (`ui.sidebar_threads_limit`).
+    /// Thread rows left out by the section's limit (`ui.sidebar_threads_limit`;
+    /// [`MAX_STARRED_THREADS`] in Favorites).
     pub threads_hidden: usize,
 }
 
@@ -541,7 +558,11 @@ fn build_item(ws: &Workspace, e: &RoomEntry, opts: &RoomListOptions) -> RoomList
     };
     let group_dm = kind == RoomKind::GroupDirect;
     let sub = e.sub.as_ref();
+    let flag = (kind != RoomKind::Omnichannel)
+        .then(|| ws.room_flag(&rid))
+        .flatten();
     RoomListItem {
+        flag,
         display_name: display_name(ws, e, opts.use_real_names),
         name: e.name().to_owned(),
         participants,
@@ -581,14 +602,19 @@ fn matches_filter(ws: &Workspace, e: &RoomEntry, item: &RoomListItem, q: &str) -
             .any(hit)
 }
 
-/// The section a room is listed in: Unread, Favorites, Omnichannel, the group
-/// that claims its type, Conversations (not grouping by type), its type's
-/// section. Display order is `opts.layout.order`, independent of this.
+/// The section a room is listed in: Unread, its flag's section, Favorites,
+/// Omnichannel, the group that claims its type, Conversations (not grouping
+/// by type), its type's section. Display order is `opts.layout.order`,
+/// independent of this.
 fn section_for(e: &RoomEntry, item: &RoomListItem, opts: &RoomListOptions) -> SectionId {
     if opts.unread_on_top
         && (is_unread(e) || opts.kept_unread.as_deref() == Some(item.rid.as_str()))
     {
         return SectionKind::Unread.into();
+    }
+    // A flag is a deliberate, usually temporary state: it beats Favorites.
+    if let Some(c) = item.flag {
+        return SectionId::Flag(c);
     }
     if opts.show_favorites && item.favorite {
         return SectionKind::Favorites.into();
@@ -667,10 +693,15 @@ fn sort_by_kind(items: &mut [RoomListItem], sort: SidebarSort) {
 
 /// Sidebar sections in `opts.layout.order`, then Omnichannel (rendered
 /// separately). Rooms without a subscription, with `open == false` or
-/// archived are excluded (Rocket.Chat's `getRoomCategory`); `filter` is a
-/// case-insensitive substring over names, `fname`s and DM participants. Each
-/// section is sorted by its own sort; empty sections are omitted, except the
-/// Threads section while it is on and nothing is filtered (see [`thread_rows`]).
+/// archived are excluded (Rocket.Chat's `getRoomCategory`), and so are
+/// service rooms; `filter` is a case-insensitive substring over names,
+/// `fname`s and DM participants. Each section is sorted by its own sort;
+/// empty sections are omitted, except the Threads section while it is on and
+/// nothing is filtered (see [`thread_rows`]). Favorites lists favorite rooms,
+/// then starred threads (see [`starred_thread_rows`]), and a flag section
+/// its flagged rooms, then flagged threads ([`flagged_thread_rows`]), each
+/// block by the section's sort. A flagged item is listed in its flag's
+/// section only (rooms: unless unread rooms are on top and it is unread).
 pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Section> {
     let q = filter.trim().to_lowercase();
     let mut buckets: std::collections::HashMap<SectionId, Vec<RoomListItem>> = Default::default();
@@ -678,7 +709,7 @@ pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Sect
         let Some(sub) = e.sub.as_ref() else {
             continue;
         };
-        if !sub.open || e.is_archived() {
+        if !sub.open || e.is_archived() || e.is_service_room() {
             continue;
         }
         let item = build_item(ws, e, opts);
@@ -715,9 +746,19 @@ pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Sect
             }
             continue;
         }
-        let Some(mut items) = buckets.remove(id).filter(|v| !v.is_empty()) else {
+        let (mut threads, mut threads_hidden) = (Vec::new(), 0);
+        if id == &SectionId::Builtin(SectionKind::Favorites) {
+            threads = starred_thread_rows(ws, opts, &q);
+            threads_hidden = threads.len().saturating_sub(MAX_STARRED_THREADS);
+            threads.truncate(MAX_STARRED_THREADS);
+        }
+        if let Some(c) = id.flag() {
+            threads = flagged_thread_rows(ws, opts, &q, c);
+        }
+        let mut items = buckets.remove(id).unwrap_or_default();
+        if items.is_empty() && threads.is_empty() {
             continue;
-        };
+        }
         sort_items(
             &mut items,
             layout.sort_of(id),
@@ -725,16 +766,120 @@ pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Sect
             opts,
         );
         out.push(Section {
-            title: id
-                .group_id()
-                .and_then(|g| layout.group_name(g))
-                .map(str::to_owned),
+            title: match id {
+                SectionId::Flag(c) => ws.flags().name(*c),
+                _ => id.group_id().and_then(|g| layout.group_name(g)),
+            }
+            .map(str::to_owned),
             id: id.clone(),
             items,
-            threads: Vec::new(),
-            threads_hidden: 0,
+            threads,
+            threads_hidden,
         });
     }
+    out
+}
+
+/// Whether starred threads show in Favorites (and leave Threads).
+fn starred_threads_shown(ws: &Workspace, opts: &RoomListOptions) -> bool {
+    opts.starred_threads
+        && opts.show_favorites
+        && ws.thread_index().pins_enabled()
+        && ws.settings().allow_starring()
+        && ws.settings().threads_enabled()
+}
+
+/// A room whose rows the sidebar lists: subscribed, open, not archived, not
+/// a service room.
+fn listed<'w>(ws: &'w Workspace, rid: &str) -> Option<&'w RoomEntry> {
+    ws.room(rid).filter(|e| {
+        e.sub.as_ref().is_some_and(|s| s.open) && !e.is_archived() && !e.is_service_room()
+    })
+}
+
+/// Whether flagged threads show in flag sections (and leave Threads and
+/// Favorites): threads are enabled on the server.
+fn flagged_threads_shown(ws: &Workspace) -> bool {
+    ws.settings().threads_enabled()
+}
+
+/// Whether thread `tmid` of `rid` is listed in a flag section.
+fn in_flag_section(ws: &Workspace, rid: &str, tmid: &str) -> bool {
+    ws.thread_flag(tmid).is_some()
+        && flagged_threads_shown(ws)
+        && ws
+            .room(rid)
+            .is_some_and(|e| kind_of(e) != RoomKind::Omnichannel)
+}
+
+/// Thread rows of the flag section of `color`: flagged threads in listed,
+/// non-omnichannel rooms, whatever the Threads mode is (empty while threads
+/// are disabled on the server). Gone or deleted parents are listed while
+/// flagged. `q` (lower case) matches the room name and the title. Sorted by
+/// the section's sort and unread-first setting.
+pub fn flagged_thread_rows(
+    ws: &Workspace,
+    opts: &RoomListOptions,
+    q: &str,
+    color: FlagColor,
+) -> Vec<ThreadListItem> {
+    if !flagged_threads_shown(ws) {
+        return Vec::new();
+    }
+    let mut out: Vec<ThreadListItem> = ws
+        .flags()
+        .threads()
+        .filter(|(_, _, c)| *c == color)
+        .filter_map(|(rid, tmid, _)| thread_item(ws, listed(ws, rid)?, tmid, opts, q))
+        .filter(|t| t.flag == Some(color))
+        .collect();
+    sort_threads(&mut out, &SectionId::Flag(color), opts);
+    out
+}
+
+/// Flag usage per color: `(listed, other)` items. Listed ones show in the
+/// sidebar; the others are in rooms the user left, hid or that are
+/// archived (kept, in case the room comes back) or in omnichannel rooms.
+/// Flagged threads count as listed while threads are enabled on the
+/// server.
+pub fn flag_usage(ws: &Workspace) -> std::collections::BTreeMap<FlagColor, (usize, usize)> {
+    let mut out: std::collections::BTreeMap<FlagColor, (usize, usize)> = Default::default();
+    let shown = |rid: &str| listed(ws, rid).is_some_and(|e| kind_of(e) != RoomKind::Omnichannel);
+    let flags = ws.flags();
+    for (rid, c) in flags.rooms() {
+        let n = out.entry(c).or_default();
+        if shown(rid) { n.0 += 1 } else { n.1 += 1 }
+    }
+    let threads = flagged_threads_shown(ws);
+    for (rid, _, c) in flags.threads() {
+        let n = out.entry(c).or_default();
+        if threads && shown(rid) {
+            n.0 += 1
+        } else {
+            n.1 += 1
+        }
+    }
+    out
+}
+
+/// Starred thread rows of Favorites (empty while they are off): threads
+/// whose parent the user starred, in listed rooms, whatever the Threads
+/// mode is. Unread ones stay here too (Threads does not repeat them);
+/// flagged ones are in their flag's section.
+/// Deleted parents are listed while starred. `q` (lower case) matches the
+/// room name and the title. Sorted by the Favorites sort and unread-first
+/// setting; not cut.
+pub fn starred_thread_rows(ws: &Workspace, opts: &RoomListOptions, q: &str) -> Vec<ThreadListItem> {
+    if !starred_threads_shown(ws, opts) {
+        return Vec::new();
+    }
+    let mut out: Vec<ThreadListItem> = ws
+        .thread_index()
+        .starred()
+        .filter(|(rid, tmid)| !in_flag_section(ws, rid, tmid))
+        .filter_map(|(rid, tmid)| thread_item(ws, listed(ws, rid)?, tmid, opts, q))
+        .collect();
+    sort_threads(&mut out, &SectionKind::Favorites.into(), opts);
     out
 }
 
@@ -846,16 +991,11 @@ pub fn all_thread_rows(ws: &Workspace, opts: &RoomListOptions, q: &str) -> Vec<T
         return Vec::new();
     }
     let idx = ws.thread_index();
-    let listed = |rid: &str| {
-        ws.room(rid)
-            .filter(|e| e.sub.as_ref().is_some_and(|s| s.open) && !e.is_archived())
-    };
     let kept_open = opts.kept_thread.as_ref().map(|(_, t)| t.as_str());
-    let me = ws.user_id();
     // tmid -> rid, deduplicated.
     let mut wanted: std::collections::BTreeMap<&str, &str> = Default::default();
     for e in ws.rooms().values() {
-        let Some(s) = e.sub.as_ref().filter(|_| listed(e.rid()).is_some()) else {
+        let Some(s) = e.sub.as_ref().filter(|_| listed(ws, e.rid()).is_some()) else {
             continue;
         };
         for v in [&s.tunread, &s.tunread_user, &s.tunread_group]
@@ -884,67 +1024,92 @@ pub fn all_thread_rows(ws: &Workspace, opts: &RoomListOptions, q: &str) -> Vec<T
             }
         }
     }
+    // Starred threads are in Favorites, flagged ones in flag sections.
+    let starred = starred_threads_shown(ws, opts);
+    wanted.retain(|t, r| !(starred && idx.is_starred(t)) && !in_flag_section(ws, r, t));
     let mut out = Vec::new();
     for (tmid, rid) in wanted {
-        let Some(e) = listed(rid) else {
+        let Some(e) = listed(ws, rid) else {
             continue;
         };
-        let parent = idx.parent(tmid).filter(|p| p.rid == rid);
-        let unread = e.sub.as_ref().and_then(|s| thread_unread(s, tmid));
-        let kept = idx.is_kept(tmid) && mode != ThreadsMode::Unread;
-        if parent.is_some_and(crate::thread_index::is_removed)
-            && unread.is_none()
-            && !kept
+        let Some(row) = thread_item(ws, e, tmid, opts, q) else {
+            continue;
+        };
+        if matches!(row.title, ThreadTitle::Removed)
+            && row.unread.is_none()
+            && !row.kept
             && kept_open != Some(tmid)
         {
             continue;
         }
-        let title = match parent {
-            Some(p) => thread_title(p),
-            None if idx.is_gone(tmid) => ThreadTitle::Unavailable,
-            None => ThreadTitle::Loading,
-        };
-        let room_name = display_name(ws, e, opts.use_real_names);
-        if !q.is_empty() {
-            let hit = |s: &str| s.to_lowercase().contains(q);
-            if !hit(&room_name) && !title.text().is_some_and(hit) {
-                continue;
-            }
-        }
-        let author = parent.and_then(|p| p.u.username.clone());
-        let avatar = match &author {
-            Some(u) => Avatar::User {
-                username: u.clone(),
-            },
-            None => Avatar::Room {
-                rid: rid.to_owned(),
-                etag: e.room.as_ref().and_then(|r| r.avatar_etag.clone()),
-            },
-        };
-        out.push(ThreadListItem {
-            rid: rid.to_owned(),
-            tmid: tmid.to_owned(),
-            room_name,
-            room_kind: kind_of(e),
-            title,
-            author,
-            avatar,
-            tlm: parent.and_then(crate::thread_index::activity),
-            tcount: parent.and_then(|p| p.tcount).unwrap_or(0),
-            unread,
-            kept,
-            following: me.is_some_and(|id| {
-                parent.is_some_and(|p| p.replies.iter().flatten().any(|u| u == id))
-            }),
-        });
+        out.push(row);
     }
-    sort_threads(&mut out, opts);
+    sort_threads(&mut out, &SectionKind::Threads.into(), opts);
     out
 }
 
-fn sort_threads(rows: &mut [ThreadListItem], opts: &RoomListOptions) {
-    let id = SectionId::Builtin(SectionKind::Threads);
-    match opts.layout.sort_of(&id) {
+/// The row of thread `tmid` of the listed room `e` (`None`: `q`, lower
+/// case, matches neither the room name nor the title).
+fn thread_item(
+    ws: &Workspace,
+    e: &RoomEntry,
+    tmid: &str,
+    opts: &RoomListOptions,
+    q: &str,
+) -> Option<ThreadListItem> {
+    let idx = ws.thread_index();
+    let rid = e.rid();
+    let me = ws.user_id();
+    let parent = idx.parent(tmid).filter(|p| p.rid == rid);
+    let unread = e.sub.as_ref().and_then(|s| thread_unread(s, tmid));
+    let kept = idx.is_kept(tmid) && opts.layout.threads != ThreadsMode::Unread;
+    let title = match parent {
+        Some(p) => thread_title(p),
+        None if idx.is_gone(tmid) => ThreadTitle::Unavailable,
+        None => ThreadTitle::Loading,
+    };
+    let room_name = display_name(ws, e, opts.use_real_names);
+    if !q.is_empty() {
+        let hit = |s: &str| s.to_lowercase().contains(q);
+        if !hit(&room_name) && !title.text().is_some_and(hit) {
+            return None;
+        }
+    }
+    let author = parent.and_then(|p| p.u.username.clone());
+    let avatar = match &author {
+        Some(u) => Avatar::User {
+            username: u.clone(),
+        },
+        None => Avatar::Room {
+            rid: rid.to_owned(),
+            etag: e.room.as_ref().and_then(|r| r.avatar_etag.clone()),
+        },
+    };
+    Some(ThreadListItem {
+        rid: rid.to_owned(),
+        tmid: tmid.to_owned(),
+        room_name,
+        room_kind: kind_of(e),
+        title,
+        author,
+        avatar,
+        tlm: parent.and_then(crate::thread_index::activity),
+        tcount: parent.and_then(|p| p.tcount).unwrap_or(0),
+        unread,
+        kept,
+        following: me
+            .is_some_and(|id| parent.is_some_and(|p| p.replies.iter().flatten().any(|u| u == id))),
+        starred: idx.is_starred(tmid),
+        flag: (kind_of(e) != RoomKind::Omnichannel)
+            .then(|| ws.thread_flag(tmid))
+            .flatten(),
+    })
+}
+
+/// Sorts thread rows by the sort of section `id`; with its unread-first
+/// setting, unread rows (and the open thread) come first.
+fn sort_threads(rows: &mut [ThreadListItem], id: &SectionId, opts: &RoomListOptions) {
+    match opts.layout.sort_of(id) {
         SidebarSort::Activity => {
             rows.sort_by(|a, b| b.tlm.cmp(&a.tlm).then_with(|| a.tmid.cmp(&b.tmid)))
         }
@@ -961,7 +1126,7 @@ fn sort_threads(rows: &mut [ThreadListItem], opts: &RoomListOptions) {
                 .then_with(|| a.tmid.cmp(&b.tmid))
         }),
     }
-    if opts.layout.is_unread_first(&id) {
+    if opts.layout.is_unread_first(id) {
         let kept = opts.kept_thread.as_ref().map(|(_, t)| t.as_str());
         // Stable: keeps the sort within both blocks.
         rows.sort_by_key(|r| r.unread.is_none() && kept != Some(r.tmid.as_str()));
@@ -980,13 +1145,17 @@ pub fn room_is_unread(e: &RoomEntry) -> bool {
 }
 
 /// Totals for a window/tray badge: (unread rooms, mentions) over open,
-/// non-archived rooms; muted rooms (`disableNotifications`) don't count as
+/// non-archived rooms (service rooms aside); muted rooms (`disableNotifications`) don't count as
 /// unread rooms, hidden mention status hides mentions.
 pub fn unread_totals(ws: &Workspace) -> (u64, u64) {
     let mut rooms = 0;
     let mut mentions = 0;
     for e in ws.rooms().values() {
-        let Some(s) = e.sub.as_ref().filter(|s| s.open && !e.is_archived()) else {
+        let Some(s) = e
+            .sub
+            .as_ref()
+            .filter(|s| s.open && !e.is_archived() && !e.is_service_room())
+        else {
             continue;
         };
         let b = badge(e);
@@ -1008,7 +1177,7 @@ mod tests {
     use super::*;
     use crate::sidebar_layout::ThreadsMode;
     use crate::test_util::{fixture_workspace, me, msg, room, sub, ts};
-    use crate::workspace::Change;
+    use crate::workspace::{Change, Dirty};
     use rocketchat::models::{FileInfo, Room, Subscription};
 
     fn ws_with(entries: Vec<(Subscription, Option<Room>)>) -> Workspace {
@@ -2297,5 +2466,588 @@ mod tests {
                 "omnichannel"
             ]
         );
+    }
+
+    // --- Starred threads in Favorites ------------------------------------------------
+
+    fn star(mut m: Message) -> Message {
+        m.starred = Some(vec![rocketchat::models::IdRef { id: "me".into() }]);
+        m
+    }
+
+    /// [`threads_ws`] with starred threads on: t1 (unread in "a") and s1, s2
+    /// (read, in "b") starred; "fav" is a favorite room.
+    fn starred_ws(mode: ThreadsMode) -> Workspace {
+        let mut ws = threads_ws(mode);
+        let mut fav = sub("fav", "favorite", RoomType::Channel);
+        fav.f = true;
+        ws.apply_subscription(Change::Inserted, fav);
+        ws.set_starred_threads(true);
+        ws.apply_thread_parents(vec![
+            star(parent("t1", "a", 300, "bob")),
+            star(parent("s1", "b", 200, "carol")),
+            star(parent("s2", "b", 400, "bob")),
+        ]);
+        ws
+    }
+
+    fn section<'s>(sections: &'s [Section], id: &str) -> &'s Section {
+        sections
+            .iter()
+            .find(|s| s.id.as_config_str() == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn starred_threads_join_favorites() {
+        for mode in [ThreadsMode::Off, ThreadsMode::Following] {
+            let ws = starred_ws(mode);
+            let s = compute(&ws, &thread_opts(mode), "");
+            let fav = section(&s, "favorites");
+            assert_eq!(names(fav), ["favorite"], "{mode:?}");
+            // Newest reply first; unread first is off in Favorites.
+            assert_eq!(tmids(&fav.threads), ["s2", "t1", "s1"], "{mode:?}");
+            assert!(fav.threads.iter().all(|t| t.starred));
+            assert_eq!(fav.threads[1].unread, Some(BadgeVariant::Thread));
+            assert_eq!(fav.len(), 4);
+        }
+        // A room the user left or hid: its starred threads are not listed.
+        let mut ws = starred_ws(ThreadsMode::Off);
+        let mut b = ws.subscription("b").unwrap().clone();
+        b.open = false;
+        ws.apply_subscription(Change::Updated, b);
+        let s = compute(&ws, &thread_opts(ThreadsMode::Off), "");
+        assert_eq!(tmids(&section(&s, "favorites").threads), ["t1"]);
+    }
+
+    #[test]
+    fn starred_thread_is_not_repeated_in_threads() {
+        let mut ws = starred_ws(ThreadsMode::UnreadKept);
+        ws.set_thread_config(ThreadsMode::UnreadKept, [("b", "s1"), ("b", "k")]);
+        let mut opts = thread_opts(ThreadsMode::UnreadKept);
+        opts.kept_thread = Some(("b".into(), "s2".into()));
+        opts.open_thread = Some(("b".into(), "s2".into()));
+        let s = compute(&ws, &opts, "");
+        assert_eq!(tmids(&section(&s, "threads").threads), ["t2", "t3", "k"]);
+        assert_eq!(tmids(&section(&s, "favorites").threads), ["s2", "t1", "s1"]);
+        // Unstarred: back to Threads (t1 unread, s1 kept).
+        ws.set_thread_starred("a", "t1", false);
+        ws.set_thread_starred("b", "s1", false);
+        let s = compute(&ws, &opts, "");
+        assert_eq!(
+            tmids(&section(&s, "threads").threads),
+            ["t1", "t2", "t3", "s1", "k"]
+        );
+        // The switch off: everything back in Threads.
+        opts.starred_threads = false;
+        let s = compute(&ws, &opts, "");
+        assert_eq!(
+            tmids(&section(&s, "threads").threads),
+            ["s2", "t1", "t2", "t3", "s1", "k"]
+        );
+        assert!(section(&s, "favorites").threads.is_empty());
+    }
+
+    /// Which section shows a thread row, by Threads mode and state.
+    #[test]
+    fn thread_row_section_matrix() {
+        let modes = [
+            ThreadsMode::Off,
+            ThreadsMode::Unread,
+            ThreadsMode::UnreadKept,
+            ThreadsMode::Following,
+        ];
+        for mode in modes {
+            let mut ws = starred_ws(mode);
+            // k: kept; ks: kept and starred; f: followed; fs: followed and
+            // starred.
+            ws.set_thread_config(mode, [("b", "k"), ("b", "ks")]);
+            ws.apply_thread_parents(vec![
+                parent("k", "b", 10, "bob"),
+                star(parent("ks", "b", 10, "bob")),
+            ]);
+            ws.apply_followed(
+                "b",
+                vec![
+                    parent("f", "b", 10, "me"),
+                    star(parent("fs", "b", 10, "me")),
+                ],
+                None,
+                std::time::Instant::now(),
+            );
+            let s = compute(&ws, &thread_opts(mode), "");
+            let rows = |id: &str| {
+                s.iter()
+                    .find(|s| s.id.as_config_str() == id)
+                    .map(|s| tmids(&s.threads).join(","))
+                    .unwrap_or_default()
+            };
+            let threads = match mode {
+                ThreadsMode::Off => "",
+                ThreadsMode::Unread => "t2,t3",
+                ThreadsMode::UnreadKept => "t2,t3,k",
+                ThreadsMode::Following => "t2,t3,f,k",
+            };
+            assert_eq!(rows("threads"), threads, "{mode:?}");
+            // Only Following crawls the followed sets (and learns of fs).
+            let fav = match mode {
+                ThreadsMode::Following => "s2,t1,s1,fs,ks",
+                _ => "s2,t1,s1,ks",
+            };
+            assert_eq!(rows("favorites"), fav, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn favorites_with_only_threads_is_emitted() {
+        let mut ws = starred_ws(ThreadsMode::Off);
+        ws.apply_subscription(Change::Removed, sub("fav", "favorite", RoomType::Channel));
+        let opts = thread_opts(ThreadsMode::Off);
+        let s = compute(&ws, &opts, "");
+        assert_eq!(ids(&s), ["favorites", "channels"]);
+        assert!(s[0].items.is_empty());
+        assert_eq!(s[0].threads.len(), 3);
+        // A filter searches them like Threads rows.
+        let s = compute(&ws, &opts, "beta");
+        assert_eq!(ids(&s), ["favorites", "channels"]);
+        assert_eq!(tmids(&s[0].threads), ["s2", "s1"]);
+        assert_eq!(ids(&compute(&ws, &opts, "nothing")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn favorites_sort_blocks() {
+        let ws = starred_ws(ThreadsMode::Off);
+        let with = |sort: Option<SidebarSort>, unread_first: Option<bool>| {
+            let mut o = thread_opts(ThreadsMode::Off);
+            o.layout = layout(|p| {
+                for e in [
+                    crate::sidebar_layout::LayoutEdit::SetSort {
+                        id: SectionKind::Favorites.into(),
+                        sort,
+                    },
+                    crate::sidebar_layout::LayoutEdit::SetUnreadFirst {
+                        id: SectionKind::Favorites.into(),
+                        on: unread_first,
+                    },
+                ] {
+                    crate::sidebar_layout::apply(p, e);
+                }
+            });
+            o
+        };
+        let fav = |o: &RoomListOptions| {
+            let s = compute(&ws, o, "");
+            let f = section(&s, "favorites");
+            (names(f).len(), tmids(&f.threads).join(","))
+        };
+        assert_eq!(fav(&with(None, None)), (1, "s2,t1,s1".into()));
+        assert_eq!(
+            fav(&with(Some(SidebarSort::ActivityAsc), None)),
+            (1, "s1,t1,s2".into())
+        );
+        // By room name ("alpha" < "beta"), then title.
+        assert_eq!(
+            fav(&with(Some(SidebarSort::Alphabetical), None)),
+            (1, "t1,s1,s2".into())
+        );
+        assert_eq!(fav(&with(None, Some(true))), (1, "t1,s2,s1".into()));
+    }
+
+    #[test]
+    fn starred_threads_hidden_when_starring_disallowed() {
+        for (id, threads) in [("Message_AllowStarring", "t1"), ("Threads_enabled", "")] {
+            let mut ws = starred_ws(ThreadsMode::Unread);
+            ws.apply_setting(
+                Change::Updated,
+                rocketchat::models::Setting {
+                    id: id.into(),
+                    value: serde_json::json!(false),
+                    ..Default::default()
+                },
+            );
+            let s = compute(&ws, &thread_opts(ThreadsMode::Unread), "");
+            assert!(section(&s, "favorites").threads.is_empty(), "{id}");
+            // Back in Threads (while threads are on at all).
+            let rows = s
+                .iter()
+                .find(|s| s.is(SectionKind::Threads))
+                .map(|s| tmids(&s.threads).join(","))
+                .unwrap_or_default();
+            assert!(rows.starts_with(threads), "{id}: {rows}");
+        }
+    }
+
+    // --- flags ---
+
+    fn flag_edits(ws: &mut Workspace, edits: &[crate::flags::FlagEdit]) {
+        let mut overlay = ws.flag_overlay().clone();
+        for e in edits {
+            overlay.edit(ws.flag_blob(), e, 1_000, "dev").unwrap();
+        }
+        ws.set_flag_overlay(overlay);
+    }
+
+    fn flag_room(rid: &str, c: Option<FlagColor>) -> crate::flags::FlagEdit {
+        crate::flags::FlagEdit::Room {
+            rid: rid.into(),
+            color: c,
+        }
+    }
+
+    fn flag_thread(rid: &str, tmid: &str, c: Option<FlagColor>) -> crate::flags::FlagEdit {
+        crate::flags::FlagEdit::Thread {
+            rid: rid.into(),
+            tmid: tmid.into(),
+            color: c,
+        }
+    }
+
+    fn setting(ws: &mut Workspace, id: &str, on: bool) {
+        ws.apply_setting(
+            Change::Updated,
+            rocketchat::models::Setting {
+                id: id.into(),
+                value: serde_json::json!(on),
+                ..Default::default()
+            },
+        );
+    }
+
+    /// The user's service room, open (as before it is hidden), with unread
+    /// messages and `flags` stored.
+    fn service_sub(rid: &str, flags: serde_json::Value) -> Subscription {
+        let mut s = sub(rid, "rustket-sync-me", RoomType::Private);
+        s.roles = Some(vec!["owner".into()]);
+        s.unread = 3;
+        s.user_mentions = 1;
+        let mut f = rocketchat::models::ServiceFields::new("me");
+        f.set(rocketchat::models::FLAGS_KEY, flags);
+        s.custom_fields = Some(f.to_custom_fields());
+        s
+    }
+
+    #[test]
+    fn flag_wins_over_favorites_and_groups() {
+        use FlagColor::{Blue, Red};
+        let mut ws = starred_ws(ThreadsMode::Following);
+        flag_edits(
+            &mut ws,
+            &[
+                flag_room("fav", Some(Red)),
+                flag_room("a", Some(Red)),
+                flag_room("b", Some(Blue)),
+                flag_thread("a", "t1", Some(Red)),
+                flag_thread("b", "s1", Some(Blue)),
+                crate::flags::FlagEdit::Rename {
+                    color: Red,
+                    name: Some("Срочно".into()),
+                },
+            ],
+        );
+        let mut p = UiPrefs {
+            sidebar_threads: ThreadsMode::Following,
+            ..Default::default()
+        };
+        add_group(&mut p, "Work", &[GroupType::Channels]);
+        crate::sidebar_layout::sanitize_prefs(&mut p);
+        let opts = RoomListOptions {
+            layout: Layout::from_prefs(&p),
+            ..Default::default()
+        };
+        let s = compute(&ws, &opts, "");
+        // Favorites keeps the starred thread that is not flagged; the group
+        // has no room left.
+        assert_eq!(ids(&s), ["favorites", "flag:red", "flag:blue", "threads"]);
+        let fav = section(&s, "favorites");
+        assert!(fav.items.is_empty());
+        assert_eq!(tmids(&fav.threads), ["s2"]);
+        let red = section(&s, "flag:red");
+        assert_eq!(red.title.as_deref(), Some("Срочно"));
+        assert_eq!(names(red), ["alpha", "favorite"]);
+        assert!(red.items.iter().all(|i| i.flag == Some(Red)));
+        assert_eq!(tmids(&red.threads), ["t1"]);
+        assert_eq!(red.threads[0].flag, Some(Red));
+        assert!(red.threads[0].starred);
+        let blue = section(&s, "flag:blue");
+        assert_eq!(blue.title, None);
+        assert_eq!(names(blue), ["beta"]);
+        assert_eq!(tmids(&blue.threads), ["s1"]);
+        // Flagged threads leave Threads too.
+        assert_eq!(tmids(&section(&s, "threads").threads), ["t2", "t3"]);
+        // Unflagged: back where they were.
+        flag_edits(
+            &mut ws,
+            &[
+                flag_room("fav", None),
+                flag_thread("a", "t1", None),
+                crate::flags::FlagEdit::ClearColor(Blue),
+            ],
+        );
+        let s = compute(&ws, &opts, "");
+        assert_eq!(
+            ids(&s),
+            [
+                "favorites",
+                "flag:red",
+                "threads",
+                &format!("group:{}", p.sidebar_groups[0].id)
+            ]
+        );
+        assert_eq!(names(section(&s, "favorites")), ["favorite"]);
+        assert_eq!(tmids(&section(&s, "favorites").threads), ["s2", "t1", "s1"]);
+        assert_eq!(names(section(&s, "flag:red")), ["alpha"]);
+    }
+
+    #[test]
+    fn unread_wins_over_flag() {
+        let mut a = sub("a", "alpha", RoomType::Channel);
+        a.unread = 2;
+        let mut ws = ws_with(vec![(a, None), (sub("b", "beta", RoomType::Channel), None)]);
+        flag_edits(
+            &mut ws,
+            &[
+                flag_room("a", Some(FlagColor::Green)),
+                flag_room("b", Some(FlagColor::Green)),
+            ],
+        );
+        let opts = RoomListOptions {
+            unread_on_top: true,
+            ..Default::default()
+        };
+        let s = compute(&ws, &opts, "");
+        assert_eq!(ids(&s), ["unread", "flag:green"]);
+        assert_eq!(s[0].items[0].flag, Some(FlagColor::Green));
+        assert_eq!(names(&s[1]), ["beta"]);
+        // A filter keeps the routing.
+        let s = compute(&ws, &RoomListOptions::default(), "bet");
+        assert_eq!(ids(&s), ["flag:green"]);
+    }
+
+    #[test]
+    fn flag_section_sort_and_unread_first() {
+        let mut a = sub("a", "alpha", RoomType::Channel);
+        a.unread = 1;
+        let ws_rooms = vec![
+            (a, Some(with_lm(room("a", "alpha", RoomType::Channel), 100))),
+            (
+                sub("b", "beta", RoomType::Channel),
+                Some(with_lm(room("b", "beta", RoomType::Channel), 300)),
+            ),
+            (
+                sub("c", "gamma", RoomType::Channel),
+                Some(with_lm(room("c", "gamma", RoomType::Channel), 200)),
+            ),
+        ];
+        let mut ws = ws_with(ws_rooms);
+        flag_edits(
+            &mut ws,
+            &["a", "b", "c"].map(|r| flag_room(r, Some(FlagColor::Yellow))),
+        );
+        let id = SectionId::Flag(FlagColor::Yellow);
+        let s = compute(&ws, &RoomListOptions::default(), "");
+        assert_eq!(
+            names(section(&s, "flag:yellow")),
+            ["beta", "gamma", "alpha"]
+        );
+        let opts = RoomListOptions {
+            layout: layout(|p| {
+                p.sidebar_section_prefs.insert(
+                    id.as_config_str(),
+                    crate::sidebar_layout::SectionPrefs {
+                        sort: Some(SidebarSort::Alphabetical),
+                        unread_first: Some(true),
+                    },
+                );
+            }),
+            ..Default::default()
+        };
+        let s = compute(&ws, &opts, "");
+        assert_eq!(
+            names(section(&s, "flag:yellow")),
+            ["alpha", "beta", "gamma"]
+        );
+        let opts = RoomListOptions {
+            layout: layout(|p| {
+                p.sidebar_section_prefs.insert(
+                    id.as_config_str(),
+                    crate::sidebar_layout::SectionPrefs {
+                        sort: None,
+                        unread_first: Some(true),
+                    },
+                );
+            }),
+            ..Default::default()
+        };
+        let s = compute(&ws, &opts, "");
+        assert_eq!(
+            names(section(&s, "flag:yellow")),
+            ["alpha", "beta", "gamma"]
+        );
+    }
+
+    #[test]
+    fn flagged_threads_with_threads_off() {
+        let mut ws = threads_ws(ThreadsMode::Off);
+        assert!(!ws.thread_index().indexing());
+        flag_edits(
+            &mut ws,
+            &[
+                flag_thread("b", "g", Some(FlagColor::Purple)),
+                flag_thread("a", "t1", Some(FlagColor::Purple)),
+            ],
+        );
+        assert!(ws.thread_index().indexing() && ws.thread_index().is_flagged("g"));
+        // Parents of flagged threads are stored with the section off.
+        ws.apply_thread_parents(vec![
+            parent("t1", "a", 300, "bob"),
+            parent("x", "a", 1, "bob"),
+        ]);
+        assert!(ws.thread_index().parent("t1").is_some());
+        assert!(ws.thread_index().parent("x").is_none());
+        let opts = thread_opts(ThreadsMode::Off);
+        let s = compute(&ws, &opts, "");
+        assert_eq!(ids(&s), ["flag:purple", "channels"]);
+        let rows = &s[0].threads;
+        assert_eq!(tmids(rows), ["t1", "g"]);
+        assert_eq!(rows[1].title, ThreadTitle::Loading);
+        assert_eq!(rows[0].unread, Some(BadgeVariant::Thread));
+        // Gone: still listed (the user clears the flag).
+        ws.thread_gone("g");
+        let s = compute(&ws, &opts, "");
+        assert_eq!(s[0].threads[1].title, ThreadTitle::Unavailable);
+        assert_eq!(ws.thread_flag("g"), Some(FlagColor::Purple));
+        // A filter searches flagged threads too.
+        let s = compute(&ws, &opts, "text t1");
+        assert_eq!(tmids(&section(&s, "flag:purple").threads), ["t1"]);
+        // Threads disabled on the server: no flagged thread rows anywhere.
+        setting(&mut ws, "Threads_enabled", false);
+        let s = compute(&ws, &thread_opts(ThreadsMode::Unread), "");
+        assert_eq!(ids(&s), ["channels"]);
+        let usage = flag_usage(&ws);
+        assert_eq!(usage.get(&FlagColor::Purple), Some(&(0, 2)));
+    }
+
+    #[test]
+    fn flags_outside_the_list() {
+        let mut ws = mixed_ws();
+        let (omni, channel) = ("l", "c");
+        flag_edits(
+            &mut ws,
+            &[
+                flag_room(omni, Some(FlagColor::Red)),
+                flag_room(channel, Some(FlagColor::Red)),
+                flag_room("left", Some(FlagColor::Red)),
+                flag_thread(omni, "ot", Some(FlagColor::Blue)),
+            ],
+        );
+        let s = compute(&ws, &RoomListOptions::default(), "");
+        // Omnichannel rooms ignore flags; rooms the user is not in are
+        // not listed.
+        let omni_section = section(&s, "omnichannel");
+        assert!(omni_section.items.iter().all(|i| i.flag.is_none()));
+        assert!(omni_section.items.iter().any(|i| i.rid == omni));
+        let red = section(&s, "flag:red");
+        assert_eq!(red.items.len(), 1);
+        assert_eq!(red.items[0].rid, channel);
+        assert!(s.iter().all(|x| x.id != SectionId::Flag(FlagColor::Blue)));
+        let usage = flag_usage(&ws);
+        assert_eq!(usage.get(&FlagColor::Red), Some(&(1, 2)));
+        assert_eq!(usage.get(&FlagColor::Blue), Some(&(0, 1)));
+        // Hidden: kept, not listed.
+        let mut hidden = ws.subscription(channel).unwrap().clone();
+        hidden.open = false;
+        ws.apply_subscription(Change::Updated, hidden);
+        let s = compute(&ws, &RoomListOptions::default(), "");
+        assert!(s.iter().all(|x| x.id != SectionId::Flag(FlagColor::Red)));
+        assert_eq!(ws.room_flag(channel), Some(FlagColor::Red));
+    }
+
+    #[test]
+    fn service_rooms_hold_flags_and_are_never_listed() {
+        let stored = serde_json::json!({
+            "v": 1,
+            "rooms": { "a": { "c": "orange", "t": 5, "d": "x" } },
+            "names": { "orange": { "n": "Ждёт ответа", "t": 5 } },
+        });
+        let svc = service_sub("svc", stored);
+        let svc_room = crate::test_util::service_room(&svc, "me", 1);
+        let mut ws = ws_with(vec![
+            (sub("a", "alpha", RoomType::Channel), None),
+            (svc, Some(svc_room)),
+        ]);
+        assert_eq!(ws.service_rooms(), ["svc"]);
+        assert!(ws.is_service_room("svc") && !ws.is_service_room("a"));
+        assert_eq!(ws.room_flag("a"), Some(FlagColor::Orange));
+        assert_eq!(ws.flags().name(FlagColor::Orange), Some("Ждёт ответа"));
+        let s = compute(&ws, &RoomListOptions::default(), "");
+        assert_eq!(ids(&s), ["flag:orange"]);
+        assert_eq!(s[0].title.as_deref(), Some("Ждёт ответа"));
+        assert!(compute(&ws, &RoomListOptions::default(), "rustket").is_empty());
+        assert_eq!(unread_totals(&ws), (0, 0));
+        // A marked room someone else created is an ordinary room, even when
+        // the user was made its owner: its data is not trusted.
+        let forged = service_sub(
+            "forged",
+            serde_json::json!({ "rooms": { "a": { "c": "red", "t": i64::MAX } } }),
+        );
+        let forged_room = crate::test_util::service_room(&forged, "bob", 2);
+        ws.apply_subscription(Change::Inserted, forged.clone());
+        ws.apply_room(Change::Inserted, forged_room.clone());
+        assert_eq!(ws.room_flag("a"), Some(FlagColor::Orange));
+        assert!(!ws.is_service_room("forged"));
+        assert_eq!(ws.service_rooms(), ["svc"]);
+        assert_eq!(unread_totals(&ws), (1, 1));
+        assert!(
+            compute(&ws, &RoomListOptions::default(), "")
+                .iter()
+                .any(|x| x.items.iter().any(|i| i.rid == "forged"))
+        );
+        // Still not once its creator has left.
+        ws.apply_room(
+            Change::Updated,
+            Room {
+                users_count: Some(1),
+                ..forged_room
+            },
+        );
+        assert!(!ws.is_service_room("forged"));
+        assert_eq!(ws.room_flag("a"), Some(FlagColor::Orange));
+        ws.apply_subscription(Change::Removed, forged);
+        // A live write arrives as a subscription change.
+        let rev = ws.revision(Dirty::FLAGS);
+        let mut svc = ws.subscription("svc").unwrap().clone();
+        let mut f = svc.service_fields().unwrap();
+        f.set(
+            rocketchat::models::FLAGS_KEY,
+            serde_json::json!({ "rooms": { "a": { "c": null, "t": 6 } } }),
+        );
+        svc.custom_fields = Some(f.to_custom_fields());
+        ws.apply_subscription(Change::Updated, svc);
+        assert!(ws.revision(Dirty::FLAGS) > rev);
+        assert_eq!(ws.room_flag("a"), None);
+        assert_eq!(
+            ids(&compute(&ws, &RoomListOptions::default(), "")),
+            ["channels"]
+        );
+        // Unrelated changes leave the flags alone.
+        let rev = ws.revision(Dirty::FLAGS);
+        let mut a = ws.subscription("a").unwrap().clone();
+        a.unread = 4;
+        ws.apply_subscription(Change::Updated, a);
+        assert_eq!(ws.revision(Dirty::FLAGS), rev);
+        // Leaving the service room drops its flags.
+        let svc = ws.subscription("svc").unwrap().clone();
+        let mut svc2 = svc.clone();
+        let mut f = svc.service_fields().unwrap();
+        f.set(
+            rocketchat::models::FLAGS_KEY,
+            serde_json::json!({ "rooms": { "a": { "c": "blue", "t": 7 } } }),
+        );
+        svc2.custom_fields = Some(f.to_custom_fields());
+        ws.apply_subscription(Change::Updated, svc2.clone());
+        assert_eq!(ws.room_flag("a"), Some(FlagColor::Blue));
+        ws.apply_subscription(Change::Removed, svc2);
+        assert!(ws.service_rooms().is_empty());
+        assert_eq!(ws.room_flag("a"), None);
     }
 }

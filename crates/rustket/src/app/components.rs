@@ -2,6 +2,7 @@
 //! status menu, desktop integration) and their effects.
 
 use iced::Task;
+use rust_i18n::t;
 use rustket_core::ServerId;
 use rustket_core::workspace::ConnectionState;
 
@@ -87,7 +88,39 @@ impl App {
         if leaves && !self.may_leave(Message::Go(Go::Nav(nav.clone()))) {
             return Task::none();
         }
+        let commit = if leaves {
+            self.commit_flag_drafts()
+        } else {
+            Task::none()
+        };
         let sid = self.active.clone();
+        let task = self.navigate_to(nav, sid);
+        Task::batch([commit, task])
+    }
+
+    /// Leaving the settings: flag names typed but not saved with Enter are
+    /// saved (iced's `text_input` has no blur event).
+    fn commit_flag_drafts(&mut self) -> Task<Message> {
+        let Screen::Settings(s) = &mut self.screen else {
+            return Task::none();
+        };
+        let mut tasks = Vec::new();
+        for ((sid, color), draft) in std::mem::take(&mut s.flag_drafts) {
+            let name = rustket_core::flags::clean_flag_name(&draft);
+            let stored = self
+                .servers
+                .get(&sid)
+                .and_then(|s| s.workspace.flags().name(color));
+            if name.as_deref() != stored {
+                tasks.push(
+                    self.set_flag(&sid, rustket_core::flags::FlagEdit::Rename { color, name }),
+                );
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    fn navigate_to(&mut self, nav: Nav, sid: Option<ServerId>) -> Task<Message> {
         match (nav, sid) {
             (nav @ (Nav::Settings | Nav::SidebarSettings { .. }), _) => {
                 // The real autostart location only with real desktop integration.
@@ -99,12 +132,13 @@ impl App {
                 let mut screen = settings::Settings::with_autostart(at);
                 let load = screen.load().map(Message::Settings);
                 let reveal = match nav {
-                    Nav::SidebarSettings { ungroup } => {
+                    Nav::SidebarSettings { ungroup, flag } => {
                         // The confirmation is in the group's row, far below
-                        // the card's top.
-                        let task = match &ungroup {
-                            Some(g) => settings::reveal_sidebar_group(g),
-                            None => settings::reveal_sidebar(),
+                        // the card's top; a flag's name in the Flags block.
+                        let task = match (&ungroup, flag, &self.active) {
+                            (Some(g), _, _) => settings::reveal_sidebar_group(g),
+                            (None, Some(c), Some(sid)) => settings::reveal_flag(sid, c),
+                            _ => settings::reveal_sidebar(),
                         };
                         screen.confirm_delete = ungroup;
                         task
@@ -231,6 +265,8 @@ impl App {
                     self.config.set_recent_status_texts(list);
                     self.save_config()
                 }
+                Effect::SetFlag(sid, edit) => self.set_flag(&sid, edit),
+                Effect::StarKeptThreads => self.star_kept_threads(),
                 Effect::UiKit(m) => match sid {
                     Some(sid) => {
                         self.on_uikit(sid.clone(), crate::uikit::Msg::Ui { rid: None, msg: *m })
@@ -312,6 +348,15 @@ impl App {
             ui_state: &mut self.ui_state,
         };
         let a = s.update(m, &mut ctx);
+        // A draft that reads exactly like the stored name is no edit: it must
+        // not shadow a rename made elsewhere.
+        s.flag_drafts.retain(|(sid, color), draft| {
+            let stored = self
+                .servers
+                .get(sid)
+                .and_then(|s| s.workspace.flags().name(*color));
+            draft.as_str() != stored.unwrap_or_default()
+        });
         let task = a.task.map(Message::Settings);
         Task::batch([
             task,
@@ -440,6 +485,12 @@ impl App {
         if !self.may_leave(Message::Go(go.clone())) {
             return Task::none();
         }
+        let commit = self.commit_flag_drafts();
+        let task = self.go_to(go);
+        Task::batch([commit, task])
+    }
+
+    fn go_to(&mut self, go: Go) -> Task<Message> {
         match go {
             Go::Nav(nav) => self.navigate(nav),
             Go::Room { sid, rid, tmid } => {
@@ -740,6 +791,39 @@ impl App {
                 .offline
                 .enabled()
                 .then_some((self.offline.size, self.offline.clearing)),
+            flags: self.flag_accounts(),
+            star_kept_busy: !self.star_kept.is_empty(),
         }
+    }
+
+    /// The signed-in accounts' flags for the Settings, the active server's
+    /// first.
+    fn flag_accounts(&self) -> Vec<settings::FlagAccount<'_>> {
+        let mut servers: Vec<&ServerState> = self
+            .servers
+            .values()
+            .filter(|s| s.workspace.user_id().is_some())
+            .collect();
+        servers.sort_by_key(|s| (Some(&s.id) != self.active.as_ref(), s.name.to_lowercase()));
+        servers
+            .into_iter()
+            .map(|s| settings::FlagAccount {
+                sid: s.id.clone(),
+                label: t!(
+                    "settings.flags_account",
+                    user = s.workspace.username().unwrap_or_default(),
+                    server = s.name
+                )
+                .into_owned(),
+                flags: s.workspace.flags(),
+                usage: rustket_core::room_list::flag_usage(&s.workspace),
+                status: s.flags.status(),
+                kept_unstarred: if s.session.is_some() {
+                    self.kept_unstarred(&s.id).len()
+                } else {
+                    0
+                },
+            })
+            .collect()
     }
 }

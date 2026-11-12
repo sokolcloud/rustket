@@ -50,6 +50,7 @@ pub fn local(ws: &Workspace, target: &Target) -> Option<String> {
         Target::Name(name) => ws
             .rooms()
             .values()
+            .filter(|e| !e.is_service_room())
             .find(|e| e.name() == name || e.fname() == Some(name.as_str()))
             .map(|e| e.rid().to_owned()),
         Target::Join(rid) => ws.subscription(rid).map(|_| rid.clone()),

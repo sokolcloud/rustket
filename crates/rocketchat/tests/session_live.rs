@@ -742,3 +742,42 @@ async fn thread_parent_updates_reach_my_messages() {
     })
     .await;
 }
+
+/// A write to the hidden service room reaches the owner's other devices as a
+/// subscription change carrying the new `customFields`; the room stays hidden.
+#[tokio::test(flavor = "multi_thread")]
+async fn service_room_fields_arrive_live() {
+    use rocketchat::models::{FLAGS_KEY, ServiceFields};
+
+    with_fixture(|server, fx| async move {
+        let a = fx.user("ss").await;
+        let (sa, mut ea) = start(&server, &a).await;
+        let room = a
+            .rest
+            .create_service_room(&unique("rk-svc"), &ServiceFields::new(&a.id))
+            .await
+            .unwrap();
+        fx.add_room(&room.id);
+        let rid = room.id.clone();
+        let mut fields = room.service_fields().unwrap();
+        fields.set(FLAGS_KEY, json!({ "rooms": { "GENERAL": { "c": "red", "t": 1 } } }));
+        a.rest.write_service_fields(&rid, &fields).await.unwrap();
+        let ev = expect_event(
+            &mut ea,
+            |e| {
+                matches!(e, SessionEvent::SubscriptionChanged { sub, .. }
+                    if sub.rid == rid && sub.service_fields().is_some_and(|f| f.get(FLAGS_KEY).is_some()))
+            },
+            WAIT,
+        )
+        .await;
+        let SessionEvent::SubscriptionChanged { sub, .. } = ev else {
+            unreachable!()
+        };
+        assert!(!sub.open);
+        assert!(sub.is_service_room_of(&a.id));
+        assert_eq!(sub.service_fields(), Some(fields));
+        sa.close().await;
+    })
+    .await;
+}

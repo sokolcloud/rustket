@@ -588,6 +588,7 @@ impl CreateRoom {
                     members: self.members.clone(),
                     read_only: self.read_only,
                     extra_data: Some(extra(topic, self.broadcast)),
+                    ..Default::default()
                 },
             },
             Kind::Team => Request::Team(json!({

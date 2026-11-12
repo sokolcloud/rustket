@@ -55,6 +55,8 @@ enum Message {
     /// Section `dragged` (a key from `section_key`) moves before `before`.
     ReorderSections(u64, Option<u64>),
     MoveSection(&'static str, isize),
+    /// Room index, flag palette index (`None`: remove the flag).
+    SetFlag(usize, Option<usize>),
     SectionSort(&'static str, u8),
     AutoScroll(f32),
     Noop,
@@ -90,6 +92,28 @@ struct Room {
     icon: Option<Icon>,
     section: &'static str,
     typing: bool,
+    /// Flag palette index: the room shows in that flag's section.
+    flag: Option<usize>,
+}
+
+impl Room {
+    fn shown_in(&self) -> &'static str {
+        self.flag.map_or(self.section, |i| FLAG_NAMES[i])
+    }
+}
+
+/// Flag names in palette order (two renamed by the "user").
+const FLAG_NAMES: [&str; FLAG_COUNT] = [
+    "Urgent",
+    "Orange",
+    "Yellow",
+    "Green",
+    "Waiting for reply",
+    "Purple",
+];
+
+fn section_flag(section: &str) -> Option<usize> {
+    FLAG_NAMES.iter().position(|n| *n == section)
 }
 
 const fn room(
@@ -111,6 +135,7 @@ const fn room(
         icon: Some(Icon::Hash),
         section,
         typing: false,
+        flag: None,
     }
 }
 
@@ -129,6 +154,7 @@ fn rooms() -> Vec<Room> {
         Room {
             icon: Some(Icon::Lock),
             unread: 12,
+            flag: Some(0),
             ..room(
                 "release-planning",
                 "Anna: Let's freeze the branch tomorrow",
@@ -190,6 +216,7 @@ fn rooms() -> Vec<Room> {
         },
         Room {
             icon: Some(Icon::Lock),
+            flag: Some(0),
             ..room(
                 "security-incidents",
                 "No incidents this week ✅",
@@ -212,6 +239,7 @@ fn rooms() -> Vec<Room> {
             presence: Some(Presence::Busy),
             unread: 1,
             mentions: 1,
+            flag: Some(4),
             ..room(
                 "Carol Danvers",
                 "Can you review my PR?",
@@ -249,14 +277,41 @@ fn section_key(name: &str) -> u64 {
     h.finish()
 }
 
-const SECTIONS: [&str; 6] = [
+const SECTIONS: [&str; 12] = [
     "Favorites",
+    FLAG_NAMES[0],
+    FLAG_NAMES[1],
+    FLAG_NAMES[2],
+    FLAG_NAMES[3],
+    FLAG_NAMES[4],
+    FLAG_NAMES[5],
     THREADS,
     "Teams",
     "Discussions",
     "Channels",
     "Direct messages",
 ];
+
+/// The flag block of a row menu: a caption, one checked item per colour
+/// with its swatch, and "Remove flag".
+fn flag_entries(room: usize, current: Option<usize>) -> Vec<MenuEntry<Message>> {
+    let mut entries = vec![MenuEntry::Header("Flag".into())];
+    for (i, name) in FLAG_NAMES.iter().enumerate() {
+        entries.push(
+            MenuItem::new(*name, Message::SetFlag(room, Some(i)))
+                .swatch(i)
+                .checked(current == Some(i))
+                .into(),
+        );
+    }
+    entries.push(
+        MenuItem::new("Remove flag", Message::SetFlag(room, None))
+            .icon(Icon::FlagOff)
+            .disabled(current.is_none())
+            .into(),
+    );
+    entries
+}
 
 #[derive(Clone)]
 struct Msg {
@@ -498,6 +553,11 @@ impl Gallery {
                     self.sections.insert(at, name);
                 }
             }
+            Message::SetFlag(room, flag) => {
+                if let Some(r) = self.rooms.get_mut(room) {
+                    r.flag = flag;
+                }
+            }
             Message::MoveSection(name, delta) => {
                 if let Some(i) = self.sections.iter().position(|s| *s == name) {
                     let j = i.saturating_add_signed(delta).min(self.sections.len() - 1);
@@ -642,23 +702,41 @@ impl Gallery {
         let mut list = Column::new().spacing(0).padding([0.0, SPACE_2]);
         let mut handles = Vec::new();
         let mut y = 0.0;
-        let last = self.sections.len().saturating_sub(1);
-        for (n, &section) in self.sections.iter().enumerate() {
+        // A flag section shows only while something carries its flag; the
+        // first one also holds a flagged thread.
+        let flagged_thread = Some(0);
+        let shown: Vec<&'static str> = self
+            .sections
+            .iter()
+            .copied()
+            .filter(|&s| {
+                section_flag(s).is_none_or(|i| {
+                    Some(i) == flagged_thread || self.rooms.iter().any(|r| r.flag == Some(i))
+                })
+            })
+            .collect();
+        let last = shown.len().saturating_sub(1);
+        for (n, &section) in shown.iter().enumerate() {
             let items: Vec<(usize, &Room)> = self
                 .rooms
                 .iter()
                 .enumerate()
-                .filter(|(_, r)| r.section == section)
+                .filter(|(_, r)| r.shown_in() == section)
                 .collect();
             let collapsed = self.collapsed.contains(section);
-            let count = if section == THREADS { 1 } else { items.len() };
+            let flag = section_flag(section);
+            let threads =
+                usize::from(section == THREADS || (flag.is_some() && flag == flagged_thread));
+            let count = items.len() + threads;
             handles.push((section_key(section), y, HEADER_SLOT));
             y += HEADER_SLOT + if collapsed { 0.0 } else { count as f32 * row_h };
             list = list.push(context_menu(
-                container(section_header(
+                container(section_header_full(
                     section,
                     collapsed,
                     Some(count as u32),
+                    flag,
+                    None,
                     Message::ToggleSection(section),
                 ))
                 .center_y(HEADER_SLOT),
@@ -668,7 +746,7 @@ impl Gallery {
                 continue;
             }
             if section == THREADS {
-                list = list.push(self.thread_row());
+                list = list.push(self.thread_row(None));
                 continue;
             }
             for (i, r) in items {
@@ -689,12 +767,13 @@ impl Gallery {
                 p.icon = r.icon;
                 p.typing = r.typing;
                 p.typing_label = "typing…".into();
+                p.flag = r.flag.map(|f| FlagMark::new(f, FLAG_NAMES[f]));
                 p.density = if self.condensed {
                     Density::Condensed
                 } else {
                     Density::Extended
                 };
-                let entries = vec![
+                let mut entries = vec![
                     MenuItem::new("Mark as read", Message::MenuAction("read"))
                         .icon(Icon::CheckCheck)
                         .into(),
@@ -709,8 +788,13 @@ impl Gallery {
                         .icon(Icon::LogOut)
                         .danger(true)
                         .into(),
+                    MenuEntry::Separator,
                 ];
+                entries.extend(flag_entries(i, r.flag));
                 list = list.push(context_menu(room_list_item(p), entries));
+            }
+            if threads > 0 && section != THREADS {
+                list = list.push(self.thread_row(flag));
             }
         }
         let list = reorder_area(list, handles, Message::ReorderSections)
@@ -782,8 +866,8 @@ impl Gallery {
         entries
     }
 
-    /// A followed thread with unread replies.
-    fn thread_row(&self) -> Element<'_, Message> {
+    /// A followed thread with unread replies, optionally flagged.
+    fn thread_row(&self, flag: Option<usize>) -> Element<'_, Message> {
         let mut p = RoomListItemProps::new(
             AvatarSource::initials("Alice Johnson", "alice"),
             if self.condensed {
@@ -797,6 +881,7 @@ impl Gallery {
         p.time = Some("10:41".into());
         p.icon = Some(Icon::MessageCircle);
         p.badge_dot = Some(BadgeKind::Thread);
+        p.flag = flag.map(|f| FlagMark::new(f, FLAG_NAMES[f]));
         p.density = if self.condensed {
             Density::Condensed
         } else {
@@ -1057,6 +1142,14 @@ impl Gallery {
         ]
         .spacing(SPACE_1)
         .align_y(Alignment::Center);
+        let mut flags = row![].spacing(SPACE_2).align_y(Alignment::Center);
+        for i in 0..FLAG_COUNT {
+            flags = flags.push(
+                row![flag_glyph(i, 14.0), flag_swatch(i, 10.0)]
+                    .spacing(SPACE_1)
+                    .align_y(Alignment::Center),
+            );
+        }
         let avatars = row![
             avatar(
                 AvatarSource::initials("Alice Johnson", "alice"),
@@ -1179,6 +1272,9 @@ impl Gallery {
             title("BADGES & PRESENCE"),
             badges,
             presences,
+            title("FLAGS"),
+            flags,
+            menu_panel(&flag_entries(1, Some(0))),
             title("BUTTONS"),
             buttons,
             title("TAGS"),

@@ -213,6 +213,21 @@ pub struct Tokens {
 
     pub tooltip_bg: Color,
     pub tooltip_fg: Color,
+
+    /// Flag colours in palette order (red, orange, yellow, green, blue,
+    /// purple): marks and swatches, 3:1 on sidebar rows and menus.
+    pub flag: [Color; FLAG_COUNT],
+}
+
+/// Number of flag colours in [`Tokens::flag`].
+pub const FLAG_COUNT: usize = 6;
+
+impl Tokens {
+    /// Flag colour `index` (palette order); an unknown index falls back to
+    /// the hint colour.
+    pub fn flag_color(&self, index: usize) -> Color {
+        self.flag.get(index).copied().unwrap_or(self.text_hint)
+    }
 }
 
 const fn hex(rgb: u32) -> Color {
@@ -317,6 +332,15 @@ pub static LIGHT: Tokens = Tokens {
 
     tooltip_bg: hex(0x2F343D),
     tooltip_fg: Color::WHITE,
+
+    flag: [
+        hex(0xD93025),
+        hex(0xC45A00),
+        hex(0xA07800),
+        hex(0x188038),
+        hex(0x1A73E8),
+        hex(0x9334E6),
+    ],
 };
 
 pub static DARK: Tokens = Tokens {
@@ -399,6 +423,15 @@ pub static DARK: Tokens = Tokens {
 
     tooltip_bg: hex(0xE4E7EA),
     tooltip_fg: hex(0x1F2329),
+
+    flag: [
+        hex(0xF28B82),
+        hex(0xFCAD70),
+        hex(0xFDD663),
+        hex(0x81C995),
+        hex(0x8AB4F8),
+        hex(0xC58AF9),
+    ],
 };
 
 /// Builds the iced theme for a mode.
@@ -659,6 +692,36 @@ mod tests {
             ] {
                 check(t, (name, fg), ("its background", bg), TEXT, &mut failures);
             }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Flag marks and swatches (non-text, 3:1) on every surface they are
+    /// drawn on: sidebar rows in each state, menus and the room header.
+    #[test]
+    fn flag_colors_are_visible() {
+        let mut failures = Vec::new();
+        for t in both() {
+            for (i, fg) in t.flag.iter().enumerate() {
+                for bg in [
+                    ("sidebar", t.surface_sidebar),
+                    ("sidebar hover", t.sidebar_hover_bg),
+                    ("sidebar selected", t.sidebar_selected_bg),
+                    ("room", t.surface_room),
+                    ("raised", t.surface_raised),
+                    ("menu hover", t.hover_bg),
+                    ("pressed", t.pressed_bg),
+                    ("selected", t.selected_bg),
+                ] {
+                    check(t, ("flag", *fg), bg, GRAPHIC, &mut failures);
+                }
+                // No two flags share a colour.
+                for other in &t.flag[i + 1..] {
+                    assert_ne!(fg, other, "{:?}", t.mode);
+                }
+            }
+            assert_eq!(t.flag_color(0), t.flag[0]);
+            assert_eq!(t.flag_color(FLAG_COUNT), t.text_hint);
         }
         assert!(failures.is_empty(), "{failures:#?}");
     }

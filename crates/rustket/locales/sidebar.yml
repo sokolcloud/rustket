@@ -23,6 +23,24 @@ sidebar.favorites:
 sidebar.threads:
   en: "Threads"
   ru: "Треды"
+sidebar.flag.red:
+  en: "Red"
+  ru: "Красный"
+sidebar.flag.orange:
+  en: "Orange"
+  ru: "Оранжевый"
+sidebar.flag.yellow:
+  en: "Yellow"
+  ru: "Жёлтый"
+sidebar.flag.green:
+  en: "Green"
+  ru: "Зелёный"
+sidebar.flag.blue:
+  en: "Blue"
+  ru: "Синий"
+sidebar.flag.purple:
+  en: "Purple"
+  ru: "Фиолетовый"
 sidebar.thread_loading:
   en: "Loading…"
   ru: "Загрузка…"
@@ -59,6 +77,30 @@ sidebar.keep_thread:
 sidebar.unkeep_thread:
   en: "Remove from sidebar"
   ru: "Убрать из боковой панели"
+sidebar.star_thread:
+  en: "Add thread to Favorites"
+  ru: "Добавить тред в избранное"
+sidebar.unstar_thread:
+  en: "Remove thread from Favorites"
+  ru: "Убрать тред из избранного"
+sidebar.flags_sync_failed:
+  en: "Couldn't sync flags. They are kept on this device until the next try."
+  ru: "Не удалось синхронизировать флажки. Они сохранены на этом устройстве до следующей попытки."
+sidebar.flags_full:
+  en: "Too many flagged items"
+  ru: "Слишком много элементов с флажками"
+sidebar.flag_failed:
+  en: "Couldn't set the flag"
+  ru: "Не удалось поставить флажок"
+sidebar.star_thread_failed:
+  en: "Couldn't add the thread to Favorites"
+  ru: "Не удалось добавить тред в избранное"
+sidebar.star_kept_failed:
+  en: "Couldn't add kept threads to Favorites: %{count}"
+  ru: "Не удалось добавить в избранное оставленные треды: %{count}"
+sidebar.unstar_thread_failed:
+  en: "Couldn't remove the thread from Favorites"
+  ru: "Не удалось убрать тред из избранного"
 sidebar.thread_read_failed:
   en: "Couldn't mark the thread as read"
   ru: "Не удалось отметить тред прочитанным"
@@ -128,6 +170,21 @@ sidebar.threads_hidden_tip:
 sidebar.menu_refresh:
   en: "Refresh"
   ru: "Обновить"
+sidebar.menu_flag:
+  en: "Flag"
+  ru: "Флажок"
+sidebar.menu_flag_clear:
+  en: "Remove flag"
+  ru: "Снять флажок"
+sidebar.menu_rename_flag:
+  en: "Rename flag…"
+  ru: "Переименовать флажок…"
+sidebar.menu_refresh_starred:
+  en: "Refresh starred threads"
+  ru: "Обновить избранные треды"
+sidebar.threads_unread_collapsed:
+  en: "Unread threads: %{count}"
+  ru: "Непрочитанных тредов: %{count}"
 sidebar.menu_hide_threads:
   en: "Hide threads"
   ru: "Скрыть треды"

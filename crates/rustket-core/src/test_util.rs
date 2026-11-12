@@ -74,6 +74,20 @@ pub fn room(rid: &str, name: &str, t: RoomType) -> Room {
     }
 }
 
+/// A service room created by `creator` with `users` members whose
+/// `customFields` are those of `sub` (see `rocketchat::models::service_room`).
+pub fn service_room(sub: &Subscription, creator: &str, users: u64) -> Room {
+    Room {
+        id: sub.rid.clone(),
+        t: RoomType::Private,
+        name: Some(sub.name.clone()),
+        u: Some(user_ref(creator, creator)),
+        users_count: Some(users),
+        custom_fields: sub.custom_fields.clone(),
+        ..Default::default()
+    }
+}
+
 /// Workspace loaded from the captured `me`, `subscriptions.get`, `rooms.get` and
 /// `permissions.listAll` fixtures (user alice).
 pub fn fixture_workspace() -> Workspace {
