@@ -182,9 +182,9 @@ sidebar.menu_rename_flag:
 sidebar.menu_refresh_starred:
   en: "Refresh starred threads"
   ru: "Обновить избранные треды"
-sidebar.threads_unread_collapsed:
-  en: "Unread threads: %{count}"
-  ru: "Непрочитанных тредов: %{count}"
+sidebar.unread_collapsed:
+  en: "Unread: %{count}"
+  ru: "Непрочитанных: %{count}"
 sidebar.menu_hide_threads:
   en: "Hide threads"
   ru: "Скрыть треды"

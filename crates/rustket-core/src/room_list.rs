@@ -139,7 +139,7 @@ pub enum BadgeVariant {
     Mention,
     /// `@all` / `@here` (orange).
     GroupMention,
-    /// Unread thread replies (blue).
+    /// Unread thread replies (muted slate).
     Thread,
     #[default]
     Normal,

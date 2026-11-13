@@ -993,20 +993,27 @@ impl Sidebar {
             } else if slot >= end {
                 after += HEADER_H;
             } else {
+                // A collapsed section still shows that something in it is unread.
+                let unread = collapsed
+                    .then(|| collapsed_unread_status(section))
+                    .flatten();
                 let status = if section.is(SectionKind::Threads) {
-                    self.thread_progress.map(progress_status).or_else(|| {
-                        (section.threads_hidden > 0)
-                            .then(|| hidden_status(section.threads_hidden, layout.threads_limit))
-                    })
-                } else if collapsed && let Some(dot) = unread_threads_status(section) {
-                    // Unread threads have no Unread section to go to.
-                    Some(dot)
+                    self.thread_progress
+                        .map(progress_status)
+                        .or(unread)
+                        .or_else(|| {
+                            (section.threads_hidden > 0).then(|| {
+                                hidden_status(section.threads_hidden, layout.threads_limit)
+                            })
+                        })
                 } else {
-                    (section.threads_hidden > 0).then(|| {
-                        hidden_status(
-                            section.threads_hidden,
-                            rustket_core::sidebar_layout::MAX_STARRED_THREADS as u32,
-                        )
+                    unread.or_else(|| {
+                        (section.threads_hidden > 0).then(|| {
+                            hidden_status(
+                                section.threads_hidden,
+                                rustket_core::sidebar_layout::MAX_STARRED_THREADS as u32,
+                            )
+                        })
                     })
                 };
                 let header = section_header_full(
@@ -1126,6 +1133,7 @@ impl Sidebar {
             .map(|ts| short_time(ts, chrono::Local::now(), ctx.prefs.clock_24h));
         let b = &item.badge;
         p.unread = count_u32(b.count);
+        p.thread_count = count_u32(b.threads);
         p.user_mentions = if b.variant == BadgeVariant::Mention {
             count_u32(b.mentions)
         } else {
@@ -1238,25 +1246,64 @@ fn progress_status((done, total): (usize, usize)) -> Element<'static, Message> {
 }
 
 /// "+N": thread rows left out by the limit, explained in a tooltip.
-/// A dot for the unread thread rows of a collapsed section (the strongest
-/// kind), their number in a tooltip.
-fn unread_threads_status(section: &Section) -> Option<Element<'static, Message>> {
-    let unread: Vec<BadgeVariant> = section.threads.iter().filter_map(|t| t.unread).collect();
-    let kind = if unread.contains(&BadgeVariant::Mention) {
-        BadgeKind::Mention
-    } else if unread.contains(&BadgeVariant::GroupMention) {
-        BadgeKind::GroupMention
-    } else if unread.is_empty() {
-        return None;
-    } else {
-        BadgeKind::Thread
-    };
-    let full = t!("sidebar.threads_unread_collapsed", count = unread.len()).into_owned();
+/// A dot for the unread rows of a collapsed section (the strongest kind),
+/// their number in a tooltip.
+fn collapsed_unread_status(section: &Section) -> Option<Element<'static, Message>> {
+    let kinds: Vec<BadgeKind> = section
+        .items
+        .iter()
+        .filter_map(room_badge_kind)
+        .chain(section.threads.iter().filter_map(thread_badge_kind))
+        .collect();
+    let kind = kinds.iter().copied().max_by_key(|&k| badge_rank(k))?;
+    let full = t!("sidebar.unread_collapsed", count = kinds.len()).into_owned();
     Some(tooltip(
         rustket_ui::widget::dot(kind, 8.0),
         full,
         TooltipPosition::Bottom,
     ))
+}
+
+/// How loud a badge kind is: mentions, then plain unread, then the quiet kinds.
+fn badge_rank(k: BadgeKind) -> u8 {
+    match k {
+        BadgeKind::Mention => 4,
+        BadgeKind::GroupMention => 3,
+        BadgeKind::Unread => 2,
+        BadgeKind::Thread => 1,
+        BadgeKind::Muted => 0,
+    }
+}
+
+/// The badge of a room row (see [`Sidebar::row_props`]).
+fn room_badge_kind(item: &RoomListItem) -> Option<BadgeKind> {
+    let b = &item.badge;
+    let unread = count_u32(b.count);
+    BadgeKind::for_room(
+        if b.variant == BadgeVariant::Mention {
+            count_u32(b.mentions)
+        } else {
+            0
+        },
+        if b.variant == BadgeVariant::GroupMention {
+            count_u32(b.group_mentions)
+        } else {
+            0
+        },
+        unread.saturating_sub(count_u32(b.threads)),
+        b.threads > 0 || (b.dot && unread == 0),
+        item.muted,
+    )
+}
+
+/// The dot of a thread row: red/orange for mentions, a quiet grey for
+/// plain replies (blue reads like a mention next to room badges).
+fn thread_badge_kind(t: &ThreadListItem) -> Option<BadgeKind> {
+    t.unread.map(|v| match v {
+        BadgeVariant::Mention => BadgeKind::Mention,
+        BadgeVariant::GroupMention => BadgeKind::GroupMention,
+        BadgeVariant::Thread | BadgeVariant::Normal => BadgeKind::Muted,
+    })
 }
 
 fn hidden_status(hidden: usize, limit: u32) -> Element<'static, Message> {
@@ -1360,11 +1407,7 @@ fn thread_row_props(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> RoomListItemPro
     p.flag = t
         .flag
         .map(|c| super::flag_menu::mark(ctx.workspace.flags(), c));
-    p.badge_dot = t.unread.map(|v| match v {
-        BadgeVariant::Mention => BadgeKind::Mention,
-        BadgeVariant::GroupMention => BadgeKind::GroupMention,
-        _ => BadgeKind::Thread,
-    });
+    p.badge_dot = thread_badge_kind(t);
     p.is_selected = ctx.active_thread == Some(t.tmid.as_str());
     if let Some(label) = ctx.workspace.typing_label(&t.rid, Some(&t.tmid), ctx.now) {
         p.typing = true;
@@ -2615,6 +2658,67 @@ mod tests {
             assert!((to - (row_top + row_h - 600.0)).abs() < 0.5, "{to}");
         }
 
+        /// Thread rows and rooms light a collapsed header with their
+        /// strongest kind: plain thread replies are grey, room unread beats
+        /// them, mentions beat both.
+        #[test]
+        fn collapsed_header_takes_strongest_row() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 2, 1);
+            assert!(
+                fx.sidebar
+                    .sections
+                    .iter()
+                    .all(|s| collapsed_unread_status(s).is_none())
+            );
+            let mut s = sub("r0000", "r0000", RoomType::Channel);
+            s.tunread = Some(vec!["t000".into()]);
+            fx.ws.apply_subscription(Change::Updated, s);
+            fx.refresh();
+            let threads = fx.sidebar.sections[0].clone();
+            assert!(threads.is(SectionKind::Threads));
+            let kinds = |sec: &Section| -> Vec<Option<BadgeKind>> {
+                sec.items
+                    .iter()
+                    .map(room_badge_kind)
+                    .chain(sec.threads.iter().map(thread_badge_kind))
+                    .collect()
+            };
+            assert!(kinds(&threads).contains(&Some(BadgeKind::Muted)));
+            // A channel with only an unread thread: the quiet thread colour,
+            // its counter still counts the thread.
+            let r0 = fx
+                .sidebar
+                .sections
+                .iter()
+                .flat_map(|s| &s.items)
+                .find(|i| i.rid == "r0000")
+                .unwrap()
+                .clone();
+            assert_eq!(room_badge_kind(&r0), Some(BadgeKind::Thread));
+            let p = fx.sidebar.row_props(&r0, &ctx(&fx));
+            assert_eq!((p.unread, p.badge_kind()), (1, Some(BadgeKind::Thread)));
+            assert!(collapsed_unread_status(&threads).is_some());
+            let mut s = sub("r0001", "r0001", RoomType::Channel);
+            s.unread = 2;
+            fx.ws.apply_subscription(Change::Updated, s);
+            fx.refresh();
+            let sec = fx
+                .sidebar
+                .sections
+                .iter()
+                .find(|s| s.items.iter().any(|i| i.rid == "r0001"))
+                .unwrap();
+            assert!(kinds(sec).contains(&Some(BadgeKind::Unread)));
+            assert!(collapsed_unread_status(sec).is_some());
+            let max = [BadgeKind::Muted, BadgeKind::Unread, BadgeKind::Mention]
+                .into_iter()
+                .max_by_key(|&k| badge_rank(k));
+            assert_eq!(max, Some(BadgeKind::Mention));
+            assert!(badge_rank(BadgeKind::Unread) > badge_rank(BadgeKind::Thread));
+        }
+
         /// Row contents: unread dot without a count, the room in the
         /// subtitle (in the title when condensed), placeholders and the
         /// context menu by state; opening and menu items map to outputs.
@@ -2639,7 +2743,7 @@ mod tests {
             let p = thread_row_props(&rows[1], &c);
             assert_eq!(p.title, "Loading…");
             assert_eq!(p.subtitle.as_deref(), Some("r0000"));
-            assert_eq!(p.badge_dot, Some(BadgeKind::Thread));
+            assert_eq!(p.badge_dot, Some(BadgeKind::Muted));
             fx.ws.thread_gone("t001");
             fx.refresh();
             let gone = fx.sidebar.sections[0].threads[1].clone();
@@ -2825,7 +2929,7 @@ mod tests {
                 .find(|s| s.is(SectionKind::Favorites))
                 .unwrap()
                 .clone();
-            assert!(unread_threads_status(&fav).is_none());
+            assert!(collapsed_unread_status(&fav).is_none());
             let mut s = sub("r0000", "r0000", RoomType::Channel);
             s.tunread = Some(vec!["t".into()]);
             fx.ws.apply_subscription(Change::Updated, s);
@@ -2837,7 +2941,7 @@ mod tests {
                 .find(|s| s.is(SectionKind::Favorites))
                 .unwrap();
             assert!(fav.threads[0].unread.is_some());
-            assert!(unread_threads_status(fav).is_some());
+            assert!(collapsed_unread_status(fav).is_some());
             // Without tracking there is no refresh.
             fx.ws.set_starred_threads(false);
             fx.refresh();

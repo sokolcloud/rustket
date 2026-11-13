@@ -36,6 +36,9 @@ pub struct RoomListItemProps<Message> {
     /// Formatted time of the last message.
     pub time: Option<String>,
     pub unread: u32,
+    /// The part of `unread` that is thread replies: a room with nothing else
+    /// unread gets the quiet thread colour.
+    pub thread_count: u32,
     pub user_mentions: u32,
     pub group_mentions: u32,
     pub thread_unread: bool,
@@ -65,6 +68,7 @@ impl<Message> RoomListItemProps<Message> {
             subtitle: None,
             time: None,
             unread: 0,
+            thread_count: 0,
             user_mentions: 0,
             group_mentions: 0,
             thread_unread: false,
@@ -88,7 +92,7 @@ impl<Message> RoomListItemProps<Message> {
         BadgeKind::for_room(
             self.user_mentions,
             self.group_mentions,
-            self.unread,
+            self.unread.saturating_sub(self.thread_count),
             self.thread_unread,
             self.is_muted,
         )
