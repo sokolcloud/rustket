@@ -307,7 +307,8 @@ pub static LIGHT: Tokens = Tokens {
     quote_bg: hex(0xF7F8FA),
     selection: hexa(0x156FF5, 0.25),
 
-    badge_unread: BRAND_BLUE,
+    // Plain unread and thread-only counters are quiet; mentions stay loud.
+    badge_unread: hex(0x5574A6),
     badge_mention: BRAND_DANGER,
     badge_group_mention: hex(0xB35300),
     badge_thread: hex(0x66758C),
@@ -398,10 +399,10 @@ pub static DARK: Tokens = Tokens {
     quote_bg: hex(0x262931),
     selection: hexa(0x3A86F7, 0.35),
 
-    badge_unread: BRAND_BLUE,
+    badge_unread: hex(0x3A5F94),
     badge_mention: BRAND_DANGER,
     badge_group_mention: hex(0xB35300),
-    badge_thread: hex(0x56637A),
+    badge_thread: hex(0x475263),
     badge_muted: hex(0x474C55),
     badge_fg: Color::WHITE,
     badge_muted_fg: hex(0xEEF1F5),
