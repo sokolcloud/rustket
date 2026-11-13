@@ -345,7 +345,7 @@ fn row_key(rid: &str, p: &RoomListItemProps<Message>) -> u64 {
     p.title.hash(&mut h);
     p.subtitle.hash(&mut h);
     p.time.hash(&mut h);
-    (p.unread, p.user_mentions, p.group_mentions).hash(&mut h);
+    (p.unread, p.thread_count, p.user_mentions, p.group_mentions).hash(&mut h);
     (p.thread_unread, p.is_muted, p.is_selected, p.typing).hash(&mut h);
     p.presence.hash(&mut h);
     p.icon.as_ref().map(std::mem::discriminant).hash(&mut h);
@@ -1131,24 +1131,12 @@ impl Sidebar {
         p.time = item
             .last_activity
             .map(|ts| short_time(ts, chrono::Local::now(), ctx.prefs.clock_24h));
-        let b = &item.badge;
-        p.unread = count_u32(b.count);
-        p.thread_count = count_u32(b.threads);
-        p.user_mentions = if b.variant == BadgeVariant::Mention {
-            count_u32(b.mentions)
-        } else {
-            0
-        };
-        p.group_mentions = if b.variant == BadgeVariant::GroupMention {
-            count_u32(b.group_mentions)
-        } else {
-            0
-        };
-        p.thread_unread = b.threads > 0;
-        if b.dot && p.unread == 0 {
-            // `alert` without a counter: show a dot via thread/unread styling.
-            p.thread_unread = true;
-        }
+        let b = row_badge(&item.badge);
+        p.unread = b.unread;
+        p.thread_count = b.thread_count;
+        p.user_mentions = b.user_mentions;
+        p.group_mentions = b.group_mentions;
+        p.thread_unread = b.thread_unread;
         p.is_muted = item.muted;
         p.is_selected = ctx.active_room == Some(item.rid.as_str());
         p.presence = item.dm_status.map(presence);
@@ -1275,23 +1263,51 @@ fn badge_rank(k: BadgeKind) -> u8 {
     }
 }
 
-/// The badge of a room row (see [`Sidebar::row_props`]).
-fn room_badge_kind(item: &RoomListItem) -> Option<BadgeKind> {
-    let b = &item.badge;
+/// What a room row's badge is made of.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RowBadge {
+    /// The counter: unread messages and unread threads.
+    unread: u32,
+    /// The part of `unread` that is threads.
+    thread_count: u32,
+    user_mentions: u32,
+    group_mentions: u32,
+    /// Unread threads, or `alert` without a counter (a dot).
+    thread_unread: bool,
+}
+
+/// A room's badge inputs; nothing when the room shows neither a counter nor
+/// a dot (its unread status is hidden), as Rocket.Chat does.
+fn row_badge(b: &room_list::Badge) -> RowBadge {
+    if b.count == 0 && !b.dot {
+        return RowBadge::default();
+    }
     let unread = count_u32(b.count);
-    BadgeKind::for_room(
-        if b.variant == BadgeVariant::Mention {
+    RowBadge {
+        unread,
+        thread_count: count_u32(b.threads),
+        user_mentions: if b.variant == BadgeVariant::Mention {
             count_u32(b.mentions)
         } else {
             0
         },
-        if b.variant == BadgeVariant::GroupMention {
+        group_mentions: if b.variant == BadgeVariant::GroupMention {
             count_u32(b.group_mentions)
         } else {
             0
         },
-        unread.saturating_sub(count_u32(b.threads)),
-        b.threads > 0 || (b.dot && unread == 0),
+        thread_unread: b.threads > 0 || (b.dot && unread == 0),
+    }
+}
+
+/// The badge kind of a room row (the same as [`RoomListItemProps::badge_kind`]).
+fn room_badge_kind(item: &RoomListItem) -> Option<BadgeKind> {
+    let b = row_badge(&item.badge);
+    BadgeKind::for_room(
+        b.user_mentions,
+        b.group_mentions,
+        b.unread.saturating_sub(b.thread_count),
+        b.thread_unread,
         item.muted,
     )
 }
@@ -2717,6 +2733,25 @@ mod tests {
                 .max_by_key(|&k| badge_rank(k));
             assert_eq!(max, Some(BadgeKind::Mention));
             assert!(badge_rank(BadgeKind::Unread) > badge_rank(BadgeKind::Thread));
+
+            // Hidden unread status: no badge, also not in a collapsed header.
+            let mut s = sub("r0002", "r0002", RoomType::Channel);
+            s.tunread = Some(vec!["t9".into()]);
+            s.user_mentions = 1;
+            s.hide_unread_status = Some(true);
+            s.hide_mention_status = Some(true);
+            fx.ws.apply_subscription(Change::Updated, s);
+            fx.refresh();
+            let r2 = fx
+                .sidebar
+                .sections
+                .iter()
+                .flat_map(|s| &s.items)
+                .find(|i| i.rid == "r0002")
+                .unwrap()
+                .clone();
+            assert_eq!(room_badge_kind(&r2), None);
+            assert_eq!(fx.sidebar.row_props(&r2, &ctx(&fx)).badge_kind(), None);
         }
 
         /// Row contents: unread dot without a count, the room in the
