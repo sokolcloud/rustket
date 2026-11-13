@@ -136,6 +136,8 @@ fn main() -> iced::Result {
     #[cfg(target_os = "macos")]
     rustket::macos_events::install();
     let config_dir = rustket_core::config::AppConfig::default_dir().ok();
+    // Before `rustket_ui::settings()`: the theme's fonts are fixed per session.
+    rustket::themes::init_fonts(config_dir.as_deref());
     let decorations = rustket::workspace::titlebar::saved_system_title_bar(config_dir.as_deref());
     let flags = Flags {
         urls,

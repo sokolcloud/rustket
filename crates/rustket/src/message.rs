@@ -184,6 +184,8 @@ pub enum Message {
     Modal(ModalMessage),
     CloseModal,
     CloseToast(u64),
+    /// The file manager could not open the themes folder (its path).
+    ThemesFolderNotOpened(String),
     /// Offline cache (`crate::cache`).
     Cache(crate::cache::Msg),
     /// In-app updates (`crate::updater`).

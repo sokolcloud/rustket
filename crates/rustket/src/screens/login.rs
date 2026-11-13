@@ -22,7 +22,7 @@ use rustket_core::ServerId;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_MEDIUM, RADIUS_MD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, tokens,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_medium, radius_md, tokens,
 };
 use rustket_ui::widget::{
     BannerKind, above, banner, dialog, ghost_button, primary_button, secondary_button, spinner,
@@ -922,7 +922,7 @@ impl Login {
                 spinner(18.0),
                 text(t!("login.pending_title", service = p.label))
                     .size(TEXT_BODY + 1.0)
-                    .font(FONT_MEDIUM)
+                    .font(font_medium())
             ]
             .spacing(SPACE_2)
             .align_y(Alignment::Center),
@@ -1121,7 +1121,7 @@ fn service_button<'a>(s: &LoginServiceConfig, msg: Message) -> Element<'a, Messa
     let fg = s.button_label_color.as_deref().and_then(parse_color);
     let label = t!("login.continue_with", service = s.button_label()).into_owned();
     button(
-        container(text(label).size(TEXT_BODY).font(FONT_MEDIUM))
+        container(text(label).size(TEXT_BODY).font(font_medium()))
             .center_x(Length::Fill)
             .center_y(Length::Fill),
     )
@@ -1141,7 +1141,7 @@ fn service_button<'a>(s: &LoginServiceConfig, msg: Message) -> Element<'a, Messa
             background: Some(Background::Color(bgc)),
             text_color: fg.unwrap_or(t.text_primary),
             border: Border {
-                radius: RADIUS_MD.into(),
+                radius: radius_md().into(),
                 width: if bg.is_some() { 0.0 } else { 1.0 },
                 color: t.border_strong,
             },

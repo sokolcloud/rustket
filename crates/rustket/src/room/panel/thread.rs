@@ -19,7 +19,7 @@ use rustket_core::timeline::{DeliveryState, PAGE_SIZE, PageTicket, TimelineItem}
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_4, TEXT_CAPTION, TEXT_SMALL, font_semibold};
 use rustket_ui::widget::{divider, icon_button_with, keyed_list, spinner};
 
 use super::common;
@@ -1011,7 +1011,7 @@ impl Thread {
             row![
                 text(label)
                     .size(TEXT_CAPTION)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
                     .style(style::text_secondary),
                 container(divider()).width(Length::Fill),
             ]

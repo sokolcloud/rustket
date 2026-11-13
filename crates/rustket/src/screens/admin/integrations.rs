@@ -12,9 +12,7 @@ use rust_i18n::t;
 use rustket_core::permissions::has_any_permission;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{
-    FONT_MEDIUM, MONOSPACE_FONT, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL,
-};
+use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_medium, font_mono};
 use rustket_ui::widget::{
     BannerKind, above, banner, danger_button, ghost_button, icon_button, primary_button,
     secondary_button,
@@ -610,7 +608,7 @@ impl State {
                             .style(style::text_secondary),
                             text(i.name.clone().unwrap_or_default())
                                 .size(TEXT_BODY)
-                                .font(FONT_MEDIUM),
+                                .font(font_medium()),
                         ]
                         .spacing(SPACE_2)
                         .align_y(Alignment::Center)
@@ -898,7 +896,7 @@ fn editor_view<'a>(e: &'a Editor, v: &V<'a>) -> Element<'a, Message> {
         text_editor(&e.script)
             .on_action(|a| Message::Integrations(Msg::Script(a)))
             .height(280)
-            .font(MONOSPACE_FONT)
+            .font(font_mono())
             .size(TEXT_SMALL)
             .padding(SPACE_2),
     ));

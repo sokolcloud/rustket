@@ -9,7 +9,7 @@ use rustket_core::room_list;
 use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_TITLE};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_TITLE, font_semibold};
 use rustket_ui::widget::{ChipKind, divider};
 
 use super::Kind;
@@ -174,7 +174,7 @@ impl Info {
             container(
                 text(name.clone())
                     .size(TEXT_TITLE)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
                     .align_x(Alignment::Center)
             )
             .center_x(Length::Fill),

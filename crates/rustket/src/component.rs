@@ -154,6 +154,13 @@ pub enum Effect {
     ClearOfflineCache,
     /// Show a test desktop notification.
     TestNotification,
+    /// `UiPrefs::theme_name` changed: activate it (`rescan`: read the theme
+    /// files again first).
+    ApplyTheme {
+        rescan: bool,
+    },
+    /// Open the themes folder in the file manager (created if missing).
+    OpenThemesFolder,
     /// The recently used custom status texts changed (most recent first):
     /// store them in `AppConfig::recent_status_texts` and save.
     RecentStatusTexts(Vec<String>),

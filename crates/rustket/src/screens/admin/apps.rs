@@ -9,9 +9,7 @@ use rust_i18n::t;
 use rustket_core::permissions::has_permission;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{
-    FONT_MEDIUM, MONOSPACE_FONT, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL,
-};
+use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_medium, font_mono};
 use rustket_ui::widget::{
     BannerKind, ChipKind, above, banner, chip, danger_button, primary_button, secondary_button,
 };
@@ -400,7 +398,7 @@ impl State {
                     button(
                         column![
                             row![
-                                text(a.name.clone()).size(TEXT_BODY).font(FONT_MEDIUM),
+                                text(a.name.clone()).size(TEXT_BODY).font(font_medium()),
                                 muted(a.version.clone()),
                                 if a.private {
                                     chip(t!("admin.apps.private"), ChipKind::Neutral)
@@ -541,9 +539,9 @@ fn detail_view<'a>(d: &'a Detail, can_manage: bool) -> Element<'a, Message> {
                     )
                     .secure(secure)
                     .font(if s.kind == "code" {
-                        MONOSPACE_FONT
+                        font_mono()
                     } else {
-                        rustket_ui::theme::DEFAULT_FONT
+                        rustket_ui::theme::font_regular()
                     }),
                 )
             }
@@ -595,7 +593,7 @@ fn detail_view<'a>(d: &'a Detail, can_manage: bool) -> Element<'a, Message> {
                 column![
                     text(format!("{} · {}", date(item.created_at), item.method))
                         .size(TEXT_SMALL)
-                        .font(FONT_MEDIUM),
+                        .font(font_medium()),
                     readonly(entries.join("\n")),
                 ]
                 .spacing(SPACE_2),

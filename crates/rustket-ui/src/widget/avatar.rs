@@ -7,7 +7,7 @@ use super::presence::{Presence, presence_dot};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::emoji::{EMOJI_FONT, first_emoji, is_emoji_grapheme};
-use crate::theme::{FONT_SEMIBOLD, Tokens, tokens};
+use crate::theme::{Tokens, font_semibold, tokens};
 
 /// What to show in an avatar.
 #[derive(Debug, Clone)]
@@ -131,7 +131,11 @@ pub(crate) fn face<'a, Message: 'a>(
     container(
         text(label)
             .size(font_size.max(8.0))
-            .font(if is_emoji { EMOJI_FONT } else { FONT_SEMIBOLD })
+            .font(if is_emoji {
+                EMOJI_FONT
+            } else {
+                font_semibold()
+            })
             .color(Color::WHITE)
             .wrapping(text::Wrapping::None),
     )

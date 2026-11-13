@@ -302,6 +302,8 @@ struct BodyKey<'k> {
     locale: String,
     day: chrono::NaiveDate,
     over_mac: bool,
+    /// Theme generation (radii and colours given to the row widgets).
+    theme: u64,
 }
 
 #[cfg(test)]
@@ -721,14 +723,15 @@ impl Sidebar {
             let t = rustket_ui::theme::tokens(theme);
             container::Style {
                 background: Some(t.surface_sunken.into()),
-                border: iced::border::rounded(rustket_ui::theme::RADIUS_MD)
+                border: iced::border::rounded(rustket_ui::theme::radius_md())
                     .width(1)
                     .color(t.border),
                 ..container::Style::default()
             }
         })
         .padding([0.0, SPACE_1]);
-        let search = rustket_ui::widget::focus_within(search).radius(rustket_ui::theme::RADIUS_MD);
+        let search =
+            rustket_ui::widget::focus_within(search).radius(rustket_ui::theme::radius_md());
         let queue = crate::omnichannel::sidebar::queue_group(ctx, &self.filter);
         let body: Element<'a, Message> = if self.sections.is_empty() && queue.is_none() {
             if self.filter.trim().is_empty() {
@@ -779,6 +782,7 @@ impl Sidebar {
                 day: chrono::Local::now().date_naive(),
                 over_mac: crate::omnichannel::shared::get(ctx.server_id)
                     .is_some_and(|o| o.over_mac),
+                theme: rustket_ui::theme::generation(),
             };
             let ctx = *ctx;
             let window = key.window;
@@ -1097,6 +1101,7 @@ impl Sidebar {
             menu.flag
                 .then(|| super::flag_menu::names_key(ctx.workspace.flags())),
             rust_i18n::locale().to_string(),
+            rustket_ui::theme::generation(),
         ));
         let entries = menu.entries(&item.rid, ctx.workspace);
         lazy(key, move |_| {
@@ -1362,6 +1367,7 @@ fn thread_row(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> Element<'static, Mess
         (kept_enabled, star_enabled),
         flags.map(super::flag_menu::names_key),
         rust_i18n::locale().to_string(),
+        rustket_ui::theme::generation(),
     ));
     let entries = thread_menu(t, kept_enabled, star_enabled, flags);
     lazy(key, move |_| {
@@ -2178,7 +2184,7 @@ mod tests {
         fn build_and_layout(fx: &Fx) -> (usize, std::time::Duration) {
             use iced_runtime::user_interface::{Cache, UserInterface};
             let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-                rustket_ui::theme::DEFAULT_FONT,
+                rustket_ui::theme::font_regular(),
                 iced::Pixels(rustket_ui::theme::TEXT_BODY),
             ));
             BUILDS.with(|b| b.set((0, 0)));
@@ -3394,7 +3400,7 @@ mod tests {
             let mut fx = Fx::with_rooms(3);
             fx.refresh();
             let mut r = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-                rustket_ui::theme::DEFAULT_FONT,
+                rustket_ui::theme::font_regular(),
                 iced::Pixels(rustket_ui::theme::TEXT_BODY),
             ));
             let mut ui =

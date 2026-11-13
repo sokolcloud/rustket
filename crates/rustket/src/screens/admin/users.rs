@@ -11,7 +11,7 @@ use rust_i18n::t;
 use rustket_core::permissions::has_permission;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_medium};
 use rustket_ui::widget::{
     ChipKind, chip, danger_button, dialog, ghost_button, primary_button, secondary_button,
 };
@@ -762,7 +762,7 @@ impl State {
                         column![
                             text(u.name.clone().unwrap_or_default())
                                 .size(TEXT_BODY)
-                                .font(FONT_MEDIUM),
+                                .font(font_medium()),
                             muted(format!("@{}", u.username.clone().unwrap_or_default())),
                         ]
                         .into(),

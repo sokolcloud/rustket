@@ -9,7 +9,7 @@ use rocketchat::models::admin::{Banner, Instance, LicenseInfo, Statistics};
 use rust_i18n::t;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{MONOSPACE_FONT, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL, font_mono};
 use rustket_ui::widget::{BannerKind, banner, dialog, loading_placeholder, secondary_button};
 
 use super::common::{Cx, card, date, kv, num, size, title_row, yes_no_text};
@@ -182,7 +182,7 @@ impl State {
             let json = serde_json::to_string_pretty(s).unwrap_or_default();
             return col
                 .push(
-                    container(text(json).font(MONOSPACE_FONT).size(TEXT_CAPTION))
+                    container(text(json).font(font_mono()).size(TEXT_CAPTION))
                         .padding(SPACE_3)
                         .width(Length::Fill)
                         .style(style::container_code_block),
@@ -420,7 +420,7 @@ impl State {
                     ),
                     kv(t!("admin.ws.pid").into_owned(), num(r.pid)),
                     kv(t!("admin.ws.created").into_owned(), date(r.created_at)),
-                    text(extra).font(MONOSPACE_FONT).size(TEXT_SMALL),
+                    text(extra).font(font_mono()).size(TEXT_SMALL),
                 ]
                 .spacing(SPACE_2),
             );

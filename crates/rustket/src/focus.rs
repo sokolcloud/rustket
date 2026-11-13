@@ -92,7 +92,7 @@ mod tests {
     /// published messages.
     fn drive(view: Element<'_, M>, focused: &'static str, events: &[Event]) -> Vec<M> {
         let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-            rustket_ui::theme::DEFAULT_FONT,
+            rustket_ui::theme::font_regular(),
             iced::Pixels(rustket_ui::theme::TEXT_BODY),
         ));
         let mut ui = UserInterface::build(

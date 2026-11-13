@@ -16,8 +16,8 @@ use rustket_core::permissions::has_permission;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, HEADER_HEIGHT, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
-    TEXT_SUBTITLE,
+    HEADER_HEIGHT, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SUBTITLE,
+    font_semibold,
 };
 use rustket_ui::widget::{ChipKind, chip, divider, ellipsis, icon_button};
 
@@ -243,7 +243,7 @@ impl ContactCenter {
         if let Some(p) = c.phones.first() {
             sub.push(p.phone_number.clone());
         }
-        let mut head = row![ellipsis(name.clone()).size(TEXT_BODY).font(FONT_SEMIBOLD)]
+        let mut head = row![ellipsis(name.clone()).size(TEXT_BODY).font(font_semibold())]
             .spacing(SPACE_2)
             .align_y(Alignment::Center);
         if c.unknown {
@@ -318,7 +318,7 @@ impl ContactCenter {
                 column![
                     ellipsis(r.fname.clone().unwrap_or_default())
                         .size(TEXT_BODY)
-                        .font(FONT_SEMIBOLD),
+                        .font(font_semibold()),
                     text(format!("{agent}  {when}"))
                         .size(TEXT_CAPTION)
                         .style(style::text_secondary),
@@ -338,7 +338,7 @@ impl ContactCenter {
                 icon::sized(Icon::Contact, 18.0),
                 text(t!("omnichannel.contact_center").into_owned())
                     .size(TEXT_SUBTITLE)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
                     .width(Length::Fill),
                 icon_button(Icon::X, Some(Msg::Close), t!("omnichannel.close_screen")),
             ]
@@ -358,7 +358,7 @@ impl ContactCenter {
                 row![
                     icon_button(Icon::ChevronLeft, Some(Msg::Back), t!("omnichannel.back")),
                     column![
-                        ellipsis(name.clone()).size(TEXT_BODY).font(FONT_SEMIBOLD),
+                        ellipsis(name.clone()).size(TEXT_BODY).font(font_semibold()),
                         text(t!("omnichannel.contact_chats").into_owned())
                             .size(TEXT_CAPTION)
                             .style(style::text_secondary),

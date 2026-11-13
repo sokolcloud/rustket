@@ -12,7 +12,7 @@ use rustket_core::teams;
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_3, SPACE_4, TEXT_BODY, TEXT_TITLE};
+use rustket_ui::theme::{SPACE_1, SPACE_3, SPACE_4, TEXT_BODY, TEXT_TITLE, font_semibold};
 use rustket_ui::widget::{ChipKind, chip, primary_button};
 
 use super::chooser::{self, Chooser, Flow, Outcome};
@@ -190,7 +190,7 @@ impl Info {
                 96.0
             ))
             .center_x(Length::Fill),
-            container(text(name).size(TEXT_TITLE).font(FONT_SEMIBOLD)).center_x(Length::Fill),
+            container(text(name).size(TEXT_TITLE).font(font_semibold())).center_x(Length::Fill),
             container(
                 row![
                     chip(t!("teams.team").into_owned(), ChipKind::Primary),
@@ -296,7 +296,7 @@ impl Info {
             column![
                 text(t!("teams.convert_to_team").into_owned())
                     .size(TEXT_BODY)
-                    .font(FONT_SEMIBOLD),
+                    .font(font_semibold()),
                 text(t!("teams.convert_to_team_hint").into_owned())
                     .size(TEXT_BODY)
                     .style(style::text_secondary),

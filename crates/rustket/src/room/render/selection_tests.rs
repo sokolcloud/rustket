@@ -109,7 +109,7 @@ fn selection_survives_a_new_message() {
         }
     }
     let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         Pixels(rustket_ui::theme::TEXT_BODY),
     ));
     let size = Size::new(900.0, 700.0);

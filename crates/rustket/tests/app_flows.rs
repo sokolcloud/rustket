@@ -2242,7 +2242,7 @@ type Ui<'a> = iced_runtime::user_interface::UserInterface<'a, Message, iced::The
 
 fn test_renderer() -> iced::Renderer {
     iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         iced::Pixels(rustket_ui::theme::TEXT_BODY),
     ))
 }
@@ -2641,8 +2641,9 @@ async fn header_menu_settings_scrolls_to_the_sidebar_card() {
     )
     .expect("the Sidebar card");
     let top = card.y - t.y;
+    // The scroll offset is snapped to whole pixels; the card's top may not be.
     assert!(
-        top >= bounds.y && top < bounds.y + bounds.height,
+        top >= bounds.y - 0.5 && top < bounds.y + bounds.height,
         "card {card:?} at {top} in {bounds:?}"
     );
 }

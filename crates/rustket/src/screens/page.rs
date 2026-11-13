@@ -5,7 +5,7 @@ use iced::{Alignment, Element, Length};
 use rust_i18n::t;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_4, SPACE_6, TEXT_TITLE};
+use rustket_ui::theme::{SPACE_4, SPACE_6, TEXT_TITLE, font_semibold};
 use rustket_ui::widget::{divider, empty_state, icon_button};
 
 /// The page body's scrollable.
@@ -18,7 +18,7 @@ pub fn page<'a, M: Clone + 'a>(title: String, body: Element<'a, M>, on_close: M)
             row![
                 text(title)
                     .size(TEXT_TITLE)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
                     .width(Length::Fill),
                 icon_button(Icon::X, Some(on_close), t!("app.close")),
             ]

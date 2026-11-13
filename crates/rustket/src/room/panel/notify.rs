@@ -9,7 +9,7 @@ use rust_i18n::t;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_semibold,
 };
 use rustket_ui::widget::primary_button;
 
@@ -257,7 +257,7 @@ impl Notify {
         let section = |s: String| {
             text(s)
                 .size(TEXT_CAPTION)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
                 .style(style::text_hint)
         };
 

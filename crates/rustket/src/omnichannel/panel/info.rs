@@ -15,7 +15,7 @@ use rustket_core::permissions::has_permission;
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_semibold};
 use rustket_ui::widget::{ChipKind, chip, divider, ellipsis, presence_dot, secondary_button};
 
 use super::PanelKind;
@@ -179,7 +179,7 @@ impl InfoPanel {
             avatar,
             column![
                 row![
-                    ellipsis(name).size(TEXT_BODY).font(FONT_SEMIBOLD),
+                    ellipsis(name).size(TEXT_BODY).font(font_semibold()),
                     presence_dot(presence_of(status), 8.0)
                 ]
                 .spacing(SPACE_1)

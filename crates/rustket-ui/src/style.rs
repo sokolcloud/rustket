@@ -11,7 +11,7 @@ use iced::widget::toggler as w_toggler;
 use iced::widget::{button, container, overlay, text};
 use iced::{Background, Border, Color, Shadow, Theme, Vector, border};
 
-use crate::theme::{RADIUS_LG, RADIUS_MD, RADIUS_PILL, RADIUS_SM, Tokens, tokens};
+use crate::theme::{RADIUS_PILL, Tokens, radius_lg, radius_md, radius_sm, tokens};
 
 fn bg(color: Color) -> Option<Background> {
     Some(Background::Color(color))
@@ -82,7 +82,7 @@ fn filled(
     button::Style {
         background: bg(background),
         text_color,
-        border: border::rounded(RADIUS_SM),
+        border: border::rounded(radius_sm()),
         shadow: Shadow::default(),
         snap: true,
     }
@@ -123,7 +123,7 @@ pub fn button_secondary(theme: &Theme, status: button::Status) -> button::Style 
     button::Style {
         background: bg(background),
         text_color,
-        border: border::rounded(RADIUS_SM).width(1).color(border_color),
+        border: border::rounded(radius_sm()).width(1).color(border_color),
         shadow: Shadow::default(),
         snap: true,
     }
@@ -141,7 +141,7 @@ pub fn button_ghost(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background,
         text_color,
-        border: border::rounded(RADIUS_SM),
+        border: border::rounded(radius_sm()),
         shadow: Shadow::default(),
         snap: true,
     }
@@ -159,7 +159,7 @@ pub fn button_icon(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background,
         text_color,
-        border: border::rounded(RADIUS_SM),
+        border: border::rounded(radius_sm()),
         shadow: Shadow::default(),
         snap: true,
     }
@@ -179,7 +179,7 @@ pub fn button_icon_active(theme: &Theme, status: button::Status) -> button::Styl
         } else {
             t.link
         },
-        border: border::rounded(RADIUS_SM),
+        border: border::rounded(radius_sm()),
         shadow: Shadow::default(),
         snap: true,
     }
@@ -220,7 +220,7 @@ pub fn button_list_item(selected: bool) -> impl Fn(&Theme, button::Status) -> bu
             } else {
                 t.text_primary
             },
-            border: border::rounded(RADIUS_SM),
+            border: border::rounded(radius_sm()),
             shadow: Shadow::default(),
             snap: true,
         }
@@ -245,7 +245,7 @@ pub fn button_menu_item(danger: bool) -> impl Fn(&Theme, button::Status) -> butt
         button::Style {
             background,
             text_color,
-            border: border::rounded(RADIUS_SM),
+            border: border::rounded(radius_sm()),
             shadow: Shadow::default(),
             snap: true,
         }
@@ -332,7 +332,7 @@ pub fn container_card(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(t.text_primary),
         background: bg(t.surface_raised),
-        border: border::rounded(RADIUS_LG).width(1).color(t.border),
+        border: border::rounded(radius_lg()).width(1).color(t.border),
         shadow: Shadow::default(),
         snap: true,
     }
@@ -343,7 +343,7 @@ pub fn container_popover(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(t.text_primary),
         background: bg(t.surface_raised),
-        border: border::rounded(RADIUS_MD).width(1).color(t.border),
+        border: border::rounded(radius_md()).width(1).color(t.border),
         shadow: shadow(t, 4.0, 16.0),
         snap: true,
     }
@@ -354,7 +354,7 @@ pub fn container_modal(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(t.text_primary),
         background: bg(t.surface_raised),
-        border: border::rounded(RADIUS_LG).width(1).color(t.border),
+        border: border::rounded(radius_lg()).width(1).color(t.border),
         shadow: shadow(t, 8.0, 32.0),
         snap: true,
     }
@@ -372,7 +372,7 @@ pub fn container_tooltip(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(t.tooltip_fg),
         background: bg(t.tooltip_bg),
-        border: border::rounded(RADIUS_SM),
+        border: border::rounded(radius_sm()),
         shadow: shadow(t, 2.0, 8.0),
         snap: true,
     }
@@ -383,7 +383,7 @@ pub fn container_code_block(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(t.code_fg),
         background: bg(t.code_bg),
-        border: border::rounded(RADIUS_SM).width(1).color(t.border),
+        border: border::rounded(radius_sm()).width(1).color(t.border),
         shadow: Shadow::default(),
         snap: true,
     }
@@ -394,7 +394,7 @@ pub fn container_inline_code(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(t.code_fg),
         background: bg(t.code_bg),
-        border: border::rounded(RADIUS_SM),
+        border: border::rounded(radius_sm()),
         shadow: Shadow::default(),
         snap: true,
     }
@@ -408,8 +408,8 @@ pub fn container_quote(theme: &Theme) -> container::Style {
         background: bg(t.quote_bg),
         border: border::rounded(
             border::Radius::default()
-                .top_right(RADIUS_SM)
-                .bottom_right(RADIUS_SM),
+                .top_right(radius_sm())
+                .bottom_right(radius_sm()),
         ),
         shadow: Shadow::default(),
         snap: true,
@@ -422,8 +422,8 @@ pub fn container_quote_bar(theme: &Theme) -> container::Style {
         background: bg(t.quote_bar),
         border: border::rounded(
             border::Radius::default()
-                .top_left(RADIUS_SM)
-                .bottom_left(RADIUS_SM),
+                .top_left(radius_sm())
+                .bottom_left(radius_sm()),
         ),
         ..container::Style::default()
     }
@@ -440,7 +440,7 @@ pub fn container_mention(me: bool) -> impl Fn(&Theme) -> container::Style {
         container::Style {
             text_color: Some(f),
             background: bg(b),
-            border: border::rounded(RADIUS_SM),
+            border: border::rounded(radius_sm()),
             ..container::Style::default()
         }
     }
@@ -477,7 +477,7 @@ pub fn container_selected(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(t.link),
         background: bg(t.selected_bg),
-        border: border::rounded(RADIUS_SM),
+        border: border::rounded(radius_sm()),
         ..container::Style::default()
     }
 }
@@ -486,7 +486,7 @@ fn banner(bg_color: Color, fg: Color, border_color: Color) -> container::Style {
     container::Style {
         text_color: Some(fg),
         background: bg(bg_color),
-        border: border::rounded(RADIUS_SM)
+        border: border::rounded(radius_sm())
             .width(1)
             .color(border_color.scale_alpha(0.35)),
         shadow: Shadow::default(),
@@ -573,7 +573,9 @@ fn input_style(t: &Tokens, status: w_text_input::Status, error: bool) -> w_text_
     };
     w_text_input::Style {
         background: Background::Color(background),
-        border: border::rounded(RADIUS_SM).width(width).color(border_color),
+        border: border::rounded(radius_sm())
+            .width(width)
+            .color(border_color),
         icon: t.text_secondary,
         placeholder: t.text_hint,
         value,
@@ -588,7 +590,7 @@ pub fn container_composer(focused: bool) -> impl Fn(&Theme) -> container::Style 
         container::Style {
             text_color: Some(t.text_primary),
             background: bg(t.surface_raised),
-            border: border::rounded(RADIUS_MD).width(1).color(if focused {
+            border: border::rounded(radius_md()).width(1).color(if focused {
                 t.border_focus
             } else {
                 t.border_strong
@@ -611,7 +613,7 @@ pub fn pick_list(theme: &Theme, status: w_pick_list::Status) -> w_pick_list::Sty
         placeholder_color: t.text_hint,
         handle_color: t.text_secondary,
         background: Background::Color(t.surface_raised),
-        border: border::rounded(RADIUS_SM).width(1).color(border_color),
+        border: border::rounded(radius_sm()).width(1).color(border_color),
     }
 }
 
@@ -620,7 +622,7 @@ pub fn menu(theme: &Theme) -> overlay::menu::Style {
     let t = tokens(theme);
     overlay::menu::Style {
         background: Background::Color(t.surface_raised),
-        border: border::rounded(RADIUS_SM).width(1).color(t.border),
+        border: border::rounded(radius_sm()).width(1).color(t.border),
         text_color: t.text_primary,
         selected_text_color: t.text_primary,
         selected_background: Background::Color(t.hover_bg),
@@ -645,7 +647,7 @@ pub fn checkbox(theme: &Theme, status: w_checkbox::Status) -> w_checkbox::Style 
     w_checkbox::Style {
         background: Background::Color(if checked { fill } else { t.surface_raised }),
         icon_color: t.on_primary,
-        border: border::rounded(RADIUS_SM)
+        border: border::rounded(radius_sm())
             .width(if checked { 0.0 } else { 1.0 })
             .color(if hovered {
                 t.text_hint

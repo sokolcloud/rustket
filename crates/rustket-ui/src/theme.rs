@@ -1,6 +1,8 @@
 //! Rustket palette, design tokens, spacing/typography scales and the iced theme.
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use iced::font::Weight;
 use iced::theme::Palette;
@@ -22,11 +24,15 @@ impl Mode {
         }
     }
 
+    /// The active tokens of this mode (an external theme's, or the
+    /// built-in ones when none is active).
     pub fn tokens(self) -> &'static Tokens {
-        match self {
-            Mode::Light => &LIGHT,
-            Mode::Dark => &DARK,
-        }
+        active_tokens(self)
+    }
+
+    /// The built-in Rustket tokens of this mode.
+    pub fn builtin(self) -> &'static Tokens {
+        builtin_tokens(self)
     }
 }
 
@@ -41,13 +47,40 @@ pub const SPACE_6: f32 = 24.0;
 pub const SPACE_8: f32 = 32.0;
 pub const SPACE_10: f32 = 40.0;
 
-// Corner radii.
-pub const RADIUS_XS: f32 = 2.0;
-pub const RADIUS_SM: f32 = 4.0;
-pub const RADIUS_MD: f32 = 6.0;
-pub const RADIUS_LG: f32 = 8.0;
-pub const RADIUS_XL: f32 = 12.0;
+// Corner radii: the built-in values, scaled by the active theme's
+// `layout.radius` ([`radius_scale`]).
+const RADIUS_XS: f32 = 2.0;
+const RADIUS_SM: f32 = 4.0;
+const RADIUS_MD: f32 = 6.0;
+const RADIUS_LG: f32 = 8.0;
+const RADIUS_XL: f32 = 12.0;
+/// Fully rounded ends; not scaled.
 pub const RADIUS_PILL: f32 = 999.0;
+/// Allowed range of the corner-radius scale.
+pub const RADIUS_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.0..=2.0;
+
+static RADIUS_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+
+/// The active corner-radius scale (1.0 without an external theme).
+pub fn radius_scale() -> f32 {
+    f32::from_bits(RADIUS_SCALE.load(Ordering::Relaxed))
+}
+
+pub fn radius_xs() -> f32 {
+    RADIUS_XS * radius_scale()
+}
+pub fn radius_sm() -> f32 {
+    RADIUS_SM * radius_scale()
+}
+pub fn radius_md() -> f32 {
+    RADIUS_MD * radius_scale()
+}
+pub fn radius_lg() -> f32 {
+    RADIUS_LG * radius_scale()
+}
+pub fn radius_xl() -> f32 {
+    RADIUS_XL * radius_scale()
+}
 
 // Font size scale.
 pub const TEXT_MICRO: f32 = 10.0;
@@ -73,21 +106,73 @@ pub const HEADER_HEIGHT: f32 = 56.0;
 /// Medium, SemiBold and Bold are bundled ([`fonts`]): many distributions ship only
 /// Regular/Bold, and cosmic-text takes a face of the default family only on an
 /// exact weight match, so a missing weight would fall back to another family.
-pub const DEFAULT_FONT: Font = Font::with_name("Noto Sans");
-pub const FONT_MEDIUM: Font = Font {
-    weight: Weight::Medium,
-    ..DEFAULT_FONT
-};
-pub const FONT_SEMIBOLD: Font = Font {
-    weight: Weight::Semibold,
-    ..DEFAULT_FONT
-};
-pub const FONT_BOLD: Font = Font {
-    weight: Weight::Bold,
-    ..DEFAULT_FONT
-};
-/// Monospace font for inline code and code blocks (system monospace family).
-pub const MONOSPACE_FONT: Font = Font::MONOSPACE;
+///
+/// A theme's `[fonts]` replace them for the whole session: the fonts are
+/// chosen once at startup ([`init_fonts`]) because iced's default font (used
+/// by every widget without an explicit font) is fixed when the window opens.
+const NOTO_SANS: Font = Font::with_name("Noto Sans");
+
+/// The UI fonts per weight and the monospace font.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FontSet {
+    pub regular: Font,
+    pub medium: Font,
+    pub semibold: Font,
+    pub bold: Font,
+    /// Inline code and code blocks.
+    pub mono: Font,
+}
+
+impl FontSet {
+    /// Noto Sans (bundled) and the system monospace family.
+    pub const BUILTIN: FontSet = FontSet {
+        regular: NOTO_SANS,
+        medium: Font {
+            weight: Weight::Medium,
+            ..NOTO_SANS
+        },
+        semibold: Font {
+            weight: Weight::Semibold,
+            ..NOTO_SANS
+        },
+        bold: Font {
+            weight: Weight::Bold,
+            ..NOTO_SANS
+        },
+        mono: Font::MONOSPACE,
+    };
+}
+
+static FONTS: OnceLock<FontSet> = OnceLock::new();
+
+/// Sets the session's fonts; only the first call has an effect (`false`
+/// afterwards). Call it before [`settings`].
+pub fn init_fonts(fonts: FontSet) -> bool {
+    FONTS.set(fonts).is_ok()
+}
+
+/// The session's fonts ([`FontSet::BUILTIN`] unless [`init_fonts`] ran).
+pub fn active_fonts() -> FontSet {
+    FONTS.get().copied().unwrap_or(FontSet::BUILTIN)
+}
+
+/// Default UI font (regular weight).
+pub fn font_regular() -> Font {
+    active_fonts().regular
+}
+pub fn font_medium() -> Font {
+    active_fonts().medium
+}
+pub fn font_semibold() -> Font {
+    active_fonts().semibold
+}
+pub fn font_bold() -> Font {
+    active_fonts().bold
+}
+/// Monospace font for inline code and code blocks.
+pub fn font_mono() -> Font {
+    active_fonts().mono
+}
 
 /// Fonts that must be loaded at startup: pass each to `iced::application(..).font(..)`.
 pub fn fonts() -> Vec<Cow<'static, [u8]>> {
@@ -111,7 +196,7 @@ const NOTO_SANS_BOLD: &[u8] = include_bytes!("../assets/fonts/NotoSans-Bold.ttf"
 pub fn settings() -> iced::Settings {
     iced::Settings {
         fonts: fonts(),
-        default_font: DEFAULT_FONT,
+        default_font: font_regular(),
         default_text_size: iced::Pixels(TEXT_BODY),
         ..iced::Settings::default()
     }
@@ -230,6 +315,106 @@ impl Tokens {
     }
 }
 
+/// Lists every colour field of [`Tokens`] once and generates name-based
+/// access (theme files, `--dump-theme`). The exhaustive destructuring in
+/// `color_fields` stops the build when a field is added to `Tokens` but
+/// not here.
+macro_rules! token_colors {
+    ($($name:ident),* $(,)?) => {
+        /// Names of the colour tokens (Rust field names), in declaration order.
+        pub const COLOR_TOKENS: &[&str] = &[$(stringify!($name)),*];
+
+        impl Tokens {
+            /// Sets the colour token `name`; `false` for an unknown name.
+            pub fn set_color(&mut self, name: &str, color: Color) -> bool {
+                match name {
+                    $(stringify!($name) => self.$name = color,)*
+                    _ => return false,
+                }
+                true
+            }
+
+            /// Every colour token with its name, in declaration order
+            /// (without `flag`).
+            pub fn colors(&self) -> Vec<(&'static str, Color)> {
+                let Tokens { mode: _, flag: _, $($name),* } = self;
+                vec![$((stringify!($name), *$name)),*]
+            }
+        }
+    };
+}
+
+token_colors!(
+    primary,
+    primary_hover,
+    primary_pressed,
+    on_primary,
+    primary_tint,
+    danger,
+    danger_hover,
+    danger_pressed,
+    on_danger,
+    warning,
+    success,
+    danger_text,
+    success_text,
+    warning_icon,
+    surface_room,
+    surface_sidebar,
+    surface_rail,
+    surface_raised,
+    surface_sunken,
+    backdrop,
+    shadow,
+    text_primary,
+    text_secondary,
+    text_hint,
+    text_disabled,
+    border,
+    border_strong,
+    border_focus,
+    focus_ring_inner,
+    hover_bg,
+    pressed_bg,
+    selected_bg,
+    sidebar_hover_bg,
+    sidebar_selected_bg,
+    mention_bg,
+    mention_fg,
+    mention_me_bg,
+    mention_me_fg,
+    own_message_bg,
+    highlight_bg,
+    link,
+    code_bg,
+    code_fg,
+    quote_bar,
+    quote_bg,
+    selection,
+    badge_unread,
+    badge_mention,
+    badge_group_mention,
+    badge_thread,
+    badge_muted,
+    badge_fg,
+    badge_muted_fg,
+    presence_online,
+    presence_away,
+    presence_away_ring,
+    presence_busy,
+    presence_offline,
+    info_bg,
+    info_fg,
+    warning_bg,
+    warning_fg,
+    error_bg,
+    error_fg,
+    success_bg,
+    success_fg,
+    tooltip_bg,
+    tooltip_fg,
+);
+
 const fn hex(rgb: u32) -> Color {
     Color::from_rgb8(
         ((rgb >> 16) & 0xff) as u8,
@@ -238,12 +423,14 @@ const fn hex(rgb: u32) -> Color {
     )
 }
 
-const fn hexa(rgb: u32, a: f32) -> Color {
+/// `a` is the alpha byte, so every built-in colour has an exact
+/// `#RRGGBBAA` form (theme files and `--dump-theme` round-trip exactly).
+const fn hexa(rgb: u32, a: u8) -> Color {
     Color::from_rgba8(
         ((rgb >> 16) & 0xff) as u8,
         ((rgb >> 8) & 0xff) as u8,
         (rgb & 0xff) as u8,
-        a,
+        a as f32 / 255.0,
     )
 }
 
@@ -275,8 +462,8 @@ pub static LIGHT: Tokens = Tokens {
     surface_rail: hex(0xEEEFF1),
     surface_raised: Color::WHITE,
     surface_sunken: hex(0xF2F3F5),
-    backdrop: hexa(0x0B0D10, 0.6),
-    shadow: hexa(0x000000, 0.14),
+    backdrop: hexa(0x0B0D10, 153),
+    shadow: hexa(0x000000, 36),
 
     text_primary: hex(0x1A1D22),
     text_secondary: hex(0x4A4F57),
@@ -305,7 +492,7 @@ pub static LIGHT: Tokens = Tokens {
     code_fg: hex(0x1A1D22),
     quote_bar: hex(0xCBCED1),
     quote_bg: hex(0xF7F8FA),
-    selection: hexa(0x156FF5, 0.25),
+    selection: hexa(0x156FF5, 64),
 
     // Plain unread and thread-only counters are quiet; mentions stay loud.
     badge_unread: hex(0x5574A6),
@@ -367,8 +554,8 @@ pub static DARK: Tokens = Tokens {
     surface_rail: hex(0x1A1D22),
     surface_raised: hex(0x2C3038),
     surface_sunken: hex(0x1A1D22),
-    backdrop: hexa(0x000000, 0.7),
-    shadow: hexa(0x000000, 0.45),
+    backdrop: hexa(0x000000, 179),
+    shadow: hexa(0x000000, 115),
 
     text_primary: hex(0xEEF1F5),
     text_secondary: hex(0xB4B8BE),
@@ -397,7 +584,7 @@ pub static DARK: Tokens = Tokens {
     code_fg: hex(0xEEF1F5),
     quote_bar: hex(0x4F555E),
     quote_bg: hex(0x262931),
-    selection: hexa(0x3A86F7, 0.35),
+    selection: hexa(0x3A86F7, 89),
 
     badge_unread: hex(0x3A5F94),
     badge_mention: BRAND_DANGER,
@@ -435,14 +622,123 @@ pub static DARK: Tokens = Tokens {
     ],
 };
 
-/// Builds the iced theme for a mode.
-pub fn theme(mode: Mode) -> Theme {
-    let t = mode.tokens();
-    let name = match mode {
-        Mode::Light => "Rustket Light",
-        Mode::Dark => "Rustket Dark",
+/// The built-in Rustket tokens of a mode.
+pub fn builtin_tokens(mode: Mode) -> &'static Tokens {
+    match mode {
+        Mode::Light => &LIGHT,
+        Mode::Dark => &DARK,
+    }
+}
+
+/// The tokens in use: an external theme's (see [`set_active`]) or the
+/// built-in ones.
+struct Active {
+    light: &'static Tokens,
+    dark: &'static Tokens,
+    /// Theme id (`None`: built-in), part of the iced theme name.
+    id: Option<String>,
+}
+
+static ACTIVE: RwLock<Active> = RwLock::new(Active {
+    light: &LIGHT,
+    dark: &DARK,
+    id: None,
+});
+
+/// Bumped whenever the active tokens or radius change (cache keys of
+/// views that bake colours or radii into their widgets).
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Every distinct token set made `'static` by [`intern`].
+static INTERNED: Mutex<Vec<&'static Tokens>> = Mutex::new(Vec::new());
+
+/// A `'static` copy of `t`: the built-ins or an earlier equal copy when
+/// there is one, otherwise a leaked box. Invariant: the leak is bounded by
+/// the number of distinct token sets activated in a session (a few per
+/// theme edit), each about 1 KiB.
+fn intern(t: &Tokens) -> &'static Tokens {
+    if *t == LIGHT {
+        return &LIGHT;
+    }
+    if *t == DARK {
+        return &DARK;
+    }
+    let mut seen = INTERNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(found) = seen.iter().find(|s| **s == t) {
+        return found;
+    }
+    let leaked: &'static Tokens = Box::leak(Box::new(*t));
+    seen.push(leaked);
+    leaked
+}
+
+/// Activates a theme: tokens for each mode, its id (`None`: built-in
+/// Rustket) and corner-radius scale (clamped to [`RADIUS_SCALE_RANGE`]).
+pub fn set_active(id: Option<&str>, light: &Tokens, dark: &Tokens, radius: f32) {
+    let light = intern(&Tokens {
+        mode: Mode::Light,
+        ..*light
+    });
+    let dark = intern(&Tokens {
+        mode: Mode::Dark,
+        ..*dark
+    });
+    let radius = if radius.is_finite() {
+        radius.clamp(*RADIUS_SCALE_RANGE.start(), *RADIUS_SCALE_RANGE.end())
+    } else {
+        1.0
     };
-    Theme::custom(
+    let mut changed = RADIUS_SCALE.swap(radius.to_bits(), Ordering::Relaxed) != radius.to_bits();
+    // Poisoned: nothing changes and reads fall back to the built-ins.
+    if let Ok(mut a) = ACTIVE.write() {
+        changed |=
+            !std::ptr::eq(a.light, light) || !std::ptr::eq(a.dark, dark) || a.id.as_deref() != id;
+        *a = Active {
+            light,
+            dark,
+            id: id.map(str::to_owned),
+        };
+    }
+    if changed {
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Changes whenever [`set_active`] changes the look.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
+}
+
+/// The active tokens of a mode (built-ins if the registry is poisoned).
+pub fn active_tokens(mode: Mode) -> &'static Tokens {
+    match ACTIVE.read() {
+        Ok(a) => match mode {
+            Mode::Light => a.light,
+            Mode::Dark => a.dark,
+        },
+        Err(_) => builtin_tokens(mode),
+    }
+}
+
+/// Builds the iced theme for a mode from the active tokens.
+pub fn theme(mode: Mode) -> Theme {
+    let id = ACTIVE.read().ok().and_then(|a| a.id.clone());
+    let name = match (id, mode) {
+        (None, Mode::Light) => "Rustket Light".to_owned(),
+        (None, Mode::Dark) => "Rustket Dark".to_owned(),
+        (Some(id), Mode::Light) => format!("Rustket {id} Light"),
+        (Some(id), Mode::Dark) => format!("Rustket {id} Dark"),
+    };
+    theme_named(mode.tokens(), name)
+}
+
+/// An iced theme from tokens. `is_dark` follows the tokens' mode, not the
+/// background's luminance, so [`tokens`] maps it back to the same mode.
+pub fn theme_named(t: &Tokens, name: impl Into<Cow<'static, str>>) -> Theme {
+    let dark = t.mode == Mode::Dark;
+    Theme::custom_with_fn(
         name,
         Palette {
             background: t.surface_room,
@@ -452,15 +748,21 @@ pub fn theme(mode: Mode) -> Theme {
             warning: t.warning,
             danger: t.danger,
         },
+        move |p| {
+            let mut e = iced::theme::palette::Extended::generate(p);
+            e.is_dark = dark;
+            e
+        },
     )
 }
 
-/// Returns the tokens matching an iced theme (dark tokens for any dark theme).
+/// Returns the active tokens matching an iced theme (dark tokens for any
+/// dark theme).
 pub fn tokens(theme: &Theme) -> &'static Tokens {
     if theme.extended_palette().is_dark {
-        &DARK
+        active_tokens(Mode::Dark)
     } else {
-        &LIGHT
+        active_tokens(Mode::Light)
     }
 }
 
@@ -472,12 +774,232 @@ pub fn contrast_ratio(a: Color, b: Color) -> f32 {
     (hi + 0.05) / (lo + 0.05)
 }
 
+/// WCAG AA minimum for text.
+pub const MIN_TEXT_CONTRAST: f32 = 4.5;
+/// WCAG AA minimum for graphics (icons, focus ring, marks).
+pub const MIN_GRAPHIC_CONTRAST: f32 = 3.0;
+
+/// A colour pair below its WCAG AA minimum ([`contrast_report`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContrastIssue {
+    /// Which pair, by token names (`text_hint on sidebar`).
+    pub what: String,
+    pub ratio: f32,
+    pub min: f32,
+}
+
+impl std::fmt::Display for ContrastIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {:.2} < {}", self.what, self.ratio, self.min)
+    }
+}
+
+/// Backgrounds that body/secondary/hint text and timestamps are drawn on.
+fn text_surfaces(t: &Tokens) -> Vec<(&'static str, Color)> {
+    vec![
+        ("room", t.surface_room),
+        ("sidebar", t.surface_sidebar),
+        ("raised", t.surface_raised),
+        ("sunken", t.surface_sunken),
+        ("hover", t.hover_bg),
+        ("pressed", t.pressed_bg),
+        ("selected", t.selected_bg),
+        ("sidebar hover", t.sidebar_hover_bg),
+        ("sidebar selected", t.sidebar_selected_bg),
+        ("mention row", t.highlight_bg),
+        ("own row", t.own_message_bg),
+        ("quote", t.quote_bg),
+        ("primary tint", t.primary_tint),
+    ]
+}
+
+/// Surfaces flag marks and swatches are drawn on: sidebar rows in each
+/// state, menus and the room header.
+fn flag_surfaces(t: &Tokens) -> [(&'static str, Color); 8] {
+    [
+        ("sidebar", t.surface_sidebar),
+        ("sidebar hover", t.sidebar_hover_bg),
+        ("sidebar selected", t.sidebar_selected_bg),
+        ("room", t.surface_room),
+        ("raised", t.surface_raised),
+        ("menu hover", t.hover_bg),
+        ("pressed", t.pressed_bg),
+        ("selected", t.selected_bg),
+    ]
+}
+
+/// Every colour pair of `t` below its WCAG AA minimum: text on each
+/// surface, icons and presence dots, the keyboard focus ring (WCAG 2.2
+/// 1.4.11), filled buttons, banners, badges and flag marks. Empty for the
+/// built-in tokens; for theme files the issues are shown as warnings.
+pub fn contrast_report(t: &Tokens) -> Vec<ContrastIssue> {
+    let mut out = Vec::new();
+    let mut check = |fg: (&str, Color), bg: (&str, Color), min: f32| {
+        let ratio = contrast_ratio(fg.1, bg.1);
+        if ratio < min {
+            out.push(ContrastIssue {
+                what: format!("{} on {}", fg.0, bg.0),
+                ratio,
+                min,
+            });
+        }
+    };
+    let (text, graphic) = (MIN_TEXT_CONTRAST, MIN_GRAPHIC_CONTRAST);
+    for bg in text_surfaces(t) {
+        for fg in [
+            ("text_primary", t.text_primary),
+            ("text_secondary", t.text_secondary),
+            ("text_hint", t.text_hint),
+            ("link", t.link),
+            ("danger_text", t.danger_text),
+        ] {
+            check(fg, bg, text);
+        }
+        for fg in [
+            ("warning_icon", t.warning_icon),
+            ("presence_online", t.presence_online),
+            ("presence_busy", t.presence_busy),
+        ] {
+            check(fg, bg, graphic);
+        }
+    }
+    for bg in [
+        ("room", t.surface_room),
+        ("sidebar", t.surface_sidebar),
+        ("raised", t.surface_raised),
+    ] {
+        check(("success_text", t.success_text), bg, text);
+        check(("presence_away_ring", t.presence_away_ring), bg, graphic);
+    }
+    for (name, fg, bg) in [
+        ("code_fg on code_bg", t.code_fg, t.code_bg),
+        ("mention_fg on mention_bg", t.mention_fg, t.mention_bg),
+        (
+            "mention_me_fg on mention_me_bg",
+            t.mention_me_fg,
+            t.mention_me_bg,
+        ),
+        ("tooltip_fg on tooltip_bg", t.tooltip_fg, t.tooltip_bg),
+        ("on_primary on primary", t.on_primary, t.primary),
+        ("on_primary on primary_hover", t.on_primary, t.primary_hover),
+        (
+            "on_primary on primary_pressed",
+            t.on_primary,
+            t.primary_pressed,
+        ),
+        ("on_danger on danger", t.on_danger, t.danger),
+        ("on_danger on danger_hover", t.on_danger, t.danger_hover),
+        ("on_danger on danger_pressed", t.on_danger, t.danger_pressed),
+        ("info_fg on info_bg", t.info_fg, t.info_bg),
+        ("warning_fg on warning_bg", t.warning_fg, t.warning_bg),
+        ("error_fg on error_bg", t.error_fg, t.error_bg),
+        ("success_fg on success_bg", t.success_fg, t.success_bg),
+        ("badge_fg on badge_unread", t.badge_fg, t.badge_unread),
+        ("badge_fg on badge_mention", t.badge_fg, t.badge_mention),
+        (
+            "badge_fg on badge_group_mention",
+            t.badge_fg,
+            t.badge_group_mention,
+        ),
+        ("badge_fg on badge_thread", t.badge_fg, t.badge_thread),
+        (
+            "badge_muted_fg on badge_muted",
+            t.badge_muted_fg,
+            t.badge_muted,
+        ),
+        (
+            "text_primary on highlight_bg",
+            t.text_primary,
+            t.highlight_bg,
+        ),
+        (
+            "mention_me_fg on highlight_bg",
+            t.mention_me_fg,
+            t.highlight_bg,
+        ),
+    ] {
+        let ratio = contrast_ratio(fg, bg);
+        if ratio < text {
+            out.push(ContrastIssue {
+                what: name.to_owned(),
+                ratio,
+                min: text,
+            });
+        }
+    }
+    // The focus ring: on every surface an interactive widget sits on, one
+    // of its two lines (focus colour outside, `focus_ring_inner` inside)
+    // reaches 3:1, and the two lines differ from each other.
+    let mut ring = text_surfaces(t);
+    ring.extend([
+        ("rail", t.surface_rail),
+        ("primary", t.primary),
+        ("primary hover", t.primary_hover),
+        ("danger", t.danger),
+        ("tooltip", t.tooltip_bg),
+    ]);
+    let between = contrast_ratio(t.border_focus, t.focus_ring_inner);
+    if between < graphic {
+        out.push(ContrastIssue {
+            what: "border_focus on focus_ring_inner".to_owned(),
+            ratio: between,
+            min: graphic,
+        });
+    }
+    for (name, bg) in ring {
+        let best = contrast_ratio(t.border_focus, bg).max(contrast_ratio(t.focus_ring_inner, bg));
+        if best < graphic {
+            out.push(ContrastIssue {
+                what: format!("focus ring on {name}"),
+                ratio: best,
+                min: graphic,
+            });
+        }
+    }
+    // Text inputs show focus with the focus colour as their border.
+    for bg in [
+        ("room", t.surface_room),
+        ("sidebar", t.surface_sidebar),
+        ("raised", t.surface_raised),
+        ("sunken", t.surface_sunken),
+    ] {
+        let ratio = contrast_ratio(t.border_focus, bg.1);
+        if ratio < graphic {
+            out.push(ContrastIssue {
+                what: format!("border_focus on {}", bg.0),
+                ratio,
+                min: graphic,
+            });
+        }
+    }
+    for (i, fg) in t.flag.iter().enumerate() {
+        for (name, bg) in flag_surfaces(t) {
+            let ratio = contrast_ratio(*fg, bg);
+            if ratio < graphic {
+                out.push(ContrastIssue {
+                    what: format!("flag[{i}] on {name}"),
+                    ratio,
+                    min: graphic,
+                });
+            }
+        }
+        // Flags must be told apart.
+        for (j, other) in t.flag.iter().enumerate().skip(i + 1) {
+            if fg == other {
+                out.push(ContrastIssue {
+                    what: format!("flag[{i}] same as flag[{j}]"),
+                    ratio: 1.0,
+                    min: 1.0,
+                });
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const TEXT: f32 = 4.5;
-    const GRAPHIC: f32 = 3.0;
 
     /// fontdb (what cosmic-text matches with) finds a bundled face of exactly
     /// each UI weight under the family "Noto Sans".
@@ -494,10 +1016,11 @@ mod tests {
             db.load_font_data(face.to_vec());
         }
         assert_eq!(db.len(), 4);
-        let iced::font::Family::Name(family) = DEFAULT_FONT.family else {
+        let iced::font::Family::Name(family) = NOTO_SANS.family else {
             panic!("the UI font is not a named family");
         };
-        for font in [DEFAULT_FONT, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD] {
+        let set = FontSet::BUILTIN;
+        for font in [set.regular, set.medium, set.semibold, set.bold] {
             let want = match font.weight {
                 Weight::Normal => 400,
                 Weight::Medium => 500,
@@ -505,7 +1028,7 @@ mod tests {
                 Weight::Bold => 700,
                 other => panic!("unexpected weight {other:?}"),
             };
-            assert_eq!(font.family, DEFAULT_FONT.family);
+            assert_eq!(font.family, NOTO_SANS.family);
             let id = db
                 .query(&fontdb::Query {
                     families: &[fontdb::Family::Name(family)],
@@ -531,200 +1054,56 @@ mod tests {
         [&LIGHT, &DARK]
     }
 
-    /// Backgrounds that body/secondary/hint text and timestamps are drawn on.
-    fn text_surfaces(t: &Tokens) -> Vec<(&'static str, Color)> {
-        vec![
-            ("room", t.surface_room),
-            ("sidebar", t.surface_sidebar),
-            ("raised", t.surface_raised),
-            ("sunken", t.surface_sunken),
-            ("hover", t.hover_bg),
-            ("pressed", t.pressed_bg),
-            ("selected", t.selected_bg),
-            ("sidebar hover", t.sidebar_hover_bg),
-            ("sidebar selected", t.sidebar_selected_bg),
-            ("mention row", t.highlight_bg),
-            ("own row", t.own_message_bg),
-            ("quote", t.quote_bg),
-            ("primary tint", t.primary_tint),
-        ]
-    }
-
-    fn check(
-        t: &Tokens,
-        fg: (&str, Color),
-        bg: (&str, Color),
-        min: f32,
-        failures: &mut Vec<String>,
-    ) {
-        let ratio = contrast_ratio(fg.1, bg.1);
-        if ratio < min {
-            failures.push(format!(
-                "{:?}: {} on {} = {ratio:.2} < {min}",
-                t.mode, fg.0, bg.0
-            ));
-        }
-    }
-
+    /// Text, icons, focus ring, filled widgets, banners, badges and flags
+    /// of both built-in palettes meet WCAG AA.
     #[test]
-    fn every_text_pair_meets_wcag_aa() {
-        let mut failures = Vec::new();
+    fn builtin_contrast_report_is_empty() {
         for t in both() {
-            for bg in text_surfaces(t) {
-                for fg in [
-                    ("text_primary", t.text_primary),
-                    ("text_secondary", t.text_secondary),
-                    ("text_hint", t.text_hint),
-                    ("link", t.link),
-                    ("danger_text", t.danger_text),
-                ] {
-                    check(t, fg, bg, TEXT, &mut failures);
-                }
-                // Icons and presence/status graphics.
-                for fg in [
-                    ("warning_icon", t.warning_icon),
-                    ("presence_online", t.presence_online),
-                    ("presence_busy", t.presence_busy),
-                ] {
-                    check(t, fg, bg, GRAPHIC, &mut failures);
-                }
-            }
-            for bg in [
-                ("room", t.surface_room),
-                ("sidebar", t.surface_sidebar),
-                ("raised", t.surface_raised),
-            ] {
-                check(t, ("success_text", t.success_text), bg, TEXT, &mut failures);
-                check(
-                    t,
-                    ("presence_away_ring", t.presence_away_ring),
-                    bg,
-                    GRAPHIC,
-                    &mut failures,
-                );
-            }
-            for (name, fg, bg) in [
-                ("code", t.code_fg, t.code_bg),
-                ("mention", t.mention_fg, t.mention_bg),
-                ("mention me", t.mention_me_fg, t.mention_me_bg),
-                ("tooltip", t.tooltip_fg, t.tooltip_bg),
-                ("on primary", t.on_primary, t.primary),
-                ("on primary hover", t.on_primary, t.primary_hover),
-                ("on danger", t.on_danger, t.danger),
-                ("info banner", t.info_fg, t.info_bg),
-                ("warning banner", t.warning_fg, t.warning_bg),
-                ("error banner", t.error_fg, t.error_bg),
-                ("success banner", t.success_fg, t.success_bg),
-                ("unread badge", t.badge_fg, t.badge_unread),
-                ("mention badge", t.badge_fg, t.badge_mention),
-                ("@all badge", t.badge_fg, t.badge_group_mention),
-                ("thread badge", t.badge_fg, t.badge_thread),
-                ("muted badge", t.badge_muted_fg, t.badge_muted),
-                ("text on mention row", t.text_primary, t.highlight_bg),
-                ("mention me on row", t.mention_me_fg, t.highlight_bg),
-            ] {
-                check(t, (name, fg), ("its background", bg), TEXT, &mut failures);
-            }
-        }
-        assert!(failures.is_empty(), "{failures:#?}");
-    }
-
-    /// WCAG 2.2 AA non-text contrast (1.4.11) for the keyboard focus ring:
-    /// on every surface an interactive widget sits on, one of its two lines
-    /// (focus colour outside, `focus_ring_inner` inside) reaches 3:1 against
-    /// what is around it, also on filled widgets (primary, danger, selected).
-    #[test]
-    fn focus_ring_is_visible_everywhere() {
-        let mut failures = Vec::new();
-        for t in both() {
-            let mut surfaces = text_surfaces(t);
-            surfaces.extend([
-                ("rail", t.surface_rail),
-                ("primary", t.primary),
-                ("primary hover", t.primary_hover),
-                ("danger", t.danger),
-                ("primary tint", t.primary_tint),
-                ("tooltip", t.tooltip_bg),
-            ]);
-            for (name, bg) in surfaces {
-                let outer = contrast_ratio(t.border_focus, bg);
-                let inner = contrast_ratio(t.focus_ring_inner, bg);
-                // The two lines also differ from each other, so the ring
-                // reads as one double line.
-                let between = contrast_ratio(t.border_focus, t.focus_ring_inner);
-                if outer.max(inner) < GRAPHIC || between < GRAPHIC {
-                    failures.push(format!(
-                        "{:?}: ring on {name}: outer {outer:.2}, inner {inner:.2}, between {between:.2}",
-                        t.mode
-                    ));
-                }
-            }
-            // Text inputs show focus with the focus colour as their border.
-            for (name, bg) in [
-                ("room", t.surface_room),
-                ("sidebar", t.surface_sidebar),
-                ("raised", t.surface_raised),
-                ("sunken", t.surface_sunken),
-            ] {
-                check(
-                    t,
-                    ("border_focus", t.border_focus),
-                    (name, bg),
-                    GRAPHIC,
-                    &mut failures,
-                );
-            }
-        }
-        assert!(failures.is_empty(), "{failures:#?}");
-    }
-
-    /// Placeholders, captions and disabled-looking but readable states.
-    #[test]
-    fn secondary_pairs_meet_wcag_aa() {
-        let mut failures = Vec::new();
-        for t in both() {
-            for (name, fg, bg) in [
-                ("on primary pressed", t.on_primary, t.primary_pressed),
-                ("on danger hover", t.on_danger, t.danger_hover),
-                ("on danger pressed", t.on_danger, t.danger_pressed),
-                ("hint on tooltip-free raised", t.text_hint, t.surface_raised),
-                ("link on primary tint", t.link, t.primary_tint),
-                ("danger text on raised", t.danger_text, t.surface_raised),
-            ] {
-                check(t, (name, fg), ("its background", bg), TEXT, &mut failures);
-            }
-        }
-        assert!(failures.is_empty(), "{failures:#?}");
-    }
-
-    /// Flag marks and swatches (non-text, 3:1) on every surface they are
-    /// drawn on: sidebar rows in each state, menus and the room header.
-    #[test]
-    fn flag_colors_are_visible() {
-        let mut failures = Vec::new();
-        for t in both() {
-            for (i, fg) in t.flag.iter().enumerate() {
-                for bg in [
-                    ("sidebar", t.surface_sidebar),
-                    ("sidebar hover", t.sidebar_hover_bg),
-                    ("sidebar selected", t.sidebar_selected_bg),
-                    ("room", t.surface_room),
-                    ("raised", t.surface_raised),
-                    ("menu hover", t.hover_bg),
-                    ("pressed", t.pressed_bg),
-                    ("selected", t.selected_bg),
-                ] {
-                    check(t, ("flag", *fg), bg, GRAPHIC, &mut failures);
-                }
-                // No two flags share a colour.
-                for other in &t.flag[i + 1..] {
-                    assert_ne!(fg, other, "{:?}", t.mode);
-                }
-            }
+            let report = contrast_report(t);
+            assert!(report.is_empty(), "{:?}: {report:#?}", t.mode);
             assert_eq!(t.flag_color(0), t.flag[0]);
             assert_eq!(t.flag_color(FLAG_COUNT), t.text_hint);
         }
-        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn contrast_report_finds_bad_pairs() {
+        let mut t = LIGHT;
+        t.text_hint = t.surface_room;
+        t.flag[1] = t.flag[0];
+        t.focus_ring_inner = t.border_focus;
+        let report = contrast_report(&t);
+        let has = |what: &str| report.iter().any(|i| i.what == what);
+        assert!(has("text_hint on room"), "{report:#?}");
+        assert!(has("flag[0] same as flag[1]"));
+        assert!(has("border_focus on focus_ring_inner"));
+        assert!(report.iter().all(|i| i.ratio < i.min || i.min == 1.0));
+    }
+
+    #[test]
+    fn color_tokens_cover_every_field() {
+        let colors = LIGHT.colors();
+        assert_eq!(colors.len(), COLOR_TOKENS.len());
+        let mut t = DARK;
+        for (name, c) in &colors {
+            assert!(t.set_color(name, *c), "{name}");
+        }
+        t.flag = LIGHT.flag;
+        t.mode = Mode::Light;
+        assert_eq!(t, LIGHT);
+        assert!(!t.set_color("mode", Color::BLACK));
+        assert!(!t.set_color("flag", Color::BLACK));
+    }
+
+    #[test]
+    fn interning_reuses_equal_tokens() {
+        assert!(std::ptr::eq(intern(&LIGHT.clone()), &LIGHT));
+        let mut t = DARK;
+        t.link = Color::WHITE;
+        let a = intern(&t);
+        let b = intern(&t.clone());
+        assert!(std::ptr::eq(a, b));
+        assert_eq!(*a, t);
     }
 
     #[test]

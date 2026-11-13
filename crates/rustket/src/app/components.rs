@@ -130,6 +130,9 @@ impl App {
                     .then(crate::desktop::autostart::Autostart::system)
                     .flatten();
                 let mut screen = settings::Settings::with_autostart(at);
+                // Theme files edited meanwhile show up (and apply) here.
+                self.themes.rescan();
+                self.themes.apply(self.config.ui.theme_name.as_deref());
                 let load = screen.load().map(Message::Settings);
                 let reveal = match nav {
                     Nav::SidebarSettings { ungroup, flag } => {
@@ -261,6 +264,14 @@ impl App {
                     .desktop
                     .test_notification(&self.config.ui)
                     .map(Message::Desktop),
+                Effect::ApplyTheme { rescan } => {
+                    if rescan {
+                        self.themes.rescan();
+                    }
+                    self.themes.apply(self.config.ui.theme_name.as_deref());
+                    Task::none()
+                }
+                Effect::OpenThemesFolder => self.open_themes_folder(),
                 Effect::RecentStatusTexts(list) => {
                     self.config.set_recent_status_texts(list);
                     self.save_config()
@@ -789,6 +800,7 @@ impl App {
     pub(super) fn settings_view_data(&self) -> settings::SettingsView<'_> {
         settings::SettingsView {
             config: &self.config,
+            themes: &self.themes,
             handler_registered: self.handler_registered,
             secret_backend: self.secret_backend,
             secrets_in_memory: self.secrets_mode == SecretsMode::System,

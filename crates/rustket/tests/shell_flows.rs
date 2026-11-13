@@ -615,7 +615,7 @@ async fn keys_over_a_range_slider_do_not_edit_it() {
 
     let size = Size::new(1280.0, 800.0);
     let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         Pixels(rustket_ui::theme::TEXT_BODY),
     ));
     let mut ui = UserInterface::build(app.view(), size, Cache::default(), &mut renderer);

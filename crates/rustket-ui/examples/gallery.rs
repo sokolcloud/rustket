@@ -4,7 +4,8 @@
 //!
 //! Environment switches for screenshots: `GALLERY_MODE=dark`, `GALLERY_MODAL=1`,
 //! `GALLERY_TOASTS=1`, `GALLERY_MENU=1` (popover open), `GALLERY_CONDENSED=1`,
-//! `GALLERY_TOP=1` (timeline scrolled to the top).
+//! `GALLERY_TOP=1` (timeline scrolled to the top), `GALLERY_THEME=<file.toml>`
+//! (an external theme, e.g. `docs/themes/forest.toml`; fonts included).
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -20,7 +21,32 @@ use rustket_ui::style;
 use rustket_ui::theme::{self, *};
 use rustket_ui::widget::*;
 
+fn load_theme(path: &str) {
+    let file = std::fs::read_to_string(path)
+        .map_err(|e| e.to_string())
+        .and_then(|t| rustket_ui::ThemeFile::parse(&t).map_err(|e| e.to_string()));
+    match file {
+        Ok(f) => {
+            let (fonts, font_warnings) = rustket_ui::fonts::resolve(&f.fonts);
+            for w in f.warnings.iter().chain(&font_warnings) {
+                eprintln!("theme warning: {w}");
+            }
+            theme::init_fonts(fonts);
+            theme::set_active(
+                Some("gallery"),
+                &f.tokens(theme::Mode::Light),
+                &f.tokens(theme::Mode::Dark),
+                f.radius.unwrap_or(1.0),
+            );
+        }
+        Err(e) => eprintln!("cannot load {path}: {e}"),
+    }
+}
+
 pub fn main() -> iced::Result {
+    if let Ok(path) = std::env::var("GALLERY_THEME") {
+        load_theme(&path);
+    }
     iced::application(Gallery::new, Gallery::update, Gallery::view)
         .settings(rustket_ui::settings())
         .title("Rustket UI gallery")
@@ -1117,7 +1143,7 @@ impl Gallery {
         let title = |s: &'static str| {
             text(s)
                 .size(TEXT_CAPTION)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
                 .style(style::text_secondary)
         };
         let badges = row![
@@ -1368,7 +1394,7 @@ impl<'a, T: Into<Element<'a, Message>>> ApplyStyle<'a> for T {
 }
 
 fn code_block<'a>(code: &'a str) -> Element<'a, Message> {
-    container(text(code).font(MONOSPACE_FONT).size(TEXT_SMALL))
+    container(text(code).font(font_mono()).size(TEXT_SMALL))
         .padding([SPACE_2, SPACE_3])
         .width(Length::Fill)
         .style(style::container_code_block)
@@ -1382,7 +1408,7 @@ fn quote<'a>(author: &'a str, body: &'a str) -> Element<'a, Message> {
             .style(style::container_quote_bar),
         container(
             column![
-                text(author).size(TEXT_CAPTION).font(FONT_SEMIBOLD),
+                text(author).size(TEXT_CAPTION).font(font_semibold()),
                 text(body).size(TEXT_BODY).style(style::text_secondary)
             ]
             .spacing(2)

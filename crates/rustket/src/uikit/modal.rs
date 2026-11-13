@@ -13,7 +13,7 @@ use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_TITLE,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_TITLE, font_semibold,
 };
 use rustket_ui::widget::{
     AvatarShape, AvatarSource, ButtonKind, action_button, avatar, dialog, ellipsis,
@@ -151,7 +151,7 @@ pub fn view<'a>(
         .push(
             ellipsis(title)
                 .size(TEXT_TITLE)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
                 .width(Length::Fill),
         )
         .push(icon_button_with(

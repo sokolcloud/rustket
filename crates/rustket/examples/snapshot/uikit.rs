@@ -31,7 +31,7 @@ const TALL: Size = Size::new(1280.0, 1500.0);
 
 fn shoot_with(d: &Driver, dir: &Path, name: &str, size: Size, hover: Option<iced::Point>) {
     let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         Pixels(rustket_ui::theme::TEXT_BODY),
     ));
     let theme = d.app.theme();

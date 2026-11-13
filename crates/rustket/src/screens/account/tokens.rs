@@ -9,8 +9,7 @@ use rustket_core::permissions;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_MEDIUM, MONOSPACE_FONT, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
-    TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_medium, font_mono,
 };
 use rustket_ui::widget::{
     BannerKind, ChipKind, above, banner, chip, danger_button, dialog, divider, ghost_button,
@@ -270,7 +269,7 @@ impl Tokens {
                 .style(style::text_secondary),
             text(format!("…{}", tok.last_token_part))
                 .wrapping(iced::widget::text::Wrapping::None)
-                .font(MONOSPACE_FONT)
+                .font(font_mono())
                 .size(TEXT_CAPTION)
                 .style(style::text_secondary),
         ]
@@ -322,7 +321,7 @@ impl Tokens {
             .into()
         };
         let mut info = column![
-            text(tok.name.as_str()).size(TEXT_BODY).font(FONT_MEDIUM),
+            text(tok.name.as_str()).size(TEXT_BODY).font(font_medium()),
             meta
         ]
         .spacing(SPACE_1)
@@ -363,7 +362,7 @@ impl Tokens {
                 .align_y(Alignment::Center),
                 container(
                     text(v)
-                        .font(MONOSPACE_FONT)
+                        .font(font_mono())
                         .size(TEXT_SMALL)
                         .wrapping(iced::widget::text::Wrapping::None),
                 )

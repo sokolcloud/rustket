@@ -2,14 +2,14 @@
 //! the shared renderer.
 
 use iced::widget::{column, container, row, text};
-use iced::{Alignment, Element, Font, Length};
+use iced::{Alignment, Element, Length};
 use rocketchat::models::Message as RcMessage;
 use rust_i18n::t;
 use rustket_core::e2e::AccountE2eState;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_mono, font_semibold,
 };
 use rustket_ui::widget::{
     BannerKind, banner as info_banner, danger_button, dialog, ghost_button, primary_button,
@@ -105,7 +105,7 @@ fn passphrase_box(passphrase: &str) -> Element<'_, Message> {
     container(
         row![
             text(passphrase.to_owned())
-                .font(Font::MONOSPACE)
+                .font(font_mono())
                 .size(TEXT_BODY)
                 .width(Length::Fill),
             ghost_button(t!("e2e.copy"), Some(Message::CopyPassphrase)).icon(Icon::Copy),
@@ -196,7 +196,7 @@ fn save_password(passphrase: &str, busy: bool, insecure: bool) -> Element<'_, Me
         text(t!("e2e.save_password_body")).size(TEXT_BODY),
         text(t!("e2e.save_password_once"))
             .size(TEXT_BODY)
-            .font(FONT_SEMIBOLD),
+            .font(font_semibold()),
         code,
         text(t!("e2e.save_password_later_hint"))
             .size(TEXT_CAPTION)

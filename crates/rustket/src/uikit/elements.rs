@@ -19,7 +19,7 @@ use rustket_core::uikit::Permit;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, RADIUS_MD, RADIUS_SM, SPACE_1, SPACE_2, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL,
+    SPACE_1, SPACE_2, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_semibold, radius_md, radius_sm,
     tokens,
 };
 use rustket_ui::widget::{
@@ -567,7 +567,7 @@ fn chip_x(label: String, on: Option<UiKitMsg>) -> W {
         let t = tokens(th);
         container::Style {
             background: Some(t.surface_sunken.into()),
-            border: border::rounded(RADIUS_SM).width(1).color(t.border),
+            border: border::rounded(radius_sm()).width(1).color(t.border),
             ..container::Style::default()
         }
     })
@@ -851,7 +851,7 @@ fn calendar(
         nav(prev, Icon::ChevronLeft),
         text(month_title(month))
             .size(TEXT_SMALL)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill)
             .align_x(Alignment::Center),
         nav(next, Icon::ChevronRight),
@@ -1283,7 +1283,7 @@ pub fn icon(i: &UiIcon) -> W {
             };
             container::Style {
                 background: Some(bg.into()),
-                border: border::rounded(RADIUS_MD),
+                border: border::rounded(radius_md()),
                 ..container::Style::default()
             }
         })

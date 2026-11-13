@@ -9,7 +9,7 @@ use rustket_core::permissions::{self, ids};
 use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_1, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_medium};
 use rustket_ui::widget::{BannerKind, above, banner, primary_button, secondary_button, text_field};
 
 use super::api::{self, RoomSettings};
@@ -307,7 +307,7 @@ impl Settings {
         let multiline =
             |label: String, content: &'a text_editor::Content, field: Field| -> Element<'a, Msg> {
                 column![
-                    text(label).size(TEXT_BODY - 1.0).font(FONT_MEDIUM),
+                    text(label).size(TEXT_BODY - 1.0).font(font_medium()),
                     text_editor(content)
                         .on_action(move |a| Msg::Editor(field, a))
                         .size(TEXT_BODY)

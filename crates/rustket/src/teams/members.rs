@@ -13,7 +13,7 @@ use rustket_core::teams;
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_medium};
 use rustket_ui::widget::{
     ChipKind, MenuEntry, MenuItem, Placement, chip, dialog, ellipsis, icon_button_with,
     popover_menu, presence_dot, primary_button, secondary_button, text_field,
@@ -486,7 +486,7 @@ impl Members {
                         ellipsis(name.clone())
                             .width(Length::Shrink)
                             .size(TEXT_BODY)
-                            .font(FONT_MEDIUM),
+                            .font(font_medium()),
                     ]
                     .spacing(SPACE_1)
                     .align_y(Alignment::Center);

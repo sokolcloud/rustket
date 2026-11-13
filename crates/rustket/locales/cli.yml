@@ -17,6 +17,9 @@ cli.opt_help:
 cli.opt_version:
   en: "Print the version and exit"
   ru: "Показать версию и выйти"
+cli.opt_dump_theme:
+  en: "Print a theme template (every colour token) and exit"
+  ru: "Вывести шаблон темы (все цвета) и выйти"
 cli.env:
   en: "Environment:"
   ru: "Переменные окружения:"

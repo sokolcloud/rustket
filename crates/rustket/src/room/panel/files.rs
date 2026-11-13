@@ -7,7 +7,7 @@ use rocketchat::models::Paginated;
 use rust_i18n::t;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_MEDIUM, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_medium};
 use rustket_ui::widget::{ellipsis, icon_button};
 
 use super::api::{self, FILE_TYPES, FileItem};
@@ -245,7 +245,7 @@ impl Files {
                         Some(m) => mouse_area(
                             ellipsis(f.name.clone())
                                 .size(TEXT_BODY)
-                                .font(FONT_MEDIUM)
+                                .font(font_medium())
                                 .style(|theme| Some(rustket_ui::theme::tokens(theme).link)),
                         )
                         .interaction(iced::mouse::Interaction::Pointer)
@@ -253,7 +253,7 @@ impl Files {
                         .into(),
                         None => ellipsis(f.name.clone())
                             .size(TEXT_BODY)
-                            .font(FONT_MEDIUM)
+                            .font(font_medium())
                             .into(),
                     };
                     let line = row![

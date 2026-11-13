@@ -12,7 +12,7 @@ use rustket_core::e2e::AccountE2eState;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_semibold,
 };
 use rustket_ui::widget::{
     BannerKind, ChipKind, above, banner, chip, danger_button, primary_button, secondary_button,
@@ -223,7 +223,7 @@ impl E2eSection {
         c = c.push(
             text(t!("e2e.account_change_title"))
                 .size(TEXT_BODY)
-                .font(FONT_SEMIBOLD),
+                .font(font_semibold()),
         );
         if ready {
             let mismatch = !self.confirm.is_empty() && *self.new != *self.confirm;
@@ -286,7 +286,7 @@ impl E2eSection {
         c = c.push(
             text(t!("e2e.account_reset_title"))
                 .size(TEXT_BODY)
-                .font(FONT_SEMIBOLD),
+                .font(font_semibold()),
         );
         c = c.push(
             text(t!("e2e.account_reset_help"))

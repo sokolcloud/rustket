@@ -12,7 +12,7 @@ use rust_i18n::t;
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_medium};
 use rustket_ui::widget::ellipsis;
 
 use crate::error::Res;
@@ -283,7 +283,7 @@ impl Discussions {
                             row![
                                 icon::sized(Icon::MessagesSquare, 14.0)
                                     .style(style::text_secondary),
-                                ellipsis(title).size(TEXT_BODY).font(FONT_MEDIUM),
+                                ellipsis(title).size(TEXT_BODY).font(font_medium()),
                             ]
                             .spacing(SPACE_1)
                             .align_y(Alignment::Center),

@@ -5,7 +5,7 @@ use iced::{Alignment, Element, Length, Theme};
 
 use super::misc::divider;
 use crate::style;
-use crate::theme::{FONT_BOLD, FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_CAPTION, tokens};
+use crate::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_CAPTION, font_bold, font_semibold, tokens};
 
 /// Centred date label between two lines ("Today", "12 March 2026").
 pub fn date_separator<'a, Message: 'a>(label: impl Into<String>) -> Element<'a, Message> {
@@ -14,7 +14,7 @@ pub fn date_separator<'a, Message: 'a>(label: impl Into<String>) -> Element<'a, 
         container(
             text(label.into())
                 .size(TEXT_CAPTION)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
                 .wrapping(text::Wrapping::None)
                 .style(style::text_secondary)
         )
@@ -40,7 +40,7 @@ pub fn unread_separator<'a, Message: 'a>(label: impl Into<String>) -> Element<'a
         container(
             text(label.into())
                 .size(TEXT_CAPTION)
-                .font(FONT_BOLD)
+                .font(font_bold())
                 .wrapping(text::Wrapping::None)
                 .style(style::text_danger)
         )
@@ -63,7 +63,7 @@ pub fn reaction_pill<'a, Message: Clone + 'a>(
             emoji.into(),
             text(count.to_string())
                 .size(TEXT_CAPTION)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
         ]
         .spacing(SPACE_1)
         .align_y(Alignment::Center),

@@ -8,7 +8,7 @@ use rocketchat::{CertificateInfo, ServerUrl};
 use rust_i18n::t;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{MONOSPACE_FONT, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, font_mono};
 use rustket_ui::widget::{
     BannerKind, banner, dialog, ghost_button, primary_button, secondary_button, text_field,
 };
@@ -228,7 +228,7 @@ impl AddServer {
             .push(
                 container(
                     text(leaf.fingerprint.clone())
-                        .font(MONOSPACE_FONT)
+                        .font(font_mono())
                         .size(TEXT_CAPTION),
                 )
                 .padding(SPACE_3)

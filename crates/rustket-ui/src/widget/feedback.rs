@@ -5,7 +5,7 @@ use iced::{Alignment, Color, Element, Length, Theme, border};
 
 use crate::icon::{self, Icon};
 use crate::style;
-use crate::theme::{FONT_SEMIBOLD, RADIUS_SM, SPACE_2, SPACE_3, TEXT_BODY, Tokens, tokens};
+use crate::theme::{SPACE_2, SPACE_3, TEXT_BODY, Tokens, font_semibold, radius_sm, tokens};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BannerKind {
@@ -50,7 +50,7 @@ fn action_button<'a, Message: Clone + 'a>(
     label: String,
     message: Message,
 ) -> Element<'a, Message> {
-    button(text(label).size(TEXT_BODY).font(FONT_SEMIBOLD))
+    button(text(label).size(TEXT_BODY).font(font_semibold()))
         .padding([2, 8])
         .style(move |theme: &Theme, status| {
             let t = tokens(theme);
@@ -63,7 +63,7 @@ fn action_button<'a, Message: Clone + 'a>(
             button::Style {
                 background,
                 text_color: fg,
-                border: border::rounded(RADIUS_SM)
+                border: border::rounded(radius_sm())
                     .width(1)
                     .color(fg.scale_alpha(0.5)),
                 ..button::Style::default()
@@ -107,7 +107,7 @@ pub fn status_strip<'a, Message: Clone + 'a>(
         lead,
         text(message.into())
             .size(TEXT_BODY - 1.0)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
     ]
     .spacing(SPACE_2)
     .align_y(Alignment::Center);

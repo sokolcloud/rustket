@@ -12,7 +12,7 @@ use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_SMALL, TEXT_TITLE,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_SMALL, TEXT_TITLE, font_semibold,
 };
 use rustket_ui::widget::{ChipKind, divider, presence_dot};
 
@@ -412,7 +412,7 @@ impl UserInfo {
                 120.0
             ))
             .center_x(Length::Fill),
-            container(text(name.clone()).size(TEXT_TITLE).font(FONT_SEMIBOLD))
+            container(text(name.clone()).size(TEXT_TITLE).font(font_semibold()))
                 .center_x(Length::Fill),
             container(text(format!("@{}", self.username)).style(style::text_secondary))
                 .center_x(Length::Fill),

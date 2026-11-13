@@ -11,7 +11,7 @@ use super::layer::{Kind, Layered};
 use crate::icon::{self, Icon};
 use crate::style;
 use crate::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_BODY, TEXT_TITLE,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_BODY, TEXT_TITLE, font_semibold,
     tokens,
 };
 
@@ -86,7 +86,7 @@ pub fn dialog<'a, Message: Clone + 'a>(
     let mut header = row![
         text(title.into())
             .size(TEXT_TITLE)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill)
     ]
     .align_y(Alignment::Center)
@@ -177,7 +177,7 @@ fn toast_card<'a, Message: Clone + 'a>(
 ) -> Element<'a, Message> {
     let kind = toast.kind;
     let mut texts =
-        column![text(&toast.title).size(TEXT_BODY).font(FONT_SEMIBOLD)].spacing(SPACE_1);
+        column![text(&toast.title).size(TEXT_BODY).font(font_semibold())].spacing(SPACE_1);
     if !toast.body.is_empty() {
         texts = texts.push(
             text(&toast.body)
@@ -217,7 +217,7 @@ fn toast_card<'a, Message: Clone + 'a>(
                 BannerKind::Warning => t.warning_icon,
                 BannerKind::Error => t.danger_text,
             };
-            s.border = border::rounded(crate::theme::RADIUS_MD)
+            s.border = border::rounded(crate::theme::radius_md())
                 .width(1)
                 .color(edge.scale_alpha(0.6));
             s

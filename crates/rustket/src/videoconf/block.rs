@@ -16,7 +16,7 @@ use rustket_core::room_list::Avatar;
 use rustket_core::videoconf::InfoState;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, font_semibold};
 use rustket_ui::widget::{AvatarShape, avatar, icon_button_with, primary_button, secondary_button};
 
 use super::CallAction;
@@ -117,7 +117,7 @@ fn card(
         icon::sized(glyph, 16.0).style(style::text_secondary),
         text(title)
             .size(TEXT_BODY)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill),
     ]
     .spacing(SPACE_2)

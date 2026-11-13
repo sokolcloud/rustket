@@ -14,7 +14,7 @@ use rustket_core::timeline::{DeliveryState, TimelineItem};
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, TEXT_CAPTION, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_1, TEXT_CAPTION, TEXT_SMALL, font_semibold};
 use rustket_ui::widget::{
     AvatarShape, AvatarSource, ChipKind, MESSAGE_AVATAR, MenuEntry, MessageRowProps, Placement,
     TooltipPosition, avatar, chip, context_menu, discussion_summary, icon_button_with, message_row,
@@ -644,7 +644,7 @@ pub(crate) fn build(
         DeliveryState::Failed { .. } => {
             // Error line with Retry and Discard side by side.
             let link = |label: String, msg: Message| {
-                button(text(label).size(TEXT_CAPTION).font(FONT_SEMIBOLD))
+                button(text(label).size(TEXT_CAPTION).font(font_semibold()))
                     .padding([0, 4])
                     .style(style::button_link)
                     .on_press(msg)

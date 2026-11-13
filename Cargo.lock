@@ -5203,6 +5203,8 @@ dependencies = [
  "iced_runtime",
  "iced_tiny_skia",
  "lucide-icons",
+ "thiserror 2.0.21",
+ "toml 1.2.1+spec-1.1.0",
  "unicode-properties",
  "unicode-segmentation",
 ]

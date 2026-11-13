@@ -11,8 +11,8 @@ use super::misc::{TooltipPosition, tooltip};
 use crate::icon::{self, Icon};
 use crate::style;
 use crate::theme::{
-    FONT_BOLD, FONT_SEMIBOLD, RADIUS_SM, SPACE_1, SPACE_2, SPACE_5, TEXT_BODY, TEXT_CAPTION,
-    TEXT_MICRO, tokens,
+    SPACE_1, SPACE_2, SPACE_5, TEXT_BODY, TEXT_CAPTION, TEXT_MICRO, font_bold, font_semibold,
+    radius_sm, tokens,
 };
 
 /// Width of the avatar column (avatar 36 + gap).
@@ -140,7 +140,7 @@ pub fn message_row<'a, Message: Clone + 'a>(
             container(
                 ellipsis(p.author.clone())
                     .size(TEXT_BODY)
-                    .font(FONT_BOLD)
+                    .font(font_bold())
                     .width(Length::Shrink)
             )
             .max_width(320)
@@ -211,7 +211,7 @@ pub fn message_row<'a, Message: Clone + 'a>(
         .align_y(Alignment::Center);
         if let Some((label, msg)) = p.retry {
             failed = failed.push(
-                button(text(label).size(TEXT_CAPTION).font(FONT_SEMIBOLD))
+                button(text(label).size(TEXT_CAPTION).font(font_semibold()))
                     .padding([0, 4])
                     .style(style::button_link)
                     .on_press(msg),
@@ -323,7 +323,7 @@ pub fn thread_summary<'a, Message: Clone + 'a>(
         avatars,
         text(count_label.into())
             .size(TEXT_CAPTION + 1.0)
-            .font(FONT_SEMIBOLD),
+            .font(font_semibold()),
         text(last_reply.into())
             .size(TEXT_CAPTION)
             .style(style::text_hint),
@@ -346,7 +346,7 @@ pub fn discussion_summary<'a, Message: Clone + 'a>(
         icon::sized(Icon::MessagesSquare, 14.0),
         text(count_label.into())
             .size(TEXT_CAPTION + 1.0)
-            .font(FONT_SEMIBOLD),
+            .font(font_semibold()),
         text(last_message.into())
             .size(TEXT_CAPTION)
             .style(style::text_hint),
@@ -371,7 +371,7 @@ fn summary_button<'a, Message: Clone + 'a>(
             button::Style {
                 background,
                 text_color: t.link,
-                border: border::rounded(RADIUS_SM).width(1).color(t.border),
+                border: border::rounded(radius_sm()).width(1).color(t.border),
                 ..button::Style::default()
             }
         })

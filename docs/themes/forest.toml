@@ -1,0 +1,34 @@
+# Forest: deep green accent on warm off-white paper, and on dark moss.
+# Copy to <config dir>/themes/forest.toml and pick "Forest" in
+# Settings → Appearance → Theme.
+
+[meta]
+name = "Forest"
+name_ru = "Лес"
+author = "Rustket"
+version = 1
+
+[light.palette]
+accent = "#2F7D4F"
+danger = "#BF3B2C"
+success = "#3B7F3A"
+warning = "#D49A1A"
+background = "#FBF8F1"
+text = "#23271F"
+
+[light.tokens]
+surface_rail = "#ECE6D6"
+sidebar_selected_bg = "#E3E8D8"
+own_message_bg = "#F3F5EA"
+
+[dark.palette]
+accent = "#2E7A4B"
+danger = "#E0675A"
+success = "#6CBF86"
+warning = "#E2B84A"
+background = "#1B211C"
+text = "#E6E3D6"
+
+[dark.tokens]
+surface_rail = "#141915"
+sidebar_selected_bg = "#28322A"

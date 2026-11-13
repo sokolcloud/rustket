@@ -179,7 +179,8 @@ pub(crate) fn plan<'a, Tz: chrono::TimeZone>(
 /// View-wide inputs of every row key, computed once per frame.
 #[derive(Clone, Copy)]
 pub(crate) struct Common {
-    dark: bool,
+    /// Dark mode and the theme generation (colours baked into rich text).
+    look: (bool, u64),
     revs: (u64, u64, u64, u64),
     prefs: (bool, bool),
     locale: u64,
@@ -195,7 +196,10 @@ impl Common {
         let now = Utc::now();
         let now_local = Local::now();
         Self {
-            dark: render::mode() == rustket_ui::theme::Mode::Dark,
+            look: (
+                render::mode() == rustket_ui::theme::Mode::Dark,
+                rustket_ui::theme::generation(),
+            ),
             revs: (
                 ws.revision(Dirty::SETTINGS | Dirty::PERMISSIONS | Dirty::ROLES | Dirty::ME),
                 ws.revision(Dirty::EMOJI),
@@ -229,7 +233,8 @@ struct RowKey {
     flags: RowFlags,
     /// Day separator, unread divider above the row.
     separators: (bool, bool),
-    dark: bool,
+    /// Dark mode and the theme generation (colours baked into rich text).
+    look: (bool, u64),
     prefs: (bool, bool),
     revs: (u64, u64, u64, u64),
     /// Which of the row's images are loaded.
@@ -256,7 +261,7 @@ impl Hash for RowKey {
         self.uikit.hash(h);
         self.flags.hash(h);
         self.separators.hash(h);
-        self.dark.hash(h);
+        self.look.hash(h);
         self.prefs.hash(h);
         self.revs.hash(h);
         self.images.hash(h);
@@ -322,7 +327,7 @@ pub(crate) fn row<'a>(
         uikit: crate::uikit::row_key(env.ws, env.images, env.server, m),
         flags,
         separators: (r.new_day, r.unread_before),
-        dark: common.dark,
+        look: common.look,
         prefs: common.prefs,
         revs: common.revs,
         images: row::images_key(&env, m),

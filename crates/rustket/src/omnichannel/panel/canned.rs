@@ -8,7 +8,7 @@ use rocketchat::models::{CannedResponse, CannedScope};
 use rust_i18n::t;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_SMALL, font_semibold};
 use rustket_ui::widget::{ChipKind, chip, divider, secondary_button};
 
 use crate::room::panel::common::{self, filter_pills, search_field};
@@ -98,7 +98,7 @@ impl CannedPanel {
                         row![
                             text(format!("!{}", r.shortcut))
                                 .size(TEXT_BODY)
-                                .font(FONT_SEMIBOLD)
+                                .font(font_semibold())
                                 .width(Length::Fill),
                             chip(scope.into_owned(), ChipKind::Neutral),
                             secondary_button(

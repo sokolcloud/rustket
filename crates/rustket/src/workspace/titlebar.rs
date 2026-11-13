@@ -703,7 +703,7 @@ mod tests {
     fn click(app: &App, width: f32, at: Point) -> Vec<String> {
         use iced_runtime::user_interface::{Cache, UserInterface};
         let mut r = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-            rustket_ui::theme::DEFAULT_FONT,
+            rustket_ui::theme::font_regular(),
             iced::Pixels(rustket_ui::theme::TEXT_BODY),
         ));
         let mut ui = UserInterface::build(

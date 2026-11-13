@@ -63,7 +63,7 @@ fn load_fonts() {
 fn renderer() -> iced::Renderer {
     load_fonts();
     iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         iced::Pixels(14.0),
     ))
 }

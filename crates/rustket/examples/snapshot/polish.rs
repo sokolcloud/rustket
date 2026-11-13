@@ -44,7 +44,7 @@ fn key(named: keyboard::key::Named) -> Event {
 pub(super) fn shoot_steps(d: &Driver, dir: &Path, name: &str, size: Size, steps: Vec<Step>) {
     use iced::futures::{FutureExt as _, StreamExt as _};
     let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         Pixels(rustket_ui::theme::TEXT_BODY),
     ));
     let theme = d.app.theme();

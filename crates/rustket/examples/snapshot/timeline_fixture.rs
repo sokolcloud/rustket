@@ -47,7 +47,7 @@ pub async fn teardown(server: &rocketchat::ServerUrl) {
 /// Renders at `size`, optionally with the mouse at `hover`.
 fn shoot_with(d: &Driver, dir: &Path, name: &str, size: Size, hover: Option<iced::Point>) {
     let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         Pixels(rustket_ui::theme::TEXT_BODY),
     ));
     let theme = d.app.theme();

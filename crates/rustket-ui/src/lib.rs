@@ -13,10 +13,14 @@
 //! numbers, image handles and messages.
 
 pub mod emoji;
+pub mod fonts;
 pub mod icon;
+pub mod palette;
 pub mod style;
 pub mod theme;
+pub mod theme_file;
 pub mod widget;
 
 pub use icon::{Icon, icon};
 pub use theme::{Mode, Tokens, fonts, settings, theme, tokens};
+pub use theme_file::{ThemeFile, ThemeFileError, ThemeWarning};

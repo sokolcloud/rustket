@@ -18,7 +18,7 @@ use super::badge::{BadgeKind, badge, dot};
 use super::focus_ring::focus_ring;
 use super::misc::{TooltipPosition, tooltip};
 use crate::icon::{self, Icon};
-use crate::theme::{RADIUS_MD, RADIUS_PILL, tokens};
+use crate::theme::{RADIUS_PILL, radius_md, tokens};
 
 /// Height of the custom title bar.
 pub const TITLE_BAR_HEIGHT: f32 = 40.0;
@@ -39,7 +39,7 @@ fn item_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Styl
         button::Style {
             background: (hovered && !selected).then(|| t.hover_bg.into()),
             text_color: t.text_primary,
-            border: border::rounded(RADIUS_MD),
+            border: border::rounded(radius_md()),
             ..button::Style::default()
         }
     }
@@ -62,7 +62,7 @@ pub fn title_bar_workspace<'a, Message: Clone + 'a>(
         .style(move |theme: &Theme| {
             let t = tokens(theme);
             container::Style {
-                border: border::rounded(RADIUS_MD + 2.0)
+                border: border::rounded(radius_md() + 2.0)
                     .width(2)
                     .color(if selected {
                         t.primary
@@ -140,7 +140,7 @@ pub fn title_bar_workspace<'a, Message: Clone + 'a>(
         .padding(0)
         .style(item_style(selected))
         .on_press_maybe(on_press.clone());
-    let b = focus_ring(b, on_press).radius(RADIUS_MD + 2.0);
+    let b = focus_ring(b, on_press).radius(radius_md() + 2.0);
     tooltip(b, name, TooltipPosition::Bottom)
 }
 
@@ -169,12 +169,12 @@ pub fn title_bar_button<'a, Message: Clone + 'a>(
                     _ if active || hovered => t.text_primary,
                     _ => t.text_secondary,
                 },
-                border: border::rounded(RADIUS_MD),
+                border: border::rounded(radius_md()),
                 ..button::Style::default()
             }
         })
         .on_press_maybe(on_press.clone());
-    let b = focus_ring(b, on_press).radius(RADIUS_MD);
+    let b = focus_ring(b, on_press).radius(radius_md());
     tooltip(b, label, TooltipPosition::Bottom)
 }
 
@@ -635,7 +635,7 @@ mod tests {
 
     fn renderer() -> iced::Renderer {
         iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-            crate::theme::DEFAULT_FONT,
+            crate::theme::font_regular(),
             iced::Pixels(crate::theme::TEXT_BODY),
         ))
     }

@@ -9,8 +9,8 @@ use rust_i18n::t;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_BOLD, FONT_SEMIBOLD, RADIUS_MD, RADIUS_SM, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY,
-    TEXT_CAPTION, TEXT_SMALL, tokens,
+    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_bold, font_semibold,
+    radius_md, radius_sm, tokens,
 };
 use rustket_ui::widget::{AvatarShape, AvatarSource, TooltipPosition, avatar, ellipsis, tooltip};
 
@@ -180,21 +180,21 @@ fn image_attachment(a: &MessageAttachment, cx: &Cx<'_, '_>) -> El {
             .width(bw)
             .height(bh)
             .content_fit(ContentFit::Contain)
-            .border_radius(RADIUS_MD)
+            .border_radius(radius_md())
             .into(),
         (None, Some(p)) => image(p)
             .width(bw)
             .height(bh)
             .content_fit(ContentFit::Cover)
             .opacity(0.7_f32)
-            .border_radius(RADIUS_MD)
+            .border_radius(radius_md())
             .into(),
         (None, None) => container(icon::sized(Icon::Image, 32.0).style(style::text_hint))
             .center_x(bw)
             .center_y(bh)
             .style(|theme: &Theme| container::Style {
                 background: Some(tokens(theme).surface_sunken.into()),
-                border: border::rounded(RADIUS_MD),
+                border: border::rounded(radius_md()),
                 ..container::Style::default()
             })
             .into(),
@@ -340,7 +340,7 @@ fn file_card(a: &MessageAttachment, msg: &Message, cx: &Cx<'_, '_>) -> El {
     let mut info = column![
         ellipsis(clean(&name))
             .size(TEXT_BODY)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill)
     ]
     .spacing(2)
@@ -428,7 +428,7 @@ fn file_card(a: &MessageAttachment, msg: &Message, cx: &Cx<'_, '_>) -> El {
             .center_y(40)
             .style(|theme: &Theme| container::Style {
                 background: Some(tokens(theme).surface_sunken.into()),
-                border: border::rounded(RADIUS_SM),
+                border: border::rounded(radius_sm()),
                 ..container::Style::default()
             }),
         info,
@@ -511,7 +511,7 @@ fn quote_card(
     header = header.push(
         ellipsis(author)
             .size(TEXT_SMALL)
-            .font(FONT_BOLD)
+            .font(font_bold())
             .width(Length::Shrink),
     );
     if let Some(ts) = a.ts {
@@ -581,7 +581,7 @@ fn bar(color: Option<Color>) -> El {
         .height(Length::Fill)
         .style(move |theme: &Theme| container::Style {
             background: Some(color.unwrap_or(tokens(theme).border_strong).into()),
-            border: border::rounded(RADIUS_SM),
+            border: border::rounded(radius_sm()),
             ..container::Style::default()
         })
         .into()
@@ -607,7 +607,7 @@ fn generic_card(
         let mut r = row![small_avatar(a.author_icon.as_deref(), &name, cx)]
             .spacing(SPACE_2)
             .align_y(Alignment::Center);
-        let label = text(name).size(TEXT_SMALL).font(FONT_SEMIBOLD);
+        let label = text(name).size(TEXT_SMALL).font(font_semibold());
         r = match a.author_link.as_deref().and_then(safe_url) {
             Some(l) => r.push(
                 button(label)
@@ -627,12 +627,12 @@ fn generic_card(
             .map(|l| rc.server.absolute(l))
             .and_then(|l| safe_url(&l))
         {
-            Some(l) => button(text(clean(title)).size(TEXT_BODY).font(FONT_BOLD))
+            Some(l) => button(text(clean(title)).size(TEXT_BODY).font(font_bold()))
                 .padding(0)
                 .style(style::button_link)
                 .on_press(RenderMsg::OpenUrl(l))
                 .into(),
-            None => text(clean(title)).size(TEXT_BODY).font(FONT_BOLD).into(),
+            None => text(clean(title)).size(TEXT_BODY).font(font_bold()).into(),
         };
         col = col.push(
             row![title_el, collapse_button(cx, idx, collapsed)]
@@ -791,7 +791,7 @@ fn link_preview(u: &MessageUrl, idx: usize, cx: &Cx<'_, '_>) -> Option<El> {
     if !collapsed {
         if let Some(title) = &d.title {
             let label: iced::widget::Text<'static> =
-                text(clean(title)).size(TEXT_BODY).font(FONT_SEMIBOLD);
+                text(clean(title)).size(TEXT_BODY).font(font_semibold());
             let title_el: El = match &target {
                 Some(l) => button(label)
                     .padding(0)
@@ -814,7 +814,7 @@ fn link_preview(u: &MessageUrl, idx: usize, cx: &Cx<'_, '_>) -> Option<El> {
                 .width(w)
                 .height(h)
                 .content_fit(ContentFit::Contain)
-                .border_radius(RADIUS_SM);
+                .border_radius(radius_sm());
             let pic_el: El = match &target {
                 Some(t) => button(pic)
                     .padding(0)

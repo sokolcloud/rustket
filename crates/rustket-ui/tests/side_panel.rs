@@ -42,7 +42,7 @@ impl iced::advanced::Clipboard for NoClip {
 
 fn renderer() -> iced::Renderer {
     iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         iced::Pixels(rustket_ui::theme::TEXT_BODY),
     ))
 }

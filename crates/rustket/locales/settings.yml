@@ -8,15 +8,96 @@ settings.appearance:
 settings.theme:
   en: "Theme"
   ru: "Тема"
+settings.theme_help:
+  en: "Colour themes are TOML files in the themes folder."
+  ru: "Цветовые темы — файлы TOML в папке тем."
+settings.theme_builtin:
+  en: "Rustket (built-in)"
+  ru: "Rustket (встроенная)"
+settings.themes_folder:
+  en: "Open themes folder"
+  ru: "Открыть папку тем"
+settings.themes_reload:
+  en: "Reload"
+  ru: "Обновить"
+settings.themes_folder_failed:
+  en: "Cannot create the themes folder"
+  ru: "Не удалось создать папку тем"
+settings.themes_folder_open_failed:
+  en: "Cannot open the themes folder"
+  ru: "Не удалось открыть папку тем"
+settings.theme_not_found:
+  en: "Theme file %{file} not found; using the built-in theme."
+  ru: "Файл темы %{file} не найден; используется встроенная тема."
+settings.theme_unreadable:
+  en: "Cannot read the theme file (%{error}); using the built-in theme."
+  ru: "Не удалось прочитать файл темы (%{error}); используется встроенная тема."
+settings.theme_too_large:
+  en: "The theme file is too large (%{size} bytes); using the built-in theme."
+  ru: "Файл темы слишком большой (%{size} байт); используется встроенная тема."
+settings.theme_no_name:
+  en: "The theme file has no [meta] name; using the built-in theme."
+  ru: "В файле темы нет [meta] name; используется встроенная тема."
+settings.theme_no_variants:
+  en: "The theme file has neither [light] nor [dark]; using the built-in theme."
+  ru: "В файле темы нет ни [light], ни [dark]; используется встроенная тема."
+settings.theme_invalid:
+  en: "The theme file is invalid (%{error}); using the built-in theme."
+  ru: "Файл темы некорректен (%{error}); используется встроенная тема."
+settings.theme_dark_only:
+  en: "This theme has only a dark variant: the light mode uses the built-in colours."
+  ru: "У этой темы есть только тёмный вариант: светлый режим использует встроенные цвета."
+settings.theme_light_only:
+  en: "This theme has only a light variant: the dark mode uses the built-in colours."
+  ru: "У этой темы есть только светлый вариант: тёмный режим использует встроенные цвета."
+settings.theme_fonts_restart:
+  en: "Fonts change after Rustket restarts."
+  ru: "Шрифты сменятся после перезапуска Rustket."
+settings.theme_warnings:
+  en: "The theme loaded with warnings:"
+  ru: "Тема загружена с предупреждениями:"
+settings.theme_more:
+  en: "and %{n} more"
+  ru: "и ещё %{n}"
+settings.theme_low_contrast:
+  en: "%{mode}: low contrast, %{what}: %{ratio} (needs %{min})"
+  ru: "%{mode}: низкий контраст, %{what}: %{ratio} (нужно %{min})"
+settings.theme_w_unknown:
+  en: "unknown key %{key}"
+  ru: "неизвестный ключ %{key}"
+settings.theme_w_bad:
+  en: "invalid value of %{key}: %{value}"
+  ru: "некорректное значение %{key}: %{value}"
+settings.theme_w_flags:
+  en: "%{key} needs 6 colours, has %{n}"
+  ru: "в %{key} нужно 6 цветов, указано %{n}"
+settings.theme_w_version:
+  en: "format version %{version} is newer than this Rustket supports"
+  ru: "версия формата %{version} новее поддерживаемой этой версией Rustket"
+settings.theme_w_radius:
+  en: "radius %{value} is out of range, using %{used}"
+  ru: "радиус %{value} вне допустимого диапазона, используется %{used}"
+settings.theme_w_font:
+  en: "font %{family} is not installed, using Noto Sans"
+  ru: "шрифт %{family} не установлен, используется Noto Sans"
+settings.theme_w_mono_font:
+  en: "monospace font %{family} is not installed, using the system monospace font"
+  ru: "моноширинный шрифт %{family} не установлен, используется системный моноширинный шрифт"
+settings.theme_w_weight:
+  en: "font %{family} has no weight %{wanted}, using %{used}"
+  ru: "у шрифта %{family} нет начертания %{wanted}, используется %{used}"
+settings.mode:
+  en: "Mode"
+  ru: "Режим"
 settings.theme_system:
   en: "System"
-  ru: "Системная"
+  ru: "Системный"
 settings.theme_light:
   en: "Light"
-  ru: "Светлая"
+  ru: "Светлый"
 settings.theme_dark:
   en: "Dark"
-  ru: "Тёмная"
+  ru: "Тёмный"
 settings.density:
   en: "Room list density"
   ru: "Плотность списка комнат"

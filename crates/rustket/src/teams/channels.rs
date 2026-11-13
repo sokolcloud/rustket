@@ -15,7 +15,7 @@ use rustket_core::teams;
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_medium};
 use rustket_ui::widget::{
     ChipKind, MenuEntry, MenuItem, Placement, arrow_keys, chip, danger_button, dialog, ellipsis,
     icon_button_with, popover_menu, primary_button, secondary_button, text_field,
@@ -878,7 +878,7 @@ impl Channels {
                     }
                     let mut title = row![
                         icon::sized(glyph, 14.0).style(style::text_secondary),
-                        ellipsis(name.clone()).size(TEXT_BODY).font(FONT_MEDIUM),
+                        ellipsis(name.clone()).size(TEXT_BODY).font(font_medium()),
                     ]
                     .spacing(SPACE_1)
                     .align_y(Alignment::Center);

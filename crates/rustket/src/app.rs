@@ -145,6 +145,8 @@ pub struct App {
     pub modals: Vec<Modal>,
     pub images: Images,
     pub system_mode: Option<Mode>,
+    /// External colour themes (`crate::themes`).
+    pub themes: crate::themes::Themes,
     pub focused: bool,
     pub handler_registered: bool,
     listener: Option<ListenerSlot>,
@@ -291,6 +293,10 @@ impl App {
             .map(|d| d.join("images"))
             .or_else(images::default_cache_dir);
         let decorated = flags.window_decorated.unwrap_or(config.ui.system_title_bar);
+        let mut themes =
+            crate::themes::Themes::new(config_dir.as_deref().map(crate::themes::themes_dir));
+        themes.rescan();
+        themes.apply(config.ui.theme_name.as_deref());
         let app = Self {
             config,
             config_dir,
@@ -306,6 +312,7 @@ impl App {
             modals: Vec::new(),
             images: Images::new(cache_dir),
             system_mode: None,
+            themes,
             focused,
             handler_registered: false,
             listener: flags.listener.clone(),
@@ -461,6 +468,32 @@ impl App {
             },
             |r| r,
         )
+    }
+
+    /// Opens `<config dir>/themes` in the file manager, creating it first.
+    pub(crate) fn open_themes_folder(&mut self) -> Task<Message> {
+        let Some(dir) = self.themes.dir.clone() else {
+            return Task::none();
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return self.toast(
+                BannerKind::Error,
+                t!("settings.themes_folder_failed"),
+                e.to_string(),
+            );
+        }
+        if !self.open_urls {
+            return Task::none();
+        }
+        let path = dir.display().to_string();
+        Task::perform(crate::room::timeline::transfer::open_path(dir), move |r| {
+            if r.is_err() {
+                tracing::warn!("cannot open the themes folder");
+                Message::ThemesFolderNotOpened(path.clone())
+            } else {
+                Message::Noop
+            }
+        })
     }
 
     /// Opens an absolute `http`/`https`/`mailto` URL in the browser; anything
@@ -1027,6 +1060,11 @@ impl App {
                 self.toasts.retain(|t| t.id != id);
                 Task::none()
             }
+            Message::ThemesFolderNotOpened(path) => self.toast(
+                BannerKind::Error,
+                t!("settings.themes_folder_open_failed"),
+                path,
+            ),
             Message::ShowAddServer if !self.may_leave(Message::ShowAddServer) => Task::none(),
             Message::ShowAddServer => {
                 self.screen = Screen::AddServer(Box::new(AddServer::new(!self.servers.is_empty())));

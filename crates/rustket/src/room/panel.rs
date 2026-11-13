@@ -24,7 +24,7 @@ use iced::{Alignment, Element, Length, Subscription, Task};
 use rust_i18n::t;
 use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::Icon;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_4, TEXT_SUBTITLE};
+use rustket_ui::theme::{SPACE_2, SPACE_4, TEXT_SUBTITLE, font_semibold};
 use rustket_ui::widget::{divider, ellipsis, icon_button};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -730,7 +730,7 @@ impl Panel {
         head = head.push(
             ellipsis(title)
                 .size(TEXT_SUBTITLE)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
                 .width(Length::Fill),
         );
         if let Some(Body::Thread(t)) = self.body.as_ref() {

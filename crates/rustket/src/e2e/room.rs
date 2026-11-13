@@ -12,7 +12,7 @@ use rustket_core::permissions::has_permission;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_SMALL, TEXT_SUBTITLE,
+    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_SMALL, TEXT_SUBTITLE, font_semibold,
 };
 use rustket_ui::widget::{
     BannerKind, MenuEntry, MenuItem, danger_button, dialog, ghost_button, primary_button,
@@ -377,7 +377,7 @@ pub fn body<'a>(ctx: &ViewCtx<'a>, room_name: String) -> Option<Element<'a, Msg>
     };
     let mut c = column![
         icon::sized(ic, 48.0).style(style::text_hint),
-        text(title).size(TEXT_SUBTITLE).font(FONT_SEMIBOLD),
+        text(title).size(TEXT_SUBTITLE).font(font_semibold()),
         text(subtitle)
             .size(TEXT_BODY)
             .style(style::text_secondary)

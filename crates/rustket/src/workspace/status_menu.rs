@@ -13,7 +13,7 @@ use rustket_core::room_list::Avatar;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, tokens,
+    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, font_semibold, tokens,
 };
 use rustket_ui::widget::{
     AvatarShape, BannerKind, Placement, avatar, divider, ellipsis, focus_ring, menu_nav, popover,
@@ -330,7 +330,7 @@ impl StatusMenu {
             row![
                 me_avatar,
                 column![
-                    ellipsis(name.clone()).size(TEXT_BODY).font(FONT_SEMIBOLD),
+                    ellipsis(name.clone()).size(TEXT_BODY).font(font_semibold()),
                     ellipsis(subtitle)
                         .size(TEXT_CAPTION)
                         .style(|theme: &Theme| Some(tokens(theme).text_secondary)),
@@ -383,7 +383,7 @@ impl StatusMenu {
             row![
                 avatar(src, 40.0, AvatarShape::Rounded),
                 column![
-                    ellipsis(name).size(TEXT_BODY).font(FONT_SEMIBOLD),
+                    ellipsis(name).size(TEXT_BODY).font(font_semibold()),
                     ellipsis(format!("@{username}"))
                         .size(TEXT_CAPTION)
                         .style(|theme: &Theme| Some(tokens(theme).text_secondary)),

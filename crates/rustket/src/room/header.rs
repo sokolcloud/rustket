@@ -13,8 +13,8 @@ use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, HEADER_HEIGHT, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL,
-    TEXT_SUBTITLE, tokens,
+    HEADER_HEIGHT, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL, TEXT_SUBTITLE,
+    font_semibold, tokens,
 };
 use rustket_ui::widget::{
     ChipKind, MenuEntry, MenuItem, Placement, chip, divider, ellipsis, icon_button_with, popover,
@@ -669,7 +669,7 @@ impl Header {
         title = title.push(
             ellipsis(name.clone())
                 .size(TEXT_SUBTITLE)
-                .font(FONT_SEMIBOLD),
+                .font(font_semibold()),
         );
         if entry.is_some_and(|e| e.is_team()) {
             title = title.push(chip(t!("room_header.team").into_owned(), ChipKind::Primary));

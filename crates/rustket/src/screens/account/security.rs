@@ -14,8 +14,8 @@ use rustket_core::Workspace;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, MONOSPACE_FONT, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
-    TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_mono,
+    font_semibold,
 };
 use rustket_ui::widget::{
     BannerKind, ChipKind, above, banner, chip, danger_button, dialog, ghost_button, primary_button,
@@ -770,7 +770,7 @@ impl Security {
         }
         let mut title = row![
             icon::sized(Icon::Smartphone, 14.0),
-            text(x.title()).size(TEXT_BODY).font(FONT_SEMIBOLD)
+            text(x.title()).size(TEXT_BODY).font(font_semibold())
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
@@ -825,7 +825,7 @@ impl Security {
         let grid = column(codes.chunks(2).map(|pair| {
             row(pair.iter().map(|c| {
                 text(c.as_str())
-                    .font(MONOSPACE_FONT)
+                    .font(font_mono())
                     .size(TEXT_BODY + 1.0)
                     .width(Length::Fill)
                     .into()
@@ -872,7 +872,7 @@ fn status_line<'a>(title: String, on: bool) -> Element<'a, Message> {
     row![
         text(title)
             .size(TEXT_BODY)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill),
         chip(
             if on {
@@ -935,7 +935,7 @@ fn setup_view(p: &Pending) -> Element<'_, Message> {
             .style(style::text_secondary),
         row![
             text(group_secret(&p.setup.secret))
-                .font(MONOSPACE_FONT)
+                .font(font_mono())
                 .size(TEXT_SMALL)
                 .width(Length::Fill),
             ghost_button(

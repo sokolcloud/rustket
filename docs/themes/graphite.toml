@@ -1,0 +1,35 @@
+# Graphite: near-monochrome greys with a muted steel-blue accent and
+# tighter corners. Copy to <config dir>/themes/graphite.toml and pick
+# "Graphite" in Settings → Appearance → Theme.
+
+[meta]
+name = "Graphite"
+name_ru = "Графит"
+author = "Rustket"
+version = 1
+
+[layout]
+radius = 0.5
+
+[light.palette]
+accent = "#46698A"
+danger = "#B23A3A"
+success = "#3C7556"
+warning = "#C99A2E"
+background = "#F7F7F8"
+text = "#1E2023"
+
+[light.tokens]
+surface_raised = "#FFFFFF"
+badge_unread = "#5C6B79"
+
+[dark.palette]
+accent = "#4A6A87"
+danger = "#C24848"
+success = "#5FAE84"
+warning = "#D4B05A"
+background = "#1D1F22"
+text = "#E3E4E6"
+
+[dark.tokens]
+badge_unread = "#4B5763"

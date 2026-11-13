@@ -18,7 +18,7 @@ use super::misc::divider;
 use crate::icon::{self, Icon};
 use crate::style;
 use crate::theme::{
-    DEFAULT_FONT, RADIUS_SM, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, tokens,
+    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, font_regular, radius_sm, tokens,
 };
 
 /// One actionable menu row.
@@ -115,7 +115,7 @@ pub fn menu_width<Message>(entries: &[MenuEntry<Message>]) -> f32 {
         .filter_map(|e| match e {
             MenuEntry::Item(item) => {
                 let hint = item.hint.as_deref().map_or(0.0, |h| {
-                    SPACE_3 + super::ellipsis::natural_width(h, TEXT_CAPTION, DEFAULT_FONT)
+                    SPACE_3 + super::ellipsis::natural_width(h, TEXT_CAPTION, font_regular())
                 });
                 let swatch = if item.swatch.is_some() {
                     SWATCH + SPACE_3
@@ -123,7 +123,7 @@ pub fn menu_width<Message>(entries: &[MenuEntry<Message>]) -> f32 {
                     0.0
                 };
                 Some(
-                    super::ellipsis::natural_width(&item.label, TEXT_BODY, DEFAULT_FONT)
+                    super::ellipsis::natural_width(&item.label, TEXT_BODY, font_regular())
                         + hint
                         + swatch,
                 )
@@ -131,7 +131,7 @@ pub fn menu_width<Message>(entries: &[MenuEntry<Message>]) -> f32 {
             MenuEntry::Header(h) => Some(super::ellipsis::natural_width(
                 h,
                 TEXT_CAPTION,
-                DEFAULT_FONT,
+                font_regular(),
             )),
             MenuEntry::Separator => None,
         })
@@ -321,7 +321,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for MenuNav<'_, Mess
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: row.bounds(),
-                    border: border::rounded(RADIUS_SM),
+                    border: border::rounded(radius_sm()),
                     ..renderer::Quad::default()
                 },
                 tokens(theme).hover_bg,
@@ -338,7 +338,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for MenuNav<'_, Mess
         );
         // The keyboard highlight also gets the focus ring.
         if let Some(row) = state.highlighted.and_then(|i| layout.children().nth(i)) {
-            super::focus_ring::draw_ring(renderer, theme, row.bounds(), RADIUS_SM);
+            super::focus_ring::draw_ring(renderer, theme, row.bounds(), radius_sm());
         }
     }
 

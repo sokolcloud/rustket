@@ -9,7 +9,7 @@ use rustket_core::permissions;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_MEDIUM, FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_medium, font_semibold,
 };
 use rustket_ui::widget::{arrow_keys, ellipsis, icon_button, primary_button, secondary_button};
 
@@ -328,7 +328,7 @@ impl Invite {
             col = col.push(
                 text(t!("room_panel.choose_users").into_owned())
                     .size(TEXT_CAPTION)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
                     .style(style::text_hint),
             );
             col = col.push(arrow_keys(
@@ -374,7 +374,7 @@ impl Invite {
                         row![
                             common::user_avatar(ctx, &username, &name, 28.0),
                             column![
-                                ellipsis(name).size(TEXT_BODY).font(FONT_MEDIUM),
+                                ellipsis(name).size(TEXT_BODY).font(font_medium()),
                                 ellipsis(format!("@{username}")).size(TEXT_CAPTION).style(
                                     |t: &iced::Theme| Some(rustket_ui::tokens(t).text_secondary)
                                 ),
@@ -406,7 +406,7 @@ impl Invite {
             col = col.push(
                 text(t!("room_panel.invite_link").into_owned())
                     .size(TEXT_CAPTION)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
                     .style(style::text_hint),
             );
             let picker =

@@ -7,7 +7,7 @@ use iced::{Alignment, Element, Length, Theme, border};
 use rocketchat::uikit::{StrOrText, Surface};
 use rust_i18n::t;
 use rustket_ui::icon::{self, Icon};
-use rustket_ui::theme::{FONT_SEMIBOLD, RADIUS_MD, SPACE_2, SPACE_3, TEXT_BODY, tokens};
+use rustket_ui::theme::{SPACE_2, SPACE_3, TEXT_BODY, font_semibold, radius_md, tokens};
 use rustket_ui::widget::icon_button_with;
 
 use super::modal::AppCtx;
@@ -42,13 +42,13 @@ pub fn view<'a>(app: AppCtx<'a>) -> Option<Element<'a, UiKitMsg>> {
     let mut body = column![].spacing(SPACE_2).width(Length::Fill);
     match &v.title {
         Some(StrOrText::Str(s)) if !s.trim().is_empty() => {
-            body = body.push(text(s.clone()).size(TEXT_BODY).font(FONT_SEMIBOLD));
+            body = body.push(text(s.clone()).size(TEXT_BODY).font(font_semibold()));
         }
         Some(StrOrText::Text(t)) => {
             body = body.push(
                 text(tx::label(&env, t, None))
                     .size(TEXT_BODY)
-                    .font(FONT_SEMIBOLD),
+                    .font(font_semibold()),
             );
         }
         _ => {}
@@ -91,7 +91,7 @@ pub fn view<'a>(app: AppCtx<'a>) -> Option<Element<'a, UiKitMsg>> {
                     };
                     container::Style {
                         background: Some(bg.into()),
-                        border: border::rounded(RADIUS_MD).width(1).color(t.border),
+                        border: border::rounded(radius_md()).width(1).color(t.border),
                         ..container::Style::default()
                     }
                 }),

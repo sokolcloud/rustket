@@ -7,7 +7,7 @@
 use std::cell::Cell;
 
 use chrono::{DateTime, Local, TimeZone};
-use iced::font::{Style as FontStyle, Weight};
+use iced::font::Style as FontStyle;
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::text::{Span, Wrapping};
 use iced::widget::{
@@ -24,8 +24,9 @@ use rustket_ui::emoji::{EMOJI_FONT, segments};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    DEFAULT_FONT, FONT_SEMIBOLD, MONOSPACE_FONT, RADIUS_SM, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY,
-    TEXT_CAPTION, TEXT_EMOJI_LARGE, TEXT_HEADLINE, TEXT_SMALL, TEXT_SUBTITLE, TEXT_TITLE,
+    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_EMOJI_LARGE, TEXT_HEADLINE,
+    TEXT_SMALL, TEXT_SUBTITLE, TEXT_TITLE, font_bold, font_mono, font_regular, font_semibold,
+    radius_sm,
 };
 use rustket_ui::widget::selectable::rich;
 use rustket_ui::widget::{TooltipPosition, divider, tooltip};
@@ -101,20 +102,40 @@ struct Fmt {
     size: Option<f32>,
 }
 
+/// `cover` composited onto `room`: opaque, so glyphs drawn in it on a
+/// background of it stay hidden even when the theme gives it alpha.
+fn spoiler_cover(cover: Color, room: Color) -> Color {
+    if cover.a >= 1.0 {
+        return cover;
+    }
+    Color {
+        a: 1.0,
+        ..rustket_ui::palette::mix(room, cover, cover.a)
+    }
+}
+
 impl Fmt {
     fn font(&self) -> Font {
+        self.styled(if self.bold {
+            font_bold()
+        } else {
+            font_regular()
+        })
+    }
+
+    /// The theme's semibold face, italic when this span is.
+    fn semibold(&self) -> Font {
+        self.styled(font_semibold())
+    }
+
+    fn styled(&self, font: Font) -> Font {
         Font {
-            weight: if self.bold {
-                Weight::Bold
-            } else {
-                Weight::Normal
-            },
             style: if self.italic {
                 FontStyle::Italic
             } else {
                 FontStyle::Normal
             },
-            ..DEFAULT_FONT
+            ..font
         }
     }
 }
@@ -510,7 +531,7 @@ fn paragraph(spans: Vec<Sp>, size: f32) -> El {
 /// line, scrolled horizontally instead of wrapped.
 fn code_text(code: String) -> El {
     rich::<RenderMsg, RenderMsg>(vec![span(code)])
-        .font(MONOSPACE_FONT)
+        .font(font_mono())
         .size(TEXT_SMALL)
         .wrapping(Wrapping::None)
         .into()
@@ -622,6 +643,7 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
                 } else {
                     t.text_secondary
                 };
+                let cover = spoiler_cover(cover, t.surface_room);
                 Fmt {
                     color: Some(cover),
                     background: Some(cover),
@@ -698,10 +720,7 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
             let name = value.value.as_str();
             out.push(
                 span(format!("#{name}"))
-                    .font(Font {
-                        weight: Weight::Semibold,
-                        ..fmt.font()
-                    })
+                    .font(fmt.semibold())
                     .color(t.link)
                     .link(RenderMsg::OpenRoom(name.to_owned())),
             );
@@ -740,9 +759,9 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
             let label = format_timestamp(value, cx.rc.clock_24h);
             out.push(
                 span(label)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
                     .background(t.surface_sunken)
-                    .border(border::rounded(RADIUS_SM))
+                    .border(border::rounded(radius_sm()))
                     .padding([0, 3]),
             );
         }
@@ -756,10 +775,10 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
 
 fn code_span(code: &str, t: &Tokens, fmt: &Fmt) -> Sp {
     let mut s = span(code.to_owned())
-        .font(MONOSPACE_FONT)
+        .font(font_mono())
         .color(t.code_fg)
         .background(t.code_bg)
-        .border(border::rounded(RADIUS_SM))
+        .border(border::rounded(radius_sm()))
         .padding([0, 3])
         .strikethrough(fmt.strike)
         .link_maybe(fmt.link.clone());
@@ -789,13 +808,10 @@ fn mention_user(name: &str, cx: &Cx<'_, '_>, fmt: &Fmt) -> Sp {
         (t.mention_bg, t.mention_fg)
     };
     let mut s = span(format!("@{}", rustket_ui::widget::sanitize_bidi(&shown)))
-        .font(Font {
-            weight: Weight::Semibold,
-            ..fmt.font()
-        })
+        .font(fmt.semibold())
         .color(fg)
         .background(bg)
-        .border(border::rounded(RADIUS_SM))
+        .border(border::rounded(radius_sm()))
         .padding([0, 2]);
     if !special {
         s = s.link(RenderMsg::OpenUser(name.to_owned()));
@@ -902,7 +918,7 @@ fn code_block(language: Option<&str>, lines: &[CodeLine]) -> El {
     let header = row![
         text(lang.to_owned())
             .size(TEXT_CAPTION)
-            .font(MONOSPACE_FONT)
+            .font(font_mono())
             .style(style::text_hint)
             .width(Length::Fill),
         tooltip(
@@ -1062,7 +1078,7 @@ fn table<'t>(
         .style(|theme: &iced::Theme| {
             let t = rustket_ui::tokens(theme);
             container::Style {
-                border: border::rounded(RADIUS_SM).width(1).color(t.border),
+                border: border::rounded(radius_sm()).width(1).color(t.border),
                 ..container::Style::default()
             }
         })
@@ -1174,6 +1190,7 @@ mod tests {
     use crate::images::Images;
     use crate::room::render::RenderState;
     use chrono::Duration;
+    use iced::font::Weight;
     use rocketchat::ServerUrl;
     use rocketchat::models::md::Root;
     use rustket_core::{ServerId, Workspace};
@@ -1227,6 +1244,16 @@ mod tests {
     }
 
     #[test]
+    fn spoiler_cover_is_opaque() {
+        let room = Color::WHITE;
+        let c = spoiler_cover(Color::from_rgba(0.0, 0.0, 0.0, 0.25), room);
+        assert_eq!(c.a, 1.0);
+        assert!((c.r - 0.75).abs() < 1e-6, "{c:?}");
+        let solid = Color::from_rgb(0.2, 0.3, 0.4);
+        assert_eq!(spoiler_cover(solid, room), solid);
+    }
+
+    #[test]
     fn inline_formatting_becomes_spans() {
         let fx = Fx::new();
         let rc = fx.rc();
@@ -1251,7 +1278,7 @@ mod tests {
         assert_eq!(spans[2].font.unwrap().style, FontStyle::Italic);
         assert_eq!(spans[2].font.unwrap().weight, Weight::Bold);
         assert!(spans[3].strikethrough);
-        assert_eq!(spans[4].font, Some(MONOSPACE_FONT));
+        assert_eq!(spans[4].font, Some(font_mono()));
         assert!(spans[4].highlight.is_some(), "inline code has a background");
         assert_eq!(
             spans[5].link,
@@ -1260,7 +1287,7 @@ mod tests {
         assert!(spans[5].underline);
         assert_eq!(spans[6].link, None, "unsafe schemes are not clickable");
         assert_eq!(spans[7].font, Some(EMOJI_FONT));
-        assert_eq!(spans[8].font, Some(MONOSPACE_FONT));
+        assert_eq!(spans[8].font, Some(font_mono()));
     }
 
     #[test]
@@ -1376,7 +1403,7 @@ mod tests {
         assert_eq!(spans[1].font.unwrap().weight, Weight::Bold);
         assert_eq!(spans[3].font.unwrap().style, FontStyle::Italic);
         assert!(spans[5].strikethrough);
-        assert_eq!(spans[7].font, Some(MONOSPACE_FONT));
+        assert_eq!(spans[7].font, Some(font_mono()));
         assert_eq!(
             spans[9].link,
             Some(RenderMsg::OpenUrl("https://ci.example/1".into()))

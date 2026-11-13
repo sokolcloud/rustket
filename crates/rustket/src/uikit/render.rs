@@ -18,8 +18,8 @@ use rustket_core::uikit::{Permit, Scratch, ViewState, element_permit};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, RADIUS_MD, RADIUS_SM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY,
-    TEXT_CAPTION, TEXT_SMALL, tokens,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_semibold,
+    radius_md, radius_sm, tokens,
 };
 use rustket_ui::widget::{divider, ellipsis};
 use serde_json::Value;
@@ -336,7 +336,7 @@ fn block<'e>(
             let mut col = column![
                 text(tx::label(env, label, app))
                     .size(TEXT_SMALL)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
             ]
             .spacing(SPACE_1);
             if let Some(w) = element(env, editors, &e, Ctx::Form, true) {
@@ -393,7 +393,7 @@ pub fn block_image(env: &Env<'_>, url: &str, alt: &str, max: f32) -> Element<'st
             image(l.handle.clone())
                 .width(w * scale)
                 .height(h * scale)
-                .border_radius(RADIUS_SM)
+                .border_radius(radius_sm())
                 .into()
         }
         None => alt_box(alt, max.min(360.0), (max * 154.0 / 360.0).min(154.0)),
@@ -408,7 +408,7 @@ pub fn square_image(env: &Env<'_>, url: &str, alt: &str, size: f32) -> Element<'
             .width(size)
             .height(size)
             .content_fit(iced::ContentFit::Cover)
-            .border_radius(if size > 30.0 { RADIUS_SM } else { size / 2.0 })
+            .border_radius(if size > 30.0 { radius_sm() } else { size / 2.0 })
             .into(),
         None => alt_box(if size > 30.0 { alt } else { "" }, size, size),
     }
@@ -422,7 +422,7 @@ fn cover_image(env: &Env<'_>, url: &str, size: (f32, f32)) -> Element<'static, U
             .width(size.0)
             .height(size.1)
             .content_fit(iced::ContentFit::Cover)
-            .border_radius(RADIUS_SM)
+            .border_radius(radius_sm())
             .into(),
         None => alt_box("", size.0, size.1),
     }
@@ -459,7 +459,7 @@ fn alt_box(alt: &str, w: f32, h: f32) -> Element<'static, UiKitMsg> {
         let t = tokens(th);
         container::Style {
             background: Some(t.surface_sunken.into()),
-            border: border::rounded(RADIUS_SM),
+            border: border::rounded(radius_sm()),
             ..container::Style::default()
         }
     })
@@ -566,7 +566,7 @@ fn card_style(secondary: bool) -> impl Fn(&Theme) -> container::Style {
                 }
                 .into(),
             ),
-            border: border::rounded(RADIUS_MD).width(1).color(t.border),
+            border: border::rounded(radius_md()).width(1).color(t.border),
             ..container::Style::default()
         }
     }
@@ -582,14 +582,14 @@ fn preview(env: &Env<'_>, p: &PreviewBlock, app: Option<&str>) -> Element<'stati
                 button(
                     text(label)
                         .size(TEXT_BODY)
-                        .font(FONT_SEMIBOLD)
+                        .font(font_semibold())
                         .style(style::text_link),
                 )
                 .padding(0)
                 .style(style::button_bare)
                 .on_press(UiKitMsg::Render(Box::new(RenderMsg::OpenUrl(u.clone())))),
             ),
-            None => text(label).size(TEXT_BODY).font(FONT_SEMIBOLD).into(),
+            None => text(label).size(TEXT_BODY).font(font_semibold()).into(),
         });
     }
     for d in &p.description {
@@ -636,7 +636,7 @@ fn callout<'e>(
     let mut col = column![].spacing(SPACE_1).width(Length::Fill);
     if let Some(t) = title {
         // The raw title text: no i18n, no markdown (§2.1).
-        col = col.push(text(t.text.clone()).size(TEXT_BODY).font(FONT_SEMIBOLD));
+        col = col.push(text(t.text.clone()).size(TEXT_BODY).font(font_semibold()));
     }
     col = col.push(tx::body(env, body, app));
     let mut r = row![
@@ -674,7 +674,7 @@ fn callout<'e>(
             };
             container::Style {
                 background: Some(bg.into()),
-                border: border::rounded(RADIUS_MD)
+                border: border::rounded(radius_md())
                     .width(1)
                     .color(fg.scale_alpha(0.35)),
                 ..container::Style::default()
@@ -717,7 +717,7 @@ fn tab_strip(
         });
         let label = text(tx::label(env, &title, app))
             .size(TEXT_SMALL)
-            .font(FONT_SEMIBOLD);
+            .font(font_semibold());
         let tab_btn = button(container(label).padding([SPACE_1, SPACE_2]))
             .padding(0)
             .style(style::button_list_item(is_selected))
@@ -782,7 +782,7 @@ fn info_card<'e>(
         container(col)
             .clip(true)
             .style(|_: &Theme| container::Style {
-                border: border::rounded(RADIUS_MD - 1.0),
+                border: border::rounded(radius_md() - 1.0),
                 ..container::Style::default()
             }),
     )

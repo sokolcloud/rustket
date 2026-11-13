@@ -10,7 +10,7 @@ use rustket_core::workspace::Workspace;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_semibold,
 };
 use rustket_ui::widget::{BadgeKind, divider, dot, ellipsis};
 
@@ -202,7 +202,7 @@ impl Messages {
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
         let line = column![
-            mouse_area(text(name).size(TEXT_CAPTION).font(FONT_SEMIBOLD))
+            mouse_area(text(name).size(TEXT_CAPTION).font(font_semibold()))
                 .interaction(iced::mouse::Interaction::Pointer)
                 .on_press(Msg::OpenUser(username)),
             line
@@ -227,7 +227,7 @@ impl Messages {
             .filter(|a| !a.is_empty())
             .unwrap_or_else(|| common::user_display(ws, use_real, &username, m.u.name.as_deref()));
         let head = row![
-            mouse_area(ellipsis(name.clone()).size(TEXT_BODY).font(FONT_SEMIBOLD))
+            mouse_area(ellipsis(name.clone()).size(TEXT_BODY).font(font_semibold()))
                 .interaction(iced::mouse::Interaction::Pointer)
                 .on_press(Msg::OpenUser(username.clone())),
             text(common::time_label(m.ts, ctx))

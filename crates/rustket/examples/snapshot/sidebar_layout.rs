@@ -86,7 +86,7 @@ fn header_at(d: &Driver, sid: &ServerId, id: &SectionId) -> Point {
 
 fn renderer() -> iced::Renderer {
     iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         Pixels(rustket_ui::theme::TEXT_BODY),
     ))
 }

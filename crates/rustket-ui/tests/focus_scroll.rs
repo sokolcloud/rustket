@@ -52,7 +52,7 @@ impl Operation for Probe {
 /// and whether it is inside the scrollable's viewport.
 fn tab(bottom: bool, start: &'static str, forward: bool) -> (Id, bool) {
     let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-        rustket_ui::theme::DEFAULT_FONT,
+        rustket_ui::theme::font_regular(),
         iced::Pixels(rustket_ui::theme::TEXT_BODY),
     ));
     let mut ui = UserInterface::build(

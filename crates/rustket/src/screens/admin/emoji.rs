@@ -7,7 +7,7 @@ use iced::{Alignment, Element, Length, Task};
 use rocketchat::models::{CustomEmoji, Paginated};
 use rust_i18n::t;
 use rustket_ui::icon::Icon;
-use rustket_ui::theme::{FONT_MEDIUM, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY};
+use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, font_medium};
 use rustket_ui::widget::{danger_button, primary_button, secondary_button};
 
 use super::common::{
@@ -256,7 +256,7 @@ impl State {
                             Self::preview(e, v),
                             text(format!(":{}:", e.name))
                                 .size(TEXT_BODY)
-                                .font(FONT_MEDIUM)
+                                .font(font_medium())
                         ]
                         .spacing(SPACE_2)
                         .align_y(Alignment::Center)

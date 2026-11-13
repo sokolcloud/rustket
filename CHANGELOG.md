@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- External themes: TOML files in the `themes` folder of the config
+  directory, picked in Settings → Appearance → Theme (with "Open themes
+  folder" and "Reload"). A theme sets a few palette seeds (accent,
+  background, text, danger, success, warning) and/or exact colour tokens
+  for a light and/or dark variant, and optionally fonts and a corner-radius
+  scale. Problems and low-contrast colour pairs are listed as warnings.
+  `rustket --dump-theme` prints a complete template; see
+  `docs/themes/README.md` and the example themes Forest and Graphite.
+
+### Changed
+
+- The light/dark/system control in the settings is now called "Mode".
+
 ## [0.2.4] - 2026-11-13
 
 ### Added

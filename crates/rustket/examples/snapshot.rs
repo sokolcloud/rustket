@@ -159,7 +159,7 @@ impl Driver {
     /// Like `shoot` with another window size (e.g. a whole settings page).
     fn shoot_at(&self, dir: &Path, name: &str, size: Size) {
         let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
-            rustket_ui::theme::DEFAULT_FONT,
+            rustket_ui::theme::font_regular(),
             Pixels(rustket_ui::theme::TEXT_BODY),
         ));
         let theme = self.app.theme();

@@ -5,7 +5,7 @@ use iced::{Alignment, ContentFit, Element, Length};
 use rust_i18n::t;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_semibold};
 use rustket_ui::widget::{
     danger_button, dialog, ellipsis, icon_button_with, loading_placeholder, secondary_button,
 };
@@ -97,7 +97,7 @@ pub fn lightbox(
     let header = row![
         ellipsis(img.title.clone())
             .size(TEXT_BODY)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill),
         tool(
             if zoom { Icon::Minimize } else { Icon::ZoomIn },

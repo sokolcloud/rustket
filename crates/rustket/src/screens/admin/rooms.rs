@@ -9,7 +9,7 @@ use rocketchat::models::{Paginated, RoomType};
 use rust_i18n::t;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_medium};
 use rustket_ui::widget::danger_button;
 
 use super::common::{
@@ -384,7 +384,7 @@ impl State {
                     vec![
                         row![
                             icon::sized(room_icon(r), 16.0).style(style::text_secondary),
-                            text(r.display_name()).size(TEXT_BODY).font(FONT_MEDIUM),
+                            text(r.display_name()).size(TEXT_BODY).font(font_medium()),
                         ]
                         .spacing(SPACE_2)
                         .align_y(Alignment::Center)

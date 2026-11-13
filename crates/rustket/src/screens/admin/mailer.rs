@@ -7,7 +7,7 @@ use rocketchat::models::admin::{EmailInbox, EmailInboxServer, MailerRequest};
 use rust_i18n::t;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{MONOSPACE_FONT, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_mono};
 use rustket_ui::widget::{BannerKind, banner, danger_button, primary_button, secondary_button};
 
 use super::common::{
@@ -150,7 +150,7 @@ impl State {
             field(
                 t!("admin.mailer.query").into_owned(),
                 Some(t!("admin.mailer.query_hint").into_owned()),
-                input(&self.query, Some(move |s| m(Msg::Query(s)))).font(MONOSPACE_FONT)
+                input(&self.query, Some(move |s| m(Msg::Query(s)))).font(font_mono())
             ),
             text_row(
                 t!("admin.mailer.subject").into_owned(),

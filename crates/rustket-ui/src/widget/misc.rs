@@ -4,7 +4,7 @@ use iced::widget::{Column, column, container, text, tooltip as iced_tooltip};
 use iced::{Element, Length, Theme, border};
 
 use crate::style;
-use crate::theme::{FONT_SEMIBOLD, MONOSPACE_FONT, RADIUS_SM, TEXT_CAPTION, TEXT_MICRO, tokens};
+use crate::theme::{TEXT_CAPTION, TEXT_MICRO, font_mono, font_semibold, radius_sm, tokens};
 
 pub use iced::widget::tooltip::Position as TooltipPosition;
 
@@ -41,7 +41,7 @@ pub fn chip<'a, Message: 'a>(label: impl Into<String>, kind: ChipKind) -> Elemen
     container(
         text(label.into())
             .size(TEXT_MICRO + 1.0)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .wrapping(text::Wrapping::None),
     )
     .padding([1, 6])
@@ -57,7 +57,7 @@ pub fn chip<'a, Message: 'a>(label: impl Into<String>, kind: ChipKind) -> Elemen
         container::Style {
             text_color: Some(fg),
             background: Some(bg.into()),
-            border: border::rounded(RADIUS_SM).width(1).color(t.border),
+            border: border::rounded(radius_sm()).width(1).color(t.border),
             ..container::Style::default()
         }
     })
@@ -69,7 +69,7 @@ pub fn kbd<'a, Message: 'a>(key: impl Into<String>) -> Element<'a, Message> {
     container(
         text(key.into())
             .size(TEXT_MICRO + 1.0)
-            .font(MONOSPACE_FONT)
+            .font(font_mono())
             .wrapping(text::Wrapping::None),
     )
     .padding([1, 5])
@@ -78,7 +78,7 @@ pub fn kbd<'a, Message: 'a>(key: impl Into<String>) -> Element<'a, Message> {
         container::Style {
             text_color: Some(t.text_secondary),
             background: Some(t.surface_sunken.into()),
-            border: border::rounded(RADIUS_SM).width(1).color(t.border_strong),
+            border: border::rounded(radius_sm()).width(1).color(t.border_strong),
             ..container::Style::default()
         }
     })

@@ -15,8 +15,8 @@ use rustket_core::admin::timespan::TimeUnit;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_MEDIUM, FONT_SEMIBOLD, MONOSPACE_FONT, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION,
-    TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_medium, font_mono,
+    font_semibold,
 };
 use rustket_ui::widget::{
     BannerKind, ChipKind, banner, chip, ghost_button, icon_button, secondary_button,
@@ -260,7 +260,7 @@ pub fn setting<'a>(
     let mut head: Row<'a, Message> = row![
         text(label.clone())
             .size(TEXT_BODY)
-            .font(FONT_MEDIUM)
+            .font(font_medium())
             .width(Length::Fill)
     ]
     .spacing(SPACE_2)
@@ -306,7 +306,7 @@ pub fn setting<'a>(
                 text_editor(c)
                     .on_action(move |a| Message::Settings(Msg::Editor(sid.clone(), a)))
                     .height(if code { 200 } else { 110 })
-                    .font(if code { MONOSPACE_FONT } else { Font::DEFAULT })
+                    .font(if code { font_mono() } else { Font::DEFAULT })
                     .size(if code { TEXT_SMALL } else { TEXT_BODY })
                     .padding(SPACE_2)
                     .into()
@@ -472,7 +472,7 @@ pub fn setting<'a>(
                     None,
                     editable.then_some(set),
                     false,
-                    Some(MONOSPACE_FONT)
+                    Some(font_mono())
                 )
             ]
             .spacing(SPACE_2)
@@ -743,7 +743,7 @@ pub fn setting<'a>(
             .spacing(SPACE_1),
         );
     }
-    let _ = FONT_SEMIBOLD;
+    let _ = font_semibold();
     Some(col.into())
 }
 
@@ -832,7 +832,7 @@ pub fn markdown<'a>(src: &str, size: f32, _block: bool) -> Element<'a, Message> 
             "`" => match after.find('`') {
                 Some(j) => {
                     push_plain(&mut spans, before);
-                    spans.push(span(after[..j].to_owned()).font(MONOSPACE_FONT));
+                    spans.push(span(after[..j].to_owned()).font(font_mono()));
                     rest = after[j + 1..].to_owned();
                 }
                 None => {
@@ -843,7 +843,7 @@ pub fn markdown<'a>(src: &str, size: f32, _block: bool) -> Element<'a, Message> 
             "**" => match after.find("**") {
                 Some(j) => {
                     push_plain(&mut spans, before);
-                    spans.push(span(after[..j].to_owned()).font(FONT_SEMIBOLD));
+                    spans.push(span(after[..j].to_owned()).font(font_semibold()));
                     rest = after[j + 2..].to_owned();
                 }
                 None => {

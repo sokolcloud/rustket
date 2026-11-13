@@ -14,7 +14,7 @@ use rustket_core::permissions::has_permission;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL, font_semibold,
 };
 use rustket_ui::widget::{
     BannerKind, above, banner, dialog, icon_button, primary_button, secondary_button,
@@ -444,7 +444,7 @@ impl State {
                         row![
                             text(r.name.clone())
                                 .size(TEXT_SMALL)
-                                .font(FONT_SEMIBOLD)
+                                .font(font_semibold())
                                 .width(Length::FillPortion(2)),
                             text(r.scope.clone().unwrap_or_else(|| "Users".into()))
                                 .size(TEXT_SMALL)
@@ -487,7 +487,7 @@ impl State {
             container(
                 text(t!("admin.perms.permission"))
                     .size(TEXT_CAPTION)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
             )
             .width(LABEL_W)
         ]
@@ -498,7 +498,7 @@ impl State {
                 button(
                     text(r.name.clone())
                         .size(TEXT_CAPTION)
-                        .font(FONT_SEMIBOLD)
+                        .font(font_semibold())
                         .style(style::text_link),
                 )
                 .padding(0)

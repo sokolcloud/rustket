@@ -9,7 +9,7 @@ use iced::{Element, Length};
 use rocketchat::models::RoomType;
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, TEXT_CAPTION, TEXT_SMALL};
+use rustket_ui::theme::{TEXT_CAPTION, TEXT_SMALL, font_semibold};
 
 /// `(shortcut, text)` suggestions for `!query` in room `rid`; empty outside
 /// omnichannel rooms or without the canned responses feature.
@@ -41,7 +41,7 @@ pub fn item_view<'a, M: 'a>(shortcut: &'a str, body: &'a str) -> Element<'a, M> 
     column![
         text(format!("!{shortcut}"))
             .size(TEXT_SMALL)
-            .font(FONT_SEMIBOLD),
+            .font(font_semibold()),
         text(first)
             .size(TEXT_CAPTION)
             .style(style::text_secondary)

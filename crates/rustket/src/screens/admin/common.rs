@@ -16,8 +16,8 @@ use rustket_core::admin::server_i18n::ServerI18n;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_MEDIUM, FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
-    TEXT_SMALL, TEXT_SUBTITLE,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, TEXT_SUBTITLE,
+    font_medium, font_semibold,
 };
 use rustket_ui::widget::{
     BannerKind, above, banner, dialog, divider, ellipsis, ghost_button, icon_button,
@@ -420,7 +420,7 @@ pub fn table<'a, M: Clone + 'a>(
         let mut label = row![
             ellipsis(c.label)
                 .size(TEXT_CAPTION)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
                 .width(Length::Shrink)
                 .style(|t: &iced::Theme| Some(rustket_ui::tokens(t).text_secondary))
         ]
@@ -549,7 +549,7 @@ pub fn title_row<'a, M: Clone + 'a>(title: String, buttons: Vec<Element<'a, M>>)
     row![
         text(title)
             .size(TEXT_SUBTITLE)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill)
     ]
     .extend(buttons)
@@ -565,7 +565,7 @@ pub fn field<'a, M: 'a>(
     control: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
     let mut col = column![
-        text(label).size(TEXT_SMALL).font(FONT_MEDIUM),
+        text(label).size(TEXT_SMALL).font(font_medium()),
         control.into()
     ]
     .spacing(SPACE_1)
@@ -633,7 +633,11 @@ pub fn kv<'a, M: 'a>(key: String, value: String) -> Element<'a, M> {
 /// A titled card.
 pub fn card<'a, M: 'a>(title: String, body: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(
-        column![text(title).size(TEXT_BODY).font(FONT_SEMIBOLD), body.into()].spacing(SPACE_3),
+        column![
+            text(title).size(TEXT_BODY).font(font_semibold()),
+            body.into()
+        ]
+        .spacing(SPACE_3),
     )
     .padding(SPACE_4)
     .width(Length::Fill)
@@ -694,7 +698,7 @@ pub fn back_row<'a, M: Clone + 'a>(
         ghost_button(t!("admin.back"), Some(back)).icon(Icon::ArrowLeft),
         text(title)
             .size(TEXT_SUBTITLE)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill),
     ]
     .extend(buttons)
@@ -717,7 +721,7 @@ pub fn readonly<'a, M: 'a>(value: String) -> Element<'a, M> {
     container(
         text(value)
             .size(TEXT_SMALL)
-            .font(rustket_ui::theme::MONOSPACE_FONT),
+            .font(rustket_ui::theme::font_mono()),
     )
     .padding([6, 10])
     .width(Length::Fill)

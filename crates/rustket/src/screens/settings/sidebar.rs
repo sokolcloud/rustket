@@ -16,7 +16,7 @@ use rustket_core::sidebar_layout::{
 };
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, font_semibold};
 use rustket_ui::widget::{
     danger_button, divider, ghost_button, icon_button, primary_button, secondary_button, text_field,
 };
@@ -132,9 +132,9 @@ pub(super) fn type_caption(layout: &Layout, d: &GroupDraft, ty: GroupType) -> Op
 
 /// A pick list entry: value plus its label.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Choice<T> {
-    value: T,
-    label: String,
+pub(super) struct Choice<T> {
+    pub(super) value: T,
+    pub(super) label: String,
 }
 
 impl<T> fmt::Display for Choice<T> {
@@ -599,7 +599,7 @@ impl Settings {
         let mut list = column![
             text(t!("settings.sections"))
                 .size(TEXT_BODY)
-                .font(FONT_SEMIBOLD),
+                .font(font_semibold()),
         ]
         .spacing(SPACE_3);
         let ids = listed_sections(layout, flags);
@@ -640,7 +640,7 @@ impl Settings {
         let mut head = row![
             text(section_name(id, layout, flags))
                 .size(TEXT_BODY)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
                 .style(if claimed {
                     style::text_hint
                 } else {
@@ -875,7 +875,7 @@ impl Settings {
         let mut block = column![
             text(t!("settings.flags"))
                 .size(TEXT_BODY)
-                .font(FONT_SEMIBOLD),
+                .font(font_semibold()),
             text(t!("settings.flags_caption"))
                 .size(TEXT_CAPTION)
                 .style(style::text_secondary),

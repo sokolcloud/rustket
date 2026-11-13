@@ -356,7 +356,12 @@ pub enum Density {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPrefs {
+    /// Light/dark mode (or follow the system).
     pub theme: Theme,
+    /// External colour theme: file stem in `<config dir>/themes/`; `None`
+    /// is the built-in Rustket theme.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme_name: Option<String>,
     pub language: Language,
     pub sidebar_sort: SidebarSort,
     pub group_by_type: bool,
@@ -419,6 +424,7 @@ impl Default for UiPrefs {
     fn default() -> Self {
         Self {
             theme: Theme::System,
+            theme_name: None,
             language: Language::System,
             sidebar_sort: SidebarSort::Activity,
             group_by_type: true,
@@ -527,6 +533,7 @@ const APP_KEYS: &[&str] = &[
 ];
 const UI_KEYS: &[&str] = &[
     "theme",
+    "theme_name",
     "language",
     "sidebar_sort",
     "group_by_type",
@@ -1063,6 +1070,21 @@ mod tests {
     }
 
     #[test]
+    fn theme_name_is_optional() {
+        let c = AppConfig::parse("[ui]\ntheme = \"dark\"\n").unwrap();
+        assert_eq!(c.ui.theme_name, None);
+        assert!(!toml::to_string(&c).unwrap().contains("theme_name"));
+        let c = AppConfig::parse("[ui]\ntheme = \"light\"\ntheme_name = \"forest\"\n").unwrap();
+        assert_eq!(c.ui.theme, Theme::Light);
+        assert_eq!(c.ui.theme_name.as_deref(), Some("forest"));
+        let again = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(again, c);
+        // A wrong type keeps the built-in theme.
+        let c = AppConfig::parse("[ui]\ntheme_name = 3\n").unwrap();
+        assert_eq!(c.ui.theme_name, None);
+    }
+
+    #[test]
     fn corrupted_file_is_moved_aside() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(CONFIG_FILE), "this is [not toml").unwrap();
@@ -1176,6 +1198,7 @@ mod tests {
         c.add_server(s);
         c.ensure_device_id();
         c.ui.use_real_names = Some(true);
+        c.ui.theme_name = Some("forest".into());
         crate::sidebar_layout::apply(
             &mut c.ui,
             crate::sidebar_layout::LayoutEdit::AddGroup {

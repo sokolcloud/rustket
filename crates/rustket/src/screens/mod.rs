@@ -12,7 +12,7 @@ pub mod settings;
 use iced::widget::{column, container, text};
 use iced::{Alignment, Element, Length};
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_6, TEXT_BODY, TEXT_HEADLINE};
+use rustket_ui::theme::{SPACE_2, SPACE_6, TEXT_BODY, TEXT_HEADLINE, font_semibold};
 
 /// Centred card used by the add-server and login screens.
 pub fn card<'a, M: 'a>(
@@ -23,7 +23,7 @@ pub fn card<'a, M: 'a>(
     let mut head = column![
         text(title)
             .size(TEXT_HEADLINE)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill)
             .align_x(iced::alignment::Horizontal::Center)
     ]

@@ -36,8 +36,8 @@ use rustket_core::admin::{AdminSection, VisibleSection, visible_sections};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_CAPTION,
-    TEXT_SMALL, TEXT_TITLE,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, TEXT_TITLE,
+    font_semibold,
 };
 use rustket_ui::widget::{
     ChipKind, chip, danger_button, dialog, divider, ellipsis, empty_state, icon_button,
@@ -598,7 +598,7 @@ impl Admin {
                     icon::sized(Icon::Shield, 20.0),
                     text(t!("admin.title"))
                         .size(TEXT_TITLE)
-                        .font(FONT_SEMIBOLD)
+                        .font(font_semibold())
                         .width(Length::Fill),
                     icon_button(Icon::X, Some(Message::Close), t!("admin.close")),
                 ]
@@ -734,7 +734,7 @@ impl Admin {
                     // One long word (Russian) must not run under the chip.
                     ellipsis(section_title(v.section))
                         .size(TEXT_BODY)
-                        .font(FONT_SEMIBOLD)
+                        .font(font_semibold())
                 ]
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center);

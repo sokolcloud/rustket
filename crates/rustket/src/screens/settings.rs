@@ -2,7 +2,7 @@
 //! notifications, window behaviour, integration, storage, about. Owner:
 //! desktop agent. Strings: `locales/settings.yml` (`settings.*`).
 
-use iced::widget::{button, column, container, row, text, toggler};
+use iced::widget::{button, column, container, pick_list, row, text, toggler};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use rust_i18n::t;
 use rustket_core::config::{
@@ -11,8 +11,8 @@ use rustket_core::config::{
 use rustket_core::secrets::SecretBackend;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_CAPTION,
-    TEXT_SUBTITLE,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_CAPTION, TEXT_SUBTITLE,
+    font_semibold,
 };
 use rustket_ui::widget::{BannerKind, banner, divider, focus_ring, secondary_button};
 
@@ -24,6 +24,7 @@ use crate::ui_state::UiState;
 
 mod sidebar;
 
+use sidebar::Choice;
 pub use sidebar::{FlagAccount, GroupDraft, Message as SidebarMessage};
 
 /// The Sidebar card (scrolled to by the sidebar's "Sidebar settings…").
@@ -88,6 +89,10 @@ pub const IMAGE_CACHE_CHOICES: [u32; 5] = [100, 250, 500, 1000, 2000];
 #[derive(Debug, Clone)]
 pub enum Message {
     SetTheme(ThemePref),
+    /// External theme id (`None`: built-in Rustket).
+    SetThemeName(Option<String>),
+    ReloadThemes,
+    OpenThemesFolder,
     SetDensity(Density),
     /// Zoom in (`1`), out (`-1`) or reset (`0`).
     Zoom(i8),
@@ -147,6 +152,7 @@ pub struct SettingsCtx<'a> {
 
 pub struct SettingsView<'a> {
     pub config: &'a AppConfig,
+    pub themes: &'a crate::themes::Themes,
     pub handler_registered: bool,
     pub secret_backend: Option<SecretBackend>,
     /// Secrets are kept in memory because nothing else is usable (not in tests).
@@ -246,6 +252,11 @@ impl Settings {
     pub fn update(&mut self, msg: Message, ctx: &mut SettingsCtx<'_>) -> Action<Message> {
         match msg {
             Message::SetTheme(v) => Self::pref(ctx, |p| p.theme = v),
+            Message::SetThemeName(v) => {
+                Self::pref(ctx, |p| p.theme_name = v).with(Effect::ApplyTheme { rescan: false })
+            }
+            Message::ReloadThemes => Action::effect(Effect::ApplyTheme { rescan: true }),
+            Message::OpenThemesFolder => Action::effect(Effect::OpenThemesFolder),
             Message::SetDensity(v) => Self::pref(ctx, |p| p.density = v),
             Message::Zoom(dir) => Self::pref(ctx, |p| p.zoom = zoom_step(p.zoom, dir)),
             Message::SetShowAvatars(v) => Self::pref(ctx, |p| p.show_avatars = v),
@@ -395,8 +406,9 @@ impl Settings {
         body = body.push(section(
             t!("settings.appearance").into_owned(),
             vec![
+                theme_picker(ui, v.themes),
                 field(
-                    t!("settings.theme").into_owned(),
+                    t!("settings.mode").into_owned(),
                     None,
                     segmented(
                         &ui.theme,
@@ -747,6 +759,160 @@ fn updates_card<'a>(ui: &UiPrefs, d: &crate::updater::view::SettingsData) -> Ele
     )
 }
 
+/// Most theme warnings listed before "and N more".
+const THEME_WARNINGS_SHOWN: usize = 5;
+
+/// The external theme picker with "Open themes folder" and "Reload", and
+/// below it what is wrong with the selected theme.
+fn theme_picker<'a>(ui: &UiPrefs, themes: &crate::themes::Themes) -> Element<'a, Message> {
+    use crate::themes::LoadError;
+    use rustket_ui::theme_file::ThemeFileError;
+    let builtin = Choice {
+        value: None,
+        label: t!("settings.theme_builtin").into_owned(),
+    };
+    let mut choices = vec![builtin.clone()];
+    let names: Vec<String> = themes.entries.iter().map(|e| e.display_name()).collect();
+    choices.extend(themes.entries.iter().zip(&names).map(|(e, name)| {
+        let label = if names.iter().filter(|n| *n == name).count() > 1 {
+            format!("{name} ({}.toml)", e.id)
+        } else {
+            name.clone()
+        };
+        Choice {
+            value: Some(e.id.clone()),
+            label,
+        }
+    }));
+    let selected = ui.theme_name.as_deref();
+    let current = match selected {
+        None => builtin,
+        Some(id) => choices
+            .iter()
+            .find(|c| c.value.as_deref() == Some(id))
+            .cloned()
+            .unwrap_or_else(|| Choice {
+                value: Some(id.to_owned()),
+                label: id.to_owned(),
+            }),
+    };
+    let controls = row![
+        pick_list(choices, Some(current), |c: Choice<Option<String>>| {
+            Message::SetThemeName(c.value)
+        })
+        .text_size(TEXT_BODY)
+        .width(Length::Fill)
+        .style(style::pick_list)
+        .menu_style(style::menu),
+        secondary_button(
+            t!("settings.themes_folder"),
+            themes.dir.is_some().then_some(Message::OpenThemesFolder)
+        ),
+        secondary_button(
+            t!("settings.themes_reload"),
+            themes.dir.is_some().then_some(Message::ReloadThemes)
+        ),
+    ]
+    .spacing(SPACE_2)
+    .align_y(Alignment::Center);
+    let mut col = column![controls].spacing(SPACE_2);
+    let caption = |s: String| text(s).size(TEXT_CAPTION).style(style::text_secondary);
+    match themes.resolve(selected) {
+        None => {}
+        Some(Err(e)) => {
+            let msg = match e {
+                LoadError::NotFound => t!(
+                    "settings.theme_not_found",
+                    file = format!("{}.toml", selected.unwrap_or_default())
+                ),
+                LoadError::Read(e) => t!("settings.theme_unreadable", error = e),
+                LoadError::TooLarge(size) => t!("settings.theme_too_large", size = size),
+                LoadError::Parse(ThemeFileError::MissingName) => t!("settings.theme_no_name"),
+                LoadError::Parse(ThemeFileError::NoVariants) => t!("settings.theme_no_variants"),
+                LoadError::Parse(ThemeFileError::Syntax(e)) => {
+                    t!("settings.theme_invalid", error = e)
+                }
+            };
+            col = col.push(banner(BannerKind::Error, msg, None));
+        }
+        Some(Ok(file)) => {
+            if !file.has(rustket_ui::Mode::Light) {
+                col = col.push(caption(t!("settings.theme_dark_only").into_owned()));
+            } else if !file.has(rustket_ui::Mode::Dark) {
+                col = col.push(caption(t!("settings.theme_light_only").into_owned()));
+            }
+            let entry = selected.and_then(|id| themes.get(id));
+            let mut lines: Vec<String> = file.warnings.iter().map(warning_text).collect();
+            if let Some(e) = entry {
+                lines.extend(e.font_warnings.iter().map(warning_text));
+                for (mode, issues) in [
+                    (t!("settings.theme_light"), &e.light_issues),
+                    (t!("settings.theme_dark"), &e.dark_issues),
+                ] {
+                    lines.extend(issues.iter().map(|i| {
+                        t!(
+                            "settings.theme_low_contrast",
+                            mode = mode,
+                            what = i.what,
+                            ratio = format!("{:.2}", i.ratio),
+                            min = i.min
+                        )
+                        .into_owned()
+                    }));
+                }
+            }
+            if !lines.is_empty() {
+                let more = lines.len().saturating_sub(THEME_WARNINGS_SHOWN);
+                let mut msg = t!("settings.theme_warnings").into_owned();
+                for l in lines.iter().take(THEME_WARNINGS_SHOWN) {
+                    msg.push_str("\n• ");
+                    msg.push_str(l);
+                }
+                if more > 0 {
+                    msg.push('\n');
+                    msg.push_str(&t!("settings.theme_more", n = more));
+                }
+                col = col.push(banner(BannerKind::Warning, msg, None));
+            }
+        }
+    }
+    if themes.fonts_need_restart(selected) {
+        col = col.push(caption(t!("settings.theme_fonts_restart").into_owned()));
+    }
+    field(
+        t!("settings.theme").into_owned(),
+        Some(t!("settings.theme_help").into_owned()),
+        col.into(),
+    )
+}
+
+/// A theme file warning in the UI language (key paths stay as written).
+fn warning_text(w: &rustket_ui::ThemeWarning) -> String {
+    use rustket_ui::ThemeWarning as W;
+    match w {
+        W::UnknownKey(k) => t!("settings.theme_w_unknown", key = k),
+        W::BadValue { key, value } => t!("settings.theme_w_bad", key = key, value = value),
+        W::FlagLength { key, len } => t!("settings.theme_w_flags", key = key, n = len),
+        W::NewerVersion(v) => t!("settings.theme_w_version", version = v),
+        W::RadiusClamped { value, used } => {
+            t!("settings.theme_w_radius", value = value, used = used)
+        }
+        W::FontMissing(family) => t!("settings.theme_w_font", family = family),
+        W::MonoFontMissing(family) => t!("settings.theme_w_mono_font", family = family),
+        W::FontWeight {
+            family,
+            wanted,
+            used,
+        } => t!(
+            "settings.theme_w_weight",
+            family = family,
+            wanted = wanted,
+            used = used
+        ),
+    }
+    .into_owned()
+}
+
 /// A titled card with rows separated by dividers.
 fn section<'a>(title: String, rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     let mut col = column![].spacing(SPACE_3);
@@ -758,7 +924,7 @@ fn section<'a>(title: String, rows: Vec<Element<'a, Message>>) -> Element<'a, Me
         }
     }
     column![
-        text(title).size(TEXT_SUBTITLE).font(FONT_SEMIBOLD),
+        text(title).size(TEXT_SUBTITLE).font(font_semibold()),
         container(col)
             .padding(SPACE_4)
             .width(Length::Fill)

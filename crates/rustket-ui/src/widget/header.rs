@@ -7,7 +7,7 @@ use super::ellipsis::ellipsis;
 use crate::style;
 use crate::theme::tokens;
 use crate::theme::{
-    FONT_SEMIBOLD, HEADER_HEIGHT, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SUBTITLE,
+    HEADER_HEIGHT, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SUBTITLE, font_semibold,
 };
 use iced::Theme;
 
@@ -22,7 +22,7 @@ pub fn header_bar<'a, Message: 'a>(
     let mut titles = column![
         ellipsis(title.into())
             .size(TEXT_SUBTITLE)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
     ]
     .spacing(0);
     if let Some(sub) = subtitle {

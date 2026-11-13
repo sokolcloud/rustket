@@ -3,15 +3,15 @@
 use std::time::Instant;
 
 use iced::widget::{column, container, row, text};
-use iced::{Alignment, Element, Font, Length};
+use iced::{Alignment, Element, Length};
 use rust_i18n::t;
 use rustket_core::room_list;
 use rustket_core::workspace::ConnectionState;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY,
-    TEXT_CAPTION, TEXT_SUBTITLE,
+    SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION,
+    TEXT_SUBTITLE, font_mono, font_semibold,
 };
 use rustket_ui::widget::{
     AvatarShape, AvatarSource, BannerKind, Toast, above, avatar, banner, dialog, empty_state,
@@ -414,7 +414,7 @@ impl App {
                             column![
                                 text(username_line.trim_matches(['“', '”']).to_owned())
                                     .size(TEXT_SUBTITLE)
-                                    .font(FONT_SEMIBOLD),
+                                    .font(font_semibold()),
                                 text(t!("deeplink.confirm_display_name", name = display))
                                     .size(TEXT_CAPTION)
                                     .style(style::text_secondary),
@@ -426,7 +426,7 @@ impl App {
                         text(t!("deeplink.confirm_server"))
                             .size(TEXT_CAPTION)
                             .style(style::text_secondary),
-                        container(text(host).font(Font::MONOSPACE).size(TEXT_BODY))
+                        container(text(host).font(font_mono()).size(TEXT_BODY))
                             .padding(SPACE_2)
                             .width(Length::Fill)
                             .style(style::container_code_block),

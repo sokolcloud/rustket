@@ -1,7 +1,7 @@
 //! Command-line flags handled before iced starts (and before the software
-//! renderer re-exec): `--help`/`-h` and `--version`/`-V`. Other arguments keep
-//! their old meaning: non-flag arguments are links for the single instance,
-//! unknown flags are ignored.
+//! renderer re-exec): `--help`/`-h`, `--version`/`-V` and `--dump-theme`.
+//! Other arguments keep their old meaning: non-flag arguments are links for
+//! the single instance, unknown flags are ignored.
 
 use rust_i18n::t;
 
@@ -24,7 +24,7 @@ pub fn version_line() -> String {
 
 pub fn help_text() -> String {
     format!(
-        "{version}\n{about}\n\n{usage}\n{links}\n\n{options}\n  -h, --help              {help}\n  -V, --version           {ver}\n\n{env}\n  ICED_BACKEND=tiny-skia  {backend}\n  RUST_LOG=<filter>       {log}\n  RUST_BACKTRACE=1        {bt}\n",
+        "{version}\n{about}\n\n{usage}\n{links}\n\n{options}\n  -h, --help              {help}\n  -V, --version           {ver}\n      --dump-theme        {dump}\n\n{env}\n  ICED_BACKEND=tiny-skia  {backend}\n  RUST_LOG=<filter>       {log}\n  RUST_BACKTRACE=1        {bt}\n",
         version = version_line(),
         about = t!("cli.about"),
         usage = t!("cli.usage", bin = BIN),
@@ -32,6 +32,7 @@ pub fn help_text() -> String {
         options = t!("cli.options"),
         help = t!("cli.opt_help"),
         ver = t!("cli.opt_version"),
+        dump = t!("cli.opt_dump_theme"),
         env = t!("cli.env"),
         backend = t!("cli.env_backend"),
         log = t!("cli.env_log"),
@@ -40,7 +41,8 @@ pub fn help_text() -> String {
 }
 
 /// Decides from the arguments after the program name. The first of
-/// `--help`/`--version` wins; arguments after `--` are never flags.
+/// `--help`/`--version`/`--dump-theme` wins; arguments after `--` are never
+/// flags.
 pub fn parse<I, S>(args: I) -> Action
 where
     I: IntoIterator<Item = S>,
@@ -51,6 +53,9 @@ where
             Some("--") => break,
             Some("-h" | "--help") => return Action::Print(help_text()),
             Some("-V" | "--version") => return Action::Print(format!("{}\n", version_line())),
+            Some("--dump-theme") => {
+                return Action::Print(rustket_ui::theme_file::dump_template());
+            }
             _ => {}
         }
     }
@@ -72,11 +77,21 @@ mod tests {
         assert!(help.starts_with("rustket "));
         assert!(help.contains("--version"));
         assert!(help.contains("RUST_BACKTRACE=1"));
+        assert!(help.contains("--dump-theme"));
         assert_eq!(parse(["-h"]), Action::Print(help));
         assert!(matches!(
             parse(["rocketchat://auth?host=x", "--help"]),
             Action::Print(_)
         ));
+    }
+
+    #[test]
+    fn dump_theme_prints_the_template() {
+        let Action::Print(text) = parse(["--dump-theme"]) else {
+            panic!("--dump-theme prints");
+        };
+        assert_eq!(text, rustket_ui::theme_file::dump_template());
+        assert_eq!(parse(["--", "--dump-theme"]), Action::Run);
     }
 
     #[test]

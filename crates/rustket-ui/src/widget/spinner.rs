@@ -14,7 +14,7 @@ use iced::{
 
 use crate::icon::{self, Icon};
 use crate::style;
-use crate::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_3, TEXT_BODY, TEXT_SUBTITLE};
+use crate::theme::{SPACE_2, SPACE_3, TEXT_BODY, TEXT_SUBTITLE, font_semibold};
 
 /// Animated ring of dots; takes the surrounding text colour.
 pub fn spinner<'a, Message: 'a>(size: f32) -> Element<'a, Message> {
@@ -153,7 +153,7 @@ pub fn empty_state<'a, Message: 'a>(
     let subtitle = subtitle.into();
     let mut content = column![
         icon::sized(icon, 48.0).style(style::text_hint),
-        text(title.into()).size(TEXT_SUBTITLE).font(FONT_SEMIBOLD),
+        text(title.into()).size(TEXT_SUBTITLE).font(font_semibold()),
     ]
     .spacing(SPACE_2)
     .align_x(Alignment::Center)

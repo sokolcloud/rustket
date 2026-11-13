@@ -4,7 +4,7 @@ use iced::widget::{column, text, text_input};
 use iced::{Element, Length};
 
 use crate::style;
-use crate::theme::{FONT_MEDIUM, SPACE_1, TEXT_BODY, TEXT_CAPTION};
+use crate::theme::{SPACE_1, TEXT_BODY, TEXT_CAPTION, font_medium};
 
 /// Text field builder; convert into an `Element` when done.
 pub struct TextField<'a, Message> {
@@ -111,7 +111,7 @@ impl<'a, Message: Clone + 'a> From<TextField<'a, Message>> for Element<'a, Messa
         }
         let mut col = column![].spacing(SPACE_1 + 2.0).width(f.width);
         if !f.label.is_empty() {
-            col = col.push(text(f.label).size(TEXT_BODY - 1.0).font(FONT_MEDIUM));
+            col = col.push(text(f.label).size(TEXT_BODY - 1.0).font(font_medium()));
         }
         col = col.push(input);
         if let Some(error) = f.error {

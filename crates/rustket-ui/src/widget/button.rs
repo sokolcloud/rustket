@@ -9,7 +9,7 @@ use super::misc::tooltip;
 use super::spinner::spinner;
 use crate::icon::{self, Icon};
 use crate::style;
-use crate::theme::{FONT_MEDIUM, SPACE_2, TEXT_BODY};
+use crate::theme::{SPACE_2, TEXT_BODY, font_medium};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ButtonKind {
@@ -141,7 +141,7 @@ impl<'a, Message: Clone + 'a> From<ActionButton<'a, Message>> for Element<'a, Me
         content = content.push(
             text(b.label)
                 .size(font_size)
-                .font(FONT_MEDIUM)
+                .font(font_medium())
                 .wrapping(text::Wrapping::None),
         );
         if b.width != Length::Shrink {

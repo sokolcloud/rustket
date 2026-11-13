@@ -9,7 +9,7 @@ use rust_i18n::t;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, HEADER_HEIGHT, SPACE_2, SPACE_4, TEXT_SMALL, TEXT_SUBTITLE,
+    HEADER_HEIGHT, SPACE_2, SPACE_4, TEXT_SMALL, TEXT_SUBTITLE, font_semibold,
 };
 use rustket_ui::widget::{divider, ellipsis, icon_button};
 
@@ -113,7 +113,7 @@ fn header<'a>(
         .push(
             ellipsis(title)
                 .size(TEXT_SUBTITLE)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
                 .width(Length::Fill),
         )
         .push(icon_button(Icon::X, Some(close), t!("uikit.close")));

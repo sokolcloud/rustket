@@ -26,7 +26,7 @@ use rustket_core::typing::{TypingAction, TypingThrottle, USER_TYPING};
 use rustket_core::workspace::Changes;
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL, font_semibold,
 };
 use rustket_ui::widget::{
     BannerKind, Placement, TooltipPosition, above, danger_button, icon_button_with, modal, popover,
@@ -1761,7 +1761,7 @@ fn bar<'a>(ic: Icon, title: String, detail: String, on_close: Message) -> Elemen
     container(
         row![
             icon(ic).size(14.0).style(style::text_link),
-            label(title).size(TEXT_CAPTION).font(FONT_SEMIBOLD),
+            label(title).size(TEXT_CAPTION).font(font_semibold()),
             label(detail)
                 .size(TEXT_CAPTION)
                 .style(style::text_secondary)

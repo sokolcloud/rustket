@@ -11,7 +11,7 @@ use iced::{
     Color, Element, Event, Length, Rectangle, Size, Theme, Vector, keyboard, mouse, window,
 };
 
-use crate::theme::{RADIUS_MD, SPACE_2, tokens};
+use crate::theme::{SPACE_2, radius_md, tokens};
 
 /// A press must move this far vertically before it becomes a drag.
 const DRAG_THRESHOLD: f32 = 6.0;
@@ -449,7 +449,7 @@ impl<M> Widget<M, Theme, iced::Renderer> for ReorderArea<'_, M> {
                         width,
                         height,
                     },
-                    border: iced::border::rounded(RADIUS_MD),
+                    border: iced::border::rounded(radius_md()),
                     ..renderer::Quad::default()
                 },
                 color,

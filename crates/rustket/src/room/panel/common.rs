@@ -13,8 +13,8 @@ use rustket_core::workspace::Workspace;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_MEDIUM, FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
-    TEXT_SMALL, tokens,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_medium,
+    font_semibold, tokens,
 };
 use rustket_ui::widget::{
     AvatarShape, BannerKind, Presence, avatar, ellipsis, empty_state, loading_placeholder,
@@ -370,7 +370,7 @@ pub fn filter_pills<'a, M: Clone + 'a, T: Copy + PartialEq + 'a>(
             button(
                 text(label.clone())
                     .size(TEXT_CAPTION)
-                    .font(FONT_MEDIUM)
+                    .font(font_medium())
                     .wrapping(text::Wrapping::None),
             )
             .padding([4, 10])
@@ -413,7 +413,7 @@ pub fn field<'a, M: 'a>(label: String, content: impl Into<Element<'a, M>>) -> El
     column![
         text(label)
             .size(TEXT_CAPTION)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .style(style::text_hint),
         content.into(),
     ]

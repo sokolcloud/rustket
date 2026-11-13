@@ -40,6 +40,7 @@ pub mod screens;
 pub mod session;
 pub mod single_instance;
 pub mod teams;
+pub mod themes;
 #[cfg(test)]
 mod tree_probe;
 pub mod ui_state;

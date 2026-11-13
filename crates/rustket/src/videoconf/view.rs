@@ -11,7 +11,7 @@ use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SUBTITLE,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SUBTITLE, font_semibold,
 };
 use rustket_ui::widget::{
     AvatarShape, avatar, danger_button, dialog, icon_button_with, modal, primary_button,
@@ -87,7 +87,7 @@ fn popup<'a>(
         ));
     }
     let mut who =
-        column![text(title).size(TEXT_SUBTITLE).font(FONT_SEMIBOLD)].spacing(SPACE_1 / 2.0);
+        column![text(title).size(TEXT_SUBTITLE).font(font_semibold())].spacing(SPACE_1 / 2.0);
     if let Some(s) = subtitle {
         who = who.push(text(s).size(TEXT_CAPTION).style(style::text_secondary));
     }
@@ -218,7 +218,7 @@ fn dialog_view<'a>(app: &'a App, sid: &'a ServerId, d: &'a Dialog) -> Element<'a
             let body = column![
                 row![
                     icon::sized(Icon::Video, 20.0).style(style::text_secondary),
-                    text(room).size(TEXT_BODY).font(FONT_SEMIBOLD),
+                    text(room).size(TEXT_BODY).font(font_semibold()),
                 ]
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center),

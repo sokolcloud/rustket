@@ -13,7 +13,7 @@ use iced::{Color, Element, Font, Length, Pixels, Rectangle, Size, Theme, mouse};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::emoji::owned_spans;
-use crate::theme::{DEFAULT_FONT, TEXT_BODY};
+use crate::theme::{TEXT_BODY, font_regular};
 
 type FontVersion = iced::advanced::graphics::text::Version;
 type Paragraph = <iced::Renderer as adv_text::Renderer>::Paragraph;
@@ -40,7 +40,7 @@ pub fn ellipsis<'a>(content: impl Into<Cow<'a, str>>) -> Ellipsis<'a> {
     Ellipsis {
         content: content.into(),
         size: TEXT_BODY,
-        font: DEFAULT_FONT,
+        font: font_regular(),
         width: Length::Fill,
         color: None,
     }

@@ -8,7 +8,7 @@ use rustket_core::admin::settings_editor::GroupPage;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_SMALL, font_semibold,
 };
 use rustket_ui::widget::{
     BannerKind, above, banner, dialog, ghost_button, loading_placeholder, primary_button,
@@ -92,7 +92,7 @@ fn list_body<'a>(s: &'a State, v: &V<'a>) -> Element<'a, Message> {
                     column![
                         text(label(&g.id, g.i18n_label.as_deref()))
                             .size(TEXT_BODY)
-                            .font(FONT_SEMIBOLD),
+                            .font(font_semibold()),
                         text(desc).size(TEXT_SMALL).style(style::text_secondary),
                     ]
                     .spacing(SPACE_1),
@@ -295,7 +295,7 @@ pub fn page_view<'a>(s: &'a State, g: &'a GroupView, v: &V<'a>) -> Element<'a, M
             let mut head = row![
                 text(i18n.section_label(&section.name).to_owned())
                     .size(TEXT_BODY)
-                    .font(FONT_SEMIBOLD)
+                    .font(font_semibold())
                     .width(Length::Fill)
             ]
             .spacing(SPACE_2)
@@ -435,7 +435,7 @@ pub fn dialog_view<'a>(s: &'a State, v: &V<'a>) -> Option<Element<'a, Message>> 
             for (label, alert) in list {
                 body = body.push(
                     column![
-                        text(label.clone()).size(TEXT_BODY).font(FONT_SEMIBOLD),
+                        text(label.clone()).size(TEXT_BODY).font(font_semibold()),
                         banner(BannerKind::Warning, alert.clone(), None),
                     ]
                     .spacing(SPACE_1),

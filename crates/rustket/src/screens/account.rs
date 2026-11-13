@@ -16,7 +16,7 @@ use iced::widget::{button, column, container, row, text};
 use iced::{Element, Length, Subscription, Task};
 use rust_i18n::t;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SUBTITLE};
+use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SUBTITLE, font_semibold};
 use rustket_ui::widget::{BannerKind, loading_placeholder, modal_keyed};
 
 use crate::component::{Action, Ctx, Effect, ViewCtx};
@@ -389,7 +389,11 @@ impl Account {
 /// A titled card of the account tabs.
 pub(crate) fn section<'a, M: 'a>(title: String, content: Element<'a, M>) -> Element<'a, M> {
     container(
-        column![text(title).size(TEXT_SUBTITLE).font(FONT_SEMIBOLD), content].spacing(SPACE_3),
+        column![
+            text(title).size(TEXT_SUBTITLE).font(font_semibold()),
+            content
+        ]
+        .spacing(SPACE_3),
     )
     .padding(SPACE_4)
     .width(Length::Fill)

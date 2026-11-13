@@ -10,7 +10,7 @@ use rust_i18n::t;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_semibold,
 };
 use rustket_ui::widget::{ChipKind, chip, divider, ellipsis};
 
@@ -202,7 +202,7 @@ impl HistoryPanel {
         list_row(
             row![
                 icon::sized(source_icon(src), 16.0).style(style::text_secondary),
-                column![ellipsis(name).size(TEXT_BODY).font(FONT_SEMIBOLD), meta]
+                column![ellipsis(name).size(TEXT_BODY).font(font_semibold()), meta]
                     .spacing(SPACE_1)
                     .width(Length::Fill),
             ]
@@ -234,7 +234,7 @@ impl HistoryPanel {
         container(
             column![
                 row![
-                    text(author).size(TEXT_SMALL).font(FONT_SEMIBOLD),
+                    text(author).size(TEXT_SMALL).font(font_semibold()),
                     text(common::time_label(m.ts, ctx))
                         .size(TEXT_CAPTION)
                         .style(style::text_hint),

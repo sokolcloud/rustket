@@ -3,7 +3,7 @@
 use iced::widget::{container, space, text};
 use iced::{Color, Element, Theme, border};
 
-use crate::theme::{FONT_BOLD, TEXT_MICRO, Tokens, tokens};
+use crate::theme::{TEXT_MICRO, Tokens, font_bold, tokens};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BadgeKind {
@@ -74,7 +74,7 @@ pub fn badge<'a, Message: 'a>(count: u32, kind: BadgeKind) -> Element<'a, Messag
     container(
         text(label)
             .size(TEXT_MICRO + 1.0)
-            .font(FONT_BOLD)
+            .font(font_bold())
             .wrapping(text::Wrapping::None),
     )
     .height(BADGE_HEIGHT)

@@ -11,7 +11,7 @@ use rustket_core::omnichannel::permissions as perm;
 use rustket_core::permissions::has_permission;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_semibold};
 use rustket_ui::widget::{ChipKind, chip, divider, ellipsis, secondary_button};
 
 use super::PanelKind;
@@ -133,7 +133,7 @@ impl ContactPanel {
         let mut head = column![
             ellipsis(name.clone())
                 .size(TEXT_BODY + 2.0)
-                .font(FONT_SEMIBOLD)
+                .font(font_semibold())
         ]
         .spacing(SPACE_1)
         .width(Length::Fill);

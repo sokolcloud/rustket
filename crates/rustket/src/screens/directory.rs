@@ -17,7 +17,7 @@ use rustket_core::room_list::Avatar;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_MEDIUM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_medium,
 };
 use rustket_ui::widget::{
     AvatarShape, BannerKind, avatar, banner, empty_state, loading_placeholder, secondary_button,
@@ -551,7 +551,7 @@ impl Directory {
         let joined = ws.subscription(&e.id).is_some();
         let mut title = row![
             icon::sized(kind_icon, 14.0).style(style::text_secondary),
-            text(e.title()).size(TEXT_BODY).font(FONT_MEDIUM),
+            text(e.title()).size(TEXT_BODY).font(font_medium()),
         ]
         .spacing(SPACE_1)
         .align_y(Alignment::Center);

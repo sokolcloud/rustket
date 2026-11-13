@@ -13,8 +13,8 @@ use super::presence::Presence;
 use crate::icon::{self, Icon};
 use crate::style;
 use crate::theme::{
-    FONT_BOLD, FONT_SEMIBOLD, RADIUS_LG, RADIUS_PILL, SPACE_1, SPACE_2, TEXT_BODY, TEXT_CAPTION,
-    TEXT_MICRO, tokens,
+    RADIUS_PILL, SPACE_1, SPACE_2, TEXT_BODY, TEXT_CAPTION, TEXT_MICRO, font_bold, font_semibold,
+    radius_lg, tokens,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -137,9 +137,9 @@ pub fn room_list_item<'a, Message: Clone + 'a>(
         .into();
 
     let title_font = if bold {
-        FONT_BOLD
+        font_bold()
     } else {
-        crate::theme::DEFAULT_FONT
+        crate::theme::font_regular()
     };
     let mut title_row = row![].spacing(SPACE_1).align_y(Alignment::Center);
     if condensed && let Some(presence) = p.presence {
@@ -275,7 +275,7 @@ pub fn section_header_full<'a, Message: Clone + 'a>(
     content = content.push(
         text(title.into().to_uppercase())
             .size(TEXT_MICRO + 1.0)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .wrapping(text::Wrapping::None),
     );
     if let Some(count) = count {
@@ -332,7 +332,7 @@ pub fn workspace_rail_item<'a, Message: Clone + 'a>(
                 container::Style {
                     text_color: Some(t.text_secondary),
                     background: Some(t.surface_raised.into()),
-                    border: border::rounded(RADIUS_LG).width(1).color(t.border),
+                    border: border::rounded(radius_lg()).width(1).color(t.border),
                     ..container::Style::default()
                 }
             })
@@ -342,7 +342,7 @@ pub fn workspace_rail_item<'a, Message: Clone + 'a>(
     let ringed = container(face_el).padding(3).style(move |theme: &Theme| {
         let t = tokens(theme);
         container::Style {
-            border: border::rounded(RADIUS_LG + 3.0)
+            border: border::rounded(radius_lg() + 3.0)
                 .width(2)
                 .color(if selected {
                     t.primary
@@ -382,7 +382,7 @@ pub fn workspace_rail_item<'a, Message: Clone + 'a>(
         .padding(0)
         .style(style::button_bare)
         .on_press(on_press.clone());
-    let item = focus_ring(item, Some(on_press)).radius(RADIUS_LG + 3.0);
+    let item = focus_ring(item, Some(on_press)).radius(radius_lg() + 3.0);
     let content =
         row![indicator, space().width(6), item, space().width(10)].align_y(Alignment::Center);
     tooltip(content, name, TooltipPosition::Right)
@@ -408,12 +408,12 @@ pub fn add_server_button<'a, Message: Clone + 'a>(
                     .into(),
                 ),
                 text_color: if hovered { t.primary } else { t.text_secondary },
-                border: border::rounded(RADIUS_LG).width(1).color(t.border_strong),
+                border: border::rounded(radius_lg()).width(1).color(t.border_strong),
                 ..button::Style::default()
             }
         })
         .on_press(on_press.clone());
-    let tile = focus_ring(tile, Some(on_press)).radius(RADIUS_LG);
+    let tile = focus_ring(tile, Some(on_press)).radius(radius_lg());
     let content = row![space().width(13), tile, space().width(13)];
     tooltip(content, label, TooltipPosition::Right)
 }

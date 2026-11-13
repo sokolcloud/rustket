@@ -7,7 +7,7 @@ use rust_i18n::t;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
 use rustket_ui::theme::{
-    FONT_SEMIBOLD, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_semibold,
 };
 use rustket_ui::widget::{
     ButtonSize, focus_ring, icon_button_with, primary_button, secondary_button,
@@ -311,7 +311,7 @@ pub fn card(app: &App) -> Option<Element<'_, Message>> {
     let mut head = row![
         text(title)
             .size(TEXT_BODY)
-            .font(FONT_SEMIBOLD)
+            .font(font_semibold())
             .width(Length::Fill)
     ]
     .spacing(SPACE_2)

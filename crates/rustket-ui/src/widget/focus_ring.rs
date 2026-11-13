@@ -12,7 +12,7 @@ use iced::advanced::{Clipboard, Shell, Widget};
 use iced::{Border, Color, Element, Event, Length, Rectangle, Size, Theme, Vector};
 use iced::{keyboard, mouse, touch};
 
-use crate::theme::{RADIUS_SM, Tokens, tokens};
+use crate::theme::{Tokens, radius_sm, tokens};
 
 /// Width of the outer focus ring.
 pub const FOCUS_RING_WIDTH: f32 = 2.0;
@@ -27,7 +27,7 @@ pub fn focus_ring<'a, Message: Clone + 'a>(
     FocusRing {
         content: content.into(),
         on_activate,
-        radius: RADIUS_SM,
+        radius: radius_sm(),
         id: None,
         within: false,
     }

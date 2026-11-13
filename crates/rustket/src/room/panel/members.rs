@@ -8,7 +8,7 @@ use rust_i18n::t;
 use rustket_core::permissions;
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{FONT_MEDIUM, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_medium};
 use rustket_ui::widget::{ChipKind, chip, ellipsis, presence_dot, primary_button};
 
 use super::api;
@@ -185,7 +185,7 @@ impl Members {
                         column![
                             row![
                                 presence_dot(common::presence_of(status), 8.0),
-                                ellipsis(name).size(TEXT_BODY).font(FONT_MEDIUM),
+                                ellipsis(name).size(TEXT_BODY).font(font_medium()),
                             ]
                             .spacing(SPACE_1 + 2.0)
                             .align_y(Alignment::Center),
