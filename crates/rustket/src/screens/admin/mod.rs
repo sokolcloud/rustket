@@ -200,12 +200,7 @@ impl Admin {
             .server_info()
             .and_then(|i| i.version.clone())
             .unwrap_or_default();
-        let lang = rust_i18n::locale().to_string();
-        let lang = if lang.starts_with("ru") {
-            "ru".to_owned()
-        } else {
-            "en".to_owned()
-        };
+        let lang = server_language(&rust_i18n::locale());
         let i18n = ctx.rest_task(
             move |r| async move {
                 let cached = |l: &str| I18N_CACHE.lock().ok().and_then(|c| c.get(&version, l));
@@ -814,6 +809,16 @@ impl Page {
     }
 }
 
+/// The server's translation file name (`/i18n/<name>.json`) for an app
+/// locale: Rocket.Chat names Thai `th-TH` and regional variants with `-`.
+/// A name the server lacks falls back to English per key.
+fn server_language(app: &str) -> String {
+    match app {
+        "th" => "th-TH".to_owned(),
+        other => other.replace('_', "-"),
+    }
+}
+
 /// The admin screen view (the app passes its per-server view context).
 pub fn view_in<'a>(admin: &'a Admin, ctx: ViewCtx<'a>) -> Element<'a, Message> {
     admin.view(ctx)
@@ -895,4 +900,19 @@ fn fallback<'a>(s: AdminSection, premium: bool) -> Element<'a, Message> {
     ]
     .spacing(SPACE_4)
     .into()
+}
+
+#[cfg(test)]
+mod server_language_tests {
+    use super::server_language;
+
+    #[test]
+    fn maps_app_locales_to_server_files() {
+        assert_eq!(server_language("en"), "en");
+        assert_eq!(server_language("ru"), "ru");
+        assert_eq!(server_language("es"), "es");
+        assert_eq!(server_language("zh"), "zh");
+        assert_eq!(server_language("th"), "th-TH");
+        assert_eq!(server_language("pt_BR"), "pt-BR");
+    }
 }

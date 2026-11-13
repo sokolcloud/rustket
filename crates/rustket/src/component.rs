@@ -161,6 +161,10 @@ pub enum Effect {
     },
     /// Open the themes folder in the file manager (created if missing).
     OpenThemesFolder,
+    /// Read the locale files again and re-apply `UiPrefs::language`.
+    ReloadLocales,
+    /// Open the locales folder in the file manager (created if missing).
+    OpenLocalesFolder,
     /// The recently used custom status texts changed (most recent first):
     /// store them in `AppConfig::recent_status_texts` and save.
     RecentStatusTexts(Vec<String>),

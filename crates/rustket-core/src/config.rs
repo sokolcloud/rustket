@@ -324,13 +324,67 @@ pub enum Theme {
     Dark,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Language {
-    #[default]
-    System,
-    En,
-    Ru,
+/// UI language: `"system"` (follow the environment) or a locale code — a
+/// bundled one (`en`, `ru`, …) or the file stem of an external locale
+/// (`de`, `pt_BR`). A code that is not available at runtime falls back to
+/// the system language; a value that is not a plausible code reads as
+/// `"system"`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Language(String);
+
+impl Language {
+    pub const SYSTEM: &'static str = "system";
+    /// Longest accepted code.
+    pub const MAX_LEN: usize = 32;
+
+    /// Follow the environment.
+    pub fn system() -> Self {
+        Self(Self::SYSTEM.to_owned())
+    }
+
+    /// `code` if it is `"system"` or a plausible locale code: 1..=32 ASCII
+    /// letters, digits, `_` or `-`.
+    pub fn new(code: &str) -> Option<Self> {
+        Self::valid_code(code).then(|| Self(code.to_owned()))
+    }
+
+    pub fn valid_code(code: &str) -> bool {
+        !code.is_empty()
+            && code.len() <= Self::MAX_LEN
+            && code
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    }
+
+    pub fn is_system(&self) -> bool {
+        self.0 == Self::SYSTEM
+    }
+
+    /// The stored value (`"system"` or a locale code).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for Language {
+    fn default() -> Self {
+        Self::system()
+    }
+}
+
+impl TryFrom<String> for Language {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::new(&s).ok_or_else(|| format!("invalid language code {s:?}"))
+    }
+}
+
+impl From<Language> for String {
+    fn from(l: Language) -> Self {
+        l.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -425,7 +479,7 @@ impl Default for UiPrefs {
         Self {
             theme: Theme::System,
             theme_name: None,
-            language: Language::System,
+            language: Language::system(),
             sidebar_sort: SidebarSort::Activity,
             group_by_type: true,
             unread_on_top: false,
@@ -1018,7 +1072,7 @@ mod tests {
         });
         let id = c.add_server(s);
         c.ui.theme = Theme::Dark;
-        c.ui.language = Language::Ru;
+        c.ui.language = Language::new("ru").unwrap();
         c.ui.use_real_names = Some(true);
         c.ui.zoom = 1.25;
         c.push_recent_emoji(":thumbsup:");
@@ -1106,6 +1160,40 @@ mod tests {
         assert!(AppConfig::parse("not = [toml").is_err());
     }
 
+    #[test]
+    fn language_codes() {
+        let lang = |text: &str| AppConfig::parse(text).unwrap().ui.language;
+        // Values of the old enum read the same.
+        assert!(lang("").is_system());
+        assert!(lang("[ui]\nlanguage = \"system\"").is_system());
+        assert_eq!(lang("[ui]\nlanguage = \"en\"").as_str(), "en");
+        assert_eq!(lang("[ui]\nlanguage = \"ru\"").as_str(), "ru");
+        // Any plausible code is kept (external locales).
+        assert_eq!(lang("[ui]\nlanguage = \"pt_BR\"").as_str(), "pt_BR");
+        assert_eq!(lang("[ui]\nlanguage = \"zh-Hant\"").as_str(), "zh-Hant");
+        // Not a code: the default, the rest of [ui] kept.
+        for bad in [
+            "\"\"",
+            "\"../de\"",
+            "\"a b\"",
+            "5",
+            &format!("\"{}\"", "x".repeat(33)),
+        ] {
+            let c = AppConfig::parse(&format!("[ui]\nlanguage = {bad}\nzoom = 1.5")).unwrap();
+            assert!(c.ui.language.is_system(), "{bad}");
+            assert!((c.ui.zoom - 1.5).abs() < 1e-6);
+        }
+        // Saved as a plain string.
+        let mut c = AppConfig::default();
+        c.ui.language = Language::new("pt_BR").unwrap();
+        let doc: toml::Table = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(doc["ui"]["language"].as_str(), Some("pt_BR"));
+        assert_eq!(
+            AppConfig::default().ui.language,
+            Language::new("system").unwrap()
+        );
+    }
+
     fn saved_with_two_servers(dir: &Path) -> AppConfig {
         let mut c = AppConfig::default();
         c.add_server(ServerEntry::new("https://a.example", "A"));
@@ -1123,7 +1211,7 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         for (from, to) in [
             ("theme = \"system\"", "theme = \"high-contrast\""),
-            ("language = \"system\"", "language = \"de\""),
+            ("language = \"system\"", "language = \"../de\""),
             ("sound = true", "sound = \"yes\""),
             ("added_at = ", "added_at = \"soon\"\nx_old_added_at = "),
         ] {

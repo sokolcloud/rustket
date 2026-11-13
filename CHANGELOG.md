@@ -17,10 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scale. Problems and low-contrast colour pairs are listed as warnings.
   `rustket --dump-theme` prints a complete template; see
   `docs/themes/README.md` and the example themes Forest and Graphite.
+- Languages: Spanish, Thai and Simplified Chinese join English and Russian,
+  and translations can be added or fixed with TOML files in the `locales`
+  folder of the config directory (a file named after a bundled language
+  overrides it string by string; missing strings show in English).
+  Settings → Language lists every language with "Open languages folder"
+  and "Reload", shows how complete an external translation is and what is
+  wrong with its file. Plural rules per language (one-other, east-slavic,
+  none). The system language now also matches Spanish, Thai, Chinese and
+  external languages. `rustket --dump-locale [CODE]` prints a complete
+  template for translators; see `docs/locales/README.md`. Thai and Chinese
+  text needs Thai/CJK fonts installed (on Linux).
 
 ### Changed
 
 - The light/dark/system control in the settings is now called "Mode".
+- The language setting is a list instead of a segmented control; the
+  config stores a locale code (`ui.language`, old values keep working).
 
 ## [0.2.4] - 2026-11-13
 

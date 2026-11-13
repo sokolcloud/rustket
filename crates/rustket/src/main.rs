@@ -79,10 +79,19 @@ fn platform_specific() -> iced::window::settings::PlatformSpecific {
 
 fn main() -> iced::Result {
     // `--help`/`--version` print and exit before any GUI or re-exec work.
-    rust_i18n::set_locale(rustket::i18n::from_env(|k| std::env::var(k).ok()));
-    if let rustket::cli::Action::Print(text) = rustket::cli::parse(std::env::args_os().skip(1)) {
-        print!("{text}");
-        return Ok(());
+    rust_i18n::set_locale(&rustket::i18n::system());
+    match rustket::cli::parse(std::env::args_os().skip(1)) {
+        rustket::cli::Action::Print(text) => {
+            // A closed pipe (`| head`) is not an error worth a panic.
+            use std::io::Write as _;
+            let _ = std::io::stdout().write_all(text.as_bytes());
+            return Ok(());
+        }
+        rustket::cli::Action::Fail(text) => {
+            eprint!("{text}");
+            std::process::exit(2);
+        }
+        rustket::cli::Action::Run => {}
     }
     // A relaunch after an update waits until the old process has exited.
     #[cfg(feature = "self-update")]
@@ -138,6 +147,9 @@ fn main() -> iced::Result {
     let config_dir = rustket_core::config::AppConfig::default_dir().ok();
     // Before `rustket_ui::settings()`: the theme's fonts are fixed per session.
     rustket::themes::init_fonts(config_dir.as_deref());
+    // After the theme's font check: Medium/SemiBold CJK, Thai, … text then
+    // falls back to the script's family instead of any face with that weight.
+    rustket_ui::fonts::alias_missing_weights();
     let decorations = rustket::workspace::titlebar::saved_system_title_bar(config_dir.as_deref());
     let flags = Flags {
         urls,

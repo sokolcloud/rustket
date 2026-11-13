@@ -344,20 +344,9 @@ pub fn plural(n: u64) -> &'static str {
     plural_for(&rust_i18n::locale(), n)
 }
 
-/// [`plural`] for `locale`: Russian rules for `ru`, otherwise English
-/// (`one` only for 1).
+/// [`plural`] for `locale`, by its plural rule ([`crate::i18n::plural_rule`]).
 pub fn plural_for(locale: &str, n: u64) -> &'static str {
-    if !locale.starts_with("ru") {
-        return if n == 1 { "one" } else { "many" };
-    }
-    let (m10, m100) = (n % 10, n % 100);
-    if m10 == 1 && m100 != 11 {
-        "one"
-    } else if (2..=4).contains(&m10) && !(12..=14).contains(&m100) {
-        "few"
-    } else {
-        "many"
-    }
+    crate::i18n::plural_rule(locale).category(n)
 }
 
 /// Copy of `msg` as plain text (for "Copy text").

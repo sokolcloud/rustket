@@ -147,6 +147,8 @@ pub struct App {
     pub system_mode: Option<Mode>,
     /// External colour themes (`crate::themes`).
     pub themes: crate::themes::Themes,
+    /// External translations (`crate::locales`).
+    pub locales: crate::locales::Locales,
     pub focused: bool,
     pub handler_registered: bool,
     listener: Option<ListenerSlot>,
@@ -262,7 +264,9 @@ impl App {
             }),
             None => AppConfig::default(),
         };
-        crate::i18n::apply(config.ui.language);
+        let mut locales =
+            crate::locales::Locales::new(config_dir.as_deref().map(crate::locales::locales_dir));
+        locales.reload(&config.ui.language);
         let desktop = if flags.desktop {
             crate::desktop::Desktop::system(&config.ui)
         } else {
@@ -313,6 +317,7 @@ impl App {
             images: Images::new(cache_dir),
             system_mode: None,
             themes,
+            locales,
             focused,
             handler_registered: false,
             listener: flags.listener.clone(),
@@ -490,6 +495,31 @@ impl App {
             if r.is_err() {
                 tracing::warn!("cannot open the themes folder");
                 Message::ThemesFolderNotOpened(path.clone())
+            } else {
+                Message::Noop
+            }
+        })
+    }
+
+    pub(crate) fn open_locales_folder(&mut self) -> Task<Message> {
+        let Some(dir) = self.locales.dir.clone() else {
+            return Task::none();
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return self.toast(
+                BannerKind::Error,
+                t!("settings.locales_folder_failed"),
+                e.to_string(),
+            );
+        }
+        if !self.open_urls {
+            return Task::none();
+        }
+        let path = dir.display().to_string();
+        Task::perform(crate::room::timeline::transfer::open_path(dir), move |r| {
+            if r.is_err() {
+                tracing::warn!("cannot open the locales folder");
+                Message::LocalesFolderNotOpened(path.clone())
             } else {
                 Message::Noop
             }
@@ -1063,6 +1093,11 @@ impl App {
             Message::ThemesFolderNotOpened(path) => self.toast(
                 BannerKind::Error,
                 t!("settings.themes_folder_open_failed"),
+                path,
+            ),
+            Message::LocalesFolderNotOpened(path) => self.toast(
+                BannerKind::Error,
+                t!("settings.locales_folder_open_failed"),
                 path,
             ),
             Message::ShowAddServer if !self.may_leave(Message::ShowAddServer) => Task::none(),

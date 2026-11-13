@@ -778,7 +778,7 @@ impl Sidebar {
                 images: ctx.images.server_revision(ctx.server_id),
                 window: self.window(ctx),
                 workspace: revs,
-                locale: rust_i18n::locale().to_string(),
+                locale: crate::i18n::cache_tag(),
                 day: chrono::Local::now().date_naive(),
                 over_mac: crate::omnichannel::shared::get(ctx.server_id)
                     .is_some_and(|o| o.over_mac),
@@ -1100,7 +1100,7 @@ impl Sidebar {
             &menu,
             menu.flag
                 .then(|| super::flag_menu::names_key(ctx.workspace.flags())),
-            rust_i18n::locale().to_string(),
+            crate::i18n::cache_tag(),
             rustket_ui::theme::generation(),
         ));
         let entries = menu.entries(&item.rid, ctx.workspace);
@@ -1366,7 +1366,7 @@ fn thread_row(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> Element<'static, Mess
         ),
         (kept_enabled, star_enabled),
         flags.map(super::flag_menu::names_key),
-        rust_i18n::locale().to_string(),
+        crate::i18n::cache_tag(),
         rustket_ui::theme::generation(),
     ));
     let entries = thread_menu(t, kept_enabled, star_enabled, flags);

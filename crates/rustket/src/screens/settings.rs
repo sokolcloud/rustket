@@ -101,7 +101,10 @@ pub enum Message {
     SetClock24(bool),
     /// `None`: the server's `UI_Use_Real_Name`.
     SetRealNames(Option<bool>),
+    /// `UiPrefs::language`: `"system"` or a locale code.
     SetLanguage(Language),
+    ReloadLocales,
+    OpenLocalesFolder,
     SetNotifications(bool),
     SetPreview(bool),
     SetSound(bool),
@@ -153,6 +156,7 @@ pub struct SettingsCtx<'a> {
 pub struct SettingsView<'a> {
     pub config: &'a AppConfig,
     pub themes: &'a crate::themes::Themes,
+    pub locales: &'a crate::locales::Locales,
     pub handler_registered: bool,
     pub secret_backend: Option<SecretBackend>,
     /// Secrets are kept in memory because nothing else is usable (not in tests).
@@ -264,9 +268,11 @@ impl Settings {
             Message::SetClock24(v) => Self::pref(ctx, |p| p.clock_24h = v),
             Message::SetRealNames(v) => Self::pref(ctx, |p| p.use_real_names = v),
             Message::SetLanguage(l) => {
-                crate::i18n::apply(l);
+                crate::i18n::apply(&l);
                 Self::pref(ctx, |p| p.language = l)
             }
+            Message::ReloadLocales => Action::effect(Effect::ReloadLocales),
+            Message::OpenLocalesFolder => Action::effect(Effect::OpenLocalesFolder),
             Message::SetNotifications(v) => Self::pref(ctx, |p| p.desktop_notifications = v),
             Message::SetPreview(v) => Self::pref(ctx, |p| p.notification_preview = v),
             Message::SetSound(v) => Self::pref(ctx, |p| p.sound = v),
@@ -490,18 +496,7 @@ impl Settings {
 
         body = body.push(section(
             t!("settings.language").into_owned(),
-            vec![segmented(
-                &ui.language,
-                vec![
-                    (
-                        Language::System,
-                        t!("settings.language_system").into_owned(),
-                    ),
-                    (Language::En, "English".to_owned()),
-                    (Language::Ru, "Русский".to_owned()),
-                ],
-                Message::SetLanguage,
-            )],
+            vec![language_picker(ui, v.locales)],
         ));
 
         let notify_on = ui.desktop_notifications;
@@ -882,6 +877,128 @@ fn theme_picker<'a>(ui: &UiPrefs, themes: &crate::themes::Themes) -> Element<'a,
     field(
         t!("settings.theme").into_owned(),
         Some(t!("settings.theme_help").into_owned()),
+        col.into(),
+    )
+}
+
+/// The language picker (System, bundled, external locales) with "Open
+/// languages folder" and "Reload", and below it what is wrong with the
+/// selected (or system) locale's file.
+fn language_picker<'a>(ui: &UiPrefs, locales: &crate::locales::Locales) -> Element<'a, Message> {
+    use crate::i18n;
+    let with_coverage = |code: &str, name: String| match locales.coverage(code) {
+        Some(c) if !c.complete() => format!("{name} ({}%)", c.percent()),
+        _ => name,
+    };
+    let choice = |code: &str, label: String| Choice {
+        value: Language::new(code).unwrap_or_default(),
+        label,
+    };
+    let system_code = i18n::system();
+    let system_name = i18n::native_name(&system_code).unwrap_or_else(|| system_code.clone());
+    let system = choice(
+        Language::SYSTEM,
+        format!("{} ({system_name})", t!("settings.language_system")),
+    );
+    let mut choices = vec![system.clone()];
+    choices.extend(
+        i18n::BUNDLED
+            .iter()
+            .map(|b| choice(b.code, with_coverage(b.code, b.name.to_owned()))),
+    );
+    let mut external: Vec<(String, &str)> = locales
+        .entries
+        .iter()
+        .filter(|e| i18n::bundled(&e.code).is_none())
+        .map(|e| (e.display_name(), e.code.as_str()))
+        .collect();
+    external.sort_by_cached_key(|(name, code)| (name.to_lowercase(), (*code).to_owned()));
+    // Same-named entries are told apart by their file name.
+    let clashes = |name: &str| {
+        external.iter().filter(|(n, _)| n == name).count() > 1
+            || i18n::BUNDLED
+                .iter()
+                .any(|b| b.name.to_lowercase() == name.to_lowercase())
+    };
+    choices.extend(external.iter().map(|(name, code)| {
+        let name = if clashes(name) {
+            format!("{name} ({code}.toml)")
+        } else {
+            name.clone()
+        };
+        choice(code, with_coverage(code, name))
+    }));
+    let selected = ui.language.as_str();
+    let current = choices
+        .iter()
+        .find(|c| c.value.as_str() == selected)
+        .cloned()
+        .unwrap_or_else(|| Choice {
+            value: ui.language.clone(),
+            label: selected.to_owned(),
+        });
+    let controls = row![
+        pick_list(choices, Some(current), |c: Choice<Language>| {
+            Message::SetLanguage(c.value)
+        })
+        .text_size(TEXT_BODY)
+        .width(Length::Fill)
+        .style(style::pick_list)
+        .menu_style(style::menu),
+        secondary_button(
+            t!("settings.locales_folder"),
+            locales.dir.is_some().then_some(Message::OpenLocalesFolder)
+        ),
+        secondary_button(
+            t!("settings.themes_reload"),
+            locales.dir.is_some().then_some(Message::ReloadLocales)
+        ),
+    ]
+    .spacing(SPACE_2)
+    .align_y(Alignment::Center);
+    let mut col = column![controls].spacing(SPACE_2);
+
+    let unusable = !ui.language.is_system() && !i18n::is_available(selected);
+    let code = if ui.language.is_system() {
+        system_code.as_str()
+    } else {
+        selected
+    };
+    let file = format!("{code}.toml");
+    let error = match locales.get(code).map(|e| &e.file) {
+        None if unusable => Some(t!("settings.locale_not_found", file = file).into_owned()),
+        None | Some(Ok(_)) => None,
+        Some(Err(e)) => Some(crate::locales::load_error_text(e, &file)),
+    };
+    if let Some(msg) = error {
+        let fallback = if unusable {
+            t!("settings.locale_fallback_system", name = system_name)
+        } else {
+            t!("settings.locale_fallback_builtin")
+        };
+        col = col.push(banner(
+            BannerKind::Error,
+            format!("{msg}\n{fallback}"),
+            None,
+        ));
+    } else if let Some(Ok(f)) = locales.get(code).map(|e| &e.file)
+        && !f.warnings.is_empty()
+    {
+        let more = f.warnings.len().saturating_sub(THEME_WARNINGS_SHOWN);
+        let mut msg = t!("settings.locale_warnings", file = file).into_owned();
+        for w in f.warnings.iter().take(THEME_WARNINGS_SHOWN) {
+            msg.push_str("\n• ");
+            msg.push_str(&crate::locales::warning_text(w, code));
+        }
+        if more > 0 {
+            msg.push('\n');
+            msg.push_str(&t!("settings.theme_more", n = more));
+        }
+        col = col.push(banner(BannerKind::Warning, msg, None));
+    }
+    field(
+        t!("settings.language_ui").into_owned(),
+        Some(t!("settings.language_help").into_owned()),
         col.into(),
     )
 }
@@ -1846,11 +1963,16 @@ mod tests {
         // and the rust-i18n locale is process-wide.
         let mut s = Settings::with_autostart(None);
         let mut cfg = AppConfig::default();
-        cfg.ui.language = Language::Ru;
-        let a = run(&mut s, &mut cfg, Message::SetLanguage(Language::En));
-        assert_eq!(cfg.ui.language, Language::En);
+        cfg.ui.language = Language::new("ru").unwrap();
+        let en = Language::new("en").unwrap();
+        let a = run(&mut s, &mut cfg, Message::SetLanguage(en.clone()));
+        assert_eq!(cfg.ui.language, en);
         assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
         assert_eq!(&*rust_i18n::locale(), "en");
+        let a = run(&mut s, &mut cfg, Message::ReloadLocales);
+        assert!(matches!(a.effects.as_slice(), [Effect::ReloadLocales]));
+        let a = run(&mut s, &mut cfg, Message::OpenLocalesFolder);
+        assert!(matches!(a.effects.as_slice(), [Effect::OpenLocalesFolder]));
     }
 
     #[test]

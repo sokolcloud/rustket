@@ -80,7 +80,8 @@ spectacle -b -n -a -o <scratchpad>/shot.png
 ## Conventions
 
 - Code, comments, identifiers, commit messages: English. UI strings go through the
-  i18n layer (English + Russian).
+  i18n layer: every key carries en, ru, es, th and zh (`BUNDLED_COMPLETE` in
+  `crates/rustket/src/i18n.rs`; translations follow the terms already used in `locales/`).
 - Pure-Rust dependencies only: no crates that need system `-dev` packages
   (no openssl, gtk, alsa, dbus C libs). TLS is rustls everywhere; reuse the shared
   `ClientConfig` from `rocketchat::tls`.

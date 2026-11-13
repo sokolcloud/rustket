@@ -76,7 +76,7 @@ fn room_state_key(ws: &Workspace, rid: &str) -> u64 {
 
 fn locale_key() -> u64 {
     let mut h = std::hash::DefaultHasher::new();
-    rust_i18n::locale().hash(&mut h);
+    crate::i18n::cache_tag().hash(&mut h);
     h.finish()
 }
 

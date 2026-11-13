@@ -29,7 +29,7 @@ pub fn names_key(flags: &Flags) -> u64 {
     for c in FlagColor::ALL {
         flags.name(c).hash(&mut h);
     }
-    rust_i18n::locale().to_string().hash(&mut h);
+    crate::i18n::cache_tag().hash(&mut h);
     h.finish()
 }
 

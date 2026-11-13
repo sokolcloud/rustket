@@ -186,6 +186,8 @@ pub enum Message {
     CloseToast(u64),
     /// The file manager could not open the themes folder (its path).
     ThemesFolderNotOpened(String),
+    /// The file manager could not open the locales folder (its path).
+    LocalesFolderNotOpened(String),
     /// Offline cache (`crate::cache`).
     Cache(crate::cache::Msg),
     /// In-app updates (`crate::updater`).

@@ -5,10 +5,19 @@
 //! ([`weight_fallback`]); a family that is not installed keeps the built-in
 //! font. Family names become `&'static str` (iced's `Font`) by interning:
 //! each distinct name is leaked once per session.
+//!
+//! The same exact-weight rule applies to cosmic-text's script fallback
+//! (`Noto Sans CJK SC`, `Noto Sans Thai`, …): text in a weight the fallback
+//! family lacks (most ship only Regular and Bold) is drawn with whatever
+//! other installed face has that weight and the glyph. [`alias_missing_weights`]
+//! gives every installed family the UI weights it lacks as aliases of its
+//! nearest face.
 
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 
 use iced::Font;
+use iced::advanced::graphics::text::cosmic_text::fontdb;
 use iced::font::{Family, Weight};
 
 use crate::theme::FontSet;
@@ -120,6 +129,72 @@ pub fn resolve_with(
     (set, warnings)
 }
 
+/// Faces added by [`alias_missing_weights`] (ignored by [`resolve`]).
+static ALIASES: OnceLock<HashSet<fontdb::ID>> = OnceLock::new();
+/// Largest weight distance an alias bridges (Regular ↔ Bold).
+const MAX_ALIAS_DISTANCE: u16 = 300;
+
+/// The faces to add to `faces` so that every family (per style and
+/// stretch) has each UI weight: a copy of the face [`weight_fallback`]
+/// picks, with the wanted weight. Nothing for a weight further than
+/// [`MAX_ALIAS_DISTANCE`] from any face of the family.
+fn weight_aliases<'a>(faces: impl Iterator<Item = &'a fontdb::FaceInfo>) -> Vec<fontdb::FaceInfo> {
+    let mut groups: HashMap<(&str, fontdb::Style, u16), Vec<&fontdb::FaceInfo>> = HashMap::new();
+    for face in faces {
+        let Some((family, _)) = face.families.first() else {
+            continue;
+        };
+        groups
+            .entry((family.as_str(), face.style, face.stretch.to_number()))
+            .or_default()
+            .push(face);
+    }
+    let mut out = Vec::new();
+    for group in groups.values() {
+        let available: Vec<u16> = group.iter().map(|f| f.weight.0).collect();
+        for wanted in UI_WEIGHTS {
+            if available.contains(&wanted) {
+                continue;
+            }
+            let Some(used) = weight_fallback(&available, wanted)
+                .filter(|used| used.abs_diff(wanted) <= MAX_ALIAS_DISTANCE)
+            else {
+                continue;
+            };
+            if let Some(face) = group.iter().find(|f| f.weight.0 == used) {
+                out.push(fontdb::FaceInfo {
+                    weight: fontdb::Weight(wanted),
+                    ..(*face).clone()
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Gives every installed family the UI weights it lacks (see the module
+/// docs), so that text in Medium, SemiBold or Bold falls back to the right
+/// family for scripts the UI font does not cover. Loads the bundled fonts
+/// first (they have every UI weight). Runs once; call it at startup after
+/// [`resolve`].
+pub fn alias_missing_weights() {
+    ALIASES.get_or_init(|| {
+        let lock = iced::advanced::graphics::text::font_system();
+        let Ok(mut fs) = lock.write() else {
+            return HashSet::new();
+        };
+        for f in crate::theme::fonts() {
+            fs.load_font(f);
+        }
+        let aliases = weight_aliases(fs.raw().db().faces());
+        let db = fs.raw().db_mut();
+        aliases
+            .into_iter()
+            .map(|face| db.push_face_info(face))
+            .collect()
+    });
+}
+
 /// Resolves `prefs` against iced's font system (system fonts plus the
 /// bundled ones, which are loaded into it first).
 pub fn resolve(prefs: &FontPrefs) -> (FontSet, Vec<ThemeWarning>) {
@@ -138,7 +213,11 @@ pub fn resolve(prefs: &FontPrefs) -> (FontSet, Vec<ThemeWarning>) {
     resolve_with(prefs, |family| {
         let mut name = None;
         let mut weights = Vec::new();
+        let aliases = ALIASES.get();
         for face in db.faces() {
+            if aliases.is_some_and(|a| a.contains(&face.id)) {
+                continue;
+            }
             let Some((n, _)) = face
                 .families
                 .iter()
@@ -218,6 +297,49 @@ mod tests {
         assert_eq!(set.bold.weight, Weight::Bold);
         assert_eq!(set.mono, FontSet::BUILTIN.mono);
         assert_eq!(w.len(), 2, "{w:?}");
+    }
+
+    fn face(family: &str, weight: u16, index: u32) -> fontdb::FaceInfo {
+        fontdb::FaceInfo {
+            id: fontdb::ID::dummy(),
+            source: fontdb::Source::Binary(std::sync::Arc::new(Vec::<u8>::new())),
+            index,
+            families: vec![(family.to_owned(), fontdb::Language::English_UnitedStates)],
+            post_script_name: format!("{family}-{weight}"),
+            style: fontdb::Style::Normal,
+            weight: fontdb::Weight(weight),
+            stretch: fontdb::Stretch::Normal,
+            monospaced: false,
+        }
+    }
+
+    #[test]
+    fn missing_weights_become_aliases() {
+        let faces = [
+            face("CJK", 400, 0),
+            face("CJK", 700, 1),
+            face("Full", 400, 2),
+            face("Full", 500, 3),
+            face("Full", 600, 4),
+            face("Full", 700, 5),
+            face("Black Only", 900, 6),
+        ];
+        let mut got: Vec<(String, u16, u32)> = weight_aliases(faces.iter())
+            .into_iter()
+            .map(|f| (f.families[0].0.clone(), f.weight.0, f.index))
+            .collect();
+        got.sort();
+        // Medium from Regular, SemiBold from Bold; nothing for a family
+        // that has every weight or is too far from them.
+        assert_eq!(
+            got,
+            [
+                ("Black Only".to_owned(), 600, 6),
+                ("Black Only".to_owned(), 700, 6),
+                ("CJK".to_owned(), 500, 0),
+                ("CJK".to_owned(), 600, 1),
+            ]
+        );
     }
 
     /// The bundled family resolves to exactly the built-in fonts.

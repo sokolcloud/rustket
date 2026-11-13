@@ -145,7 +145,7 @@ impl Desktop {
             hidden: false,
             focused: true,
             start_minimized: prefs.start_minimized,
-            locale: rust_i18n::locale().to_string(),
+            locale: crate::i18n::cache_tag(),
             wayland: wayland_session(),
             connected: HashMap::new(),
         }
@@ -325,9 +325,9 @@ impl Desktop {
             active_ws.map(|ws| (ws.my_status(), crate::workspace::status_menu::offered(ws))),
         );
         if self.enabled {
-            let locale = rust_i18n::locale();
-            if *locale != *self.locale {
-                self.locale = locale.to_string();
+            let locale = crate::i18n::cache_tag();
+            if locale != self.locale {
+                self.locale = locale;
                 self.tray.refresh();
             }
         }

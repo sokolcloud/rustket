@@ -5,7 +5,8 @@
 //! runs [`app::App`]. Everything else lives here so examples and tests can drive
 //! the real `App::update` paths headlessly.
 
-rust_i18n::i18n!("locales", fallback = "en");
+// External locale files override the bundled strings (`i18n::Overrides`).
+rust_i18n::i18n!("locales", fallback = "en", backend = crate::i18n::Overrides);
 
 /// The window's application id (X11 `WM_CLASS`, Wayland `app_id`); the packaged
 /// desktop file, icon and AppStream id use the same name (`packaging/linux`).
@@ -29,6 +30,7 @@ pub mod focus;
 pub mod format;
 pub mod i18n;
 pub mod images;
+pub mod locales;
 #[cfg(target_os = "macos")]
 pub mod macos_events;
 pub mod message;

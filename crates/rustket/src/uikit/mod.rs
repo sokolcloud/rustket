@@ -242,7 +242,7 @@ pub fn row_key(ws: &Workspace, images: &Images, server: &ServerUrl, msg: &RcMess
     };
     store.scratch().digest(&surface.prefix()).hash(&mut h);
     ws.is_ephemeral(&msg.rid, &msg.id).hash(&mut h);
-    rust_i18n::locale().hash(&mut h);
+    crate::i18n::cache_tag().hash(&mut h);
     for url in render::image_urls(server, &blocks) {
         images.contains(&url).hash(&mut h);
     }

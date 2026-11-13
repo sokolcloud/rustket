@@ -2,9 +2,18 @@ _version: 2
 rail.add_server:
   en: "Add workspace"
   ru: "Добавить рабочее пространство"
+  es: "Añadir espacio de trabajo"
+  th: "เพิ่มเวิร์กสเปซ"
+  zh: "添加工作区"
 rail.settings:
   en: "Settings"
   ru: "Настройки"
+  es: "Configuración"
+  th: "การตั้งค่า"
+  zh: "设置"
 rail.signed_out:
   en: "%{name} (signed out)"
   ru: "%{name} (выполнен выход)"
+  es: "%{name} (sesión cerrada)"
+  th: "%{name} (ออกจากระบบแล้ว)"
+  zh: "%{name}（已退出登录）"

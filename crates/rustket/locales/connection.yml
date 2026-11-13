@@ -2,18 +2,36 @@ _version: 2
 connection.connecting:
   en: "Connecting…"
   ru: "Подключение…"
+  es: "Conectando…"
+  th: "กำลังเชื่อมต่อ…"
+  zh: "正在连接…"
 connection.reconnecting:
   en: "Connection lost. Reconnecting (attempt %{attempt})…"
   ru: "Соединение потеряно. Переподключение (попытка %{attempt})…"
+  es: "Conexión perdida. Reconectando (intento %{attempt})…"
+  th: "การเชื่อมต่อขาดหาย กำลังเชื่อมต่อใหม่ (ครั้งที่ %{attempt})…"
+  zh: "连接已断开，正在重新连接（第 %{attempt} 次尝试）…"
 connection.offline:
   en: "Offline"
   ru: "Нет соединения"
+  es: "Sin conexión"
+  th: "ออฟไลน์"
+  zh: "离线"
 connection.failed:
   en: "Cannot connect: %{error}"
   ru: "Не удаётся подключиться: %{error}"
+  es: "No se puede conectar: %{error}"
+  th: "เชื่อมต่อไม่ได้: %{error}"
+  zh: "无法连接：%{error}"
 connection.retry:
   en: "Retry now"
   ru: "Повторить"
+  es: "Reintentar ahora"
+  th: "ลองใหม่ตอนนี้"
+  zh: "立即重试"
 connection.sync_failed:
   en: "Could not load the workspace (%{error}). Retrying…"
   ru: "Не удалось загрузить рабочее пространство (%{error}). Повтор…"
+  es: "No se pudo cargar el espacio de trabajo (%{error}). Reintentando…"
+  th: "โหลดเวิร์กสเปซไม่ได้ (%{error}) กำลังลองใหม่…"
+  zh: "无法加载工作区（%{error}），正在重试…"

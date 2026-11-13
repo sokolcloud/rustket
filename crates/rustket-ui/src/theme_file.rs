@@ -248,7 +248,7 @@ impl ThemeFile {
 }
 
 /// `line L, column C: <message>` (1-based, columns in characters), on one line.
-fn syntax_message(src: &str, e: &toml::de::Error) -> String {
+pub fn syntax_message(src: &str, e: &toml::de::Error) -> String {
     let msg = e.message().split_whitespace().collect::<Vec<_>>().join(" ");
     let Some(start) = e.span().map(|s| s.start).filter(|s| *s <= src.len()) else {
         return msg;

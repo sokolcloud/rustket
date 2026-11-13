@@ -2,18 +2,36 @@ _version: 2
 titlebar.minimize:
   en: "Minimize"
   ru: "Свернуть"
+  es: "Minimizar"
+  th: "ย่อเล็กสุด"
+  zh: "最小化"
 titlebar.maximize:
   en: "Maximize"
   ru: "Развернуть"
+  es: "Maximizar"
+  th: "ขยายใหญ่สุด"
+  zh: "最大化"
 titlebar.restore:
   en: "Restore"
   ru: "Восстановить"
+  es: "Restaurar"
+  th: "คืนขนาด"
+  zh: "还原"
 titlebar.close:
   en: "Close"
   ru: "Закрыть"
+  es: "Cerrar"
+  th: "ปิด"
+  zh: "关闭"
 titlebar.setting:
   en: "Use system window title bar"
   ru: "Системный заголовок окна"
+  es: "Usar la barra de título del sistema"
+  th: "ใช้แถบชื่อหน้าต่างของระบบ"
+  zh: "使用系统窗口标题栏"
 titlebar.setting_help:
   en: "Off: workspaces, settings and window buttons share one row at the top instead of the left column."
   ru: "Если выключено, рабочие пространства, настройки и кнопки окна располагаются в одной строке сверху, а не в левой колонке."
+  es: "Desactivado: los espacios de trabajo, la configuración y los botones de la ventana comparten una fila en la parte superior en lugar de la columna izquierda."
+  th: "ปิด: เวิร์กสเปซ การตั้งค่า และปุ่มหน้าต่างจะอยู่ในแถวเดียวกันด้านบนแทนคอลัมน์ด้านซ้าย"
+  zh: "关闭时：工作区、设置和窗口按钮共用顶部一行，而不是左侧栏。"

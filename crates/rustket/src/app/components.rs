@@ -133,6 +133,8 @@ impl App {
                 // Theme files edited meanwhile show up (and apply) here.
                 self.themes.rescan();
                 self.themes.apply(self.config.ui.theme_name.as_deref());
+                // So are locale files.
+                self.locales.reload(&self.config.ui.language);
                 let load = screen.load().map(Message::Settings);
                 let reveal = match nav {
                     Nav::SidebarSettings { ungroup, flag } => {
@@ -272,6 +274,11 @@ impl App {
                     Task::none()
                 }
                 Effect::OpenThemesFolder => self.open_themes_folder(),
+                Effect::ReloadLocales => {
+                    self.locales.reload(&self.config.ui.language);
+                    Task::none()
+                }
+                Effect::OpenLocalesFolder => self.open_locales_folder(),
                 Effect::RecentStatusTexts(list) => {
                     self.config.set_recent_status_texts(list);
                     self.save_config()
@@ -801,6 +808,7 @@ impl App {
         settings::SettingsView {
             config: &self.config,
             themes: &self.themes,
+            locales: &self.locales,
             handler_registered: self.handler_registered,
             secret_backend: self.secret_backend,
             secrets_in_memory: self.secrets_mode == SecretsMode::System,
