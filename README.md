@@ -1,5 +1,10 @@
 # Rustket
 
+[![CI](https://github.com/sokolcloud/rustket/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sokolcloud/rustket/actions/workflows/ci.yml)
+[![Release](https://github.com/sokolcloud/rustket/actions/workflows/release.yml/badge.svg)](https://github.com/sokolcloud/rustket/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/sokolcloud/rustket)](https://github.com/sokolcloud/rustket/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A native Rocket.Chat desktop client in Rust ([iced](https://iced.rs) 0.14). There is
 no Electron and no embedded web view: rooms, threads, end-to-end encryption, apps
 (UIKit), omnichannel, teams and administration are rendered natively. Browser
@@ -7,6 +12,41 @@ sign-in (OAuth, OpenID, SAML, CAS) and video calls open in the default browser
 and come back through `rocketchat://` links.
 
 Tested against Rocket.Chat 8.9. Linux is the primary platform.
+
+## Screenshots
+
+| Light | Dark |
+|---|---|
+| [![Rustket, light theme](docs/screenshots/main-light.png)](docs/screenshots/main-light.png) | [![Rustket, dark theme](docs/screenshots/main-dark.png)](docs/screenshots/main-dark.png) |
+| [![Condensed sidebar, light theme](docs/screenshots/compact-light.png)](docs/screenshots/compact-light.png) | [![Condensed sidebar, dark theme](docs/screenshots/compact-dark.png)](docs/screenshots/compact-dark.png) |
+
+Top: a channel with a code block, reactions, a thread and a mention. In the
+sidebar, colored flags group rooms and threads into your own sections
+("On call", "This sprint", "Follow up"), and unread badges go from loud to
+quiet: mentions (red), `@all`/`@here` (orange), new messages (muted blue),
+replies in threads only (slate), muted rooms (grey). Bottom: the condensed
+sidebar with collapsed sections, each showing a dot for its most important
+unread item.
+
+The screenshots come from a demo workspace on the local dev server
+(`dev/seed-demo.sh`, then `dev/screenshots.sh`).
+
+## Build and test status
+
+CI runs formatting, clippy and the tests on Linux, Windows x64, Windows ARM64
+and macOS for every push and pull request; the release workflow builds and publishes the packages
+of every tag (badges above).
+
+Results for 0.2.4 on Linux (x86_64), on the release commit:
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` | no warnings |
+| `cargo test --workspace` (unit, fixture, mock-server and packaging tests) | 1620 passed, 0 failed, 4 ignored |
+| Live tests against Rocket.Chat 8.9.1 in Docker (`dev/`; `RUSTKET_TEST_SERVER=… cargo test -p rocketchat -- --test-threads=1`, then `-p rustket-core`) | 56 live tests passed, 0 failed (761 tests of the two crates in that run) |
+| `cargo build --release -p rustket` | builds, `rustket --version` prints `rustket 0.2.4` |
+| Release packages (deb, rpm, AppImage, Windows x64/ARM64 installer and zip, macOS universal dmg) | built by the release workflow, see the [release page](https://github.com/sokolcloud/rustket/releases/latest) |
 
 ## Install
 
@@ -241,6 +281,11 @@ Wayland) and whether hardware acceleration is on.
 
 See `CLAUDE.md` (toolchain, dev server, tests), `docs/PLAN.md` and
 `crates/rustket/COMPONENTS.md`.
+
+The README screenshots are made on the dev server: `dev/seed-demo.sh` creates
+the demo team (rerunnable), `dev/screenshots.sh [binary] [out dir]` runs the app
+from a throwaway profile with the CPU renderer and captures the light and dark
+views into `docs/screenshots/` (X11 with `wmctrl`, `xwd` and Python PIL).
 
 ## License
 

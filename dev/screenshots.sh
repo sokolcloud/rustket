@@ -141,7 +141,7 @@ EOF
   xwd -silent -id "$wid" -out "$PROFILE/shot.xwd"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  python3 "$HERE/xwd2png.py" "$PROFILE/shot.xwd" "$OUT/$name.png" "${SHOT_MAX_WIDTH:-1600}"
+  python3 "$HERE/xwd2png.py" "$PROFILE/shot.xwd" "$OUT/$name.png" "${SHOT_MAX_WIDTH:-1400}"
   echo "$OUT/$name.png"
 }
 
