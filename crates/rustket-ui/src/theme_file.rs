@@ -678,7 +678,8 @@ mod tests {
     /// `docs/themes/template.toml` is exactly the `--dump-theme` output.
     #[test]
     fn checked_in_template_is_current() {
-        let file = include_str!("../../../docs/themes/template.toml");
+        // Windows checkouts may convert the file to CRLF.
+        let file = include_str!("../../../docs/themes/template.toml").replace("\r\n", "\n");
         assert!(
             file == dump_template(),
             "docs/themes/template.toml is stale: regenerate it with `rustket --dump-theme`"
