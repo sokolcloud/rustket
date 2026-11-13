@@ -10,7 +10,7 @@ license.workspace = true
 chrono = "0.4.45"
 directories = "6.0.0"
 keyring = "4.2.0"
-rocketchat = { version = "0.2.4", path = "../rocketchat" }
+rocketchat = { version = "0.2.5", path = "../rocketchat" }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
