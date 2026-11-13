@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-13
+
+### Added
+
+- A collapsed sidebar section shows a dot in the color of its most important
+  unread item (rooms and threads) and their number in a tooltip, so you no
+  longer have to expand every section to find what is new.
+- Screenshots of the light and dark themes in the README.
+
+### Changed
+
+- Quieter unread colors: plain unread counters (no mention) use a muted blue,
+  rooms where only threads are unread a darker slate, and thread rows with new
+  replies a grey dot. Mentions and @all/@here keep their red and orange.
+- A room whose only unread items are threads gets the thread color, not the
+  unread one (its counter includes the thread replies).
+
+### Fixed
+
+- Rooms whose unread status is hidden in their notification preferences no
+  longer show a thread or mention badge.
+
 ## [0.2.3] - 2026-11-12
 
 ### Added
@@ -138,7 +160,8 @@ First public release.
 - Auth tokens and end-to-end encryption keys are kept in the desktop keyring,
   with a warned-about private file fallback when no keyring is available.
 
-[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/sokolcloud/rustket/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sokolcloud/rustket/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sokolcloud/rustket/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sokolcloud/rustket/compare/v0.2.0...v0.2.1
