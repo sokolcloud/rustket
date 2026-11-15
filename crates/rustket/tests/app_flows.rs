@@ -2616,24 +2616,31 @@ fn container_bounds(
     f.1
 }
 
-/// "Sidebar settings…" opens the settings scrolled to the Sidebar card.
+/// "Sidebar settings…" opens the settings on the Sidebar tab with its first
+/// card in view.
 #[tokio::test]
-async fn header_menu_settings_scrolls_to_the_sidebar_card() {
+async fn header_menu_settings_opens_the_sidebar_tab() {
     use iced_runtime::user_interface::{Cache, UserInterface};
+    use rustket::screens::settings::Tab;
     let dir = tempfile::tempdir().unwrap();
     let (mut app, sid) = loaded_app(dir.path());
     let task = app.update(header(&sid, sidebar::HeaderAct::OpenSettings));
-    assert!(matches!(app.screen, rustket::app::Screen::Settings(_)));
+    let rustket::app::Screen::Settings(s) = &app.screen else {
+        panic!("settings not open");
+    };
+    assert_eq!(s.tab, Tab::Sidebar);
     let mut renderer = test_renderer();
     let size = iced::Size::new(1280.0, 800.0);
     let mut ui = UserInterface::build(app.view(), size, Cache::default(), &mut renderer);
-    let before = scrollables(&mut ui, &renderer);
-    assert_eq!(before.len(), 1, "{before:?}");
-    assert_eq!(before[0].1.y, 0.0);
+    // Start away from the card so the reveal task has to scroll back.
+    run_ops(
+        &mut ui,
+        &renderer,
+        iced::widget::operation::snap_to_end(rustket::screens::page::SCROLL_ID),
+    );
+    assert!(scrollables(&mut ui, &renderer)[0].1.y > 0.0);
     run_ops(&mut ui, &renderer, task);
-    let after = scrollables(&mut ui, &renderer);
-    let (bounds, t) = after[0];
-    assert!(t.y > 0.0, "scrolled: {after:?}");
+    let (bounds, t) = scrollables(&mut ui, &renderer)[0];
     let card = container_bounds(
         &mut ui,
         &renderer,
@@ -2645,6 +2652,61 @@ async fn header_menu_settings_scrolls_to_the_sidebar_card() {
     assert!(
         top >= bounds.y - 0.5 && top < bounds.y + bounds.height,
         "card {card:?} at {top} in {bounds:?}"
+    );
+}
+
+/// In a small window (the minimum one at 150% zoom) the wrapped tabs scroll
+/// with the content instead of leaving it no height.
+#[tokio::test]
+async fn settings_tabs_leave_room_for_content_in_a_small_window() {
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(header(&sid, sidebar::HeaderAct::OpenSettings));
+    let mut renderer = test_renderer();
+    let size = iced::Size::new(320.0, 267.0);
+    let mut ui = UserInterface::build(app.view(), size, Cache::default(), &mut renderer);
+    let (bounds, _) = scrollables(&mut ui, &renderer)[0];
+    assert!(bounds.height > 100.0, "page scroll {bounds:?}");
+}
+
+/// The settings reopen on the tab shown last; sidebar deep links open the
+/// Sidebar tab.
+#[tokio::test]
+async fn settings_remember_the_last_tab() {
+    use rustket::app::Screen;
+    use rustket::screens::settings::{Message as Sm, Tab};
+    use rustket::workspace::rail;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let tab = |app: &App| match &app.screen {
+        Screen::Settings(s) => Some(s.tab),
+        _ => None,
+    };
+    let _ = app.update(Message::Rail(rail::Message::Settings));
+    assert_eq!(tab(&app), Some(Tab::General));
+    let _ = app.update(Message::Settings(Sm::Tab(Tab::Appearance)));
+    let _ = app.update(Message::Settings(Sm::Close));
+    assert_eq!(tab(&app), None);
+    let _ = app.update(Message::Rail(rail::Message::Settings));
+    assert_eq!(tab(&app), Some(Tab::Appearance));
+    let _ = app.update(Message::Settings(Sm::Close));
+    for act in [
+        sidebar::HeaderAct::OpenSettings,
+        sidebar::HeaderAct::RenameFlag(rustket_core::flags::FlagColor::Red),
+    ] {
+        let _ = app.update(Message::Rail(rail::Message::Settings));
+        let _ = app.update(Message::Settings(Sm::Tab(Tab::About)));
+        let _ = app.update(Message::Settings(Sm::Close));
+        let _ = app.update(header(&sid, act));
+        assert_eq!(tab(&app), Some(Tab::Sidebar));
+        let _ = app.update(Message::Settings(Sm::Close));
+    }
+    let _ = app.update(Message::Rail(rail::Message::Settings));
+    assert_eq!(
+        tab(&app),
+        Some(Tab::Sidebar),
+        "the deep link's tab is remembered"
     );
 }
 

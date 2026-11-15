@@ -136,6 +136,8 @@ pub struct App {
     writer: Option<ConfigWriter>,
     pub secrets: Option<Arc<dyn SecretStore>>,
     pub secret_backend: Option<SecretBackend>,
+    /// The settings tab shown last this session (not saved).
+    pub settings_tab: crate::screens::settings::Tab,
     pub servers: BTreeMap<ServerId, ServerState>,
     pub active: Option<ServerId>,
     pub screen: Screen,
@@ -242,6 +244,7 @@ impl App {
             writer,
             secrets: None,
             secret_backend: None,
+            settings_tab: Default::default(),
             servers,
             active,
             screen: Screen::Loading,

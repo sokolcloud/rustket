@@ -36,8 +36,7 @@ use rustket_core::admin::{AdminSection, VisibleSection, visible_sections};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, TEXT_TITLE,
-    font_semibold,
+    SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_SMALL, TEXT_TITLE, font_semibold,
 };
 use rustket_ui::widget::{
     ChipKind, chip, danger_button, dialog, divider, ellipsis, empty_state, icon_button,
@@ -46,6 +45,7 @@ use rustket_ui::widget::{
 
 use crate::component::{Action, Ctx, Effect, ViewCtx};
 use crate::error::Res;
+use crate::screens::page::nav_item;
 use common::{Confirm, Cx};
 use guard::{Done, Op, Outcome};
 
@@ -679,33 +679,23 @@ impl Admin {
     }
 
     fn nav<'a>(&'a self, sections: &[VisibleSection]) -> Element<'a, Message> {
-        let mut col = column![nav_item(
+        let mut items = vec![nav_item(
             Icon::LayoutGrid,
             t!("admin.section.home").into_owned(),
-            false,
+            None,
             self.section.is_none(),
             Message::Select(None),
-        )]
-        .spacing(SPACE_1)
-        .padding(SPACE_2);
+        )];
         for v in sections {
-            col = col.push(nav_item(
+            items.push(nav_item(
                 section_icon(v.section),
                 section_title(v.section),
-                v.premium_locked,
+                v.premium_locked.then(|| t!("admin.premium").into_owned()),
                 self.section == Some(v.section),
                 Message::Select(Some(v.section)),
             ));
         }
-        container(
-            scrollable(col)
-                .height(Length::Fill)
-                .style(style::scrollable),
-        )
-        .width(232)
-        .height(Length::Fill)
-        .style(style::container_sidebar)
-        .into()
+        crate::screens::page::nav_list(items)
     }
 
     fn home<'a>(&'a self, sections: &[VisibleSection]) -> Element<'a, Message> {
@@ -852,34 +842,6 @@ pub fn section_icon(s: AdminSection) -> Icon {
         AdminSection::Settings => Icon::Settings,
         AdminSection::Apps => Icon::Blocks,
     }
-}
-
-fn nav_item<'a>(
-    ic: Icon,
-    label: String,
-    premium: bool,
-    selected: bool,
-    on_press: Message,
-) -> Element<'a, Message> {
-    let mut r = row![
-        icon::sized(ic, 16.0),
-        text(label).size(TEXT_BODY).width(Length::Fill)
-    ]
-    .spacing(SPACE_2)
-    .align_y(Alignment::Center);
-    if premium {
-        r = r.push(
-            text(t!("admin.premium"))
-                .size(TEXT_CAPTION)
-                .style(style::text_secondary),
-        );
-    }
-    button(r)
-        .padding([6, 10])
-        .width(Length::Fill)
-        .style(style::button_list_item(selected))
-        .on_press(on_press)
-        .into()
 }
 
 /// EE-only or not native: explanation and "Open in browser".

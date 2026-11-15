@@ -129,7 +129,14 @@ impl App {
                     .is_enabled()
                     .then(crate::desktop::autostart::Autostart::system)
                     .flatten();
-                let mut screen = settings::Settings::with_autostart(at);
+                // Sidebar deep links open the Sidebar tab, so the revealed
+                // card exists when the reveal runs; otherwise the last tab.
+                let tab = match nav {
+                    Nav::SidebarSettings { .. } => settings::Tab::Sidebar,
+                    _ => self.settings_tab,
+                };
+                self.settings_tab = tab;
+                let mut screen = settings::Settings::with_autostart(at).with_tab(tab);
                 // Theme files edited meanwhile show up (and apply) here.
                 self.themes.rescan();
                 self.themes.apply(self.config.ui.theme_name.as_deref());
@@ -139,7 +146,7 @@ impl App {
                 let reveal = match nav {
                     Nav::SidebarSettings { ungroup, flag } => {
                         // The confirmation is in the group's row, far below
-                        // the card's top; a flag's name in the Flags block.
+                        // the tab's top; a flag's name in the Flags card.
                         let task = match (&ungroup, flag, &self.active) {
                             (Some(g), _, _) => settings::reveal_sidebar_group(g),
                             (None, Some(c), Some(sid)) => settings::reveal_flag(sid, c),
@@ -368,6 +375,7 @@ impl App {
             ui_state: &mut self.ui_state,
         };
         let a = s.update(m, &mut ctx);
+        self.settings_tab = s.tab;
         // A draft that reads exactly like the stored name is no edit: it must
         // not shadow a rename made elsewhere.
         s.flag_drafts.retain(|(sid, color), draft| {

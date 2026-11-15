@@ -76,7 +76,7 @@ impl App {
             }
             Screen::Server => self.server_view(),
             Screen::Settings(c) => {
-                self.with_rail(c.view(&self.settings_view_data()).map(Message::Settings))
+                self.with_rail(c.view(self.settings_view_data()).map(Message::Settings))
             }
             Screen::Account(sid, c) => self.server_page(sid, |s| {
                 let sid = sid.clone();

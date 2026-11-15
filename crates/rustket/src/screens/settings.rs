@@ -1,38 +1,90 @@
-//! App preferences (local, not per server): appearance, language,
-//! notifications, window behaviour, integration, storage, about. Owner:
-//! desktop agent. Strings: `locales/settings.yml` (`settings.*`).
+//! App preferences (local, not per server) in tabs: General, Appearance,
+//! Notifications, Sidebar, Privacy & storage, About. Each tab's cards are
+//! built in `settings/<tab>.rs`; this file keeps the state, the messages, the
+//! update and the tab frame. Strings: `locales/settings.yml` (`settings.*`).
 
-use iced::widget::{button, column, container, pick_list, row, text, toggler};
-use iced::{Alignment, Element, Length, Subscription, Task};
+use iced::widget::{Column, container};
+use iced::{Element, Length, Subscription, Task};
 use rust_i18n::t;
 use rustket_core::config::{
     AppConfig, Density, Language, SidebarSort, Theme as ThemePref, ThreadsMode, UiPrefs, ZOOM_RANGE,
 };
 use rustket_core::secrets::SecretBackend;
-use rustket_ui::style;
-use rustket_ui::theme::{
-    SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_6, TEXT_BODY, TEXT_CAPTION, TEXT_SUBTITLE,
-    font_semibold,
-};
-use rustket_ui::widget::{BannerKind, banner, divider, focus_ring, secondary_button};
+use rustket_ui::icon::Icon;
+use rustket_ui::theme::SPACE_6;
+use rustket_ui::widget::BannerKind;
 
 use crate::component::{Action, Effect};
 use crate::desktop::TraySupport;
 use crate::desktop::autostart::{self, Autostart};
-use crate::renderer::Renderer;
 use crate::ui_state::UiState;
 
+mod about;
+mod appearance;
+mod general;
+mod notifications;
+mod pickers;
+mod privacy;
 mod sidebar;
+mod widgets;
 
-use sidebar::Choice;
+pub use privacy::size_label;
 pub use sidebar::{FlagAccount, GroupDraft, Message as SidebarMessage};
 
-/// The Sidebar card (scrolled to by the sidebar's "Sidebar settings…").
-pub const SIDEBAR_CARD: &str = "settings-sidebar";
-/// The Storage card.
-pub const STORAGE_CARD: &str = "settings-storage";
+/// A settings tab (left nav, or a wrapping row in narrow windows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum Tab {
+    #[default]
+    General,
+    Appearance,
+    Notifications,
+    Sidebar,
+    Privacy,
+    About,
+}
 
-/// Container id of a group's row in the Sidebar card's section list.
+impl Tab {
+    pub const ALL: [Tab; 6] = [
+        Tab::General,
+        Tab::Appearance,
+        Tab::Notifications,
+        Tab::Sidebar,
+        Tab::Privacy,
+        Tab::About,
+    ];
+
+    pub fn i18n_key(self) -> &'static str {
+        match self {
+            Tab::General => "settings.tab_general",
+            Tab::Appearance => "settings.appearance",
+            Tab::Notifications => "settings.notifications",
+            Tab::Sidebar => "settings.sidebar",
+            Tab::Privacy => "settings.tab_privacy",
+            Tab::About => "settings.about",
+        }
+    }
+
+    pub fn icon(self) -> Icon {
+        match self {
+            Tab::General => Icon::Settings,
+            Tab::Appearance => Icon::Palette,
+            Tab::Notifications => Icon::Bell,
+            Tab::Sidebar => Icon::PanelLeft,
+            Tab::Privacy => Icon::ShieldCheck,
+            Tab::About => Icon::Info,
+        }
+    }
+}
+
+/// The first card of the Sidebar tab (scrolled to by the sidebar's
+/// "Sidebar settings…").
+pub const SIDEBAR_CARD: &str = "settings-sidebar";
+/// The Storage card (Privacy & storage tab).
+pub const STORAGE_CARD: &str = "settings-storage";
+/// The secret store card (Privacy & storage tab).
+pub const SECRET_STORE_CARD: &str = "settings-secret-store";
+
+/// Container id of a group's row in the Sidebar tab's section list.
 pub fn sidebar_group_row_id(group: &str) -> String {
     format!("settings-sidebar-group-{group}")
 }
@@ -51,12 +103,13 @@ fn reveal_container<M: Send + 'static>(id: iced::widget::Id) -> Task<M> {
     crate::room::timeline::list::reveal(iced::widget::Id::new(super::page::SCROLL_ID), id, false)
 }
 
-/// Scrolls the open settings page to the Sidebar card.
+/// Scrolls the open settings page to the Sidebar tab's first card (the
+/// Sidebar tab must be open: [`Settings::with_tab`]).
 pub fn reveal_sidebar<M: Send + 'static>() -> Task<M> {
     reveal_container(iced::widget::Id::new(SIDEBAR_CARD))
 }
 
-/// Scrolls the open settings page to a group's row in the Sidebar card
+/// Scrolls the open settings page to a group's row in the Sidebar tab
 /// (where its deletion preset by "Ungroup…" is confirmed).
 pub fn reveal_sidebar_group<M: Send + 'static>(group: &str) -> Task<M> {
     reveal_container(iced::widget::Id::from(sidebar_group_row_id(group)))
@@ -74,7 +127,8 @@ pub fn reveal_flag<M: Send + 'static>(
     ])
 }
 
-/// Scrolls the open settings page to the Storage card.
+/// Scrolls the open settings page to the Storage card (the Privacy &
+/// storage tab must be open).
 pub fn reveal_storage<M: Send + 'static>() -> Task<M> {
     reveal_container(iced::widget::Id::new(STORAGE_CARD))
 }
@@ -109,6 +163,8 @@ pub enum Message {
     SetPreview(bool),
     SetSound(bool),
     TestNotification,
+    /// Shows a tab (scrolled to its top).
+    Tab(Tab),
     SetCloseToTray(bool),
     SetMinimizeToTray(bool),
     SetStartMinimized(bool),
@@ -123,7 +179,7 @@ pub enum Message {
     /// Disk cache cap in MiB (`UiPrefs::image_cache_mb`).
     SetImageCacheMb(u32),
     ClearOfflineCache,
-    // Sidebar card (`settings/sidebar.rs`).
+    // Sidebar tab (`settings/sidebar.rs`).
     SetGroupByType(bool),
     SetSidebarSort(SidebarSort),
     SetThreadsMode(ThreadsMode),
@@ -177,6 +233,8 @@ pub struct SettingsView<'a> {
 
 #[derive(Debug)]
 pub struct Settings {
+    /// The tab shown.
+    pub tab: Tab,
     /// Where the launch-at-login entry lives (a temporary dir in tests).
     autostart_at: Option<Autostart>,
     /// Launch at login (`None` until read).
@@ -221,6 +279,7 @@ impl Settings {
 
     pub fn with_autostart(at: Option<Autostart>) -> Self {
         Self {
+            tab: Tab::default(),
             autostart_at: at,
             autostart: None,
             autostart_busy: false,
@@ -231,6 +290,12 @@ impl Settings {
             confirm_flag_clear: None,
             confirm_star_kept: false,
         }
+    }
+
+    /// The same screen showing `tab` first (deep links reveal cards in it).
+    pub fn with_tab(mut self, tab: Tab) -> Self {
+        self.tab = tab;
+        self
     }
 
     /// Reads the launch-at-login state (run when the screen opens).
@@ -277,6 +342,13 @@ impl Settings {
             Message::SetPreview(v) => Self::pref(ctx, |p| p.notification_preview = v),
             Message::SetSound(v) => Self::pref(ctx, |p| p.sound = v),
             Message::TestNotification => Action::effect(Effect::TestNotification),
+            Message::Tab(tab) => {
+                self.tab = tab;
+                Action::task(iced::widget::operation::snap_to(
+                    iced::widget::Id::new(super::page::SCROLL_ID),
+                    iced::widget::scrollable::RelativeOffset::START,
+                ))
+            }
             Message::SetCloseToTray(v) => Self::pref(ctx, |p| p.close_to_tray = v),
             Message::SetMinimizeToTray(v) => Self::pref(ctx, |p| p.minimize_to_tray = v),
             Message::SetStartMinimized(v) => Self::pref(ctx, |p| p.start_minimized = v),
@@ -358,822 +430,44 @@ impl Settings {
         Subscription::none()
     }
 
-    pub fn view<'a>(&'a self, v: &SettingsView<'a>) -> Element<'a, Message> {
-        let ui = &v.config.ui;
-        let mut body = column![].spacing(SPACE_6).max_width(720);
-        match v.secret_backend {
-            Some(SecretBackend::File) => {
-                body = body.push(banner(BannerKind::Warning, t!("app.keyring_file"), None));
-            }
-            Some(SecretBackend::Memory) if v.secrets_in_memory => {
-                body = body.push(banner(
-                    BannerKind::Warning,
-                    t!("settings.secrets_memory"),
-                    None,
-                ));
-            }
-            _ => {}
-        }
-
-        let step = |glyph: &'static str, msg: Option<Message>| {
-            let b = button(
-                text(glyph)
-                    .size(TEXT_SUBTITLE)
-                    .width(Length::Fill)
-                    .align_x(Alignment::Center),
-            )
-            .width(36)
-            .padding([2, 0])
-            .style(style::button_secondary)
-            .on_press_maybe(msg.clone());
-            focus_ring(b, msg)
-        };
-        let zoom = row![
-            step(
-                "\u{2212}",
-                (ui.zoom > *ZOOM_RANGE.start() + 0.01).then_some(Message::Zoom(-1))
-            ),
-            text(format!("{:.0} %", ui.zoom * 100.0))
-                .size(TEXT_BODY)
-                .width(64)
-                .align_x(Alignment::Center),
-            step(
-                "+",
-                (ui.zoom < *ZOOM_RANGE.end() - 0.01).then_some(Message::Zoom(1))
-            ),
-            secondary_button(
-                t!("settings.zoom_reset"),
-                ((ui.zoom - 1.0).abs() > 0.01).then_some(Message::Zoom(0))
-            ),
-        ]
-        .spacing(SPACE_2)
-        .align_y(Alignment::Center);
-
-        body = body.push(section(
-            t!("settings.appearance").into_owned(),
-            vec![
-                theme_picker(ui, v.themes),
-                field(
-                    t!("settings.mode").into_owned(),
-                    None,
-                    segmented(
-                        &ui.theme,
-                        vec![
-                            (ThemePref::System, t!("settings.theme_system").into_owned()),
-                            (ThemePref::Light, t!("settings.theme_light").into_owned()),
-                            (ThemePref::Dark, t!("settings.theme_dark").into_owned()),
-                        ],
-                        Message::SetTheme,
-                    ),
-                ),
-                field(
-                    t!("settings.density").into_owned(),
-                    None,
-                    segmented(
-                        &ui.density,
-                        vec![
-                            (
-                                Density::Extended,
-                                t!("settings.density_extended").into_owned(),
-                            ),
-                            (
-                                Density::Condensed,
-                                t!("settings.density_condensed").into_owned(),
-                            ),
-                        ],
-                        Message::SetDensity,
-                    ),
-                ),
-                field(t!("settings.zoom").into_owned(), None, zoom.into()),
-                field(
-                    t!("settings.names").into_owned(),
-                    Some(t!("settings.names_help").into_owned()),
-                    segmented(
-                        &ui.use_real_names,
-                        vec![
-                            (None, t!("settings.names_server").into_owned()),
-                            (Some(true), t!("settings.names_real").into_owned()),
-                            (Some(false), t!("settings.names_usernames").into_owned()),
-                        ],
-                        Message::SetRealNames,
-                    ),
-                ),
-                switch(
-                    t!("settings.show_avatars").into_owned(),
-                    None,
-                    ui.show_avatars,
-                    Some(Message::SetShowAvatars),
-                ),
-                switch(
-                    t!("settings.clock_24h").into_owned(),
-                    None,
-                    ui.clock_24h,
-                    Some(Message::SetClock24),
-                ),
-                switch(
-                    t!("settings.hardware_acceleration").into_owned(),
-                    Some(format!(
-                        "{}\n{}",
-                        t!("settings.hardware_acceleration_help"),
-                        t!(
-                            "settings.renderer_now",
-                            renderer = renderer_label(crate::renderer::active())
-                        )
-                    )),
-                    ui.hardware_acceleration,
-                    Some(Message::SetHardwareAcceleration),
-                ),
-                switch(
-                    t!("titlebar.setting").into_owned(),
-                    Some(t!("titlebar.setting_help").into_owned()),
-                    ui.system_title_bar,
-                    Some(Message::SetSystemTitleBar),
-                ),
-            ],
-        ));
-
-        body = body.push(self.sidebar_card(ui, &v.flags, v.star_kept_busy));
-
-        body = body.push(section(
-            t!("settings.language").into_owned(),
-            vec![language_picker(ui, v.locales)],
-        ));
-
-        let notify_on = ui.desktop_notifications;
-        body = body.push(section(
-            t!("settings.notifications").into_owned(),
-            vec![
-                switch(
-                    t!("settings.notifications_enable").into_owned(),
-                    Some(t!("settings.notifications_help").into_owned()),
-                    notify_on,
-                    Some(Message::SetNotifications),
-                ),
-                switch(
-                    t!("settings.notifications_preview").into_owned(),
-                    None,
-                    ui.notification_preview,
-                    notify_on.then_some(Message::SetPreview),
-                ),
-                switch(
-                    t!("settings.notifications_sound").into_owned(),
-                    None,
-                    ui.sound,
-                    notify_on.then_some(Message::SetSound),
-                ),
-                row![secondary_button(
-                    t!("settings.notifications_test"),
-                    notify_on.then_some(Message::TestNotification)
-                )]
-                .into(),
-            ],
-        ));
-
-        let autostart: Element<'a, Message> = match self.autostart {
-            Some(on) => switch(
-                t!("settings.autostart").into_owned(),
-                None,
-                on,
-                (!self.autostart_busy && self.autostart_at.is_some())
-                    .then_some(Message::SetAutostart),
-            ),
-            // Still loading, or no config directory at all.
-            None => switch(
-                t!("settings.autostart").into_owned(),
-                Some(if self.autostart_at.is_none() {
-                    t!("settings.autostart_unknown").into_owned()
-                } else {
-                    t!("settings.autostart_loading").into_owned()
-                }),
-                false,
-                None,
-            ),
-        };
-        let tray = v.tray;
-        let close_help = if !tray.available {
-            t!("settings.no_tray")
-        } else if !tray.can_hide {
-            t!("settings.tray_help_wayland")
-        } else {
-            t!("settings.tray_help")
-        };
-        body = body.push(section(
-            t!("settings.behaviour").into_owned(),
-            vec![
-                switch(
-                    t!("settings.close_to_tray").into_owned(),
-                    Some(close_help.into_owned()),
-                    ui.close_to_tray && tray.available,
-                    tray.available.then_some(Message::SetCloseToTray),
-                ),
-                switch(
-                    t!("settings.minimize_to_tray").into_owned(),
-                    (tray.available && !tray.can_hide)
-                        .then(|| t!("settings.minimize_wayland").into_owned()),
-                    ui.minimize_to_tray && tray.can_hide,
-                    (tray.available && tray.can_hide).then_some(Message::SetMinimizeToTray),
-                ),
-                switch(
-                    t!("settings.start_minimized").into_owned(),
-                    None,
-                    ui.start_minimized,
-                    Some(Message::SetStartMinimized),
-                ),
-                autostart,
-            ],
-        ));
-
-        // macOS: the app bundle declares the scheme; nothing to register.
-        let links = if crate::url_handler::MANAGED_BY_BUNDLE {
-            column![
-                text(t!("settings.links")).size(TEXT_BODY),
-                text(t!("settings.handler_bundle"))
-                    .size(TEXT_CAPTION)
-                    .style(style::text_secondary),
-            ]
-            .spacing(SPACE_1)
-            .width(Length::Fill)
-            .into()
-        } else {
-            row![
-                column![
-                    text(t!("settings.links")).size(TEXT_BODY),
-                    text(if v.handler_registered {
-                        t!("settings.handler_on")
-                    } else {
-                        t!("settings.handler_off")
-                    })
-                    .size(TEXT_CAPTION)
-                    .style(if v.handler_registered {
-                        style::text_success
-                    } else {
-                        style::text_secondary
-                    }),
-                ]
-                .spacing(SPACE_1)
-                .width(Length::Fill),
-                secondary_button(
-                    t!("settings.handler_register"),
-                    Some(Message::RegisterHandler)
-                ),
-            ]
-            .spacing(SPACE_3)
-            .align_y(Alignment::Center)
-            .into()
-        };
-        body = body.push(section(
-            t!("settings.integration").into_owned(),
-            vec![links],
-        ));
-
-        let with_cache_row = |rows| {
-            crate::cache::view::with_storage_row(v.offline_cache, Message::ClearOfflineCache, rows)
-        };
-        body = body.push(
-            container(section(
-                t!("settings.storage").into_owned(),
-                with_cache_row(vec![
-                    row![
-                        column![
-                            text(t!("settings.image_cache")).size(TEXT_BODY),
-                            text(t!("settings.image_cache_help"))
-                                .size(TEXT_CAPTION)
-                                .style(style::text_secondary),
-                        ]
-                        .spacing(SPACE_1)
-                        .width(Length::Fill),
-                        secondary_button(
-                            t!("settings.clear_cache"),
-                            Some(Message::ClearImageCache)
-                        ),
-                    ]
-                    .spacing(SPACE_3)
-                    .align_y(Alignment::Center)
-                    .into(),
-                    field(
-                        t!("settings.cache_limit").into_owned(),
-                        Some(cache_limit_help(ui.image_cache_mb)),
-                        segmented(
-                            &ui.image_cache_mb,
-                            cache_choices(ui.image_cache_mb),
-                            Message::SetImageCacheMb,
-                        ),
-                    ),
-                ]),
-            ))
-            .id(STORAGE_CARD),
-        );
-
-        #[cfg(feature = "self-update")]
-        {
-            body = body.push(updates_card(ui, &v.updater));
-        }
-
-        body = body.push(section(
-            t!("settings.about").into_owned(),
-            vec![
-                text(t!("settings.version", version = env!("CARGO_PKG_VERSION")))
-                    .size(TEXT_BODY)
-                    .into(),
-                text(t!("settings.about_text"))
-                    .size(TEXT_CAPTION)
-                    .style(style::text_secondary)
-                    .into(),
-                row![
-                    link(t!("settings.website").into_owned(), WEBSITE),
-                    link(t!("settings.docs").into_owned(), DOCS),
-                ]
-                .spacing(SPACE_4)
-                .into(),
-            ],
-        ));
-
-        super::page::page(
+    /// The page: tab navigation and the current tab's cards. Takes the view
+    /// data by value: the body is rebuilt whenever the layout width changes.
+    pub fn view<'a>(&'a self, v: SettingsView<'a>) -> Element<'a, Message> {
+        let nav = Tab::ALL
+            .into_iter()
+            .map(|tab| super::page::NavEntry {
+                icon: tab.icon(),
+                label: t!(tab.i18n_key()).into_owned(),
+                selected: self.tab == tab,
+                on_press: Message::Tab(tab),
+            })
+            .collect();
+        super::page::page_with_nav(
             t!("settings.title").into_owned(),
-            container(body).center_x(Length::Fill).into(),
+            nav,
+            move || self.tab_body(&v),
             Message::Close,
         )
     }
-}
 
-/// The "Updates" card: automatic checks, pre-releases, how this copy is
-/// updated, the status and "Check now" (+ "Install").
-#[cfg(feature = "self-update")]
-fn updates_card<'a>(ui: &UiPrefs, d: &crate::updater::view::SettingsData) -> Element<'a, Message> {
-    use crate::updater::app::Msg;
-    use crate::updater::state::CheckOrigin;
-    let mut status = column![].spacing(SPACE_1).width(Length::Fill);
-    if !d.status.is_empty() {
-        status = status.push(text(d.status.clone()).size(TEXT_BODY));
-    }
-    status = status.push(
-        text(d.last_checked.clone())
-            .size(TEXT_CAPTION)
-            .style(style::text_secondary),
-    );
-    let mut actions = row![
-        status,
-        secondary_button(
-            t!("updater.check_now"),
-            (!d.busy).then_some(Message::Updater(Msg::Check(CheckOrigin::Manual))),
-        )
-    ]
-    .spacing(SPACE_3)
-    .align_y(Alignment::Center);
-    if let Some(label) = &d.install {
-        actions = actions.push(rustket_ui::widget::primary_button(
-            label.clone(),
-            Some(Message::Updater(Msg::Install)),
-        ));
-    }
-    section(
-        t!("updater.title").into_owned(),
-        vec![
-            switch(
-                t!("updater.auto_check").into_owned(),
-                Some(t!("updater.auto_check_help").into_owned()),
-                ui.check_updates,
-                Some(Message::SetCheckUpdates),
-            ),
-            switch(
-                t!("updater.prereleases").into_owned(),
-                Some(t!("updater.prereleases_help").into_owned()),
-                ui.update_prereleases,
-                Some(Message::SetUpdatePrereleases),
-            ),
-            column![
-                text(t!("updater.method")).size(TEXT_BODY),
-                text(d.method.clone())
-                    .size(TEXT_CAPTION)
-                    .style(style::text_secondary),
-            ]
-            .spacing(SPACE_1)
-            .into(),
-            actions.into(),
-        ],
-    )
-}
-
-/// Most theme warnings listed before "and N more".
-const THEME_WARNINGS_SHOWN: usize = 5;
-
-/// The external theme picker with "Open themes folder" and "Reload", and
-/// below it what is wrong with the selected theme.
-fn theme_picker<'a>(ui: &UiPrefs, themes: &crate::themes::Themes) -> Element<'a, Message> {
-    use crate::themes::LoadError;
-    use rustket_ui::theme_file::ThemeFileError;
-    let builtin = Choice {
-        value: None,
-        label: t!("settings.theme_builtin").into_owned(),
-    };
-    let mut choices = vec![builtin.clone()];
-    let names: Vec<String> = themes.entries.iter().map(|e| e.display_name()).collect();
-    choices.extend(themes.entries.iter().zip(&names).map(|(e, name)| {
-        let label = if names.iter().filter(|n| *n == name).count() > 1 {
-            format!("{name} ({}.toml)", e.id)
-        } else {
-            name.clone()
+    fn tab_body<'a>(&'a self, v: &SettingsView<'a>) -> Element<'a, Message> {
+        let cards = match self.tab {
+            Tab::General => general::view(self, v),
+            Tab::Appearance => appearance::view(v),
+            Tab::Notifications => notifications::view(v),
+            Tab::Sidebar => self.sidebar_cards(&v.config.ui, &v.flags, v.star_kept_busy),
+            Tab::Privacy => privacy::view(v),
+            Tab::About => about::view(v),
         };
-        Choice {
-            value: Some(e.id.clone()),
-            label,
-        }
-    }));
-    let selected = ui.theme_name.as_deref();
-    let current = match selected {
-        None => builtin,
-        Some(id) => choices
-            .iter()
-            .find(|c| c.value.as_deref() == Some(id))
-            .cloned()
-            .unwrap_or_else(|| Choice {
-                value: Some(id.to_owned()),
-                label: id.to_owned(),
-            }),
-    };
-    let controls = row![
-        pick_list(choices, Some(current), |c: Choice<Option<String>>| {
-            Message::SetThemeName(c.value)
-        })
-        .text_size(TEXT_BODY)
-        .width(Length::Fill)
-        .style(style::pick_list)
-        .menu_style(style::menu),
-        secondary_button(
-            t!("settings.themes_folder"),
-            themes.dir.is_some().then_some(Message::OpenThemesFolder)
-        ),
-        secondary_button(
-            t!("settings.themes_reload"),
-            themes.dir.is_some().then_some(Message::ReloadThemes)
-        ),
-    ]
-    .spacing(SPACE_2)
-    .align_y(Alignment::Center);
-    let mut col = column![controls].spacing(SPACE_2);
-    let caption = |s: String| text(s).size(TEXT_CAPTION).style(style::text_secondary);
-    match themes.resolve(selected) {
-        None => {}
-        Some(Err(e)) => {
-            let msg = match e {
-                LoadError::NotFound => t!(
-                    "settings.theme_not_found",
-                    file = format!("{}.toml", selected.unwrap_or_default())
-                ),
-                LoadError::Read(e) => t!("settings.theme_unreadable", error = e),
-                LoadError::TooLarge(size) => t!("settings.theme_too_large", size = size),
-                LoadError::Parse(ThemeFileError::MissingName) => t!("settings.theme_no_name"),
-                LoadError::Parse(ThemeFileError::NoVariants) => t!("settings.theme_no_variants"),
-                LoadError::Parse(ThemeFileError::Syntax(e)) => {
-                    t!("settings.theme_invalid", error = e)
-                }
-            };
-            col = col.push(banner(BannerKind::Error, msg, None));
-        }
-        Some(Ok(file)) => {
-            if !file.has(rustket_ui::Mode::Light) {
-                col = col.push(caption(t!("settings.theme_dark_only").into_owned()));
-            } else if !file.has(rustket_ui::Mode::Dark) {
-                col = col.push(caption(t!("settings.theme_light_only").into_owned()));
-            }
-            let entry = selected.and_then(|id| themes.get(id));
-            let mut lines: Vec<String> = file.warnings.iter().map(warning_text).collect();
-            if let Some(e) = entry {
-                lines.extend(e.font_warnings.iter().map(warning_text));
-                for (mode, issues) in [
-                    (t!("settings.theme_light"), &e.light_issues),
-                    (t!("settings.theme_dark"), &e.dark_issues),
-                ] {
-                    lines.extend(issues.iter().map(|i| {
-                        t!(
-                            "settings.theme_low_contrast",
-                            mode = mode,
-                            what = i.what,
-                            ratio = format!("{:.2}", i.ratio),
-                            min = i.min
-                        )
-                        .into_owned()
-                    }));
-                }
-            }
-            if !lines.is_empty() {
-                let more = lines.len().saturating_sub(THEME_WARNINGS_SHOWN);
-                let mut msg = t!("settings.theme_warnings").into_owned();
-                for l in lines.iter().take(THEME_WARNINGS_SHOWN) {
-                    msg.push_str("\n• ");
-                    msg.push_str(l);
-                }
-                if more > 0 {
-                    msg.push('\n');
-                    msg.push_str(&t!("settings.theme_more", n = more));
-                }
-                col = col.push(banner(BannerKind::Warning, msg, None));
-            }
-        }
-    }
-    if themes.fonts_need_restart(selected) {
-        col = col.push(caption(t!("settings.theme_fonts_restart").into_owned()));
-    }
-    field(
-        t!("settings.theme").into_owned(),
-        Some(t!("settings.theme_help").into_owned()),
-        col.into(),
-    )
-}
-
-/// The language picker (System, bundled, external locales) with "Open
-/// languages folder" and "Reload", and below it what is wrong with the
-/// selected (or system) locale's file.
-fn language_picker<'a>(ui: &UiPrefs, locales: &crate::locales::Locales) -> Element<'a, Message> {
-    use crate::i18n;
-    let with_coverage = |code: &str, name: String| match locales.coverage(code) {
-        Some(c) if !c.complete() => format!("{name} ({}%)", c.percent()),
-        _ => name,
-    };
-    let choice = |code: &str, label: String| Choice {
-        value: Language::new(code).unwrap_or_default(),
-        label,
-    };
-    let system_code = i18n::system();
-    let system_name = i18n::native_name(&system_code).unwrap_or_else(|| system_code.clone());
-    let system = choice(
-        Language::SYSTEM,
-        format!("{} ({system_name})", t!("settings.language_system")),
-    );
-    let mut choices = vec![system.clone()];
-    choices.extend(
-        i18n::BUNDLED
-            .iter()
-            .map(|b| choice(b.code, with_coverage(b.code, b.name.to_owned()))),
-    );
-    let mut external: Vec<(String, &str)> = locales
-        .entries
-        .iter()
-        .filter(|e| i18n::bundled(&e.code).is_none())
-        .map(|e| (e.display_name(), e.code.as_str()))
-        .collect();
-    external.sort_by_cached_key(|(name, code)| (name.to_lowercase(), (*code).to_owned()));
-    // Same-named entries are told apart by their file name.
-    let clashes = |name: &str| {
-        external.iter().filter(|(n, _)| n == name).count() > 1
-            || i18n::BUNDLED
-                .iter()
-                .any(|b| b.name.to_lowercase() == name.to_lowercase())
-    };
-    choices.extend(external.iter().map(|(name, code)| {
-        let name = if clashes(name) {
-            format!("{name} ({code}.toml)")
-        } else {
-            name.clone()
-        };
-        choice(code, with_coverage(code, name))
-    }));
-    let selected = ui.language.as_str();
-    let current = choices
-        .iter()
-        .find(|c| c.value.as_str() == selected)
-        .cloned()
-        .unwrap_or_else(|| Choice {
-            value: ui.language.clone(),
-            label: selected.to_owned(),
-        });
-    let controls = row![
-        pick_list(choices, Some(current), |c: Choice<Language>| {
-            Message::SetLanguage(c.value)
-        })
-        .text_size(TEXT_BODY)
-        .width(Length::Fill)
-        .style(style::pick_list)
-        .menu_style(style::menu),
-        secondary_button(
-            t!("settings.locales_folder"),
-            locales.dir.is_some().then_some(Message::OpenLocalesFolder)
-        ),
-        secondary_button(
-            t!("settings.themes_reload"),
-            locales.dir.is_some().then_some(Message::ReloadLocales)
-        ),
-    ]
-    .spacing(SPACE_2)
-    .align_y(Alignment::Center);
-    let mut col = column![controls].spacing(SPACE_2);
-
-    let unusable = !ui.language.is_system() && !i18n::is_available(selected);
-    let code = if ui.language.is_system() {
-        system_code.as_str()
-    } else {
-        selected
-    };
-    let file = format!("{code}.toml");
-    let error = match locales.get(code).map(|e| &e.file) {
-        None if unusable => Some(t!("settings.locale_not_found", file = file).into_owned()),
-        None | Some(Ok(_)) => None,
-        Some(Err(e)) => Some(crate::locales::load_error_text(e, &file)),
-    };
-    if let Some(msg) = error {
-        let fallback = if unusable {
-            t!("settings.locale_fallback_system", name = system_name)
-        } else {
-            t!("settings.locale_fallback_builtin")
-        };
-        col = col.push(banner(
-            BannerKind::Error,
-            format!("{msg}\n{fallback}"),
-            None,
-        ));
-    } else if let Some(Ok(f)) = locales.get(code).map(|e| &e.file)
-        && !f.warnings.is_empty()
-    {
-        let more = f.warnings.len().saturating_sub(THEME_WARNINGS_SHOWN);
-        let mut msg = t!("settings.locale_warnings", file = file).into_owned();
-        for w in f.warnings.iter().take(THEME_WARNINGS_SHOWN) {
-            msg.push_str("\n• ");
-            msg.push_str(&crate::locales::warning_text(w, code));
-        }
-        if more > 0 {
-            msg.push('\n');
-            msg.push_str(&t!("settings.theme_more", n = more));
-        }
-        col = col.push(banner(BannerKind::Warning, msg, None));
-    }
-    field(
-        t!("settings.language_ui").into_owned(),
-        Some(t!("settings.language_help").into_owned()),
-        col.into(),
-    )
-}
-
-/// A theme file warning in the UI language (key paths stay as written).
-fn warning_text(w: &rustket_ui::ThemeWarning) -> String {
-    use rustket_ui::ThemeWarning as W;
-    match w {
-        W::UnknownKey(k) => t!("settings.theme_w_unknown", key = k),
-        W::BadValue { key, value } => t!("settings.theme_w_bad", key = key, value = value),
-        W::FlagLength { key, len } => t!("settings.theme_w_flags", key = key, n = len),
-        W::NewerVersion(v) => t!("settings.theme_w_version", version = v),
-        W::RadiusClamped { value, used } => {
-            t!("settings.theme_w_radius", value = value, used = used)
-        }
-        W::FontMissing(family) => t!("settings.theme_w_font", family = family),
-        W::MonoFontMissing(family) => t!("settings.theme_w_mono_font", family = family),
-        W::FontWeight {
-            family,
-            wanted,
-            used,
-        } => t!(
-            "settings.theme_w_weight",
-            family = family,
-            wanted = wanted,
-            used = used
-        ),
-    }
-    .into_owned()
-}
-
-/// A titled card with rows separated by dividers.
-fn section<'a>(title: String, rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
-    let mut col = column![].spacing(SPACE_3);
-    let n = rows.len();
-    for (i, r) in rows.into_iter().enumerate() {
-        col = col.push(r);
-        if i + 1 < n {
-            col = col.push(divider());
-        }
-    }
-    column![
-        text(title).size(TEXT_SUBTITLE).font(font_semibold()),
-        container(col)
-            .padding(SPACE_4)
-            .width(Length::Fill)
-            .style(style::container_card),
-    ]
-    .spacing(SPACE_2)
-    .into()
-}
-
-/// Label (+ help) above a control.
-fn field<'a>(
-    label: String,
-    help: Option<String>,
-    control: Element<'a, Message>,
-) -> Element<'a, Message> {
-    let mut col = column![text(label).size(TEXT_BODY)].spacing(SPACE_1);
-    if let Some(h) = help {
-        col = col.push(text(h).size(TEXT_CAPTION).style(style::text_secondary));
-    }
-    column![col, control].spacing(SPACE_2).into()
-}
-
-fn renderer_label(r: Renderer) -> std::borrow::Cow<'static, str> {
-    match r {
-        Renderer::Gpu => t!("settings.renderer_gpu"),
-        Renderer::Cpu => t!("settings.renderer_cpu"),
+        container(Column::with_children(cards).spacing(SPACE_6).max_width(720))
+            .center_x(Length::Fill)
+            .into()
     }
 }
-
-/// Label (+ help) with a switch on the right.
-fn switch<'a>(
-    label: String,
-    help: Option<String>,
-    value: bool,
-    on_toggle: Option<fn(bool) -> Message>,
-) -> Element<'a, Message> {
-    let mut col = column![text(label).size(TEXT_BODY)].spacing(SPACE_1);
-    if let Some(h) = help {
-        col = col.push(text(h).size(TEXT_CAPTION).style(style::text_secondary));
-    }
-    row![
-        col.width(Length::Fill),
-        focus_ring(
-            toggler(value)
-                .size(20)
-                .style(style::toggler)
-                .on_toggle_maybe(on_toggle),
-            on_toggle.map(|f| f(!value)),
-        )
-        .radius(rustket_ui::theme::RADIUS_PILL),
-    ]
-    .spacing(SPACE_3)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-/// "100 MB", "1 GB" … (decimal units, like the cap: [`crate::images::MB`]).
-pub fn size_label(mb: u64) -> String {
-    if mb >= 1000 && mb.is_multiple_of(1000) {
-        t!("settings.size_gb", n = mb / 1000).into_owned()
-    } else {
-        t!("settings.size_mb", n = mb).into_owned()
-    }
-}
-
-/// The cap choices, with a configured value outside them kept as its own.
-fn cache_choices(current: u32) -> Vec<(u32, String)> {
-    let mut v: Vec<u32> = IMAGE_CACHE_CHOICES.to_vec();
-    if !v.contains(&current) {
-        v.push(current);
-        v.sort_unstable();
-    }
-    v.into_iter()
-        .map(|mb| (mb, size_label(u64::from(mb))))
-        .collect()
-}
-
-fn cache_limit_help(cap_mb: u32) -> String {
-    let help = t!("settings.cache_limit_help").into_owned();
-    match crate::images::disk_usage() {
-        Some(bytes) => format!(
-            "{help}\n{}",
-            t!(
-                "settings.cache_used",
-                used = size_label(bytes.div_ceil(crate::images::MB)),
-                limit = size_label(u64::from(cap_mb))
-            )
-        ),
-        None => help,
-    }
-}
-
-/// A row of mutually exclusive buttons.
-fn segmented<'a, T: Clone + PartialEq + 'a>(
-    current: &T,
-    options: Vec<(T, String)>,
-    to_msg: fn(T) -> Message,
-) -> Element<'a, Message> {
-    let mut r = row![].spacing(SPACE_2);
-    for (value, label) in options {
-        let selected = *current == value;
-        let msg = to_msg(value);
-        r = r.push(focus_ring(
-            button(text(label).size(TEXT_BODY))
-                .padding([6, 12])
-                .style(if selected {
-                    style::button_primary
-                } else {
-                    style::button_secondary
-                })
-                .on_press(msg.clone()),
-            Some(msg),
-        ));
-    }
-    r.into()
-}
-
-fn link<'a>(label: String, url: &'static str) -> Element<'a, Message> {
-    let msg = Message::OpenUrl(url.to_owned());
-    focus_ring(
-        button(text(label).size(TEXT_BODY).style(style::text_link))
-            .padding(0)
-            .style(style::button_link)
-            .on_press(msg.clone()),
-        Some(msg),
-    )
-    .into()
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::privacy::cache_choices;
     use super::*;
     use rustket_core::config::{GroupType, SectionId};
     use rustket_core::room_list::SectionKind;
@@ -1495,8 +789,8 @@ mod tests {
             kept_unstarred: 3,
         };
         cfg.ui.sidebar_starred_threads = true;
-        let _ = s.sidebar_card(&cfg.ui, std::slice::from_ref(&account), false);
-        let _ = s.sidebar_card(&cfg.ui, std::slice::from_ref(&account), true);
+        let _ = s.sidebar_cards(&cfg.ui, std::slice::from_ref(&account), false);
+        let _ = s.sidebar_cards(&cfg.ui, std::slice::from_ref(&account), true);
         run(&mut s, &mut cfg, SidebarMessage::StarKeptCancel);
         assert!(!s.confirm_star_kept);
         run(&mut s, &mut cfg, SidebarMessage::StarKept);
@@ -1546,7 +840,7 @@ mod tests {
             status: crate::workspace::flags::Status::Pending,
             kept_unstarred: 0,
         };
-        let _ = s.sidebar_card(&cfg.ui, std::slice::from_ref(&account), false);
+        let _ = s.sidebar_cards(&cfg.ui, std::slice::from_ref(&account), false);
         let a = run(
             &mut s,
             &mut cfg,
@@ -1609,7 +903,7 @@ mod tests {
             status: crate::workspace::flags::Status::Failed("offline".into()),
             kept_unstarred: 0,
         };
-        let _ = s.sidebar_card(&cfg.ui, std::slice::from_ref(&account), false);
+        let _ = s.sidebar_cards(&cfg.ui, std::slice::from_ref(&account), false);
         run(&mut s, &mut cfg, SidebarMessage::FlagClearCancel);
         assert!(s.confirm_flag_clear.is_none());
         run(
@@ -1670,7 +964,7 @@ mod tests {
         assert_eq!(*ids[i - 1], SectionId::Builtin(SectionKind::Favorites));
         assert!(ids[i + 1].flag().is_none());
         let s = Settings::with_autostart(None);
-        let _ = s.sidebar_card(&cfg.ui, &[], false);
+        let _ = s.sidebar_cards(&cfg.ui, &[], false);
     }
 
     /// Reset asks first; it drops groups, order, section prefs and the
@@ -1855,7 +1149,7 @@ mod tests {
         )));
         assert!(sidebar::has_unread_first(&SectionId::group(&empty)));
         let s = Settings::with_autostart(None);
-        let _ = s.sidebar_card(ui, &[], false);
+        let _ = s.sidebar_cards(ui, &[], false);
     }
 
     /// Conversations can never have rooms once groups take every room type.
@@ -1928,6 +1222,38 @@ mod tests {
     }
 
     /// Storage: the disk cache cap choices keep a value set in the file.
+    #[test]
+    fn tab_switches_and_scrolls_to_top() {
+        let mut s = Settings::with_autostart(None);
+        let mut cfg = AppConfig::default();
+        assert_eq!(s.tab, Tab::General);
+        let a = run(&mut s, &mut cfg, Message::Tab(Tab::Privacy));
+        assert_eq!(s.tab, Tab::Privacy);
+        assert!(a.effects.is_empty());
+        assert_eq!(a.task.units(), 1, "scrolls the page to its top");
+        assert_eq!(
+            Settings::with_autostart(None).with_tab(Tab::Sidebar).tab,
+            Tab::Sidebar
+        );
+    }
+
+    #[test]
+    fn every_tab_is_translated() {
+        let entries = crate::i18n::tests::locale_entries();
+        let mut keys = std::collections::BTreeSet::new();
+        for tab in Tab::ALL {
+            let key = tab.i18n_key();
+            assert!(keys.insert(key), "{key} used twice");
+            let texts = entries.get(key).unwrap_or_else(|| panic!("{key} missing"));
+            for loc in crate::i18n::tests::BUNDLED_COMPLETE {
+                assert!(
+                    texts.get(*loc).is_some_and(|t| !t.is_empty()),
+                    "{key}: missing {loc}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn cache_limit_choices() {
         rust_i18n::set_locale("en");

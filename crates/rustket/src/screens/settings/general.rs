@@ -1,0 +1,105 @@
+//! General tab: language, window and startup, `rocketchat://` links.
+
+use iced::widget::{column, text};
+use iced::{Element, Length};
+use rust_i18n::t;
+use rustket_ui::style;
+use rustket_ui::theme::{SPACE_1, TEXT_BODY};
+
+use super::pickers::language_picker;
+use super::widgets::{action_row, caption, section, switch};
+use super::{Message, Settings, SettingsView};
+
+pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
+    let ui = &v.config.ui;
+    let autostart: Element<'a, Message> = match s.autostart {
+        Some(on) => switch(
+            t!("settings.autostart").into_owned(),
+            None,
+            on,
+            (!s.autostart_busy && s.autostart_at.is_some()).then_some(Message::SetAutostart),
+        ),
+        // Still loading, or no config directory at all.
+        None => switch(
+            t!("settings.autostart").into_owned(),
+            Some(if s.autostart_at.is_none() {
+                t!("settings.autostart_unknown").into_owned()
+            } else {
+                t!("settings.autostart_loading").into_owned()
+            }),
+            false,
+            None,
+        ),
+    };
+    let tray = v.tray;
+    let close_help = if !tray.available {
+        t!("settings.no_tray")
+    } else if !tray.can_hide {
+        t!("settings.tray_help_wayland")
+    } else {
+        t!("settings.tray_help")
+    };
+    let behaviour = section(
+        t!("settings.behaviour").into_owned(),
+        vec![
+            switch(
+                t!("settings.close_to_tray").into_owned(),
+                Some(close_help.into_owned()),
+                ui.close_to_tray && tray.available,
+                tray.available.then_some(Message::SetCloseToTray),
+            ),
+            switch(
+                t!("settings.minimize_to_tray").into_owned(),
+                (tray.available && !tray.can_hide)
+                    .then(|| t!("settings.minimize_wayland").into_owned()),
+                ui.minimize_to_tray && tray.can_hide,
+                (tray.available && tray.can_hide).then_some(Message::SetMinimizeToTray),
+            ),
+            switch(
+                t!("settings.start_minimized").into_owned(),
+                None,
+                ui.start_minimized,
+                Some(Message::SetStartMinimized),
+            ),
+            autostart,
+        ],
+    );
+
+    // macOS: the app bundle declares the scheme; nothing to register.
+    let links = if crate::url_handler::MANAGED_BY_BUNDLE {
+        column![
+            text(t!("settings.links")).size(TEXT_BODY),
+            caption(t!("settings.handler_bundle").into_owned()),
+        ]
+        .spacing(SPACE_1)
+        .width(Length::Fill)
+        .into()
+    } else {
+        let registered = v.handler_registered;
+        action_row(
+            t!("settings.links").into_owned(),
+            caption(if registered {
+                t!("settings.handler_on").into_owned()
+            } else {
+                t!("settings.handler_off").into_owned()
+            })
+            .style(if registered {
+                style::text_success
+            } else {
+                style::text_secondary
+            })
+            .into(),
+            t!("settings.handler_register").into_owned(),
+            Some(Message::RegisterHandler),
+        )
+    };
+
+    vec![
+        section(
+            t!("settings.language").into_owned(),
+            vec![language_picker(ui, v.locales)],
+        ),
+        behaviour,
+        section(t!("settings.integration").into_owned(), vec![links]),
+    ]
+}

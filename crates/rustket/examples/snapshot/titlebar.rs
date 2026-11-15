@@ -2,6 +2,7 @@
 //! server needed): one and three workspaces with badges and a signed-out
 //! marker, light and dark, English and Russian, maximized, a modal open,
 //! 1024 px, the settings toggle and the system-title-bar fallback (rail).
+//! `RUSTKET_SNAPSHOT_ONLY=settings`: every settings tab, wide and narrow.
 
 use std::path::Path;
 
@@ -187,10 +188,17 @@ pub async fn titlebar_shots(out: &Path) -> bool {
         &mut d,
         Message::Rail(rustket::workspace::rail::Message::Settings),
     );
+    // The title bar toggle is on the Appearance tab.
+    upd(
+        &mut d,
+        Message::Settings(rustket::screens::settings::Message::Tab(
+            rustket::screens::settings::Tab::Appearance,
+        )),
+    );
     d.app.config.ui.theme = Theme::Light;
-    d.shoot_at(&out, "07-settings-light", Size::new(1280.0, 1300.0));
+    d.shoot(&out, "07-settings-light");
     rust_i18n::set_locale("ru");
-    d.shoot_at(&out, "07-settings-ru-light", Size::new(1280.0, 1300.0));
+    d.shoot(&out, "07-settings-ru-light");
     rust_i18n::set_locale("en");
     upd(
         &mut d,
@@ -202,5 +210,51 @@ pub async fn titlebar_shots(out: &Path) -> bool {
     );
     assert!(!d.app.custom_chrome());
     both(&mut d, &out, "08-system-title-bar");
+    true
+}
+
+/// Every settings tab at a normal width and at the narrowest window, light
+/// (wide also dark), offline (`RUSTKET_SNAPSHOT_ONLY=settings`).
+pub async fn settings_tab_shots(out: &Path) -> bool {
+    use rustket::screens::settings::{Message as Sm, Tab};
+    if std::env::var("RUSTKET_SNAPSHOT_ONLY").as_deref() != Ok("settings") {
+        return false;
+    }
+    let out = out.join("settings");
+    std::fs::create_dir_all(&out).expect("out dir");
+    let cache = tempfile::tempdir().expect("cache dir");
+    let mut d = Driver::new(Flags {
+        ephemeral: true,
+        cache_dir: Some(cache.path().to_owned()),
+        secrets: SecretsMode::Memory,
+        open_urls: false,
+        ..Flags::default()
+    });
+    let sid = add(&mut d, "Acme", 3901, &[("R1", "general", 0, 0)], true);
+    d.app.active = Some(sid);
+    d.app.screen = Screen::Server;
+    d.app.secret_backend = Some(rustket_core::secrets::SecretBackend::Keyring);
+    rust_i18n::set_locale("en");
+    upd(
+        &mut d,
+        Message::Rail(rustket::workspace::rail::Message::Settings),
+    );
+    for (i, tab) in Tab::ALL.into_iter().enumerate() {
+        upd(&mut d, Message::Settings(Sm::Tab(tab)));
+        let name = format!("{}-{}", i + 1, format!("{tab:?}").to_lowercase());
+        d.app.config.ui.theme = Theme::Light;
+        d.shoot_at(
+            &out,
+            &format!("{name}-1100-light"),
+            Size::new(1100.0, 800.0),
+        );
+        d.shoot_at(&out, &format!("{name}-480-light"), Size::new(480.0, 700.0));
+        d.app.config.ui.theme = Theme::Dark;
+        d.shoot_at(&out, &format!("{name}-1100-dark"), Size::new(1100.0, 800.0));
+    }
+    // The whole Sidebar tab.
+    upd(&mut d, Message::Settings(Sm::Tab(Tab::Sidebar)));
+    d.app.config.ui.theme = Theme::Light;
+    d.shoot_at(&out, "4-sidebar-full-light", Size::new(1100.0, 2200.0));
     true
 }

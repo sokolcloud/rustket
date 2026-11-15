@@ -479,6 +479,9 @@ async fn main() {
             if titlebar::titlebar_shots(&out).await {
                 return;
             }
+            if titlebar::settings_tab_shots(&out).await {
+                return;
+            }
             if admin_shots::admin_shots(&server, &out).await {
                 return;
             }
@@ -663,13 +666,19 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.send(Message::CloseModal);
     d.send(Message::Rail(rustket::workspace::rail::Message::Settings));
     d.shoot(&out, "07c-settings-dark");
-    // The whole settings page, dark and light.
-    let tall = Size::new(SIZE.width, 1900.0);
+    // Every settings tab in full, dark and light.
+    let tall = Size::new(SIZE.width, 1300.0);
     d.settle(Duration::from_millis(300)).await;
-    d.shoot_at(&out, "07d-settings-full-dark", tall);
-    d.app.config.ui.theme = rustket_core::config::Theme::Light;
-    d.shoot_at(&out, "07e-settings-full-light", tall);
-    d.app.config.ui.theme = rustket_core::config::Theme::Dark;
+    for tab in rustket::screens::settings::Tab::ALL {
+        d.send(Message::Settings(rustket::screens::settings::Message::Tab(
+            tab,
+        )));
+        let name = format!("{tab:?}").to_lowercase();
+        d.shoot_at(&out, &format!("07d-settings-{name}-dark"), tall);
+        d.app.config.ui.theme = rustket_core::config::Theme::Light;
+        d.shoot_at(&out, &format!("07e-settings-{name}-light"), tall);
+        d.app.config.ui.theme = rustket_core::config::Theme::Dark;
+    }
     d.send(Message::Settings(
         rustket::screens::settings::Message::Close,
     ));

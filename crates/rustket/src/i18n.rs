@@ -286,12 +286,12 @@ pub fn tr_dyn(key: &str, fallback: &str) -> String {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Bundled locales whose yml lines must be complete (non-empty text for
     /// every key). The others are checked only where a line exists.
-    const BUNDLED_COMPLETE: &[&str] = &["en", "ru", "es", "th", "zh"];
+    pub(crate) const BUNDLED_COMPLETE: &[&str] = &["en", "ru", "es", "th", "zh"];
 
     fn codes(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
@@ -452,7 +452,7 @@ mod tests {
     /// `key -> locale -> text` of every `locales/*.yml` (the flat
     /// `_version: 2` layout this crate uses: a key line, then one indented
     /// `<locale>: "text"` line per locale).
-    fn locale_entries() -> BTreeMap<String, BTreeMap<String, String>> {
+    pub(crate) fn locale_entries() -> BTreeMap<String, BTreeMap<String, String>> {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
         let mut out = BTreeMap::new();
         for entry in std::fs::read_dir(&dir).unwrap() {

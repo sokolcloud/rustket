@@ -188,20 +188,26 @@ pub async fn polish_shots(
     });
     d.send(Message::CloseModal);
 
-    // Settings → Storage with the cache limit (scrolled to; the Sidebar
-    // card above it is tall).
+    // Settings → Privacy & storage with the cache limit.
     d.send(Message::Rail(rustket::workspace::rail::Message::Settings));
+    d.send(Message::Settings(rustket::screens::settings::Message::Tab(
+        rustket::screens::settings::Tab::Privacy,
+    )));
     d.settle(Duration::from_millis(500)).await;
-    let tall = Size::new(SIZE.width, 2000.0);
-    both(d, out, "polish-settings-storage", tall, || {
+    both(d, out, "polish-settings-storage", SIZE, || {
         vec![Step::Task(rustket::screens::settings::reveal_storage::<
             Message,
         >())]
     });
 
-    // Settings → Sidebar card with a group taking channels and private
+    // Settings → Sidebar tab with a group taking channels and private
     // groups (their sections dimmed), a sort override and the group editor
-    // open; en and ru. Reset afterwards so later shots keep the default.
+    // open; en and ru (tall: the whole tab). Reset afterwards so later shots
+    // keep the default.
+    d.send(Message::Settings(rustket::screens::settings::Message::Tab(
+        rustket::screens::settings::Tab::Sidebar,
+    )));
+    let tall = Size::new(SIZE.width, 2000.0);
     {
         use rustket::screens::settings::SidebarMessage as Sm;
         use rustket_core::config::{GroupType, SectionId, SidebarSort};

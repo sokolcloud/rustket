@@ -1,10 +1,10 @@
-//! The Sidebar card of the settings: unread group, grouping by type, default
-//! sorting, the Threads section mode, and the section list editor (order,
-//! per-section sorting, user-defined groups). Every layout change goes
-//! through [`sidebar_layout::apply`], like the sidebar's header menu.
+//! The Sidebar tab of the settings: sorting and grouping (unread group,
+//! grouping by type, default sorting), the Threads section, the section list
+//! editor (order, per-section sorting, user-defined groups) and the flags.
+//! Every layout change goes through [`sidebar_layout::apply`], like the
+//! sidebar's header menu.
 
 use std::collections::BTreeSet;
-use std::fmt;
 
 use iced::widget::{Space, checkbox, column, container, pick_list, row, text};
 use iced::{Alignment, Element, Length};
@@ -24,9 +24,10 @@ use rustket_ui::widget::{
 use rustket_core::ServerId;
 use rustket_core::flags::{FlagColor, FlagEdit, Flags};
 
+use super::widgets::{Choice, field, section, segmented, switch};
 use super::{
-    Message as SettingsMessage, SIDEBAR_CARD, Settings, SettingsCtx, field, flag_name_id,
-    flag_row_id, section, segmented, sidebar_group_row_id, switch,
+    Message as SettingsMessage, SIDEBAR_CARD, Settings, SettingsCtx, flag_name_id, flag_row_id,
+    sidebar_group_row_id,
 };
 use crate::component::{Action, Effect};
 use crate::workspace::sidebar::{sort_label, threads_limit_label};
@@ -128,19 +129,6 @@ pub(super) fn type_caption(layout: &Layout, d: &GroupDraft, ty: GroupType) -> Op
     } else {
         t!("settings.section_in_group", group = other).into_owned()
     })
-}
-
-/// A pick list entry: value plus its label.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Choice<T> {
-    pub(super) value: T,
-    pub(super) label: String,
-}
-
-impl<T> fmt::Display for Choice<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.label)
-    }
 }
 
 fn threads_mode_label(m: ThreadsMode) -> String {
@@ -450,15 +438,15 @@ impl Settings {
         }
     }
 
-    /// The Sidebar card. A group's deletion preset by the sidebar's
-    /// "Ungroup…" is confirmed in its row here; an edited group's editor is
-    /// shown in its row too.
-    pub(super) fn sidebar_card<'a>(
+    /// The Sidebar tab's cards: sorting and grouping, threads, sections and
+    /// flags. A group's deletion preset by the sidebar's "Ungroup…" is
+    /// confirmed in its row; an edited group's editor is shown in its row too.
+    pub(super) fn sidebar_cards<'a>(
         &'a self,
         ui: &'a UiPrefs,
         flags: &[FlagAccount<'a>],
         star_kept_busy: bool,
-    ) -> Element<'a, SettingsMessage> {
+    ) -> Vec<Element<'a, SettingsMessage>> {
         let layout = Layout::from_prefs(ui);
         let mut threads_help = t!("settings.threads_mode_help").into_owned();
         if ui.sidebar_threads == ThreadsMode::Following {
@@ -504,7 +492,7 @@ impl Settings {
                 .into(),
             )
         });
-        let mut rows = vec![
+        let sorting = vec![
             switch(
                 t!("settings.unread_on_top").into_owned(),
                 Some(t!("settings.unread_on_top_help").into_owned()),
@@ -539,21 +527,21 @@ impl Settings {
                     SettingsMessage::SetSidebarSort,
                 ),
             ),
-            field(
-                t!("settings.threads_mode").into_owned(),
-                Some(threads_help),
-                pick_list(modes, Some(current_mode), |c: Choice<ThreadsMode>| {
-                    SettingsMessage::SetThreadsMode(c.value)
-                })
-                .text_size(TEXT_BODY)
-                .width(MODE_WIDTH)
-                .style(style::pick_list)
-                .menu_style(style::menu)
-                .into(),
-            ),
         ];
-        rows.extend(limit_field);
-        rows.push(switch(
+        let mut threads = vec![field(
+            t!("settings.threads_mode").into_owned(),
+            Some(threads_help),
+            pick_list(modes, Some(current_mode), |c: Choice<ThreadsMode>| {
+                SettingsMessage::SetThreadsMode(c.value)
+            })
+            .text_size(TEXT_BODY)
+            .width(MODE_WIDTH)
+            .style(style::pick_list)
+            .menu_style(style::menu)
+            .into(),
+        )];
+        threads.extend(limit_field);
+        threads.push(switch(
             t!("settings.starred_threads").into_owned(),
             Some(format!(
                 "{}\n{}",
@@ -565,13 +553,13 @@ impl Settings {
         ));
         let kept: usize = flags.iter().map(|a| a.kept_unstarred).sum();
         if ui.sidebar_starred_threads && kept > 0 {
-            rows.push(
+            threads.push(
                 self.star_kept_row(kept, star_kept_busy)
                     .map(SettingsMessage::Sidebar),
             );
         }
         let active = flags.first().map(|a| a.flags);
-        rows.extend([
+        let sections = vec![
             Element::from(
                 column![
                     self.sections_list(ui, &layout, active),
@@ -580,12 +568,22 @@ impl Settings {
                 .spacing(SPACE_3),
             )
             .map(SettingsMessage::Sidebar),
-            self.flags_block(flags).map(SettingsMessage::Sidebar),
             self.reset_row().map(SettingsMessage::Sidebar),
-        ]);
-        container(section(t!("settings.sidebar").into_owned(), rows))
+        ];
+        vec![
+            container(section(
+                t!("settings.sidebar_sorting").into_owned(),
+                sorting,
+            ))
             .id(SIDEBAR_CARD)
-            .into()
+            .into(),
+            section(t!("settings.threads").into_owned(), threads),
+            section(t!("settings.sections").into_owned(), sections),
+            section(
+                t!("settings.flags").into_owned(),
+                vec![self.flags_block(flags).map(SettingsMessage::Sidebar)],
+            ),
+        ]
     }
 
     /// The sections in their order. Flag sections are listed only while the
@@ -596,15 +594,12 @@ impl Settings {
         layout: &Layout,
         flags: Option<&Flags>,
     ) -> Element<'a, Message> {
-        let mut list = column![
-            text(t!("settings.sections"))
-                .size(TEXT_BODY)
-                .font(font_semibold()),
-        ]
-        .spacing(SPACE_3);
+        let mut list = column![].spacing(SPACE_3);
         let ids = listed_sections(layout, flags);
         for (i, id) in ids.iter().enumerate() {
-            list = list.push(divider());
+            if i > 0 {
+                list = list.push(divider());
+            }
             list = list.push(self.section_row(
                 ui,
                 layout,
@@ -873,9 +868,6 @@ impl Settings {
     /// items carry it and "Remove from all" (confirmed in place).
     fn flags_block<'a>(&'a self, accounts: &[FlagAccount<'a>]) -> Element<'a, Message> {
         let mut block = column![
-            text(t!("settings.flags"))
-                .size(TEXT_BODY)
-                .font(font_semibold()),
             text(t!("settings.flags_caption"))
                 .size(TEXT_CAPTION)
                 .style(style::text_secondary),
@@ -1032,7 +1024,7 @@ impl Settings {
             .spacing(SPACE_2)
             .into();
         }
-        row![ghost_button(
+        row![secondary_button(
             t!("settings.sidebar_reset"),
             Some(Message::Reset)
         )]

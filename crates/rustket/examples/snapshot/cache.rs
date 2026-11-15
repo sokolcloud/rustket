@@ -2,7 +2,7 @@
 //! throwaway user (offline cache in a temporary directory), opens the two
 //! throwaway channels and quits; a second instance starts with the server
 //! unreachable and renders the cached workspace (offline strip), another
-//! cached room with a message waiting to be sent, and Settings → Storage.
+//! cached room with a message waiting to be sent, and Settings → Privacy & storage.
 //!
 //! Runs only with `RUSTKET_SNAPSHOT_ONLY=cache`.
 
@@ -154,12 +154,11 @@ pub async fn cache_shots(server: &ServerUrl, out: &Path, user: &(String, String,
     both(&mut d, out, "cache-02-offline-room");
 
     d.send(Message::Rail(rail::Message::Settings));
+    d.send(Message::Settings(rustket::screens::settings::Message::Tab(
+        rustket::screens::settings::Tab::Privacy,
+    )));
     d.settle(Duration::from_secs(1)).await;
-    d.shoot_at(
-        out,
-        "cache-03-settings-storage",
-        iced::Size::new(1280.0, 1900.0),
-    );
+    d.shoot(out, "cache-03-settings-storage");
     stop(d);
     let _ = login.logout().await;
     true
