@@ -63,6 +63,21 @@ pub struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
+    /// The room context of a body (`rid` lives as long as the data).
+    fn view_ctx(&self, rid: &'a str) -> ViewCtx<'a> {
+        ViewCtx {
+            server_id: self.server_id,
+            server: self.server,
+            rid,
+            workspace: self.workspace,
+            images: self.images,
+            prefs: self.prefs,
+            connected: self.online,
+            panel: None,
+            now: self.now,
+        }
+    }
+
     fn room_ctx<'r>(&'r self, rid: &'r str) -> ViewCtx<'r> {
         ViewCtx {
             server_id: self.server_id,
@@ -127,8 +142,8 @@ fn tool(icon_: Icon, label: String, on: Option<Msg>) -> Element<'static, Msg> {
 }
 
 impl LaterView {
-    pub fn view<'a>(&'a self, c: &Ctx<'_>) -> Element<'a, Msg> {
-        let counts = c.workspace.later_counts();
+    pub fn view<'a>(&'a self, c: &Ctx<'a>) -> Element<'a, Msg> {
+        let counts = self.counts(c.workspace);
         let tabs = row(LaterTab::ALL.iter().zip(counts).map(|(t, n)| {
             let label = if n > 0 && matches!(t, LaterTab::InProgress | LaterTab::Reminders) {
                 format!("{} ({n})", tab_label(*t))
@@ -191,9 +206,17 @@ impl LaterView {
         let main = column![header, top, body]
             .width(Length::Fill)
             .height(Length::Fill);
+        let user = self
+            .user
+            .as_ref()
+            .map(|u| u.view(&c.view_ctx(&u.rid)).map(Msg::User));
+        let main = crate::room::panel::user_info::beside(main.into(), user);
         let (overlay, dismiss) = match self.overlay(c) {
             Some((k, e)) => (Some((k, e)), Some(Msg::CloseDialog)),
-            None => (None, None),
+            None => match self.lightbox(c) {
+                Some((e, d)) => (Some((4, e)), Some(d)),
+                None => (None, None),
+            },
         };
         container(modal_keyed(main, overlay, dismiss))
             .style(style::container_room)
@@ -213,7 +236,7 @@ impl LaterView {
             .center(Length::Fill)
             .into();
         }
-        let rows = ws.later_rows(self.tab);
+        let rows = self.rows(ws);
         if rows.is_empty() {
             let (icon_, title, body) = match self.tab {
                 LaterTab::InProgress => (
@@ -235,8 +258,19 @@ impl LaterView {
                 .into();
         }
         let mut col = column![].spacing(0);
-        for r in &rows {
+        for r in rows.iter().take(self.shown) {
             col = col.push(self.row(c, r));
+        }
+        let left = rows.len().saturating_sub(self.shown);
+        if left > 0 {
+            col = col.push(
+                container(secondary_button(
+                    t!("later.show_more", count = left.min(super::PAGE)),
+                    Some(Msg::ShowMore),
+                ))
+                .center_x(Length::Fill)
+                .padding(SPACE_2),
+            );
         }
         if self.tab == LaterTab::Done {
             let clear =
@@ -445,6 +479,20 @@ impl LaterView {
         p.actions_toolbar = Some(message_toolbar(toolbar));
         p.is_selected = selected;
         message_row(p)
+    }
+
+    /// The image lightbox of a row's body, with the message closing it.
+    fn lightbox(&self, c: &Ctx<'_>) -> Option<(Element<'static, Msg>, Msg)> {
+        let rid = self.image_rid.clone()?;
+        let e = self.viewer.overlay(&c.room_ctx(&rid))?;
+        let r2 = rid.clone();
+        Some((
+            e.map(move |m| Msg::View { rid: r2.clone(), m }),
+            Msg::View {
+                rid,
+                m: crate::room::timeline::ViewerMsg::CloseImage,
+            },
+        ))
     }
 
     /// The open dialog with a key for the modal.

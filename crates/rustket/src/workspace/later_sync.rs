@@ -5,7 +5,7 @@
 //! app persists them in the config (`pending_service`) until the
 //! subscriptions show them stored.
 
-use rustket_core::later::LaterBlob;
+use rustket_core::later::{LaterBlob, LaterEdit};
 use rustket_core::reminders::ReminderBlob;
 use rustket_core::{Dirty, Workspace};
 
@@ -36,6 +36,10 @@ impl ServiceKey for LaterKey {
     /// service room (or fail where creating one is not allowed).
     fn bookkeeping(overlay: &LaterBlob) -> bool {
         overlay.status.is_empty() && overlay.due.is_empty()
+    }
+
+    fn unbudgeted(edit: &LaterEdit) -> bool {
+        matches!(edit, LaterEdit::Seed { .. })
     }
 }
 
@@ -83,7 +87,7 @@ impl LaterSync {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use rocketchat::models::{
         FLAGS_KEY, LATER_KEY, MENTION_GROUPS_KEY, REMINDERS_KEY, ServiceFields, User,
@@ -141,6 +145,40 @@ mod tests {
         assert!(!s.needs_seed(&ws));
         assert_eq!(ws.later().default_status(Some(999)), LaterStatus::Archived);
         assert_eq!(s.edit(&mut ws, &seed, "dev", Instant::now()), Ok(false));
+    }
+
+    /// Live flags (not budgeted) past the budget: the seed still goes in,
+    /// so it is not refused and retried on every update.
+    #[test]
+    fn the_seed_passes_a_full_budget() {
+        use rustket_core::flags::{FlagColor, FlagEdit};
+        let mut ws = ws();
+        let mut flags = super::super::flags::FlagSync::default();
+        flags.follow_account(Some("me"), |_| Default::default());
+        let t0 = Instant::now();
+        let mut n = 0;
+        while service_bytes(&ws, chrono::Utc::now().timestamp_millis())
+            <= rustket_core::service_sync::BUDGET_BYTES
+        {
+            let edit = FlagEdit::Room {
+                rid: format!("{n:0>120}"),
+                color: Some(FlagColor::Red),
+            };
+            assert_eq!(flags.edit(&mut ws, &edit, "dev", t0), Ok(true));
+            n += 1;
+        }
+        let mut s = LaterSync::default();
+        s.follow_account(Some("me"), |_| LaterBlob::default());
+        let done = LaterEdit::Status {
+            rid: "r1".into(),
+            mid: "m1".into(),
+            ts_ms: None,
+            status: LaterStatus::Done,
+        };
+        assert!(s.edit(&mut ws, &done, "dev", t0).is_err(), "budgeted");
+        let seed = LaterEdit::Seed { at_ms: 1000 };
+        assert_eq!(s.edit(&mut ws, &seed, "dev", t0), Ok(true));
+        assert!(!s.needs_seed(&ws));
     }
 
     /// A seed alone stays on this device (kept in the config) until a
@@ -228,5 +266,25 @@ mod tests {
         assert!(!state.later.in_flight && !state.reminders.in_flight);
         assert_eq!(state.later.created.as_deref(), Some("svc"));
         assert_eq!(state.reminders.created.as_deref(), Some("svc"));
+        // The next edit waits for the server's push spacing, not only for
+        // its own coalescing.
+        let next = LaterEdit::Status {
+            rid: "r1".into(),
+            mid: "m2".into(),
+            ts_ms: None,
+            status: LaterStatus::Done,
+        };
+        let t1 = t0 + COALESCE + Duration::from_secs(1);
+        assert_eq!(
+            state.later.edit(&mut state.workspace, &next, "dev", t1),
+            Ok(true)
+        );
+        assert!(state.service_parts(t1 + COALESCE).is_none());
+        let spaced = t0 + COALESCE + super::super::service_sync::PUSH_SPACING;
+        assert_eq!(
+            state.later.plan(&state.workspace, t1 + COALESCE),
+            super::super::service_sync::Next::Wait(spaced)
+        );
+        assert!(state.service_parts(spaced).is_some());
     }
 }

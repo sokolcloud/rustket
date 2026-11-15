@@ -266,8 +266,16 @@ pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, 
     let mut col: Column<'static, RenderMsg> = column![].spacing(SPACE_1);
     // UIKit blocks hide the markdown body (docs/uikit.md §3.1).
     let blocks = crate::uikit::message_blocks(msg, rc);
+    let folded = rc.interactive
+        && fold::body_folds(msg)
+        && !rc.state.is_expanded(&msg.id, fold::EXPAND_BODY);
+    let text = if folded {
+        folded_text_part(msg, rc)
+    } else {
+        text_part(msg, rc)
+    };
     if blocks.is_none()
-        && let Some(text) = text_part(msg, rc)
+        && let Some(text) = text
     {
         col = col.push(folded_text(text, msg, rc));
     }
@@ -328,6 +336,20 @@ fn folded_text(
 /// The `video_conf` block of a `videoconf` message (`crate::videoconf`).
 pub fn video_conf(msg: &Message, rc: &RenderCtx<'_>) -> Option<Element<'static, RenderMsg>> {
     crate::videoconf::block::view(msg, rc)
+}
+
+/// The text part of a folded body: its leading blocks only
+/// ([`fold::folded_blocks`]).
+fn folded_text_part(msg: &Message, rc: &RenderCtx<'_>) -> Option<Element<'static, RenderMsg>> {
+    match &msg.md {
+        Some(root) if !root.is_empty() => Some(md::blocks(
+            &root[..fold::folded_blocks(root)],
+            &msg.id,
+            msg,
+            rc,
+        )),
+        _ => text_part(msg, rc),
+    }
 }
 
 /// Only the text (markdown) part of `msg`, if it has any.

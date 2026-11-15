@@ -682,6 +682,36 @@ fn quotes_prepend_permalinks() {
     assert!(c.quoted().is_empty());
 }
 
+/// A message not shown decrypted is never quoted (any caller, e.g. the
+/// inbox's Reply): its server text would show as the quote.
+#[test]
+fn undecrypted_messages_are_not_quoted() {
+    let mut env = Env::new("t-quote-e2e");
+    let mut m = msg("M9", "other", "server plaintext");
+    m.t = Some("e2e".into());
+    env.ws.apply_message(m);
+    let mut c = Composer::new("R1");
+    let a = c.intent(ComposeIntent::Quote("M9".into()), &mut env.ctx());
+    assert!(c.quoted().is_empty());
+    assert!(matches!(a.effects.as_slice(), [Effect::Toast(..)]));
+    // Fetched (a room not open yet, e.g. an inbox Reply): decrypted first,
+    // and still undecrypted here (no E2E), so not quoted, with a toast.
+    let mut f = msg("M10", "other", "server plaintext");
+    f.t = Some("e2e".into());
+    let a = c.update(
+        Message::Fetched(FetchFor::Quote, Ok(Box::new(f))),
+        &mut env.ctx(),
+    );
+    assert!(c.quoted().is_empty());
+    assert!(matches!(a.effects.as_slice(), [Effect::Toast(..)]));
+    let a = c.update(
+        Message::Fetched(FetchFor::Quote, Ok(Box::new(msg("M11", "other", "plain")))),
+        &mut env.ctx(),
+    );
+    assert_eq!(c.quoted().len(), 1);
+    assert!(a.effects.is_empty());
+}
+
 #[test]
 fn react_intent_opens_the_picker_and_reports_the_emoji() {
     let mut env = Env::new("t-react");

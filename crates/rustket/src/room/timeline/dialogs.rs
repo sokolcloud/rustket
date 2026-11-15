@@ -202,18 +202,19 @@ pub fn reactions<'a>(
         } else {
             u.name.clone().unwrap_or_default()
         };
-        let mut line = row![
-            common::user_avatar(ctx, &u.username, &shown, 28.0),
-            column![
-                ellipsis(shown).size(TEXT_BODY).font(font_semibold()),
+        // Without a second line the name is centred with the avatar.
+        let avatar = common::user_avatar(ctx, &u.username, &shown, 28.0);
+        let mut names = column![ellipsis(shown).size(TEXT_BODY).font(font_semibold())];
+        if !secondary.trim().is_empty() {
+            names = names.push(
                 ellipsis(sanitize_bidi(&secondary).into_owned())
                     .size(TEXT_SMALL)
                     .style(|theme: &iced::Theme| style::text_secondary(theme).color),
-            ]
-            .width(Length::Fill),
-        ]
-        .spacing(SPACE_2)
-        .align_y(Alignment::Center);
+            );
+        }
+        let mut line = row![avatar, names.width(Length::Fill)]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center);
         if !emojis.is_empty() {
             let mut used = row![].spacing(SPACE_1).align_y(Alignment::Center);
             for e in &emojis {

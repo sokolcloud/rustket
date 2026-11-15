@@ -102,10 +102,11 @@ impl Feed {
         if !after(m.ts, self.since) {
             return false;
         }
-        let key = (m.ts, m.id.clone());
-        let at = self
-            .messages
-            .partition_point(|x| (x.ts, x.id.clone()) < key);
+        let at = {
+            let key = (m.ts, m.id.as_str());
+            self.messages
+                .partition_point(|x| (x.ts, x.id.as_str()) < key)
+        };
         self.messages.insert(at, m);
         true
     }
@@ -421,6 +422,16 @@ impl FeedStore {
             changed |= !tm.stale;
             tm.stale = true;
         }
+        changed
+    }
+
+    /// The views closed a while ago: the room feeds go (they would keep
+    /// absorbing live messages nobody sees; opening a view loads them
+    /// again). Thread mentions stay: their fetches are few per session.
+    pub fn release(&mut self) -> bool {
+        self.kept.clear();
+        let changed = !self.feeds.is_empty();
+        self.feeds.clear();
         changed
     }
 

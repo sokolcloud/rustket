@@ -55,6 +55,10 @@ use crate::session::SessionHandle;
 /// limited per IP and route, by default to 10 a minute). The overlay shows
 /// and persists edits at once, so waiting costs nothing.
 pub const COALESCE: Duration = Duration::from_secs(5);
+/// Minimum time between the starts of two pushes of a server: steady
+/// edits (triaging Later item by item) stay well under both routes'
+/// limits, and every device gets the whole fields object less often.
+pub const PUSH_SPACING: Duration = Duration::from_secs(20);
 /// Read-merge-write rounds of one push before it counts as a conflict.
 pub const PUSH_ATTEMPTS: usize = 4;
 /// How long written entries are watched for being dropped by another
@@ -453,6 +457,12 @@ pub trait ServiceKey: std::fmt::Debug + Default + Send + 'static {
     fn bookkeeping(_overlay: &Self::Blob) -> bool {
         false
     }
+    /// Edits the budget lets through (Later's seed: one small entry that
+    /// must not be refused and retried on every update when unbudgeted
+    /// keys fill the budget).
+    fn unbudgeted(_edit: &<Self::Blob as EditBlob>::Edit) -> bool {
+        false
+    }
 }
 
 /// What every synced key as this device shows it (stored entries with its
@@ -532,6 +542,9 @@ pub struct BlobSync<K: ServiceKey> {
     /// route, so every key of the server keeps the pause, [`pause_on_rate_limit`];
     /// edits do not lift it).
     pub(super) paused_until: Option<Instant>,
+    /// No push of the server before this ([`PUSH_SPACING`] after the last
+    /// one started).
+    pub(super) spaced_until: Option<Instant>,
     /// Given up with this error, until the next edit or session.
     pub(super) failed: Option<String>,
     /// A service room a push created or found (the subscription may not
@@ -603,7 +616,7 @@ impl<K: ServiceKey> BlobSync<K> {
         if !next.apply_edit(K::stored(ws), edit, now_ms, device)? {
             return Ok(false);
         }
-        if K::BUDGETED {
+        if K::BUDGETED && !K::unbudgeted(edit) {
             let key = <K::Blob as SyncBlob>::KEY;
             let others: usize = charged(ws, now_ms)
                 .iter()
@@ -658,6 +671,7 @@ impl<K: ServiceKey> BlobSync<K> {
         self.failed = None;
         self.failures = 0;
         self.retry_at = None;
+        self.spaced_until = None;
         // The next session reads the store again.
         self.confirmed = K::Blob::default();
     }
@@ -740,6 +754,7 @@ impl<K: ServiceKey> BlobSync<K> {
             .into_iter()
             .chain(self.retry_at)
             .chain(self.paused_until)
+            .chain(self.spaced_until)
             .max();
         match at {
             Some(at) if now < at => Next::Wait(at),
@@ -1040,6 +1055,8 @@ pub trait Syncing {
     fn start(&mut self) -> Outgoing;
     /// No push before `until` ([`pause_on_rate_limit`]).
     fn pause(&mut self, until: Instant);
+    /// A push of the server started: none before `until` ([`PUSH_SPACING`]).
+    fn space(&mut self, until: Instant);
 }
 
 impl<K: ServiceKey> Syncing for BlobSync<K> {
@@ -1067,6 +1084,10 @@ impl<K: ServiceKey> Syncing for BlobSync<K> {
     fn pause(&mut self, until: Instant) {
         self.pause_until(until);
     }
+
+    fn space(&mut self, until: Instant) {
+        self.spaced_until = Some(until);
+    }
 }
 
 /// When the time of one key of the server has come, the parts of one push
@@ -1081,13 +1102,15 @@ pub fn take_parts(
     if !syncs.iter().any(|s| s.wants_push(ws, now)) {
         return None;
     }
-    Some(
-        syncs
-            .iter_mut()
-            .filter(|s| s.ready(ws))
-            .map(|s| s.start())
-            .collect(),
-    )
+    let parts = syncs
+        .iter_mut()
+        .filter(|s| s.ready(ws))
+        .map(|s| s.start())
+        .collect();
+    for s in syncs.iter_mut() {
+        s.space(now + PUSH_SPACING);
+    }
+    Some(parts)
 }
 
 /// Runs one combined push of `parts` ([`take_parts`]).

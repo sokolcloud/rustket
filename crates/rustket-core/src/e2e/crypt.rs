@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use rocketchat::RcDate;
-use rocketchat::e2e::{DecryptedMessage, EncryptedContent, FileMetadata, RoomKey, e2e_mentions};
+use rocketchat::e2e::{
+    DecryptedMessage, EncryptedContent, FileMetadata, RoomKey, e2e_mentions_with_groups,
+};
 use rocketchat::models::{Message, MessageAttachment, UploadedFile};
 use serde_json::Value;
 
@@ -54,16 +56,20 @@ impl<A: E2eApi> E2eManager<A> {
     /// Encrypts a text message: `{msg}` + plaintext mentions (when enabled).
     /// Slash commands must be handled by the caller before.
     pub fn encrypt_outgoing(&self, rid: &str, text: &str) -> Result<OutgoingEncrypted> {
-        self.encrypt_edit(rid, text, None)
+        self.encrypt_edit(rid, text, None, &|_| false)
     }
 
     /// Re-encrypts an edited message with the current key: the original
     /// decrypted `attachments`/`files`/`file` are kept, `msg` replaced.
+    /// `is_group` tells the sender's mention-group names: their expansions
+    /// (`@backend (@alice @bob)`) list the users, not the group, in the
+    /// plaintext mentions.
     pub fn encrypt_edit(
         &self,
         rid: &str,
         text: &str,
         original: Option<&DecryptedMessage>,
+        is_group: &dyn Fn(&str) -> bool,
     ) -> Result<OutgoingEncrypted> {
         let mut payload = original.cloned().unwrap_or_default();
         payload.msg = Some(text.to_owned());
@@ -71,7 +77,7 @@ impl<A: E2eApi> E2eManager<A> {
         let settings = self.settings();
         let mentions = settings
             .mentions
-            .then(|| e2e_mentions(text, &settings.username_pattern));
+            .then(|| e2e_mentions_with_groups(text, &settings.username_pattern, is_group));
         Ok(OutgoingEncrypted { content, mentions })
     }
 

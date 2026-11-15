@@ -480,9 +480,6 @@ pub struct Expanded {
     pub text: String,
     /// Usernames added.
     pub added: Vec<String>,
-    /// `@` mention tokens in the result, as an encrypted room's plaintext
-    /// mention list counts them (which stops at 50).
-    pub mention_tokens: usize,
 }
 
 /// Expands every `@group` token of `text` to `@group (@u1 @u2 …)`. Members
@@ -497,7 +494,7 @@ pub fn expand(text: &str, groups: &MentionGroups, opts: &ExpandOptions<'_>) -> O
     if groups.is_empty() || !text.contains('@') {
         return None;
     }
-    let skip = skipped(text, true);
+    let skip = skipped(text);
     let tokens = tokens(text, &skip);
     let mut mentioned: BTreeSet<String> = tokens.iter().map(|t| t.name.to_lowercase()).collect();
     if let Some(me) = opts.me {
@@ -542,18 +539,7 @@ pub fn expand(text: &str, groups: &MentionGroups, opts: &ExpandOptions<'_>) -> O
         return None;
     }
     out.push_str(&text[last..]);
-    let mention_tokens = tokens_in(&out);
-    Some(Expanded {
-        text: out,
-        added,
-        mention_tokens,
-    })
-}
-
-/// `@` tokens of `text` outside markdown links (what an encrypted room's
-/// plaintext mention list is collected from).
-fn tokens_in(text: &str) -> usize {
-    tokens(text, &skipped(text, false)).len()
+    Some(Expanded { text: out, added })
 }
 
 /// A `@name` token.
@@ -572,8 +558,9 @@ fn name_byte(b: u8) -> bool {
 
 /// `@` tokens at the start of the text or after whitespace, `>` or a `(`
 /// that itself follows one of these (`@backend (@alice`, not `f(@x`), outside
-/// `skip`; the same boundaries as the encrypted rooms' plaintext mention
-/// list (`rocketchat::e2e::e2e_mentions`).
+/// `skip`. The encrypted rooms' plaintext mention list
+/// (`rocketchat::e2e::e2e_mentions_with_groups`) finds group tokens the
+/// same way.
 fn tokens<'a>(text: &'a str, skip: &[Range<usize>]) -> Vec<Token<'a>> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -633,13 +620,10 @@ fn existing_expansion(rest: &str) -> Option<usize> {
     }
 }
 
-/// Byte ranges of markdown links `[label](url)` and, with `code`, of fenced
-/// code blocks and backtick spans.
-fn skipped(text: &str, code: bool) -> Vec<Range<usize>> {
+/// Byte ranges of markdown links `[label](url)`, fenced code blocks and
+/// backtick spans.
+fn skipped(text: &str) -> Vec<Range<usize>> {
     let mut out = links(text);
-    if !code {
-        return out;
-    }
     let mut fenced = false;
     let mut at = 0;
     for line in text.split('\n') {
@@ -1088,7 +1072,6 @@ mod tests {
         };
         let e = expand("@backend [x](http://y/@z) @all", &g, &opts).unwrap();
         assert_eq!(e.added, ["alice", "bob"]);
-        // @backend, @alice, @bob, @all (not the one in the link).
-        assert_eq!(e.mention_tokens, 4);
+        assert_eq!(e.text, "@backend (@alice @bob) [x](http://y/@z) @all");
     }
 }

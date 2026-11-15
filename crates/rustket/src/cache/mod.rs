@@ -152,9 +152,20 @@ pub struct ServerCache {
     later_rev: Option<u64>,
     /// When the Later data was last written.
     later_written: Option<Instant>,
+    /// Later's messages as last written (`room::render::message_key`):
+    /// later writes carry only the ones that changed.
+    later_keys: HashMap<String, u64>,
 }
 
 impl ServerCache {
+    /// The next pass writes everything shown, as if nothing was written.
+    fn write_all_again(&mut self) {
+        self.captured.clear();
+        self.needs_full = true;
+        self.outbox_sig = None;
+        self.later_keys.clear();
+    }
+
     pub fn is_open(&self) -> bool {
         self.handle.is_some()
     }
@@ -278,9 +289,7 @@ pub fn after_update(
     };
     if handle.take_write_failed() {
         // A dropped batch: everything is written again.
-        s.cache.needs_full = true;
-        s.cache.captured.clear();
-        s.cache.outbox_sig = None;
+        s.cache.write_all_again();
     }
     let mut batch = Batch::default();
     if live(&s.workspace) {
@@ -340,7 +349,57 @@ fn collect_later(s: &mut ServerState, full: bool, now: Instant, batch: &mut Batc
     }
     s.cache.later_rev = Some(rev);
     s.cache.later_written = Some(now);
-    batch.later = Some(cached_later(&s.workspace));
+    batch.later = Some(later_write(&s.workspace, &mut s.cache.later_keys, full));
+}
+
+/// The Later write: everything (`full`, or nothing written yet), else
+/// the messages that changed since the last write and the ones gone.
+fn later_write(
+    ws: &Workspace,
+    written: &mut HashMap<String, u64>,
+    full: bool,
+) -> rustket_core::cache::CachedLater {
+    let idx = ws.later_index();
+    let keys: HashMap<String, u64> = idx
+        .starred()
+        .chain(idx.copies())
+        .map(|m| (m.id.clone(), crate::room::render::message_key(m)))
+        .collect();
+    if full || written.is_empty() {
+        *written = keys;
+        return cached_later(ws);
+    }
+    let mut l = cached_later_scans(ws);
+    l.delta = true;
+    l.messages = idx
+        .starred()
+        .chain(idx.copies())
+        .filter(|m| written.get(&m.id) != keys.get(&m.id))
+        .cloned()
+        .collect();
+    l.removed = written
+        .keys()
+        .filter(|id| !keys.contains_key(*id))
+        .cloned()
+        .collect();
+    *written = keys;
+    l
+}
+
+/// The rooms' Later scans, no messages.
+fn cached_later_scans(ws: &Workspace) -> rustket_core::cache::CachedLater {
+    rustket_core::cache::CachedLater {
+        scans: ws
+            .later_index()
+            .scans()
+            .map(|(rid, s)| rustket_core::cache::CachedLaterScan {
+                rid: rid.to_owned(),
+                scanned_at: s.scanned_at,
+                scanned_lm: s.lm,
+            })
+            .collect(),
+        ..Default::default()
+    }
 }
 
 /// What the Later index holds: starred messages, reminder copies and the
@@ -349,14 +408,7 @@ pub fn cached_later(ws: &Workspace) -> rustket_core::cache::CachedLater {
     let idx = ws.later_index();
     rustket_core::cache::CachedLater {
         messages: idx.starred().chain(idx.copies()).cloned().collect(),
-        scans: idx
-            .scans()
-            .map(|(rid, s)| rustket_core::cache::CachedLaterScan {
-                rid: rid.to_owned(),
-                scanned_at: s.scanned_at,
-                scanned_lm: s.lm,
-            })
-            .collect(),
+        ..cached_later_scans(ws)
     }
 }
 
@@ -819,6 +871,13 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
         }
         Msg::Cleared(r) => {
             app.offline.clearing = false;
+            // What is shown is written again in full (the outbox too), after
+            // the clear on each writer's queue; also after a partial failure.
+            for s in app.servers.values_mut() {
+                if s.cache.handle.is_some() {
+                    s.cache.write_all_again();
+                }
+            }
             let toast = match r {
                 Ok(()) => app.toast(BannerKind::Success, t!("cache.cleared"), String::new()),
                 Err(e) => app.toast(BannerKind::Error, t!("cache.clear_failed"), e),
@@ -995,13 +1054,9 @@ pub fn clear_all(app: &mut App) -> Task<Message> {
     let mut closed = Vec::new();
     for s in app.servers.values_mut() {
         match s.cache.handle.clone() {
-            Some(h) => {
-                // What is shown is written again in full (the outbox too).
-                s.cache.captured.clear();
-                s.cache.needs_full = true;
-                s.cache.outbox_sig = None;
-                handles.push(h);
-            }
+            // Written again in full once cleared (`Msg::Cleared`): a full
+            // write queued now would land before the clear.
+            Some(h) => handles.push(h),
             None if s.cache.opening.is_none() => closed.push(server_dir(&base, &s.id)),
             None => {}
         }
@@ -1273,6 +1328,19 @@ mod tests {
         s.workspace.take_changes();
         assert!(collect(&mut s, false, min(7)).is_some());
         assert!(collect(&mut s, false, min(9)).is_none());
+    }
+
+    #[test]
+    fn writing_all_again_rewrites_later_in_full() {
+        let mut s = thread_server();
+        go_live(&mut s);
+        s.cache.later_keys.insert("gone".into(), 1);
+        s.cache.captured.insert(TimelineKey::room("a"), ((1, 1), 1));
+        s.cache.write_all_again();
+        assert!(s.cache.needs_full && s.cache.captured.is_empty());
+        let l = later_write(&s.workspace, &mut s.cache.later_keys, false);
+        assert!(!l.delta, "a full Later write, not a delta");
+        assert!(l.removed.is_empty());
     }
 
     #[test]

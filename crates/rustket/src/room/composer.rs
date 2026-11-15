@@ -661,6 +661,20 @@ impl Composer {
                         self.start_edit(&m, ctx.workspace)
                     }
                     FetchFor::Quote => {
+                        // Decrypted like every shown message: an encrypted
+                        // room's message fetched here (an inbox Reply in a
+                        // room not open yet) is quotable once it is.
+                        let mut m = m;
+                        crate::e2e::shown::process_list(
+                            ctx.workspace,
+                            ctx.server,
+                            std::slice::from_mut(&mut m),
+                        );
+                        if crate::e2e::shown::undecrypted(&m) {
+                            return Action::effect(error_toast(
+                                t!("e2e.quote_unreadable").into_owned(),
+                            ));
+                        }
                         self.add_quote(&m);
                         Action::task(self.focus())
                     }
@@ -977,6 +991,9 @@ impl Composer {
                     return Action::task(self.focus());
                 }
                 match find_message(ctx.workspace, &self.rid, self.tmid.as_deref(), &mid) {
+                    Some(m) if crate::e2e::shown::undecrypted(m) => {
+                        Action::effect(error_toast(t!("e2e.quote_unreadable").into_owned()))
+                    }
                     Some(m) => {
                         let m = m.clone();
                         self.add_quote(&m);
@@ -1105,7 +1122,9 @@ impl Composer {
     }
 
     fn add_quote(&mut self, m: &rocketchat::models::Message) {
-        if self.quotes.iter().any(|q| q.mid == m.id) {
+        // Only what is shown decrypted can be quoted (the server's text of
+        // an encrypted message is unauthenticated), whoever asks.
+        if self.quotes.iter().any(|q| q.mid == m.id) || crate::e2e::shown::undecrypted(m) {
             return;
         }
         self.quotes

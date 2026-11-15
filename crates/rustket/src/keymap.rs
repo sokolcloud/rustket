@@ -52,7 +52,7 @@ impl Shortcut {
 /// `key` is the character `c`, or (punctuation and digits) the physical key
 /// is where `c` sits on a US layout and types no letter there (Dvorak's `z`
 /// on that `/` key stays Ctrl+Z).
-fn is_char(key: &Key, physical: Physical, c: char) -> bool {
+pub(crate) fn is_char(key: &Key, physical: Physical, c: char) -> bool {
     let typed = key.to_latin(physical).map(|k| k.to_ascii_lowercase());
     if typed == Some(c) {
         return true;

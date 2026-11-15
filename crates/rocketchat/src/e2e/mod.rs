@@ -32,7 +32,10 @@ pub use file::{
 pub use keychain::{
     PASSPHRASE_MIN_LENGTH, PrivateKeyEnvelope, encrypt_v2, encrypt_v2_with, validate_new_passphrase,
 };
-pub use mentions::{DEFAULT_USERNAME_PATTERN, E2eMentions, e2e_mentions};
+pub use mentions::{
+    DEFAULT_USERNAME_PATTERN, E2eMentions, MAX_MENTIONS, e2e_mentions, e2e_mentions_with_groups,
+    e2e_user_mention_count,
+};
 pub use passphrase::{BIP39_ENGLISH, generate_passphrase, word_list};
 pub use payload::{DecryptedMessage, FileHashes, FileMetadata};
 pub use room_key::{RoomKey, RoomKeyAlg, new_key_id};

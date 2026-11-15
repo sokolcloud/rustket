@@ -42,7 +42,8 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
                     t!("settings.notifications_preview").into_owned(),
                     None,
                     ui.notification_preview,
-                    notify_on.then_some(Message::SetPreview),
+                    // Reminder notifications show the message too.
+                    (notify_on || reminders_on).then_some(Message::SetPreview),
                 ),
                 switch(
                     t!("settings.notifications_sound").into_owned(),
@@ -70,7 +71,7 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
                     t!("settings.reminders_sound").into_owned(),
                     None,
                     ui.reminder_sound,
-                    (reminders_on && ui.sound).then_some(Message::SetReminderSound),
+                    reminders_on.then_some(Message::SetReminderSound),
                 ),
                 field(
                     t!("settings.reminders_morning").into_owned(),

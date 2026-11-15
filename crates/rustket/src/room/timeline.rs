@@ -42,7 +42,7 @@ pub use actions::{
     star_thread_offer,
 };
 pub use interact::{Interactions, Msg as ItemMsg, Source};
-pub use viewer::{Viewer, ViewerMsg};
+pub use viewer::{Viewer, ViewerMsg, opens_image as viewer_opens_image};
 
 /// History pages loaded at most while looking for a jump target.
 const SEEK_PAGES: u32 = 20;

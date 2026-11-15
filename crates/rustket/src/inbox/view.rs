@@ -22,7 +22,7 @@ use rustket_ui::theme::{
 use rustket_ui::widget::{
     AvatarShape, BadgeKind, ButtonSize, MessageRowProps, TooltipPosition, avatar, badge, divider,
     dot, ellipsis, empty_state, header_bar, icon_button, icon_button_with, message_row,
-    message_toolbar, primary_button, secondary_button, spinner, tooltip,
+    message_toolbar, modal_keyed, primary_button, secondary_button, spinner, tooltip,
 };
 
 use super::{InboxKind, InboxScreen, InboxState, Msg, ROOMS_PAGE};
@@ -45,6 +45,21 @@ pub struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
+    /// The room context of a body (`rid` lives as long as the data).
+    fn view_ctx(&self, rid: &'a str) -> ViewCtx<'a> {
+        ViewCtx {
+            server_id: self.server_id,
+            server: self.server,
+            rid,
+            workspace: self.workspace,
+            images: self.images,
+            prefs: self.prefs,
+            connected: self.online,
+            panel: None,
+            now: self.now,
+        }
+    }
+
     fn room_ctx<'r>(&'r self, rid: &'r str) -> ViewCtx<'r> {
         ViewCtx {
             server_id: self.server_id,
@@ -135,13 +150,34 @@ fn link(label: String, on: Msg) -> Element<'static, Msg> {
 }
 
 impl InboxScreen {
-    pub fn view<'a>(&'a self, c: &Ctx<'_>) -> Element<'a, Msg> {
+    pub fn view<'a>(&'a self, c: &Ctx<'a>) -> Element<'a, Msg> {
         let body = match self.kind {
             InboxKind::Unreads => self.unreads(c),
             InboxKind::CatchUp => self.catch_up_view(c),
             InboxKind::Activity => self.activity_view(c),
         };
-        container(body)
+        // The image lightbox of a body covers the view, as in the room.
+        let lightbox = self.image_rid.as_ref().and_then(|rid| {
+            let e = self.viewer.overlay(&c.room_ctx(rid))?;
+            let (r1, r2) = (rid.clone(), rid.clone());
+            Some((
+                e.map(move |m| Msg::View { rid: r1.clone(), m }),
+                Msg::View {
+                    rid: r2,
+                    m: crate::room::timeline::ViewerMsg::CloseImage,
+                },
+            ))
+        });
+        let (overlay, dismiss) = match lightbox {
+            Some((e, d)) => (Some((1u8, e)), Some(d)),
+            None => (None, None),
+        };
+        let user = self
+            .user
+            .as_ref()
+            .map(|u| u.view(&c.view_ctx(&u.rid)).map(Msg::User));
+        let body = crate::room::panel::user_info::beside(body, user);
+        container(modal_keyed(body, overlay, dismiss))
             .style(style::container_room)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -161,11 +197,21 @@ impl InboxScreen {
     fn unreads<'a>(&'a self, c: &Ctx<'_>) -> Element<'a, Msg> {
         let rooms = self.rooms(c.workspace, c.state, Self::include_muted(c));
         let total = rooms.len();
-        let summary = t!(
+        let mut summary = t!(
             format!("inbox.summary_{}", plural(total as u64)),
             count = total
         )
         .into_owned();
+        // Shift+Esc and the window title count rooms with unread threads
+        // too; this view leaves those to Activity.
+        let threads = c.workspace.rooms().values().any(|e| {
+            e.sub
+                .as_ref()
+                .is_some_and(rocketchat::models::Subscription::has_unread_threads)
+        });
+        if threads {
+            summary = format!("{summary} · {}", t!("inbox.threads_in_activity"));
+        }
         let any = total > 0;
         let mark_all: Element<'static, Msg> = secondary_button(
             t!("inbox.mark_all_read"),
@@ -253,10 +299,11 @@ impl InboxScreen {
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
+        // The badge sits with the actions: the name (`Fill`) takes the
+        // row up to them (a badge after a short name floated mid-row).
         if let Some(b) = room_badge(r) {
             head = head.push(b);
         }
-        head = head.push(space().width(Length::Fill));
         if !catch_up {
             head = head
                 .push(icon_button(
@@ -304,7 +351,22 @@ impl InboxScreen {
             }
             return out;
         };
-        if f.is_full() {
+        // The newest messages only: a busy room's feed grows to hundreds.
+        let hidden = f.messages().len().saturating_sub(self.shown(rid));
+        if hidden > 0 {
+            let n = hidden as u64 + f.earlier();
+            let label = t!(format!("inbox.earlier_unread_{}", plural(n)), count = n).into_owned();
+            out.push(pad(row![
+                caption(label),
+                link(
+                    t!("inbox.show_earlier").into_owned(),
+                    Msg::ShowEarlier(rid.to_owned()),
+                ),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .into()));
+        } else if f.is_full() {
             out.push(pad(link(
                 t!("inbox.more_in_room").into_owned(),
                 Msg::OpenRoom(rid.to_owned()),
@@ -332,11 +394,13 @@ impl InboxScreen {
             )));
         }
         let vc = c.room_ctx(rid);
-        for m in f.messages() {
+        for m in &f.messages()[hidden..] {
+            // Quoting needs the message shown decrypted, as in the timeline.
+            let quotable = !crate::e2e::shown::undecrypted(m);
             let toolbar = vec![
                 icon_button_with(
                     Icon::Reply,
-                    Some(Msg::Reply {
+                    quotable.then(|| Msg::Reply {
                         rid: rid.to_owned(),
                         mid: m.id.clone(),
                     }),
@@ -583,7 +647,7 @@ impl InboxScreen {
             .padding(iced::Padding::ZERO.bottom(SPACE_3));
         let mut in_threads = false;
         let mut first = true;
-        for item in &items {
+        for item in items.iter().take(self.activity_shown()) {
             let thread = !item.is_mention();
             if first || thread != in_threads {
                 let title = if thread {
@@ -604,6 +668,17 @@ impl InboxScreen {
                 first = false;
             }
             list = list.push(self.activity_row(c, item));
+        }
+        let left = items.len().saturating_sub(self.activity_shown());
+        if left > 0 {
+            list = list.push(
+                container(secondary_button(
+                    t!("inbox.show_more", count = left.min(super::ACTIVITY_PAGE)),
+                    Some(Msg::ShowMoreActivity),
+                ))
+                .center_x(Length::Fill)
+                .padding(SPACE_2),
+            );
         }
         column![
             header,
@@ -834,6 +909,11 @@ fn thread_title(ws: &Workspace, tmid: &str) -> String {
     ws.thread_index()
         .parent(tmid)
         .map(|p| {
+            // As the sidebar names it: never the server text of an
+            // encrypted parent this process has not decrypted.
+            if crate::e2e::shown::undecrypted(p) {
+                return t!("preview.encrypted").into_owned();
+            }
             p.plain_text()
                 .lines()
                 .map(str::trim)

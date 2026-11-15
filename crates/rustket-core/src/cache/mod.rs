@@ -145,21 +145,52 @@ pub struct CachedState {
 
 /// What the Later view had loaded: starred messages (and copies of messages
 /// with a reminder) and each room's last starred-messages scan.
+///
+/// As a write it replaces everything, or with `delta` only changes the
+/// messages it holds and drops the `removed` ones (the scans are always
+/// the whole set).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CachedLater {
     pub messages: Vec<Message>,
     pub scans: Vec<CachedLaterScan>,
+    /// Messages to drop (a delta write).
+    pub removed: Vec<String>,
+    /// A write of the changed messages only.
+    pub delta: bool,
 }
 
 impl CachedLater {
     pub fn is_empty(&self) -> bool {
-        self.messages.is_empty() && self.scans.is_empty()
+        self.messages.is_empty() && self.scans.is_empty() && self.removed.is_empty()
     }
 
     /// Drops what belongs to rooms `keep` rejects.
     pub fn retain_rooms(&mut self, keep: impl Fn(&str) -> bool) {
         self.messages.retain(|m| keep(&m.rid));
         self.scans.retain(|s| keep(&s.rid));
+    }
+
+    /// Folds a later write into this one: a whole set replaces it, a delta
+    /// is applied to it.
+    pub fn absorb(&mut self, later: CachedLater) {
+        if !later.delta {
+            *self = later;
+            return;
+        }
+        for id in later.removed {
+            self.messages.retain(|m| m.id != id);
+            if self.delta && !self.removed.contains(&id) {
+                self.removed.push(id);
+            }
+        }
+        for m in later.messages {
+            self.removed.retain(|id| *id != m.id);
+            match self.messages.iter_mut().find(|x| x.id == m.id) {
+                Some(x) => *x = m,
+                None => self.messages.push(m),
+            }
+        }
+        self.scans = later.scans;
     }
 }
 
@@ -370,9 +401,14 @@ impl Batch {
             custom_statuses,
             outbox,
             interrupted_uploads,
-            threads,
-            later
+            threads
         );
+        if let Some(l) = later.later {
+            match self.later.as_mut() {
+                Some(mine) => mine.absorb(l),
+                None => self.later = Some(l),
+            }
+        }
         for r in later.rooms {
             if r.1.is_none() && r.2.is_none() {
                 // The room is gone: an earlier timeline or thread data must

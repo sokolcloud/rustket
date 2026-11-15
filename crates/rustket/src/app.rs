@@ -2,6 +2,7 @@
 
 mod after_update;
 mod components;
+mod hosted_user;
 mod inbox;
 mod keys;
 mod later;
@@ -647,6 +648,7 @@ impl App {
             Message::ReminderSync(sid, epoch, m) => self.on_reminder_sync(sid, epoch, m),
             Message::RemindersDue(at) => self.on_reminders_due(at),
             Message::ReminderNotify(m) => self.on_reminder_notify(m),
+            Message::ReminderAction(a) => self.on_reminder_action(a),
             Message::ReminderFetched(sid, epoch, mid, at, r) => {
                 self.on_reminder_fetched(sid, epoch, mid, at, r)
             }

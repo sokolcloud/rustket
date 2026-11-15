@@ -30,6 +30,11 @@ pub const MAX_WAIT: Duration = Duration::from_secs(60);
 pub const SNOOZE: chrono::Duration = chrono::Duration::hours(1);
 /// Characters of the message shown in a notification.
 const BODY_CHARS: usize = 200;
+/// Messages fetched at once per server for notification bodies
+/// (`chat.getMessage` allows 10 a minute per IP, shared with the thread
+/// loader and links): reminders due together beyond that show where they
+/// are without the text.
+const FETCH_AT_ONCE: usize = 2;
 
 /// Reminder firing state of the app.
 #[derive(Debug, Default)]
@@ -113,7 +118,7 @@ impl App {
             .later_message(mid)
             .filter(|_| self.config.ui.notification_preview)
             .and_then(body_of);
-        let sound = self.config.ui.reminder_sound && self.config.ui.sound;
+        let sound = self.config.ui.reminder_sound;
         let place = self.reminder_place(sid, &r.rid, r.tmid.as_deref());
         if sound {
             self.desktop.sound.play_theme("alarm-clock-elapsed");
@@ -188,7 +193,7 @@ impl App {
                 && notify_on
                 && self.reminder_timer.missed_shown.insert(sid.clone())
             {
-                if self.config.ui.reminder_sound && self.config.ui.sound {
+                if self.config.ui.reminder_sound {
                     self.desktop.sound.play_theme("alarm-clock-elapsed");
                 }
                 let backend = self.desktop.notifications.backend();
@@ -210,9 +215,18 @@ impl App {
                     .servers
                     .get(&sid)
                     .is_some_and(|s| s.workspace.later_message(&mid).is_some());
+                let in_flight = self
+                    .reminder_timer
+                    .fetching
+                    .iter()
+                    .filter(|(s, _, _)| *s == sid)
+                    .count();
                 let fetch = self.servers.get(&sid).and_then(|s| {
                     let live = *s.workspace.connection() == ConnectionState::Connected;
-                    (!have_copy && live && self.config.ui.notification_preview)
+                    (!have_copy
+                        && live
+                        && self.config.ui.notification_preview
+                        && in_flight < FETCH_AT_ONCE)
                         .then(|| s.session.as_ref().map(|h| (h.rest().clone(), s.generation)))
                         .flatten()
                 });
@@ -335,7 +349,27 @@ impl App {
         let Some(action) = self.reminder_timer.notify.signal(id, signal) else {
             return Task::none();
         };
+        self.on_reminder_action(action)
+    }
+
+    /// What the user asked for in a reminder notification. Opening leaves
+    /// the current screen: an admin screen with unsaved settings asks first
+    /// and replays the action after "Discard".
+    pub(super) fn on_reminder_action(&mut self, action: ReminderAction) -> Task<Message> {
         let show = self.desktop.show_window().map(Message::Desktop);
+        let leaves = matches!(
+            action,
+            ReminderAction::Open { .. } | ReminderAction::OpenLater(_)
+        );
+        let commit = if leaves {
+            if !self.may_leave(Message::ReminderAction(action.clone())) {
+                return show;
+            }
+            self.commit_flag_drafts()
+        } else {
+            Task::none()
+        };
+        let show = Task::batch([show, commit]);
         match action {
             ReminderAction::Open { sid, mid } => {
                 let target = self.servers.get(&sid).and_then(|s| {

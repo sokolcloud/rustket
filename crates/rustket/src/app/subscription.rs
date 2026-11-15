@@ -165,18 +165,27 @@ impl App {
                 iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     modifiers,
+                    repeat,
                     ..
-                } if modifiers.is_empty() => Some(Message::Escape),
+                } => {
+                    // A held Escape: the first press closed what it was
+                    // for; repeats would walk on through the Esc chain.
+                    (modifiers.is_empty() && !repeat).then_some(Message::Escape)
+                }
                 // Enter / Left / Right: the catch-up view; Enter, Up, Down, E:
                 // the Later view (ignored elsewhere).
                 iced::keyboard::Event::KeyPressed {
                     key,
+                    physical_key,
                     modifiers,
                     repeat: false,
                     ..
                 } => crate::inbox::CatchUpKey::of(&key, modifiers)
                     .map(Message::CatchUpKey)
-                    .or_else(|| crate::later::LaterKey::of(&key, modifiers).map(Message::LaterKey)),
+                    .or_else(|| {
+                        crate::later::LaterKey::of(&key, physical_key, modifiers)
+                            .map(Message::LaterKey)
+                    }),
                 _ => None,
             }
         }));

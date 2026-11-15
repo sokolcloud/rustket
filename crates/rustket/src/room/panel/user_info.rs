@@ -201,7 +201,123 @@ pub fn local_time(offset_hours: f64, clock_24h: bool) -> Option<String> {
     })
 }
 
+/// User info beside a list of several rooms' messages (All unreads,
+/// Activity, Later): a click on a name there shows who it is without
+/// opening the room, which would mark it read. `rid`: the room of the
+/// message (room roles and actions are about it).
+pub struct Hosted {
+    pub rid: String,
+    pub info: UserInfo,
+    /// Tags this showing: results for an earlier one are dropped.
+    pub stamp: u64,
+}
+
+impl std::fmt::Debug for Hosted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hosted")
+            .field("rid", &self.rid)
+            .field("username", &self.info.username)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum HostedMsg {
+    /// A message of the showing with this stamp.
+    Info(u64, Msg),
+    Close,
+}
+
+impl Hosted {
+    pub fn new(rid: &str, username: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            rid: rid.to_owned(),
+            info: UserInfo::new(username),
+            stamp: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    pub fn username(&self) -> &str {
+        &self.info.username
+    }
+
+    /// The panel with its header, for [`beside`].
+    pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, HostedMsg> {
+        let head = row![
+            rustket_ui::widget::ellipsis(t!("room_panel.user_info").into_owned())
+                .size(rustket_ui::theme::TEXT_SUBTITLE)
+                .font(font_semibold())
+                .width(Length::Fill),
+            rustket_ui::widget::icon_button(
+                Icon::X,
+                Some(HostedMsg::Close),
+                t!("room_panel.close")
+            ),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+        column![
+            container(head)
+                .height(rustket_ui::theme::HEADER_HEIGHT)
+                .padding([0.0, SPACE_4])
+                .center_y(rustket_ui::theme::HEADER_HEIGHT),
+            divider(),
+            container({
+                let stamp = self.stamp;
+                self.info.view(ctx).map(move |m| HostedMsg::Info(stamp, m))
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        ]
+        .height(Length::Fill)
+        .into()
+    }
+}
+
+/// `main` with the hosted user panel docked on the right, like a room's.
+/// The tree has the same shape with the panel closed (an empty side), so
+/// `main` keeps its state, such as its scroll position, when the panel
+/// opens or closes.
+pub fn beside<'a, M: 'a>(main: Element<'a, M>, side: Option<Element<'a, M>>) -> Element<'a, M> {
+    let main = container(main).width(Length::Fill).height(Length::Fill);
+    let Some(side) = side else {
+        return rustket_ui::widget::side_panel(main, iced::widget::space(), None);
+    };
+    let width = super::WIDTH + 1.0;
+    let side = container(iced::widget::opaque(
+        row![
+            rustket_ui::widget::vertical_divider(),
+            container(side)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(style::container_sidebar),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill),
+    ))
+    .width(Length::Fixed(width))
+    .height(Length::Fill);
+    rustket_ui::widget::side_panel(
+        main,
+        container(side)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::End),
+        Some(width),
+    )
+}
+
 impl UserInfo {
+    /// A direct message created before its room arrived: the room once
+    /// the workspace has it (hosts without [`Self::on_changes`]).
+    pub fn dm_ready(&mut self, ws: &Workspace) -> Option<String> {
+        self.dm_pending
+            .as_ref()
+            .filter(|rid| ws.room(rid).is_some())?;
+        self.dm_pending.take()
+    }
+
     pub fn new(username: &str) -> Self {
         Self {
             username: username.to_owned(),
@@ -662,5 +778,20 @@ mod tests {
         assert!(s.ends_with("(UTC+5:30)"), "{s}");
         let s = local_time(-3.0, true).unwrap();
         assert!(s.ends_with("(UTC-3)"), "{s}");
+    }
+
+    /// Opening or closing the panel keeps the main view's widget state
+    /// (scroll position): the tree has the same shape either way.
+    #[test]
+    fn beside_keeps_the_tree_shape() {
+        use iced::advanced::widget::Tree;
+        let main = || -> Element<'static, ()> { scrollable(text("list")).into() };
+        let closed = beside(main(), None);
+        let open = beside(main(), Some(text("panel").into()));
+        let (a, b) = (Tree::new(&closed), Tree::new(&open));
+        assert_eq!(a.tag, b.tag);
+        assert_eq!(a.children.len(), b.children.len());
+        assert_eq!(a.children[0].tag, b.children[0].tag);
+        assert_eq!(a.children[0].children[0].tag, b.children[0].children[0].tag);
     }
 }

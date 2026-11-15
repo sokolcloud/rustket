@@ -475,9 +475,48 @@ impl Workspace {
         rows
     }
 
-    /// Rows per tab, in [`LaterTab::ALL`] order.
+    /// Rows per tab, in [`LaterTab::ALL`] order (one pass, no rows built).
     pub fn later_counts(&self) -> [usize; 4] {
-        LaterTab::ALL.map(|t| self.later_rows(t).len())
+        let mut counts = [0; 4];
+        for m in self.later_index.starred() {
+            if !self.later_room(&m.rid) {
+                continue;
+            }
+            let i = match self.later.status_of(&m.id, ts_ms(m)) {
+                LaterStatus::InProgress => 0,
+                LaterStatus::Done => 2,
+                LaterStatus::Archived => 3,
+            };
+            counts[i] += 1;
+        }
+        counts[1] = self
+            .reminders
+            .iter()
+            .filter(|r| self.later_room(&r.rid))
+            .count();
+        counts
+    }
+
+    /// The row of message `mid` as its Later tabs show it (starred, else a
+    /// reminder), without building a tab's rows.
+    pub fn later_row_of(&self, mid: &str) -> Option<LaterRow> {
+        let reminder = self.reminders.get(mid).filter(|r| self.later_room(&r.rid));
+        let m = self.later_index.get(mid);
+        if self.later_index.is_starred(mid)
+            && let Some(m) = m.filter(|m| self.later_room(&m.rid))
+        {
+            let mut row = self.later_row(mid, &m.rid, Some(m), true);
+            if row.tmid.is_none() {
+                row.tmid = reminder.and_then(|r| r.tmid.clone());
+            }
+            return Some(row);
+        }
+        let r = reminder?;
+        let mut row = self.later_row(mid, &r.rid, m, false);
+        if row.tmid.is_none() {
+            row.tmid = r.tmid.clone();
+        }
+        Some(row)
     }
 
     /// The reminders of rooms the user is in (not omnichannel): the ones

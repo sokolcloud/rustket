@@ -759,6 +759,14 @@ impl Workspace {
         self.feeds.keep(rids);
     }
 
+    /// The inbox views closed a while ago: their room feeds go
+    /// ([`crate::inbox::feeds::FeedStore::release`]).
+    pub fn release_feeds(&mut self) {
+        if self.feeds.release() {
+            self.mark(Dirty::FEEDS);
+        }
+    }
+
     /// Starts a page of room `rid`'s feed (`earlier`: the next older one),
     /// against the subscription's current `ls`.
     pub fn begin_feed(&mut self, rid: &str, earlier: bool) -> Option<crate::inbox::feeds::FeedReq> {

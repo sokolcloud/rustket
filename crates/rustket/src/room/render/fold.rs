@@ -14,6 +14,10 @@ pub const CODE_FOLD_KEEP: usize = 10;
 pub const BODY_FOLD_MIN_LINES: usize = 24;
 /// Height of a folded body's text part (about 16 lines).
 pub const BODY_FOLD_HEIGHT: f32 = 320.0;
+/// Estimated lines a folded body renders before the clip: whole blocks
+/// up to about this many, so that a column of many short paragraphs is not
+/// squeezed into [`BODY_FOLD_HEIGHT`] (its spacing alone would fill it).
+pub const BODY_FOLD_KEEP_LINES: usize = 14;
 /// `expanded` index of the body itself (code blocks count from 0).
 pub const EXPAND_BODY: usize = usize::MAX;
 /// Characters per wrapped line in the estimate.
@@ -40,6 +44,20 @@ pub fn estimated_lines(msg: &Message) -> usize {
         Some(root) if !root.is_empty() => root.iter().map(block_lines).sum(),
         _ => text_lines(&msg.msg),
     }
+}
+
+/// Leading top-level blocks of `root` a folded body renders: whole
+/// blocks until [`BODY_FOLD_KEEP_LINES`] is reached, at least one (the
+/// clip cuts a long last one).
+pub fn folded_blocks(root: &[Block]) -> usize {
+    let mut lines = 0;
+    for (i, b) in root.iter().enumerate() {
+        if lines >= BODY_FOLD_KEEP_LINES {
+            return i.max(1);
+        }
+        lines += block_lines(b);
+    }
+    root.len()
 }
 
 /// Whether the text part of `msg` folds.
@@ -148,5 +166,29 @@ mod tests {
         assert!(body_folds(&rows(BODY_FOLD_MIN_LINES + 1)));
         // One big code block alone folds itself, not the body.
         assert!(!body_folds(&msg(serde_json::json!([code(200)]))));
+    }
+
+    /// A folded body of many one-line paragraphs renders only the first
+    /// ones (a column of all of them would be squeezed into the fold's
+    /// height, down to nothing past ~80 paragraphs).
+    #[test]
+    fn folded_bodies_keep_leading_blocks() {
+        let rows = |n: usize| -> Vec<Block> {
+            serde_json::from_value(serde_json::Value::Array(
+                (0..n).map(|_| para("p")).collect(),
+            ))
+            .unwrap()
+        };
+        let many = rows(100);
+        assert!(body_folds(&msg(serde_json::to_value(&many).unwrap())));
+        assert_eq!(folded_blocks(&many), BODY_FOLD_KEEP_LINES);
+        // Spacing included, what is kept fits the fold's height.
+        let row = rustket_ui::theme::TEXT_BODY * 1.4 + 4.0;
+        assert!(BODY_FOLD_KEEP_LINES as f32 * row <= BODY_FOLD_HEIGHT + row);
+        assert_eq!(folded_blocks(&rows(3)), 3);
+        let long = "x".repeat(90 * 40);
+        let big: Vec<Block> =
+            serde_json::from_value(serde_json::json!([para(&long), para("b")])).unwrap();
+        assert_eq!(folded_blocks(&big), 1, "one long block, cut by the clip");
     }
 }

@@ -617,6 +617,29 @@ fn feeds_are_evicted_least_recently_used() {
     assert!(store.feed("r1").is_some() && store.feed("new").is_some());
 }
 
+/// Released feeds stop absorbing live messages; thread mentions stay.
+#[test]
+fn released_feeds_go_and_stop_absorbing() {
+    let mut c = unread_sub("c", RoomType::Channel, 100);
+    c.tunread = Some(vec!["t1".into()]);
+    c.tunread_user = Some(vec!["t1".into()]);
+    let mut ws = connected(vec![(c, Some(400))]);
+    let req = ws.begin_feed("c", false).unwrap();
+    ws.finish_feed(&req, Ok(history(vec![msg("a", "c", 200, "bob")], 1, None)));
+    assert!(ws.begin_thread_mentions("c"));
+    let mut tm = msg("tm", "c", 350, "bob");
+    tm.tmid = Some("t1".into());
+    tm.mentions = Some(vec![mention("me")]);
+    ws.finish_thread_mentions("c", Ok(vec![tm]));
+    let rev = ws.revision(Dirty::FEEDS);
+    ws.release_feeds();
+    assert!(ws.revision(Dirty::FEEDS) > rev);
+    assert!(ws.feeds().feed("c").is_none());
+    assert!(ws.feeds().thread_mention("c", "t1").is_some());
+    ws.apply_message(msg("b", "c", 300, "bob"));
+    assert!(ws.feeds().feed("c").is_none(), "no feed grows back");
+}
+
 /// Feeds the open view wants are never evicted: past the cap the store
 /// grows rather than refetching wanted rooms in a loop.
 #[test]

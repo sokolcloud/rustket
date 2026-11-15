@@ -14,9 +14,13 @@ pub mod notify;
 pub mod view;
 pub mod when;
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
 use rustket_core::Workspace;
 use rustket_core::later::{LaterEdit, LaterStatus};
 use rustket_core::reminders::ReminderEdit;
+use rustket_core::workspace::Dirty;
 use rustket_core::workspace::{LaterRow, LaterTab};
 
 use crate::room::Effect;
@@ -35,6 +39,8 @@ pub struct LaterState {
     pub last_fetch: Option<std::time::Instant>,
     pub in_flight: bool,
     pub timer: Option<std::time::Instant>,
+    /// The tab the view showed last (it opens there again).
+    pub last_tab: Option<LaterTab>,
 }
 
 /// A key of the Later view (uncaptured, no modifiers; Enter comes through
@@ -49,8 +55,13 @@ pub enum LaterKey {
 }
 
 impl LaterKey {
-    /// Up, Down and E (Enter is `crate::inbox::CatchUpKey::Enter`).
-    pub fn of(key: &iced::keyboard::Key, m: iced::keyboard::Modifiers) -> Option<Self> {
+    /// Up, Down and E (Enter is `crate::inbox::CatchUpKey::Enter`). E is
+    /// the key's Latin letter, so it works on other layouts too.
+    pub fn of(
+        key: &iced::keyboard::Key,
+        physical: iced::keyboard::key::Physical,
+        m: iced::keyboard::Modifiers,
+    ) -> Option<Self> {
         use iced::keyboard::Key;
         use iced::keyboard::key::Named;
         if !m.is_empty() {
@@ -59,7 +70,7 @@ impl LaterKey {
         match key {
             Key::Named(Named::ArrowUp) => Some(Self::Up),
             Key::Named(Named::ArrowDown) => Some(Self::Down),
-            Key::Character(c) if c.as_str().eq_ignore_ascii_case("e") => Some(Self::E),
+            Key::Character(_) if crate::keymap::is_char(key, physical, 'e') => Some(Self::E),
             _ => None,
         }
     }
@@ -106,11 +117,15 @@ pub enum Msg {
     AlsoRemind(bool),
     /// Scan every room for starred messages again.
     Refresh,
+    /// Show the next [`PAGE`] rows of the tab.
+    ShowMore,
     /// A message body's interaction (the shared viewer).
     View {
         rid: String,
         m: ViewerMsg,
     },
+    /// The user info beside the view (a name clicked in a body).
+    User(crate::room::panel::user_info::HostedMsg),
 }
 
 /// Requests to the app.
@@ -147,6 +162,29 @@ pub struct UpdateCtx<'a> {
     pub online: bool,
 }
 
+/// Rows shown at first and added by "Show more" (like the timeline's
+/// window: a tab can hold thousands of archived stars).
+pub const PAGE: usize = 50;
+
+/// What the rows depend on: the tab and the workspace areas they read.
+type RowsKey = (LaterTab, u64, u64, u64);
+
+/// The rows and counts of the last workspace state seen, so that a view
+/// rebuilds them once per change instead of once per frame and lookup.
+#[derive(Debug, Default)]
+struct RowsCache {
+    rows: Option<(RowsKey, Arc<[LaterRow]>)>,
+    counts: Option<((u64, u64, u64), [usize; 4])>,
+}
+
+fn revs(ws: &Workspace) -> (u64, u64, u64) {
+    (
+        ws.revision(Dirty::LATER),
+        ws.revision(Dirty::REMINDERS),
+        ws.revision(Dirty::ROOMS),
+    )
+}
+
 /// The open Later view.
 #[derive(Debug)]
 pub struct LaterView {
@@ -154,6 +192,13 @@ pub struct LaterView {
     pub selected: Option<String>,
     pub dialog: Option<Dialog>,
     pub viewer: Viewer,
+    /// The room of the image open in the viewer's lightbox.
+    pub image_rid: Option<String>,
+    /// Rows of the tab shown (a multiple of [`PAGE`]).
+    pub shown: usize,
+    /// User info beside the view.
+    pub user: Option<crate::room::panel::user_info::Hosted>,
+    cache: RefCell<RowsCache>,
 }
 
 impl LaterView {
@@ -163,6 +208,10 @@ impl LaterView {
             selected: None,
             dialog: None,
             viewer: Viewer::new(),
+            image_rid: None,
+            shown: PAGE,
+            user: None,
+            cache: RefCell::default(),
         }
     }
 
@@ -171,18 +220,45 @@ impl LaterView {
         self.dialog.is_some() || self.viewer.image_open()
     }
 
-    fn tab_row(ws: &Workspace, tab: LaterTab, mid: &str) -> Option<LaterRow> {
-        ws.later_rows(tab).into_iter().find(|r| r.mid == mid)
+    /// The rows of the open tab (built once per workspace change).
+    pub fn rows(&self, ws: &Workspace) -> Arc<[LaterRow]> {
+        let (l, r, rooms) = revs(ws);
+        let key = (self.tab, l, r, rooms);
+        let mut cache = self.cache.borrow_mut();
+        match &cache.rows {
+            Some((k, rows)) if *k == key => rows.clone(),
+            _ => {
+                let rows: Arc<[LaterRow]> = ws.later_rows(self.tab).into();
+                cache.rows = Some((key, rows.clone()));
+                rows
+            }
+        }
     }
 
-    /// The row of `mid` in any tab (the current one first).
+    /// Rows per tab (once per workspace change).
+    pub fn counts(&self, ws: &Workspace) -> [usize; 4] {
+        let key = revs(ws);
+        let mut cache = self.cache.borrow_mut();
+        match cache.counts {
+            Some((k, counts)) if k == key => counts,
+            _ => {
+                let counts = ws.later_counts();
+                cache.counts = Some((key, counts));
+                counts
+            }
+        }
+    }
+
+    /// The row of `mid` (whichever tab lists it).
     fn find(&self, ws: &Workspace, mid: &str) -> Option<LaterRow> {
-        Self::tab_row(ws, self.tab, mid).or_else(|| {
-            LaterTab::ALL
-                .into_iter()
-                .filter(|t| *t != self.tab)
-                .find_map(|t| Self::tab_row(ws, t, mid))
-        })
+        ws.later_row_of(mid)
+    }
+
+    /// Shows rows up to index `i` (a keyboard selection below the window).
+    fn show_through(&mut self, i: usize) {
+        if i >= self.shown {
+            self.shown = (i / PAGE + 1) * PAGE;
+        }
     }
 
     fn open(row: &LaterRow) -> Out {
@@ -208,6 +284,11 @@ impl LaterView {
             Msg::Tab(t) => {
                 self.tab = t;
                 self.selected = None;
+                self.shown = PAGE;
+                Vec::new()
+            }
+            Msg::ShowMore => {
+                self.shown = self.shown.saturating_add(PAGE);
                 Vec::new()
             }
             Msg::Close => vec![Out::Close],
@@ -301,8 +382,8 @@ impl LaterView {
             }
             Msg::Picker(m) => self.picked(m, c),
             Msg::Refresh => vec![Out::Refresh],
-            // Routed by the app (the viewer needs the room context).
-            Msg::View { .. } => Vec::new(),
+            // Routed by the app (they need the room context).
+            Msg::View { .. } | Msg::User(_) => Vec::new(),
         }
     }
 
@@ -365,7 +446,7 @@ impl LaterView {
         if self.dialog.is_some() {
             return Vec::new();
         }
-        let rows = c.workspace.later_rows(self.tab);
+        let rows = self.rows(c.workspace);
         let pos = self
             .selected
             .as_ref()
@@ -376,13 +457,16 @@ impl LaterView {
                     return Vec::new();
                 }
                 let next = match (pos, k) {
-                    (None, LaterKey::Up) => rows.len() - 1,
+                    // The last row rendered, not the tab's last: a long
+                    // tab stays windowed.
+                    (None, LaterKey::Up) => rows.len().min(self.shown).saturating_sub(1),
                     (None, _) => 0,
                     (Some(p), LaterKey::Up) => p.saturating_sub(1),
                     (Some(p), _) => (p + 1).min(rows.len() - 1),
                 };
                 let mid = rows[next].mid.clone();
                 self.selected = Some(mid.clone());
+                self.show_through(next);
                 vec![Out::Scroll(mid)]
             }
             LaterKey::Enter => pos.map(|p| Self::open(&rows[p])).into_iter().collect(),
@@ -415,6 +499,23 @@ impl LaterView {
         };
         if gone {
             self.dialog = None;
+        }
+        if self
+            .user
+            .as_ref()
+            .is_some_and(|u| ws.room(&u.rid).is_none())
+        {
+            self.user = None;
+        }
+        if !self.viewer.image_open() {
+            self.image_rid = None;
+        } else if self
+            .image_rid
+            .as_deref()
+            .is_none_or(|rid| ws.room(rid).is_none())
+        {
+            self.viewer.close_image();
+            self.image_rid = None;
         }
     }
 }

@@ -37,7 +37,6 @@ impl Composer {
             expand_groups(ctx.workspace, ctx.server_id, &self.rid, &typed)
         };
         let added = expanded.as_ref().is_some_and(|e| !e.added.is_empty());
-        let mention_tokens = expanded.as_ref().map_or(0, |e| e.mention_tokens);
         let text = expanded.map_or_else(|| typed.clone(), |e| e.text);
         let max = ctx.workspace.settings().max_message_size();
         if let Some(ed) = self.editing.clone() {
@@ -155,17 +154,13 @@ impl Composer {
         ctx.workspace.take_draft(&self.rid, self.tmid.as_deref());
         let stop = self.typing.on_send();
         let typing = self.typing_task(stop, ctx);
+        let capped = added && encrypted_mentions_capped(ctx.workspace, &self.rid, &full);
         let mut action = if is_command {
             self.dispatch_text(full, ctx)
         } else {
             Action::task(self.send_text(full, ctx))
         };
-        if mention_tokens > MAX_ENCRYPTED_MENTIONS
-            && matches!(
-                crate::e2e::outgoing::mode(ctx.workspace, &self.rid),
-                crate::e2e::outgoing::Mode::Encrypt(_)
-            )
-        {
+        if capped {
             action.effects.push(Effect::Toast(
                 BannerKind::Warning,
                 t!("mention_groups.e2e_cap", max = MAX_ENCRYPTED_MENTIONS).into_owned(),
@@ -255,7 +250,22 @@ impl Composer {
 }
 
 /// Mentions an encrypted message lists in plaintext (the rest notify nobody).
-const MAX_ENCRYPTED_MENTIONS: usize = 50;
+const MAX_ENCRYPTED_MENTIONS: usize = rocketchat::e2e::MAX_MENTIONS;
+
+/// Whether `text` sent to `rid` goes out encrypted with more user mentions
+/// than its plaintext mention list holds.
+fn encrypted_mentions_capped(ws: &Workspace, rid: &str, text: &str) -> bool {
+    let crate::e2e::outgoing::Mode::Encrypt(_) = crate::e2e::outgoing::mode(ws, rid) else {
+        return false;
+    };
+    let settings = crate::e2e::outgoing::settings(ws);
+    settings.mentions
+        && rocketchat::e2e::e2e_user_mention_count(
+            text,
+            &settings.username_pattern,
+            &crate::e2e::outgoing::is_group(ws),
+        ) > MAX_ENCRYPTED_MENTIONS
+}
 
 /// `text` with the account's mention groups expanded for room `rid`
 /// ([`rustket_core::mention_groups::expand`]); `None` when it has none. A

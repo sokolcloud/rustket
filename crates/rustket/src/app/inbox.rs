@@ -180,6 +180,7 @@ impl App {
                 Task::none()
             }
             Msg::View { rid, m } => self.inbox_viewer(&sid, rid, m),
+            Msg::User(m) => self.hosted_user(&sid, super::hosted_user::Host::Inbox, m),
             m => {
                 let online = s.session.is_some()
                     && *s.workspace.connection()
@@ -217,7 +218,19 @@ impl App {
             images: &self.images,
             prefs: &self.config.ui,
         };
+        let opens = crate::room::timeline::viewer_opens_image(&m);
         let action = screen.viewer.update(m, &mut ctx);
+        screen.image_rid = screen
+            .viewer
+            .image_open()
+            .then(|| {
+                if opens {
+                    Some(rid.clone())
+                } else {
+                    screen.image_rid.take()
+                }
+            })
+            .flatten();
         let (tsid, trid) = (sid.clone(), rid.clone());
         let task = action.task.map(move |m| {
             Message::Inbox(
@@ -279,13 +292,7 @@ impl App {
                     self.save_config()
                 }
                 Out::Effects { rid, effects } => {
-                    let (local, app): (Vec<_>, Vec<_>) = effects.into_iter().partition(room_local);
-                    let mut t = vec![self.handle_effects(sid, &rid, app)];
-                    if !local.is_empty() {
-                        t.push(self.open_room(sid, &rid));
-                        t.push(self.room_run_effects(sid, &rid, local));
-                    }
-                    Task::batch(t)
+                    self.list_effects(sid, &rid, effects, super::hosted_user::Host::Inbox)
                 }
             });
         }

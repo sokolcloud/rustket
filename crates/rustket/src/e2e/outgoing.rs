@@ -132,7 +132,7 @@ pub fn prepare_send(
     match mode(ws, &m.rid) {
         Mode::Plain | Mode::Unencrypted => None,
         Mode::Blocked => Some(Err(local_error(blocked_text(ws, &m.rid)))),
-        Mode::Encrypt(mgr) => Some(encrypt_text(&mgr, m).map_err(local_error)),
+        Mode::Encrypt(mgr) => Some(encrypt_text(&mgr, m, &is_group(ws)).map_err(local_error)),
     }
 }
 
@@ -184,7 +184,7 @@ pub fn prepare_edit(
         return Some(Err(t!("e2e.edit_unavailable").into_owned()));
     }
     Some(match mode(ws, rid) {
-        Mode::Encrypt(mgr) => encrypt_edit(&mgr, original, text),
+        Mode::Encrypt(mgr) => encrypt_edit(&mgr, original, text, &is_group(ws)),
         _ => Err(t!("e2e.edit_unavailable").into_owned()),
     })
 }
@@ -217,9 +217,19 @@ pub async fn update_message(
     }
 }
 
+/// Whether `name` is one of the account's mention groups (their expansions
+/// list users, not the group, in an encrypted message's plaintext mentions).
+pub fn is_group(ws: &Workspace) -> impl Fn(&str) -> bool + '_ {
+    |name| ws.mention_groups().get(name).is_some()
+}
+
 /// Encrypts an outbox message (text, thread fields stay plaintext).
-pub fn encrypt_text(mgr: &E2eManager, m: &Message) -> Result<OutgoingEncrypted, String> {
-    mgr.encrypt_outgoing(&m.rid, &m.msg)
+pub fn encrypt_text(
+    mgr: &E2eManager,
+    m: &Message,
+    is_group: &dyn Fn(&str) -> bool,
+) -> Result<OutgoingEncrypted, String> {
+    mgr.encrypt_edit(&m.rid, &m.msg, None, is_group)
         .map_err(|e| super::error_text(&e))
 }
 
@@ -247,6 +257,7 @@ pub fn encrypt_edit(
     mgr: &E2eManager,
     original: &Message,
     text: &str,
+    is_group: &dyn Fn(&str) -> bool,
 ) -> Result<OutgoingEncrypted, String> {
     let raw = super::shown::raw_view(original);
     let payload = match mgr.decrypt_message(&raw) {
@@ -257,7 +268,7 @@ pub fn encrypt_edit(
         // Never drop the file keys of a message that could not be read.
         return Err(t!("e2e.edit_unreadable").into_owned());
     }
-    mgr.encrypt_edit(&original.rid, text, payload.as_ref())
+    mgr.encrypt_edit(&original.rid, text, payload.as_ref(), is_group)
         .map_err(|e| super::error_text(&e))
 }
 
@@ -426,6 +437,29 @@ mod tests {
             upload_mode(&ws(false, false, false), "g"),
             UploadMode::Plain
         ));
+    }
+
+    #[test]
+    fn mention_groups_are_known_to_the_plaintext_mentions() {
+        use rustket_core::mention_groups::{MentionGroupBlob, MentionGroupEdit};
+        let mut w = ws(true, false, true);
+        let mut b = MentionGroupBlob::default();
+        let e = MentionGroupEdit::Upsert {
+            id: "g0".into(),
+            name: "backend".into(),
+            members: vec!["alice".into(), "bob".into()],
+        };
+        b.edit(&MentionGroupBlob::default(), &e, 1, "dev").unwrap();
+        w.set_mention_group_overlay(b);
+        let g = is_group(&w);
+        assert!(g("backend") && g("Backend"));
+        assert!(!g("alice"));
+        let m = rocketchat::e2e::e2e_mentions_with_groups(
+            "(@backend (@alice @bob))",
+            rocketchat::e2e::DEFAULT_USERNAME_PATTERN,
+            &g,
+        );
+        assert_eq!(m.e2e_user_mentions, ["@alice", "@bob"]);
     }
 
     /// `settings.public` failed during the load: no E2E settings at all.

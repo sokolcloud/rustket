@@ -191,3 +191,59 @@ fn reminder_and_due_dialogs_emit_edits() {
     v.prune(&ws);
     assert!(v.dialog.is_none());
 }
+
+/// E is the key's Latin letter: the Russian layout's "у" on that key works.
+#[test]
+fn e_works_on_other_layouts() {
+    use iced::keyboard::key::{Code, Physical};
+    use iced::keyboard::{Key, Modifiers};
+    let ru = Key::Character("у".into());
+    assert_eq!(
+        LaterKey::of(&ru, Physical::Code(Code::KeyE), Modifiers::empty()),
+        Some(LaterKey::E)
+    );
+    let e = Key::Character("e".into());
+    assert_eq!(
+        LaterKey::of(&e, Physical::Code(Code::KeyE), Modifiers::empty()),
+        Some(LaterKey::E)
+    );
+    assert_eq!(
+        LaterKey::of(&ru, Physical::Code(Code::KeyE), Modifiers::SHIFT),
+        None
+    );
+}
+
+/// A tab shows a window of rows ("Show more" adds a page, keyboard
+/// selection below it widens it); rows and counts follow the workspace.
+#[test]
+fn rows_are_windowed_and_follow_the_workspace() {
+    let mut ws = ws();
+    let n = PAGE + 5;
+    for i in 0..n {
+        ws.apply_message(starred(&format!("m{i:03}"), 1_800_000_000_000 + i as i64));
+    }
+    let mut v = LaterView::new(LaterTab::InProgress);
+    assert_eq!(v.rows(&ws).len(), n);
+    assert_eq!(v.counts(&ws), [n, 0, 0, 0]);
+    assert_eq!(v.shown, PAGE);
+    // Up with nothing selected picks the last rendered row.
+    v.update(Msg::Key(LaterKey::Up), &ctx(&ws, true));
+    assert_eq!(v.shown, PAGE);
+    assert_eq!(v.selected, Some(v.rows(&ws)[PAGE - 1].mid.clone()));
+    v.selected = None;
+    for _ in 0..=PAGE {
+        v.update(Msg::Key(LaterKey::Down), &ctx(&ws, true));
+    }
+    assert_eq!(v.shown, 2 * PAGE, "the selection stays rendered");
+    v.update(Msg::Tab(LaterTab::Done), &ctx(&ws, true));
+    assert_eq!(v.shown, PAGE);
+    v.update(Msg::ShowMore, &ctx(&ws, true));
+    assert_eq!(v.shown, 2 * PAGE);
+    v.update(Msg::Tab(LaterTab::InProgress), &ctx(&ws, true));
+    ws.apply_message(starred("new", 1_900_000_000_000));
+    assert_eq!(v.rows(&ws).len(), n + 1);
+    assert_eq!(v.counts(&ws), [n + 1, 0, 0, 0]);
+    // One-row lookups agree with the tab's rows.
+    let rows = v.rows(&ws);
+    assert_eq!(ws.later_row_of("new").as_ref(), rows.first());
+}

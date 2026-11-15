@@ -1238,6 +1238,7 @@ fn later_data_round_trip() {
             scanned_at: Some(ts(5000)),
             scanned_lm: Some(ts(900)),
         }],
+        ..Default::default()
     };
     db.write(Batch {
         later: Some(later),
@@ -1290,4 +1291,54 @@ fn later_data_round_trip() {
     })
     .unwrap();
     assert!(db.load_state().unwrap().later.is_empty());
+}
+
+/// A delta write changes and drops only the messages it names (batches
+/// waiting for the writer fold into one), and Later's messages count
+/// against the message budget.
+#[test]
+fn later_delta_writes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    let scan = |rid: &str| CachedLaterScan {
+        rid: rid.into(),
+        scanned_at: Some(ts(5000)),
+        scanned_lm: Some(ts(900)),
+    };
+    db.write(Batch {
+        later: Some(CachedLater {
+            messages: vec![msg("a", "A", 1000, "u2"), msg("b", "A", 1001, "u2")],
+            scans: vec![scan("A")],
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut first = Batch {
+        later: Some(CachedLater {
+            messages: vec![msg("c", "A", 1002, "u2")],
+            removed: vec!["a".into()],
+            scans: vec![scan("A")],
+            delta: true,
+        }),
+        ..Default::default()
+    };
+    let mut edited = msg("b", "A", 1001, "u2");
+    edited.msg = "edited".into();
+    first.merge(Batch {
+        later: Some(CachedLater {
+            messages: vec![edited],
+            removed: vec!["c".into()],
+            scans: vec![scan("A"), scan("B")],
+            delta: true,
+        }),
+        ..Default::default()
+    });
+    db.write(first).unwrap();
+    let mut l = db.load_state().unwrap().later;
+    l.messages.sort_by(|x, y| x.id.cmp(&y.id));
+    let ids: Vec<&str> = l.messages.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["b"]);
+    assert_eq!(l.messages[0].msg, "edited");
+    assert_eq!(l.scans.len(), 2);
 }

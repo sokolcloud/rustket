@@ -586,7 +586,8 @@ pub struct UiPrefs {
     /// Desktop notifications for message reminders (independent of the
     /// message notifications).
     pub reminder_notifications: bool,
-    /// Reminder notifications play a sound (with `sound` on).
+    /// Reminder notifications play a sound (independent of `sound`, which
+    /// it starts from when not set).
     pub reminder_sound: bool,
     /// Hour the "Tomorrow" and "Next week" reminder presets use
     /// ([`Self::morning_hour`] clamps it).
@@ -935,6 +936,11 @@ impl AppConfig {
             .map(str::to_owned);
         if let Some(t) = doc.get("ui").and_then(toml::Value::as_table) {
             cfg.ui = lenient(t, "ui");
+            // Not set yet (a config from before reminders): follow the
+            // message sound, so a client kept silent stays silent.
+            if !t.contains_key("reminder_sound") {
+                cfg.ui.reminder_sound = cfg.ui.sound;
+            }
         }
         if let Some(list) = doc.get("recent_emoji").and_then(toml::Value::as_array) {
             cfg.recent_emoji = list
@@ -1821,6 +1827,13 @@ mod tests {
         let back = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
         assert!(!back.ui.reminder_sound && back.ui.reminder_notifications);
         assert_eq!(back.ui.morning_hour(), 7);
+        // Not set: follows the message sound; set: stays independent.
+        let c = AppConfig::parse("[ui]\nsound = false").unwrap();
+        assert!(!c.ui.reminder_sound);
+        let c = AppConfig::parse("[ui]\nsound = true").unwrap();
+        assert!(c.ui.reminder_sound);
+        let c = AppConfig::parse("[ui]\nsound = false\nreminder_sound = true").unwrap();
+        assert!(c.ui.reminder_sound);
     }
 
     #[test]

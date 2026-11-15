@@ -383,6 +383,12 @@ e2e.edit_unreadable:
   es: "Este mensaje cifrado no se puede editar aquí"
   th: "ไม่สามารถแก้ไขข้อความที่เข้ารหัสนี้ที่นี่ได้"
   zh: "无法在此编辑这条加密消息"
+e2e.quote_unreadable:
+  en: "This encrypted message can't be quoted until it is decrypted"
+  ru: "Это зашифрованное сообщение нельзя цитировать, пока оно не расшифровано"
+  es: "Este mensaje cifrado no se puede citar hasta que se descifre"
+  th: "ไม่สามารถอ้างอิงข้อความที่เข้ารหัสนี้ได้จนกว่าจะถอดรหัส"
+  zh: "这条加密消息解密后才能引用"
 e2e.edit_unavailable:
   en: "Encrypted messages can't be edited until the room's encryption key is available"
   ru: "Зашифрованные сообщения нельзя изменять, пока ключ шифрования комнаты недоступен"

@@ -155,6 +155,24 @@ inbox.load_earlier:
   es: "Cargar anteriores"
   th: "โหลดก่อนหน้า"
   zh: "加载更早的"
+inbox.threads_in_activity:
+  en: "unread threads are in Activity"
+  ru: "непрочитанные треды — в «Активности»"
+  es: "los hilos no leídos están en Actividad"
+  th: "เธรดที่ยังไม่ได้อ่านอยู่ในกิจกรรม"
+  zh: "未读话题在“动态”中"
+inbox.show_earlier:
+  en: "Show earlier"
+  ru: "Показать"
+  es: "Mostrar anteriores"
+  th: "แสดงก่อนหน้า"
+  zh: "显示更早的"
+inbox.show_more:
+  en: "Show %{count} more"
+  ru: "Показать ещё %{count}"
+  es: "Mostrar %{count} más"
+  th: "แสดงอีก %{count} รายการ"
+  zh: "再显示 %{count} 条"
 inbox.more_in_room:
   en: "More unread messages: open the room to read them"
   ru: "Есть ещё непрочитанные: откройте комнату, чтобы прочитать их"

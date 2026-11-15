@@ -209,10 +209,13 @@ impl App {
             images: &self.images,
             prefs: &self.config.ui,
             collapsed: &self.ui_state.collapsed_sections,
-            active_room: s.active_room.as_deref(),
+            // A main view (All unreads, Activity, Later) hides the room:
+            // only its pinned row is selected then.
+            active_room: s.active_room.as_deref().filter(|_| s.main_view.is_none()),
             active_thread: s
                 .active_room
                 .as_ref()
+                .filter(|_| s.main_view.is_none())
                 .and_then(|r| s.rooms.get(r))
                 .and_then(|rv| rv.panel.thread_tmid()),
             inbox_open: s.inbox_view().map(crate::inbox::InboxScreen::kind),

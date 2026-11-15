@@ -57,9 +57,17 @@ impl App {
                 .and_then(|e| e.last_room.as_deref());
             tasks.push(crate::cache::after_update(s, &self.offline, last_room));
             // Sidebar Threads: mode and kept threads from the config, loads.
-            let activity = s
+            // Activity keeps its override a while after it closes (see
+            // `crate::inbox::ACTIVITY_GRACE`).
+            let now = Instant::now();
+            let activity_open = s
                 .inbox_view()
                 .is_some_and(|i| i.shows(crate::inbox::InboxKind::Activity));
+            let activity = s.inbox.activity_hold(activity_open, now);
+            // Feeds of closed inbox views go after a while.
+            if s.inbox.release_feeds(s.inbox_view().is_some(), now) {
+                s.workspace.release_feeds();
+            }
             let threads_collapsed = self.ui_state.collapsed_sections.contains(
                 SectionId::Builtin(room_list::SectionKind::Threads)
                     .collapse_key()
@@ -99,7 +107,6 @@ impl App {
             s.reminders.follow_account(uid, |u| {
                 entry.map(|e| e.pending_blob(u)).unwrap_or_default()
             });
-            let now = Instant::now();
             // First use of Later on this account: stars made before now
             // count as archived (`rustket_core::later::Seed`).
             if s.later.needs_seed(&s.workspace) {
@@ -187,6 +194,8 @@ impl App {
             );
             tasks.push(self.tick_inbox(&sid));
             tasks.push(self.tick_later(&sid));
+            tasks.push(self.tick_hosted_user(&sid, super::hosted_user::Host::Inbox));
+            tasks.push(self.tick_hosted_user(&sid, super::hosted_user::Host::Later));
             let Some(s) = self.servers.get_mut(&sid) else {
                 continue;
             };

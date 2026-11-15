@@ -45,6 +45,12 @@ pub struct Viewer {
     lightbox: Option<Lightbox>,
 }
 
+/// Whether `m` opens the lightbox (lists of several rooms remember the
+/// room of the image it shows).
+pub fn opens_image(m: &ViewerMsg) -> bool {
+    matches!(m, ViewerMsg::Render(RenderMsg::OpenImage(_)))
+}
+
 fn toast_error(title: String, body: String) -> Effect {
     Effect::Toast(BannerKind::Error, title, body)
 }
@@ -87,7 +93,7 @@ impl Viewer {
     }
 
     /// The lightbox, if open (shown as a modal by the room view).
-    pub fn overlay<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, ViewerMsg>> {
+    pub fn overlay(&self, ctx: &ViewCtx<'_>) -> Option<Element<'static, ViewerMsg>> {
         let lb = self.lightbox.as_ref()?;
         Some(dialogs::lightbox(
             &lb.image,

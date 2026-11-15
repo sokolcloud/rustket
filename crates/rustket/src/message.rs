@@ -143,6 +143,9 @@ pub enum Message {
     RemindersDue(std::time::Instant),
     /// Reminder notifications (`crate::later::notify`).
     ReminderNotify(crate::later::notify::Msg),
+    /// A reminder notification action, replayed after the admin screen's
+    /// leave question.
+    ReminderAction(crate::later::notify::ReminderAction),
     /// A due reminder's message was fetched for its notification: server,
     /// session epoch, message id, due time, result.
     ReminderFetched(

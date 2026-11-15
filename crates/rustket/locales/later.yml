@@ -78,11 +78,17 @@ later.empty_title:
   th: "ไม่มีอะไรเก็บไว้ดูภายหลัง"
   zh: "没有稍后处理的内容"
 later.empty_body:
-  en: "Star a message or set a reminder to see it here."
-  ru: "Добавьте сообщение в избранное или поставьте напоминание, и оно появится здесь."
-  es: "Destaca un mensaje o crea un recordatorio para verlo aquí."
-  th: "ติดดาวข้อความหรือตั้งการเตือนเพื่อดูที่นี่"
-  zh: "为消息加星标或设置提醒，即可在此处看到。"
+  en: "Star a message to see it here. Reminders are listed under Reminders."
+  ru: "Добавьте сообщение в избранное, и оно появится здесь. Напоминания — на вкладке «Напоминания»."
+  es: "Destaca un mensaje para verlo aquí. Los recordatorios están en Recordatorios."
+  th: "ติดดาวข้อความเพื่อดูที่นี่ การเตือนจะแสดงในแท็บการเตือน"
+  zh: "为消息加星标，即可在此处看到。提醒列在“提醒”中。"
+later.show_more:
+  en: "Show %{count} more"
+  ru: "Показать ещё %{count}"
+  es: "Mostrar %{count} más"
+  th: "แสดงอีก %{count} รายการ"
+  zh: "再显示 %{count} 条"
 later.empty_reminders_title:
   en: "No reminders"
   ru: "Напоминаний нет"

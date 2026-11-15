@@ -507,6 +507,7 @@ impl CacheDb {
             later: CachedLater {
                 messages: self.docs(KIND_LATER_MSG)?,
                 scans: self.docs(KIND_LATER_SCAN)?,
+                ..Default::default()
             },
         })
     }
@@ -743,13 +744,22 @@ fn drop_room_later(tx: &Transaction<'_>, rid: &str) -> Result<()> {
 /// Replaces the Later view's data; messages pass [`sanitize`] like every
 /// message. Only documents that changed are written.
 fn write_later(tx: &Transaction<'_>, l: &CachedLater) -> Result<()> {
+    // A delta compares (and replaces) the scans only; its messages changed.
+    let kinds: &[&str] = if l.delta {
+        &[KIND_LATER_SCAN, KIND_LATER_SCAN]
+    } else {
+        &[KIND_LATER_MSG, KIND_LATER_SCAN]
+    };
     let mut stored: HashMap<(String, String), String> = {
         let mut st = tx.prepare("SELECT kind, id, json FROM docs WHERE kind IN (?1, ?2)")?;
-        st.query_map(params![KIND_LATER_MSG, KIND_LATER_SCAN], |r| {
+        st.query_map(params![kinds[0], kinds[1]], |r| {
             Ok(((r.get(0)?, r.get(1)?), r.get(2)?))
         })?
         .collect::<rusqlite::Result<_>>()?
     };
+    for id in &l.removed {
+        delete_doc(tx, KIND_LATER_MSG, id)?;
+    }
     let mut put = |kind: &str, id: &str, json: String| -> Result<()> {
         if stored.remove(&(kind.to_owned(), id.to_owned())).as_ref() != Some(&json) {
             put_json(tx, kind, id, &json)?;
@@ -909,7 +919,14 @@ fn evict(tx: &Transaction<'_>, max_bytes: u64, max_timelines: usize) -> Result<(
         st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
-    let mut total: u64 = 0;
+    // Later's messages share the budget (they are not evicted: the
+    // timelines make room).
+    let later: i64 = tx.query_row(
+        "SELECT COALESCE(SUM(LENGTH(json)), 0) FROM docs WHERE kind = ?1",
+        [KIND_LATER_MSG],
+        |r| r.get(0),
+    )?;
+    let mut total: u64 = u64::try_from(later).unwrap_or(0);
     for (i, (key, bytes)) in rows.iter().enumerate() {
         total += u64::try_from(*bytes).unwrap_or(0);
         if i >= max_timelines || total > max_bytes {

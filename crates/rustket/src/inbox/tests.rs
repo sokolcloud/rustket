@@ -263,3 +263,42 @@ fn catch_up_keys_need_no_modifiers() {
     );
     assert_eq!(CatchUpKey::of(&Key::Character("a".into()), none), None);
 }
+
+/// Activity's hold on the thread loader outlives the view a while; the
+/// feeds of closed views go once, after a delay.
+#[test]
+fn activity_hold_and_feed_release() {
+    let mut st = InboxState::default();
+    let t0 = Instant::now();
+    assert!(!st.activity_hold(false, t0));
+    assert!(st.activity_hold(true, t0));
+    assert!(st.activity_hold(false, t0 + ACTIVITY_GRACE - Duration::from_secs(1)));
+    assert!(!st.activity_hold(false, t0 + ACTIVITY_GRACE));
+    assert!(!st.release_feeds(true, t0));
+    assert!(!st.release_feeds(false, t0));
+    assert!(!st.release_feeds(false, t0 + FEED_RELEASE - Duration::from_secs(1)));
+    assert!(st.release_feeds(false, t0 + FEED_RELEASE));
+    assert!(!st.release_feeds(false, t0 + FEED_RELEASE * 3), "once");
+    assert!(!st.release_feeds(true, t0 + FEED_RELEASE * 4));
+    let t1 = t0 + FEED_RELEASE * 5;
+    assert!(!st.release_feeds(false, t1));
+    assert!(st.release_feeds(false, t1 + FEED_RELEASE));
+}
+
+/// A room of All unreads shows its newest messages; "Show earlier" adds a
+/// page; catch-up starts with a page; Activity shows a page of items.
+#[test]
+fn rows_shown_per_room_and_activity() {
+    let ws = ws_with(vec![sub("r1", RoomType::Channel)]);
+    let mut st = InboxState::default();
+    let mut s = InboxScreen::new(InboxKind::Unreads);
+    assert_eq!(s.shown("r1"), SHOWN_IN_LIST);
+    let _ = s.update(Msg::ShowEarlier("r1".into()), &ws, &mut st, false, true);
+    assert_eq!(s.shown("r1"), SHOWN_IN_LIST + SHOWN_PAGE);
+    assert_eq!(s.shown("r2"), SHOWN_IN_LIST);
+    let c = InboxScreen::new(InboxKind::CatchUp);
+    assert_eq!(c.shown("r2"), SHOWN_PAGE);
+    assert_eq!(s.activity_shown(), ACTIVITY_PAGE);
+    let _ = s.update(Msg::ShowMoreActivity, &ws, &mut st, false, true);
+    assert_eq!(s.activity_shown(), 2 * ACTIVITY_PAGE);
+}

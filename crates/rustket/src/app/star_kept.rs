@@ -35,12 +35,21 @@ pub enum StarJob {
 }
 
 /// One queued change.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 struct Queued {
     sid: ServerId,
     rid: String,
     mid: String,
     job: StarJob,
+    /// The message unstarred at once when it was queued (Later shows the
+    /// change while the call waits its turn).
+    shown: Option<Box<RcMessage>>,
+}
+
+impl Queued {
+    fn same(&self, o: &Queued) -> bool {
+        self.sid == o.sid && self.mid == o.mid && self.job == o.job
+    }
 }
 
 /// Star changes waiting to be made.
@@ -54,12 +63,25 @@ pub struct StarKept {
 }
 
 impl StarKept {
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
+    /// Whether changes of `job` wait (Settings shows its job as busy).
+    pub fn has_job(&self, job: StarJob) -> bool {
+        self.queue.iter().any(|q| q.job == job)
     }
 
+    /// Queues `q` once. The user's Later removals go before the kept
+    /// threads' bulk job, which can take minutes.
     fn push(&mut self, q: Queued) {
-        if !self.queue.contains(&q) {
+        if self.queue.iter().any(|x| x.same(&q)) {
+            return;
+        }
+        if q.job == StarJob::ClearDone {
+            let at = self
+                .queue
+                .iter()
+                .position(|x| x.job != StarJob::ClearDone)
+                .unwrap_or(self.queue.len());
+            self.queue.insert(at, q);
+        } else {
             self.queue.push_back(q);
         }
     }
@@ -104,6 +126,7 @@ impl App {
                     rid,
                     mid: tmid,
                     job: StarJob::KeptThread,
+                    shown: None,
                 });
             }
         }
@@ -118,11 +141,23 @@ impl App {
         items: Vec<(String, String)>,
     ) -> Task<Message> {
         for (rid, mid) in items {
+            // Unstarred in the view at once; the call reverts a failure.
+            let shown = self.servers.get_mut(sid).and_then(|s| {
+                let m = s
+                    .workspace
+                    .later_index()
+                    .starred()
+                    .find(|m| m.id == mid)
+                    .cloned()?;
+                s.workspace.set_message_starred(&m, false);
+                Some(Box::new(m))
+            });
             self.star_kept.push(Queued {
                 sid: sid.clone(),
                 rid,
                 mid,
                 job: StarJob::ClearDone,
+                shown,
             });
         }
         self.star_kept.start()
@@ -135,10 +170,14 @@ impl App {
             return Task::perform(tokio::time::sleep(at - now), |_| Message::StarKeptNext);
         }
         while let Some(q) = self.star_kept.queue.pop_front() {
-            let Some(s) = self.servers.get(&q.sid) else {
+            let Some(s) = self.servers.get_mut(&q.sid) else {
                 continue;
             };
             if s.session.is_none() {
+                // Signed out meanwhile: the view shows the star again.
+                if let Some(m) = &q.shown {
+                    s.workspace.set_message_starred(m, true);
+                }
                 continue;
             }
             let call = match q.job {
@@ -149,14 +188,20 @@ impl App {
                     self.star_thread_call(&q.sid, q.rid, q.mid, true, true)
                 }
                 StarJob::ClearDone => {
-                    let Some(m) = s
-                        .workspace
-                        .later_index()
-                        .starred()
-                        .find(|m| m.id == q.mid)
-                        .cloned()
-                    else {
-                        continue;
+                    let m = match q.shown {
+                        Some(m) => *m,
+                        None => {
+                            let Some(m) = s
+                                .workspace
+                                .later_index()
+                                .starred()
+                                .find(|m| m.id == q.mid)
+                                .cloned()
+                            else {
+                                continue;
+                            };
+                            m
+                        }
                     };
                     self.star_message_call(&q.sid, m, false, Some(q.job))
                 }
@@ -297,9 +342,13 @@ impl App {
         if let rocketchat::Error::RateLimited { retry_after, .. } = e.error() {
             let wait = retry_after.unwrap_or(RATE_LIMIT_PAUSE);
             self.star_kept.not_before = Some(Instant::now() + wait);
-            self.star_kept
-                .queue
-                .push_front(Queued { sid, rid, mid, job });
+            self.star_kept.queue.push_front(Queued {
+                sid,
+                rid,
+                mid,
+                job,
+                shown: None,
+            });
         } else {
             *self.star_kept.failed.entry(job).or_default() += 1;
         }
@@ -314,5 +363,36 @@ impl App {
         e: &Failure,
     ) {
         self.star_queue_failed(StarJob::KeptThread, sid, rid, tmid, e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(mid: &str, job: StarJob) -> Queued {
+        Queued {
+            sid: ServerId("s".into()),
+            rid: "r".into(),
+            mid: mid.into(),
+            job,
+            shown: None,
+        }
+    }
+
+    /// Later removals go before the kept threads' bulk job (in their own
+    /// order), and only that job makes the Settings button busy.
+    #[test]
+    fn later_removals_jump_the_bulk_job() {
+        let mut k = StarKept::default();
+        k.push(q("t1", StarJob::ClearDone));
+        assert!(!k.has_job(StarJob::KeptThread));
+        k.push(q("k1", StarJob::KeptThread));
+        k.push(q("k2", StarJob::KeptThread));
+        k.push(q("t2", StarJob::ClearDone));
+        k.push(q("t2", StarJob::ClearDone));
+        let order: Vec<&str> = k.queue.iter().map(|q| q.mid.as_str()).collect();
+        assert_eq!(order, ["t1", "t2", "k1", "k2"]);
+        assert!(k.has_job(StarJob::KeptThread));
     }
 }

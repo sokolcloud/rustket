@@ -102,7 +102,7 @@ impl App {
 
     /// Leaving the settings: flag names typed but not saved with Enter are
     /// saved (iced's `text_input` has no blur event).
-    fn commit_flag_drafts(&mut self) -> Task<Message> {
+    pub(super) fn commit_flag_drafts(&mut self) -> Task<Message> {
         let Screen::Settings(s) = &mut self.screen else {
             return Task::none();
         };
@@ -872,7 +872,9 @@ impl App {
                 .enabled()
                 .then_some((self.offline.size, self.offline.clearing)),
             flags: self.flag_accounts(),
-            star_kept_busy: !self.star_kept.is_empty(),
+            star_kept_busy: self
+                .star_kept
+                .has_job(super::star_kept::StarJob::KeptThread),
             mention_groups: self.mention_accounts(),
             #[cfg(feature = "self-update")]
             updater: crate::updater::view::settings_data(

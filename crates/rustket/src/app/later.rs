@@ -109,8 +109,18 @@ impl App {
                 }
             }
             None => {
+                // Due reminders (the sidebar row's badge) first, else the
+                // tab shown last.
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let tab = tab.unwrap_or_else(|| {
+                    if s.workspace.overdue_reminders(now_ms) > 0 {
+                        LaterTab::Reminders
+                    } else {
+                        s.later_state.last_tab.unwrap_or_default()
+                    }
+                });
                 s.close_main_view();
-                s.main_view = Some(MainView::Later(LaterView::new(tab.unwrap_or_default())));
+                s.main_view = Some(MainView::Later(LaterView::new(tab)));
             }
         }
         Task::none()
@@ -147,9 +157,13 @@ impl App {
         let Some(s) = self.servers.get_mut(&sid).filter(|s| s.is_current(epoch)) else {
             return Task::none();
         };
-        if let Msg::View { rid, m } = m {
-            return self.later_viewer(&sid, rid, m);
-        }
+        let m = match m {
+            Msg::View { rid, m } => return self.later_viewer(&sid, rid, m),
+            Msg::User(m) => {
+                return self.hosted_user(&sid, super::hosted_user::Host::Later, m);
+            }
+            m => m,
+        };
         let is_online = online(s);
         let Some(view) = s.main_view.as_mut().and_then(MainView::later_mut) else {
             return Task::none();
@@ -187,7 +201,19 @@ impl App {
             images: &self.images,
             prefs: &self.config.ui,
         };
+        let opens = crate::room::timeline::viewer_opens_image(&m);
         let action = view.viewer.update(m, &mut ctx);
+        view.image_rid = view
+            .viewer
+            .image_open()
+            .then(|| {
+                if opens {
+                    Some(rid.clone())
+                } else {
+                    view.image_rid.take()
+                }
+            })
+            .flatten();
         let (tsid, trid) = (sid.clone(), rid.clone());
         let task = action.task.map(move |m| {
             Message::Later(
@@ -231,16 +257,9 @@ impl App {
                     Task::none()
                 }
                 Out::Effects { rid, effects } => {
-                    // Effects that need the room (user info, a message's
-                    // place) open it first, like the inbox's.
-                    let (local, app): (Vec<_>, Vec<_>) =
-                        effects.into_iter().partition(super::inbox::room_local);
-                    let mut t = vec![self.handle_effects(sid, &rid, app)];
-                    if !local.is_empty() {
-                        t.push(self.open_room(sid, &rid));
-                        t.push(self.room_run_effects(sid, &rid, local));
-                    }
-                    Task::batch(t)
+                    // User info beside the view; a message's place opens
+                    // the room, like the inbox's.
+                    self.list_effects(sid, &rid, effects, super::hosted_user::Host::Later)
                 }
             });
         }
@@ -438,12 +457,14 @@ impl App {
         if s.later_state.session != ptr {
             s.later_state = LaterState {
                 session: ptr,
+                last_tab: s.later_state.last_tab,
                 ..LaterState::default()
             };
         }
         let Some(view) = s.main_view.as_mut().and_then(MainView::later_mut) else {
             return Task::none();
         };
+        s.later_state.last_tab = Some(view.tab);
         view.prune(&s.workspace);
         if view.tab != LaterTab::Reminders || !online(s) || s.workspace.from_cache() {
             return Task::none();

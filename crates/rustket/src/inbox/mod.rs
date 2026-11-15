@@ -33,11 +33,26 @@ pub enum InboxKind {
 
 /// Rooms "All unreads" shows (and loads) at first and per "Load more".
 pub const ROOMS_PAGE: usize = 30;
+/// Messages a room of All unreads shows at first (its newest); "Show
+/// earlier" adds a page. Catch-up shows a page at first.
+pub const SHOWN_IN_LIST: usize = 10;
+/// Messages catch-up shows at first and "Show earlier" adds.
+pub const SHOWN_PAGE: usize = rustket_core::inbox::feeds::FEED_PAGE as usize;
+/// Activity items shown at first and per "Show more".
+pub const ACTIVITY_PAGE: usize = 50;
 /// Rooms catch-up loads ahead (the current one included).
 pub const PREFETCH: usize = 3;
 /// A room marked read stays hidden this long after the server confirmed,
 /// waiting for its subscription update.
 const MARK_GRACE: Duration = Duration::from_secs(5);
+/// Activity's hold on the thread parents outlives the view this long: with
+/// the sidebar's Threads off, reopening it soon does not drop and reload
+/// every parent (paced lists, a per-session fetch budget).
+pub const ACTIVITY_GRACE: Duration = Duration::from_secs(10 * 60);
+/// Feeds stay this long after the inbox views close (reopening soon shows
+/// them at once); then they go, so that no closed view keeps absorbing
+/// live messages.
+pub const FEED_RELEASE: Duration = Duration::from_secs(2 * 60);
 
 /// Per account, kept while the views are closed (for the session):
 /// skipped rooms and the loader's pacing.
@@ -52,11 +67,44 @@ pub struct InboxState {
     /// The inputs the loader last planned with (it plans again when they
     /// change or the timer is due).
     pub plan_key: Option<[u64; 5]>,
+    /// Activity was last seen open then.
+    pub activity_seen: Option<Instant>,
+    /// No inbox view has been open since then.
+    pub closed_since: Option<Instant>,
+    /// The feeds went since the views closed.
+    pub released: bool,
 }
 
 impl InboxState {
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Whether the thread loader works for Activity: open now
+    /// (`activity_open`) or closed less than [`ACTIVITY_GRACE`] ago.
+    pub fn activity_hold(&mut self, activity_open: bool, now: Instant) -> bool {
+        if activity_open {
+            self.activity_seen = Some(now);
+            return true;
+        }
+        self.activity_seen
+            .is_some_and(|t| now.saturating_duration_since(t) < ACTIVITY_GRACE)
+    }
+
+    /// Whether the feeds should go now: every inbox view closed at least
+    /// [`FEED_RELEASE`] ago (`open`: one is open). Once per closing.
+    pub fn release_feeds(&mut self, open: bool, now: Instant) -> bool {
+        if open {
+            self.closed_since = None;
+            self.released = false;
+            return false;
+        }
+        let since = *self.closed_since.get_or_insert(now);
+        if self.released || now.saturating_duration_since(since) < FEED_RELEASE {
+            return false;
+        }
+        self.released = true;
+        true
     }
 }
 
@@ -109,7 +157,11 @@ pub enum Msg {
     },
     MarkAll,
     LoadEarlier(String),
+    /// Show more of a room's loaded messages (above the newest shown).
+    ShowEarlier(String),
     LoadMoreRooms,
+    /// Show the next Activity items.
+    ShowMoreActivity,
     Retry(String),
     ToggleMuted,
     Filter(ActivityFilter),
@@ -137,6 +189,8 @@ pub enum Msg {
         rid: String,
         m: ViewerMsg,
     },
+    /// The user info beside the view (a name clicked in a body).
+    User(crate::room::panel::user_info::HostedMsg),
     Key(CatchUpKey),
     // Loader results (handled by the app wiring).
     FeedDone {
@@ -192,10 +246,19 @@ pub struct InboxScreen {
     rooms_wanted: usize,
     /// Rooms whose earlier messages were asked for.
     earlier: BTreeSet<String>,
+    /// Messages shown per room beyond the first ones ("Show earlier",
+    /// "Load earlier").
+    shown_more: HashMap<String, usize>,
+    /// Activity items shown.
+    activity_shown: usize,
     /// Rooms (rid) and threads (tmid) being marked read, hidden meanwhile;
     /// the time the server confirmed.
     marking: HashMap<String, Option<Instant>>,
     pub viewer: Viewer,
+    /// The room of the image open in the viewer's lightbox.
+    pub image_rid: Option<String>,
+    /// User info beside the view.
+    pub user: Option<crate::room::panel::user_info::Hosted>,
     /// The rooms revision catch-up last followed.
     rooms_rev: u64,
     /// Bumped by every change of what the view wants (loader replans).
@@ -210,8 +273,12 @@ impl InboxScreen {
             filter: ActivityFilter::All,
             rooms_wanted: ROOMS_PAGE,
             earlier: BTreeSet::new(),
+            shown_more: HashMap::new(),
+            activity_shown: ACTIVITY_PAGE,
             marking: HashMap::new(),
             viewer: Viewer::new(),
+            image_rid: None,
+            user: None,
             rooms_rev: 0,
             revision: 0,
         }
@@ -272,6 +339,20 @@ impl InboxScreen {
         self.rooms_wanted
     }
 
+    /// How many of room `rid`'s loaded messages show (the newest ones).
+    pub fn shown(&self, rid: &str) -> usize {
+        let first = if self.kind == InboxKind::CatchUp {
+            SHOWN_PAGE
+        } else {
+            SHOWN_IN_LIST
+        };
+        first + self.shown_more.get(rid).copied().unwrap_or(0)
+    }
+
+    pub fn activity_shown(&self) -> usize {
+        self.activity_shown
+    }
+
     pub fn catch_up(&self) -> Option<&CatchUp> {
         self.catch_up.as_ref()
     }
@@ -310,6 +391,23 @@ impl InboxScreen {
     /// Per update: catch-up follows the unread rooms; marks confirmed a
     /// while ago are dropped (the subscription update hides the item).
     pub fn tick(&mut self, ws: &Workspace, st: &InboxState, include_muted: bool, now: Instant) {
+        if self
+            .image_rid
+            .as_deref()
+            .is_some_and(|rid| ws.room(rid).is_none())
+        {
+            self.viewer.close_image();
+        }
+        if !self.viewer.image_open() {
+            self.image_rid = None;
+        }
+        if self
+            .user
+            .as_ref()
+            .is_some_and(|u| ws.room(&u.rid).is_none())
+        {
+            self.user = None;
+        }
         let rev = ws.revision(rustket_core::Dirty::ROOMS);
         if rev != self.rooms_rev {
             self.rooms_rev = rev;
@@ -474,9 +572,12 @@ impl InboxScreen {
                 }
             },
             Msg::LoadEarlier(rid) => {
+                *self.shown_more.entry(rid.clone()).or_default() += SHOWN_PAGE;
                 self.earlier.insert(rid);
             }
+            Msg::ShowEarlier(rid) => *self.shown_more.entry(rid).or_default() += SHOWN_PAGE,
             Msg::LoadMoreRooms => self.rooms_wanted += ROOMS_PAGE,
+            Msg::ShowMoreActivity => self.activity_shown += ACTIVITY_PAGE,
             Msg::ToggleMuted => out.push(Out::SetIncludeMuted(!include_muted)),
             Msg::Filter(f) => self.filter = f,
             Msg::OpenRoom(rid) => out.push(Out::OpenRoom(rid)),
@@ -512,6 +613,7 @@ impl InboxScreen {
             // Handled by the app wiring (they need the workspace mutably).
             Msg::Retry(_)
             | Msg::View { .. }
+            | Msg::User(_)
             | Msg::FeedDone { .. }
             | Msg::MentionsDone { .. }
             | Msg::Pace => {}
