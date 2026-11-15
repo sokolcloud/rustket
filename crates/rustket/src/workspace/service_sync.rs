@@ -6,7 +6,7 @@
 //! the workspace shows at once and the app persists in the config, so
 //! offline edits survive a restart. While live, a key's overlay is due
 //! [`COALESCE`] after its last edit. The server's keys are then written
-//! together ([`start_push`]): one [`rustket_core::service_sync::push_all`]
+//! together ([`take_parts`], [`push_task`]): one [`rustket_core::service_sync::push_all`]
 //! over [`ServiceStore`] reads the room's `customFields`, merges every key
 //! that has pending entries, writes the whole object and reads again, at
 //! most [`PUSH_ATTEMPTS`] times. Pushes of one server hold its lock
@@ -31,9 +31,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iced::Task;
-use rocketchat::models::{FLAGS_KEY, Room, ServiceBinding, ServiceFields, service_room_name};
+use rocketchat::models::{
+    FLAGS_KEY, MENTION_GROUPS_KEY, Room, ServiceBinding, ServiceFields, service_room_name,
+};
 use rocketchat::{Error, RestClient};
 use rustket_core::flags::{FlagBlob, FlagStore};
+use rustket_core::mention_groups::MentionGroupBlob;
 use rustket_core::service_sync::{
     self as core, EditBlob, FieldsStore, KeyCheck, LastWrite, Part, Remembering, SyncBlob,
 };
@@ -447,13 +450,22 @@ pub trait ServiceKey: std::fmt::Debug + Default + Send + 'static {
 /// pending edits) charges against [`core::BUDGET_BYTES`]
 /// ([`SyncBlob::budget_bytes`]), by key. Keys added later belong here.
 fn charged(ws: &Workspace, now_ms: i64) -> Vec<(&'static str, usize)> {
-    vec![(FLAGS_KEY, shown_bytes::<super::flags::FlagsKey>(ws, now_ms))]
+    vec![
+        (FLAGS_KEY, shown_bytes::<super::flags::FlagsKey>(ws, now_ms)),
+        (
+            MENTION_GROUPS_KEY,
+            shown_bytes::<super::mention_groups::MentionGroupsKey>(ws, now_ms),
+        ),
+    ]
 }
 
 /// Every synced key, for telling whether a copy of the fields shows this
 /// client's last write ([`LastWrite::trusts`]). Keys added later belong here.
 pub fn key_checks() -> Vec<KeyCheck> {
-    vec![KeyCheck::of::<FlagBlob>()]
+    vec![
+        KeyCheck::of::<FlagBlob>(),
+        KeyCheck::of::<MentionGroupBlob>(),
+    ]
 }
 
 /// What all synced keys charge against [`core::BUDGET_BYTES`].
@@ -743,7 +755,7 @@ impl<K: ServiceKey> BlobSync<K> {
     }
 
     /// Per update of a key without duties of its own: [`Self::follow`] and
-    /// the pacing timer. The push itself starts with [`start_push`].
+    /// the pacing timer. The push itself starts with [`take_parts`].
     pub fn tick(
         &mut self,
         ws: &mut Workspace,
@@ -948,6 +960,13 @@ pub struct Outgoing {
     part: Box<dyn Part>,
 }
 
+impl Outgoing {
+    /// The key and the epoch of its sync (as an [`Outcome`] lists them).
+    pub fn key(&self) -> (&'static str, u64) {
+        (self.key, self.epoch)
+    }
+}
+
 /// The result of a combined push, for every key that took part.
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -966,6 +985,18 @@ pub struct StoredFields {
 }
 
 impl Outcome {
+    /// A successful push of `keys` that left `copies` (tests of the keys).
+    #[cfg(test)]
+    pub(super) fn for_tests(keys: Vec<(&'static str, u64)>, copies: Vec<ServiceFields>) -> Self {
+        Self {
+            keys,
+            res: Ok(StoredFields {
+                copies,
+                rid: Some("svc".into()),
+            }),
+        }
+    }
+
     fn epoch_of(&self, key: &str) -> Option<u64> {
         self.keys.iter().find(|(k, _)| *k == key).map(|&(_, e)| e)
     }
@@ -976,7 +1007,7 @@ impl Outcome {
     }
 }
 
-/// A key's sync as [`start_push`] sees it.
+/// A key's sync as [`take_parts`] sees it.
 pub trait Syncing {
     /// The key's own time to push has come.
     fn wants_push(&self, ws: &Workspace, now: Instant) -> bool;
@@ -1015,29 +1046,29 @@ impl<K: ServiceKey> Syncing for BlobSync<K> {
     }
 }
 
-/// When the time of one key of the server has come, starts one push of
-/// every key that has edits to store (a key still coalescing or backing
-/// off goes along: the write happens anyway).
-pub fn start_push(
+/// When the time of one key of the server has come, the parts of one push
+/// of every key that has edits to store, each marked in flight (a key
+/// still coalescing or backing off goes along: the write happens anyway).
+/// [`push_task`] runs them.
+pub fn take_parts(
     ws: &Workspace,
-    session: Option<&SessionHandle>,
-    shared: &Shared,
     syncs: &mut [&mut dyn Syncing],
     now: Instant,
-) -> Option<Task<Outcome>> {
-    let h = session?;
+) -> Option<Vec<Outgoing>> {
     if !syncs.iter().any(|s| s.wants_push(ws, now)) {
         return None;
     }
-    let parts: Vec<Outgoing> = syncs
-        .iter_mut()
-        .filter(|s| s.ready(ws))
-        .map(|s| s.start())
-        .collect();
-    Some(push_task(ws, h, shared, parts))
+    Some(
+        syncs
+            .iter_mut()
+            .filter(|s| s.ready(ws))
+            .map(|s| s.start())
+            .collect(),
+    )
 }
 
-fn push_task(
+/// Runs one combined push of `parts` ([`take_parts`]).
+pub fn push_task(
     ws: &Workspace,
     h: &SessionHandle,
     shared: &Shared,

@@ -1,5 +1,5 @@
-//! Autocomplete popup above the composer: `@` users, `#` rooms, `:` emoji and
-//! `/` commands. Matching is local (room members, rooms of the workspace,
+//! Autocomplete popup above the composer: `@` users (and the account's
+//! mention groups), `#` rooms, `:` emoji and `/` commands. Matching is local (room members, rooms of the workspace,
 //! emoji tables, cached commands); server results are merged in as they
 //! arrive and stale ones are dropped by sequence number.
 
@@ -20,6 +20,10 @@ use crate::room::ViewCtx;
 
 /// Maximum entries in the popup.
 pub const MAX_ITEMS: usize = 10;
+/// Mention groups offered at most.
+const MAX_GROUP_ITEMS: usize = 3;
+/// Members named in a group's row.
+const GROUP_PREVIEW: usize = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
@@ -49,6 +53,16 @@ pub enum Item {
         shortcut: String,
         text: String,
     },
+    /// A mention group of the account (`@backend`), expanded when sent.
+    Group {
+        name: String,
+        members: Vec<String>,
+    },
+    /// "Manage mention groups…" (`create`: "Create a mention group…"):
+    /// opens the Settings, inserts nothing. Always the last entry.
+    ManageGroups {
+        create: bool,
+    },
 }
 
 impl Item {
@@ -61,11 +75,16 @@ impl Item {
             Self::Emoji { key, .. } => key.clone(),
             Self::Command { command, .. } => format!("/{command}"),
             Self::Canned { text, .. } => text.clone(),
+            Self::Group { name, .. } => format!("@{name}"),
+            Self::ManageGroups { .. } => String::new(),
         }
     }
 
     fn identity(&self) -> String {
-        self.replacement().to_lowercase()
+        match self {
+            Self::ManageGroups { .. } => "\u{1}manage-groups".to_owned(),
+            _ => self.replacement().to_lowercase(),
+        }
     }
 }
 
@@ -110,12 +129,18 @@ impl Popup {
     pub fn set_items(&mut self, local: Vec<Item>) {
         let keep = self.current().map(Item::identity);
         let mut items = local;
+        let footer = items
+            .last()
+            .is_some_and(|i| matches!(i, Item::ManageGroups { .. }))
+            .then(|| items.pop())
+            .flatten();
         for r in &self.remote {
             if !items.iter().any(|i| i.identity() == r.identity()) {
                 items.push(r.clone());
             }
         }
-        items.truncate(MAX_ITEMS);
+        items.truncate(MAX_ITEMS - usize::from(footer.is_some()));
+        items.extend(footer);
         self.selected = keep
             .and_then(|k| items.iter().position(|i| i.identity() == k))
             .unwrap_or(0);
@@ -144,8 +169,10 @@ fn rank(hay: &str, query: &str) -> Option<u8> {
     }
 }
 
-/// `@` candidates: `@all`/`@here` (when permitted) and room members by
-/// username or name; the current user is left out.
+/// `@` candidates: `@all`/`@here` (when permitted), the account's mention
+/// groups by name prefix (not one a member's username equals: the user
+/// wins) and room members by username or name; the current user is left
+/// out.
 pub fn match_users(ws: &Workspace, rid: &str, members: &[UserSummary], query: &str) -> Vec<Item> {
     let q = query.to_lowercase();
     let mut out = Vec::new();
@@ -157,6 +184,20 @@ pub fn match_users(ws: &Workspace, rid: &str, members: &[UserSummary], query: &s
             out.push(Item::Special(special));
         }
     }
+    let groups = ws
+        .mention_groups()
+        .matching(&q)
+        .filter(|g| {
+            !members
+                .iter()
+                .any(|m| m.username.as_deref() == Some(g.name.as_str()))
+        })
+        .take(MAX_GROUP_ITEMS)
+        .map(|g| Item::Group {
+            name: g.name.clone(),
+            members: g.members.clone(),
+        });
+    out.extend(groups);
     let me = ws.username();
     let mut ranked: Vec<(u8, usize, Item)> = members
         .iter()
@@ -191,6 +232,19 @@ pub fn match_users(ws: &Workspace, rid: &str, members: &[UserSummary], query: &s
     out.extend(ranked.into_iter().map(|(_, _, it)| it));
     out.truncate(MAX_ITEMS);
     out
+}
+
+/// The popup's last row for an `@` query: "Manage mention groups…" when a
+/// group is listed, "Create a mention group…" for a bare `@` while the
+/// account has none.
+pub fn group_footer(ws: &Workspace, query: &str, items: &[Item]) -> Option<Item> {
+    if items.iter().any(|i| matches!(i, Item::Group { .. })) {
+        Some(Item::ManageGroups { create: false })
+    } else if query.is_empty() && ws.mention_groups().is_empty() {
+        Some(Item::ManageGroups { create: true })
+    } else {
+        None
+    }
 }
 
 /// Server users (`users.autocomplete`) as items.
@@ -451,6 +505,49 @@ fn item_view<'a, M: 'a>(item: &'a Item, ctx: &ViewCtx<'a>) -> Element<'a, M> {
             col.into()
         }
         Item::Canned { shortcut, text } => crate::omnichannel::canned::item_view(shortcut, text),
+        Item::Group { name, members } => {
+            let n = members.len() as u64;
+            let mut names: Vec<&str> = members
+                .iter()
+                .take(GROUP_PREVIEW)
+                .map(String::as_str)
+                .collect();
+            if members.len() > GROUP_PREVIEW {
+                names.push("…");
+            }
+            let caption = t!(
+                format!(
+                    "mention_groups.ac_members_{}",
+                    crate::room::render::plural(n)
+                ),
+                count = n,
+                names = names.join(", ")
+            );
+            row![
+                container(icon(Icon::Users).size(16.0)).center_x(24.0),
+                text(format!("@{name}")).size(TEXT_SMALL),
+                text(caption)
+                    .size(TEXT_CAPTION)
+                    .style(style::text_secondary),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .into()
+        }
+        Item::ManageGroups { create } => {
+            let label = if *create {
+                t!("mention_groups.ac_create")
+            } else {
+                t!("mention_groups.ac_manage")
+            };
+            row![
+                container(icon(Icon::Settings).size(16.0)).center_x(24.0),
+                text(label).size(TEXT_SMALL).style(style::text_secondary),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .into()
+        }
     }
 }
 
@@ -587,6 +684,71 @@ mod tests {
         assert_eq!(p.current().unwrap().replacement(), "@ann");
         p.move_selection(-1);
         assert_eq!(p.current().unwrap().replacement(), "@all");
+    }
+
+    fn with_groups(ws: &mut Workspace, groups: &[(&str, &[&str])]) {
+        use rustket_core::mention_groups::{MentionGroupBlob, MentionGroupEdit};
+        let mut b = MentionGroupBlob::default();
+        for (i, (name, members)) in groups.iter().enumerate() {
+            let e = MentionGroupEdit::Upsert {
+                id: format!("g{i}"),
+                name: (*name).into(),
+                members: members.iter().map(|m| (*m).to_owned()).collect(),
+            };
+            b.edit(&MentionGroupBlob::default(), &e, 1, "dev").unwrap();
+        }
+        ws.set_mention_group_overlay(b);
+    }
+
+    #[test]
+    fn groups_come_after_all_and_before_members() {
+        let mut ws = ws_with(&["admin"]);
+        with_groups(
+            &mut ws,
+            &[("alpha", &["bob"]), ("allies", &["carol"]), ("zed", &["x"])],
+        );
+        let members = vec![member("1", "albert", "Al"), member("2", "zed", "Zed")];
+        let items = match_users(&ws, "r", &members, "al");
+        let names: Vec<String> = items.iter().map(Item::replacement).collect();
+        assert_eq!(names, ["@all", "@allies", "@alpha", "@albert"]);
+        assert_eq!(
+            group_footer(&ws, "al", &items),
+            Some(Item::ManageGroups { create: false })
+        );
+        // A member with the group's name: the user wins.
+        let items = match_users(&ws, "r", &members, "ze");
+        assert!(!items.iter().any(|i| matches!(i, Item::Group { .. })));
+        assert_eq!(group_footer(&ws, "ze", &items), None);
+        // No groups: a bare `@` offers to create one.
+        let ws = ws_with(&["user"]);
+        assert_eq!(
+            group_footer(&ws, "", &[]),
+            Some(Item::ManageGroups { create: true })
+        );
+        assert_eq!(group_footer(&ws, "a", &[]), None);
+    }
+
+    #[test]
+    fn the_groups_entry_stays_last() {
+        let trigger = super::super::text::trigger_at("@a", 2).unwrap();
+        let mut p = Popup::new(trigger, 1);
+        p.remote = (0..20)
+            .map(|i| Item::User {
+                username: format!("u{i}"),
+                name: None,
+                status: UserStatus::Online,
+            })
+            .collect();
+        p.set_items(vec![
+            Item::Group {
+                name: "a1".into(),
+                members: vec!["x".into()],
+            },
+            Item::ManageGroups { create: false },
+        ]);
+        assert_eq!(p.items.len(), MAX_ITEMS);
+        assert!(matches!(p.items.last(), Some(Item::ManageGroups { .. })));
+        assert_eq!(p.items[0].replacement(), "@a1");
     }
 
     #[test]

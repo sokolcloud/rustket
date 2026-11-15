@@ -46,8 +46,8 @@ impl App {
             s.workspace.set_thread_config(mode, kept);
             s.workspace
                 .set_starred_threads(self.config.ui.sidebar_starred_threads);
-            // Synced keys (flags): the account's pending edits, one push of
-            // every key that has some, persisting them.
+            // Synced keys (flags, mention groups): the account's pending
+            // edits, one push of every key that has some, persisting them.
             let entry = self.config.server(&sid);
             let uid = entry
                 .and_then(|e| e.user_id.as_deref())
@@ -55,15 +55,28 @@ impl App {
             s.flags.follow_account(uid, |u| {
                 entry.map(|e| e.pending_blob(u)).unwrap_or_default()
             });
+            s.mention_groups.follow_account(uid, |u| {
+                entry.map(|e| e.pending_blob(u)).unwrap_or_default()
+            });
             let now = Instant::now();
             let task = s.flags.tick(&mut s.workspace, s.session.as_ref(), now);
             let (fsid, epoch) = (sid.clone(), s.generation);
             tasks.push(task.map(move |m| Message::Flags(fsid.clone(), epoch, m)));
+            let task = s
+                .mention_groups
+                .tick(&mut s.workspace, s.session.as_ref(), now);
+            let gsid = sid.clone();
+            tasks.push(task.map(move |m| Message::MentionGroups(gsid.clone(), epoch, m)));
             if let Some(task) = s.start_service_push(now) {
                 let psid = sid.clone();
                 tasks.push(task.map(move |o| Message::ServicePushed(psid.clone(), epoch, o)));
             }
             if let Some((uid, blob)) = s.flags.take_save()
+                && let Some(e) = self.config.server_mut(&sid)
+            {
+                save_synced |= e.set_pending_blob(&uid, &blob);
+            }
+            if let Some((uid, blob)) = s.mention_groups.take_save()
                 && let Some(e) = self.config.server_mut(&sid)
             {
                 save_synced |= e.set_pending_blob(&uid, &blob);

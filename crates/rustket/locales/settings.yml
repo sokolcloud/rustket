@@ -1043,6 +1043,12 @@ settings.tab_general:
   es: "General"
   th: "ทั่วไป"
   zh: "通用"
+settings.tab_mentions:
+  en: "Mentions"
+  ru: "Упоминания"
+  es: "Menciones"
+  th: "การกล่าวถึง"
+  zh: "提及"
 settings.tab_privacy:
   en: "Privacy & storage"
   ru: "Приватность"

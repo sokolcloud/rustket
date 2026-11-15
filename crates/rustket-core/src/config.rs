@@ -1594,6 +1594,33 @@ mod tests {
         assert_eq!(c.servers[0].pending_service_all_accounts.len(), 1);
     }
 
+    #[test]
+    fn pending_mention_groups_survive_toml() {
+        use crate::mention_groups::{MentionGroupBlob, MentionGroupEdit};
+        let mut blob = MentionGroupBlob::default();
+        let now = chrono::Utc::now().timestamp_millis();
+        let edit = MentionGroupEdit::Upsert {
+            id: "g1".into(),
+            name: "backend".into(),
+            members: vec!["alice".into(), "bob".into()],
+        };
+        blob.edit(&MentionGroupBlob::default(), &edit, now, "d")
+            .unwrap();
+        let gone = MentionGroupEdit::Delete { id: "g1".into() };
+        let mut deleted = blob.clone();
+        deleted
+            .edit(&MentionGroupBlob::default(), &gone, now, "d")
+            .unwrap();
+        let mut s = ServerEntry::new("https://a", "A");
+        assert!(s.set_pending_blob("u1", &deleted));
+        assert!(s.pending_flags_all_accounts.is_empty());
+        let mut c = AppConfig::default();
+        c.add_server(s);
+        let c = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
+        let read: MentionGroupBlob = c.servers[0].pending_blob("u1");
+        assert_eq!(read.groups, deleted.groups, "the removal survives");
+    }
+
     fn with_sidebar_layout() -> AppConfig {
         use crate::sidebar_layout::{LayoutEdit, apply};
         let mut c = AppConfig::default();

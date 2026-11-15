@@ -88,6 +88,7 @@ impl Workspace {
             self.mark(Dirty::FLAGS);
             self.update_flags();
         }
+        self.set_mention_group_blob(crate::service_sync::stored(&copies, now_ms));
     }
 
     /// Recomputes the effective flags and the pinned flagged threads.

@@ -240,6 +240,9 @@ pub enum Effect {
     /// Pick a target room and forward these messages there (the app's quick
     /// switcher in forward mode).
     Forward(Vec<ForwardRef>),
+    /// Open the Settings on the mention groups ("Manage mention groups…" in
+    /// the composer's `@` popup).
+    ManageMentionGroups,
 }
 
 /// Requests other room components make to the composer.

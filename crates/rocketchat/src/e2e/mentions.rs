@@ -138,7 +138,10 @@ fn mention_len(name: &Regex, token: &str, user: bool) -> Option<usize> {
 }
 
 /// Fixed candidate scan: `sigil` at the start of the text or after whitespace
-/// or `>`, followed by the token up to the next whitespace. Every entry is
+/// or `>` (users also after a `(` that itself stands at such a boundary,
+/// which the server's message parser takes as a mention: `@backend (@alice
+/// @bob)`, Rustket's mention groups; never `f(@x)`), followed by the token
+/// up to the next whitespace. Every entry is
 /// the sigil plus a prefix of such a token, so no whitespace and nothing
 /// outside a mention-shaped token can be emitted, whatever `name` matches.
 fn collect(text: &str, sigil: char, name: &Regex, user: bool) -> Vec<String> {
@@ -146,11 +149,17 @@ fn collect(text: &str, sigil: char, name: &Regex, user: bool) -> Vec<String> {
     // End of the previous entry: matches do not overlap.
     let mut consumed = 0;
     let mut prev: Option<(usize, char)> = None;
+    // The character before `prev`.
+    let mut before: Option<char> = None;
+    let edge = |c: char| c.is_whitespace() || c == '>';
     for (i, c) in text.char_indices() {
         let boundary = match prev {
             None => true,
-            Some((pi, pc)) => pi >= consumed && (pc.is_whitespace() || pc == '>'),
+            Some((pi, pc)) => {
+                pi >= consumed && (edge(pc) || (user && pc == '(' && before.is_none_or(edge)))
+            }
         };
+        before = prev.map(|(_, pc)| pc);
         prev = Some((i, c));
         if c != sigil || !boundary {
             continue;
@@ -231,6 +240,20 @@ mod tests {
         assert_eq!(m.e2e_user_mentions, ["@alice", "@bob", "@carol"]);
         assert_eq!(m.e2e_channel_mentions, ["#a", "#c"]);
         assert!(e2e_mentions("@ # @! x@y", DEFAULT_USERNAME_PATTERN).is_empty());
+        // A mention group's expansion: the parenthesised users count.
+        let m = e2e_mentions(
+            "ping @backend (@bob @carol) (#ops)",
+            DEFAULT_USERNAME_PATTERN,
+        );
+        assert_eq!(m.e2e_user_mentions, ["@backend", "@bob", "@carol"]);
+        assert!(m.e2e_channel_mentions.is_empty());
+        // A `(` inside a word is no boundary: code stays encrypted.
+        for text in ["void f(@NonNull x)", "print(@decorator)", "a(@b)"] {
+            let m = e2e_mentions(text, DEFAULT_USERNAME_PATTERN);
+            assert!(m.e2e_user_mentions.is_empty(), "{text}");
+        }
+        let m = e2e_mentions("(@alice) >(@bob", DEFAULT_USERNAME_PATTERN);
+        assert_eq!(m.e2e_user_mentions, ["@alice", "@bob"]);
     }
 
     /// Every entry is a sigil plus a short whitespace-free token.

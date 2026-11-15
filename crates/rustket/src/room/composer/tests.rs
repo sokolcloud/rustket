@@ -1489,3 +1489,203 @@ fn dm_partner_local_time_is_cached_per_server() {
     let _ = ch.on_open(&mut env.ctx());
     assert!(ch.peer.is_none());
 }
+
+/// The account's mention groups, as pending edits the workspace shows.
+fn with_groups(env: &mut Env, groups: &[(&str, &[&str])]) {
+    use rustket_core::mention_groups::{MentionGroupBlob, MentionGroupEdit};
+    let mut b = MentionGroupBlob::default();
+    for (i, (name, members)) in groups.iter().enumerate() {
+        let e = MentionGroupEdit::Upsert {
+            id: format!("g{i}"),
+            name: (*name).into(),
+            members: members.iter().map(|m| (*m).to_owned()).collect(),
+        };
+        b.edit(&MentionGroupBlob::default(), &e, 1, "dev").unwrap();
+    }
+    env.ws.set_mention_group_overlay(b);
+}
+
+#[test]
+fn mention_groups_expand_when_sent() {
+    let mut env = Env::new("t-groups");
+    with_groups(&mut env, &[("backend", &["alice", "bob", "me"])]);
+    let mut c = Composer::new("R1");
+    type_text(&mut c, &mut env, "ping @backend");
+    let a = c.update(Message::Send, &mut env.ctx());
+    assert!(a.effects.is_empty());
+    let p = env.ws.pending_messages("R1");
+    assert_eq!(
+        p[0].message.msg, "ping @backend (@alice @bob)",
+        "me left out"
+    );
+    assert!(c.text().is_empty());
+    // Thread replies too.
+    let mut t = Composer::for_thread("R1", "T1");
+    type_text(&mut t, &mut env, "@backend look");
+    let _ = t.update(Message::Send, &mut env.ctx());
+    let p = env.ws.pending_messages("R1");
+    assert!(p.iter().any(|i| i.message.tmid.as_deref() == Some("T1")
+        && i.message.msg == "@backend (@alice @bob) look"));
+    // Slash commands keep their parameters as typed.
+    store_commands(
+        &env.sid,
+        vec![SlashCommand {
+            command: "leave".into(),
+            ..Default::default()
+        }],
+    );
+    env.ws.apply_setting(
+        rustket_core::Change::Updated,
+        rocketchat::models::Setting {
+            id: "Message_AllowUnrecognizedSlashCommand".into(),
+            value: serde_json::json!(true),
+            ..Default::default()
+        },
+    );
+    type_text(&mut c, &mut env, "/invite @backend");
+    let _ = c.update(Message::Send, &mut env.ctx());
+    let p = env.ws.pending_messages("R1");
+    assert!(p.iter().any(|i| i.message.msg == "/invite @backend"));
+}
+
+#[test]
+fn a_room_member_named_like_a_group_wins() {
+    let mut env = Env::new("t-groups-user");
+    with_groups(&mut env, &[("backend", &["alice"])]);
+    assert!(expand_groups(&env.ws, &env.sid, "R1", "@backend").is_some());
+    store_members(
+        &env.sid,
+        "R1",
+        vec![rocketchat::models::UserSummary {
+            id: "u1".into(),
+            username: Some("backend".into()),
+            ..Default::default()
+        }],
+    );
+    assert!(expand_groups(&env.ws, &env.sid, "R1", "@backend").is_none());
+}
+
+#[test]
+fn edits_expand_groups_once_and_say_nobody_is_notified() {
+    let mut env = Env::new("t-groups-edit");
+    with_groups(&mut env, &[("backend", &["alice", "bob"])]);
+    env.ws.apply_message(msg("M1", "me", "hello"));
+    let mut c = Composer::new("R1");
+    let _ = c.update(Message::EditLast, &mut env.ctx());
+    type_text(&mut c, &mut env, " @backend");
+    let a = c.update(Message::Send, &mut env.ctx());
+    assert!(!c.is_editing());
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::Toast(BannerKind::Info, _, _)]
+    ));
+    // Saving an already expanded message unchanged is no edit at all.
+    let mut env = Env::new("t-groups-edit-same");
+    with_groups(&mut env, &[("backend", &["alice", "bob"])]);
+    env.ws
+        .apply_message(msg("M2", "me", "hi @backend (@alice @bob)"));
+    let mut c = Composer::new("R1");
+    let _ = c.update(Message::EditLast, &mut env.ctx());
+    assert!(c.is_editing());
+    let a = c.update(Message::Send, &mut env.ctx());
+    assert!(a.effects.is_empty() && !c.is_editing());
+    assert!(names(&outputs(a.task)).iter().all(|n| n != "Updated"));
+    // Nor is one whose group was never expanded (sent from another client).
+    let mut env = Env::new("t-groups-edit-plain");
+    with_groups(&mut env, &[("backend", &["alice", "bob"])]);
+    env.ws.apply_message(msg("M3", "me", "hi @backend"));
+    let mut c = Composer::new("R1");
+    let _ = c.update(Message::EditLast, &mut env.ctx());
+    assert!(c.is_editing());
+    let a = c.update(Message::Send, &mut env.ctx());
+    assert!(a.effects.is_empty() && !c.is_editing());
+    assert!(names(&outputs(a.task)).iter().all(|n| n != "Updated"));
+}
+
+#[test]
+fn broad_confirmation_sees_and_keeps_the_expanded_text() {
+    let mut env = broad_env("t-groups-broad", Some(20), &["mention-all"]);
+    with_groups(&mut env, &[("backend", &["alice", "bob"])]);
+    let mut c = Composer::new("R1");
+    type_text(&mut c, &mut env, "@all @backend ship it");
+    let _ = c.update(Message::Send, &mut env.ctx());
+    assert!(c.confirm_broad.is_some());
+    assert_eq!(c.text(), "@all @backend ship it", "the editor keeps @group");
+    let _ = c.update(Message::BroadConfirmed, &mut env.ctx());
+    let p = env.ws.pending_messages("R1");
+    assert_eq!(p.len(), 1);
+    assert_eq!(p[0].message.msg, "@all @backend (@alice @bob) ship it");
+}
+
+#[test]
+fn upload_captions_expand_groups_before_the_broad_check() {
+    let mut env = broad_env("t-groups-upload", Some(20), &["mention-all"]);
+    with_groups(&mut env, &[("backend", &["alice", "bob"])]);
+    assert_eq!(
+        upload::caption(&env.ws, &env.sid, "R1", " @all @backend "),
+        "@all @backend (@alice @bob)"
+    );
+    assert_eq!(
+        upload::caption(&env.ws, &env.sid, "R1", " minutes "),
+        "minutes"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(&path, b"hello").unwrap();
+    let mut c = Composer::new("R1");
+    let a = c.update(Message::FilesDropped(vec![path]), &mut env.ctx());
+    for m in outputs(a.task) {
+        let _ = c.update(m, &mut env.ctx());
+    }
+    let _ = c.update(
+        Message::Upload(upload::Message::Text("@all @backend".into())),
+        &mut env.ctx(),
+    );
+    let a = c.update(Message::Upload(upload::Message::Send), &mut env.ctx());
+    assert!(a.effects.is_empty());
+    let d = c.uploads.dialog.as_ref().unwrap();
+    assert!(d.confirm.as_ref().is_some_and(|c| c.all));
+    assert_eq!(d.message, "@all @backend", "the dialog keeps @group");
+    // Confirmed: sent again, expanded again to the same caption (refused
+    // here: not connected, and the dialog keeps the typed text).
+    let a = c.update(
+        Message::Upload(upload::Message::BroadConfirmed),
+        &mut env.ctx(),
+    );
+    assert_eq!(a.effects.len(), 1, "the not-connected toast");
+    let d = c.uploads.dialog.as_ref().unwrap();
+    assert!(d.confirm.is_none());
+    assert_eq!(d.message, "@all @backend");
+}
+
+#[test]
+fn the_people_popup_offers_groups_and_their_settings() {
+    let mut env = Env::new("t-groups-popup");
+    let mut c = Composer::new("R1");
+    type_text(&mut c, &mut env, "@");
+    assert!(matches!(
+        c.popup_items().last(),
+        Some(Item::ManageGroups { create: true })
+    ));
+    let _ = c.update(Message::AcClose, &mut env.ctx());
+    c.content = text_editor::Content::new();
+    with_groups(&mut env, &[("backend", &["alice", "bob"])]);
+    type_text(&mut c, &mut env, "hi @ba");
+    let items = c.popup_items().to_vec();
+    assert!(matches!(&items[0], Item::Group { name, .. } if name == "backend"));
+    assert!(matches!(
+        items.last(),
+        Some(Item::ManageGroups { create: false })
+    ));
+    let _ = c.update(Message::AcConfirm, &mut env.ctx());
+    assert_eq!(c.text(), "hi @backend ");
+    type_text(&mut c, &mut env, "@b");
+    let last = c.popup_items().len() - 1;
+    let a = c.update(Message::AcSelect(last), &mut env.ctx());
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::ManageMentionGroups]
+    ));
+    assert!(c.popup.is_none());
+    assert_eq!(c.text(), "hi @backend @b", "nothing inserted");
+}

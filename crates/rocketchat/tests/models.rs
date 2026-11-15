@@ -775,6 +775,44 @@ fn service_room_fields() {
     assert!(service_subscriptions([(&sub, &room)], uid).is_empty());
 }
 
+/// A service room holding the flags and the mention groups: writing one key
+/// keeps the other.
+#[test]
+fn service_room_fields_with_mention_groups() {
+    let sub: Subscription = get("subscriptions_get_one_service_groups", "subscription");
+    assert!(sub.is_service_room_of("Er3h8XYKahaopbSA7"));
+    let mut fields = sub.service_fields().unwrap();
+    let groups = fields.get(MENTION_GROUPS_KEY).unwrap();
+    assert_eq!(
+        groups["groups"]["Kq3xY7pLmN2aB9cDe"]["u"],
+        serde_json::json!(["bob", "carol"])
+    );
+    assert!(groups["groups"]["Zz9yX8wV7uT6sR5qP"].get("n").is_none());
+    fields.set(
+        MENTION_GROUPS_KEY,
+        serde_json::json!({ "v": 1, "groups": {} }),
+    );
+    let out = fields.to_custom_fields();
+    assert_eq!(out[FLAGS_KEY]["rooms"]["GENERAL"]["c"], "red");
+    assert_eq!(out[MENTION_GROUPS_KEY]["groups"], serde_json::json!({}));
+    assert_eq!(out[SERVICE_MARKER_KEY]["owner"], "Er3h8XYKahaopbSA7");
+}
+
+/// A sent group mention `@backend (@bob @carol)`: the server takes the
+/// parenthesised names as mentions (an unknown `@backend` is ignored).
+#[test]
+fn group_mention_expansion_mentions_the_members() {
+    let m: Message = get("chat_send_message_group_mention", "message");
+    assert_eq!(m.msg, "ping @backend (@bob @carol)");
+    let names: Vec<&str> = m
+        .mentions
+        .iter()
+        .flatten()
+        .filter_map(|x| x.username.as_deref())
+        .collect();
+    assert_eq!(names, ["bob", "carol"]);
+}
+
 /// `users.info` of a user who published a UTC offset (`users.setPreferences`).
 #[test]
 fn users_info_utc_offset() {

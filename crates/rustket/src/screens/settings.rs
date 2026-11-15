@@ -1,5 +1,5 @@
 //! App preferences (local, not per server) in tabs: General, Appearance,
-//! Notifications, Sidebar, Privacy & storage, About. Each tab's cards are
+//! Notifications, Sidebar, Mentions, Privacy & storage, About. Each tab's cards are
 //! built in `settings/<tab>.rs`; this file keeps the state, the messages, the
 //! update and the tab frame. Strings: `locales/settings.yml` (`settings.*`).
 
@@ -22,12 +22,17 @@ use crate::ui_state::UiState;
 mod about;
 mod appearance;
 mod general;
+mod mentions;
 mod notifications;
 mod pickers;
 mod privacy;
 mod sidebar;
 mod widgets;
 
+pub use mentions::{
+    CheckReport as MentionCheckReport, GroupCheck as MentionGroupCheck, Issue as MentionIssue,
+    MentionAccount, Message as MentionsMessage, Suggestion as MentionSuggestion,
+};
 pub use privacy::size_label;
 pub use sidebar::{FlagAccount, GroupDraft, Message as SidebarMessage};
 
@@ -39,16 +44,18 @@ pub enum Tab {
     Appearance,
     Notifications,
     Sidebar,
+    Mentions,
     Privacy,
     About,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 7] = [
         Tab::General,
         Tab::Appearance,
         Tab::Notifications,
         Tab::Sidebar,
+        Tab::Mentions,
         Tab::Privacy,
         Tab::About,
     ];
@@ -59,6 +66,7 @@ impl Tab {
             Tab::Appearance => "settings.appearance",
             Tab::Notifications => "settings.notifications",
             Tab::Sidebar => "settings.sidebar",
+            Tab::Mentions => "settings.tab_mentions",
             Tab::Privacy => "settings.tab_privacy",
             Tab::About => "settings.about",
         }
@@ -70,6 +78,7 @@ impl Tab {
             Tab::Appearance => Icon::Palette,
             Tab::Notifications => Icon::Bell,
             Tab::Sidebar => Icon::PanelLeft,
+            Tab::Mentions => Icon::AtSign,
             Tab::Privacy => Icon::ShieldCheck,
             Tab::About => Icon::Info,
         }
@@ -202,6 +211,8 @@ pub enum Message {
     SetStarredThreads(bool),
     /// The section list, the group editor and the layout reset.
     Sidebar(SidebarMessage),
+    /// The Mentions tab: mention groups and their editor.
+    Mentions(MentionsMessage),
     OpenUrl(String),
     Close,
     // Updates card (`crate::updater`).
@@ -246,6 +257,8 @@ pub struct SettingsView<'a> {
     pub flags: Vec<FlagAccount<'a>>,
     /// "Move kept threads to Favorites" is running.
     pub star_kept_busy: bool,
+    /// Mention groups of the signed-in accounts, the active server's first.
+    pub mention_groups: Vec<MentionAccount<'a>>,
     #[cfg(feature = "self-update")]
     pub updater: crate::updater::view::SettingsData,
 }
@@ -274,6 +287,10 @@ pub struct Settings {
     pub confirm_flag_clear: Option<(rustket_core::ServerId, rustket_core::flags::FlagColor)>,
     /// "Move kept threads to Favorites" awaits confirmation.
     pub confirm_star_kept: bool,
+    /// The mention group being created or edited.
+    pub mention_draft: Option<mentions::Draft>,
+    /// The deletion of this account's mention group awaits confirmation.
+    pub confirm_mention_delete: Option<(rustket_core::ServerId, String)>,
 }
 
 impl Default for Settings {
@@ -308,6 +325,8 @@ impl Settings {
             flag_drafts: Default::default(),
             confirm_flag_clear: None,
             confirm_star_kept: false,
+            mention_draft: None,
+            confirm_mention_delete: None,
         }
     }
 
@@ -439,6 +458,7 @@ impl Settings {
             Message::SetThreadsMode(m) => Self::pref(ctx, |p| p.sidebar_threads = m),
             Message::SetStarredThreads(v) => Self::pref(ctx, |p| p.sidebar_starred_threads = v),
             Message::Sidebar(m) => self.update_sidebar(m, ctx),
+            Message::Mentions(m) => self.update_mentions(m),
             #[cfg(feature = "self-update")]
             Message::SetCheckUpdates(v) => Self::pref(ctx, |p| p.check_updates = v),
             #[cfg(feature = "self-update")]
@@ -485,6 +505,7 @@ impl Settings {
             Tab::Appearance => appearance::view(v),
             Tab::Notifications => notifications::view(v),
             Tab::Sidebar => self.sidebar_cards(&v.config.ui, &v.flags, v.star_kept_busy),
+            Tab::Mentions => mentions::view(self, v),
             Tab::Privacy => privacy::view(v),
             Tab::About => about::view(v),
         };

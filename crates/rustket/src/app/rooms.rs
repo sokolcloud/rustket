@@ -118,10 +118,15 @@ impl App {
         if !s.is_current(epoch) {
             return Task::none();
         }
-        match s.service_pushed(&o, Instant::now()) {
-            Some(m) => self.on_flags(sid, epoch, m),
-            None => Task::none(),
+        let parts = s.service_pushed(&o, Instant::now());
+        let mut tasks = Vec::new();
+        if let Some(m) = parts.flags {
+            tasks.push(self.on_flags(sid.clone(), epoch, m));
         }
+        if let Some(m) = parts.mention_groups {
+            tasks.push(self.on_mention_groups(sid, epoch, m));
+        }
+        Task::batch(tasks)
     }
 
     /// Applies a flag edit of the user: shown at once, stored on the server
@@ -404,6 +409,9 @@ impl App {
                 room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
                 room::Effect::AskReadAll => self.ask_read_all(),
                 room::Effect::Forward(refs) => self.navigate(component::Nav::Forward(refs)),
+                room::Effect::ManageMentionGroups => {
+                    self.navigate(component::Nav::MentionGroupSettings)
+                }
                 room::Effect::Call(a) => {
                     self.on_calls(crate::videoconf::Message::Action(sid.clone(), a))
                 }

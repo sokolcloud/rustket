@@ -131,7 +131,7 @@ impl FlagSync {
     /// Per update: follows the session, prunes and applies the overlay,
     /// hides service rooms seen open and sets the pacing timer. The push
     /// starts with the server's other keys
-    /// ([`super::service_sync::start_push`]).
+    /// ([`super::service_sync::take_parts`]).
     pub fn tick(
         &mut self,
         ws: &mut Workspace,

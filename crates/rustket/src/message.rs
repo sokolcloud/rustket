@@ -110,6 +110,14 @@ pub enum Message {
     Flags(ServerId, u64, crate::workspace::flags::Msg),
     /// A push of the synced keys finished: server, session epoch, result.
     ServicePushed(ServerId, u64, crate::workspace::service_sync::Outcome),
+    /// Mention group sync message: server, session epoch, message.
+    MentionGroups(ServerId, u64, crate::workspace::mention_groups::Msg),
+    /// The server's checks of a mention group the Settings asked for.
+    MentionGroupChecked(
+        ServerId,
+        Box<crate::screens::settings::MentionGroupCheck>,
+        crate::screens::settings::MentionCheckReport,
+    ),
     /// A flag edit of the user (sidebar, room header, thread panel).
     SetFlag(ServerId, rustket_core::flags::FlagEdit),
     /// An app-wide keyboard shortcut (`crate::keymap`).

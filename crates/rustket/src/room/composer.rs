@@ -34,6 +34,7 @@ use self::cache::{
     commands_failed, outbox_in_flight, outbox_take_done, store_commands, store_members,
 };
 pub(crate) use self::cache::{outbox_forget, outbox_start};
+pub(crate) use self::send::expand_groups;
 pub use self::send::orphan_result;
 use self::send::{apply_send_result, commands_unavailable, error_toast, fetch, needs_join_code};
 use self::text::{Format, TriggerKind};

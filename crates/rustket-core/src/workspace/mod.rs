@@ -21,6 +21,7 @@ use rocketchat::models::{
 
 use crate::emoji::EmojiRegistry;
 use crate::flags::{FlagBlob, Flags};
+use crate::mention_groups::{MentionGroupBlob, MentionGroups};
 use crate::presence::Presence;
 use crate::settings::Settings;
 use crate::thread_index::ThreadIndex;
@@ -29,6 +30,7 @@ use crate::typing::{TypingLabel, TypingState};
 use crate::uikit::UiKitStore;
 
 mod load;
+mod mention_groups;
 mod realtime;
 mod thread_parents;
 mod timelines;
@@ -72,7 +74,8 @@ impl Dirty {
     pub const LATER: Self = Self(1 << 17);
     /// Synced message reminders (reserved).
     pub const REMINDERS: Self = Self(1 << 18);
-    /// Synced mention groups (reserved).
+    /// Synced mention groups: the stored blob, the pending overlay or the
+    /// effective groups (see [`Workspace::mention_groups`]).
     pub const MENTION_GROUPS: Self = Self(1 << 19);
     /// All unreads / Activity feeds (reserved).
     pub const FEEDS: Self = Self(1 << 20);
@@ -298,6 +301,12 @@ pub struct Workspace {
     flag_overlay: FlagBlob,
     /// `flag_blob` merged with `flag_overlay`.
     flags: Flags,
+    /// The mention groups blob of the user's service rooms.
+    mention_group_blob: MentionGroupBlob,
+    /// This device's mention group edits not known to be stored yet.
+    mention_group_overlay: MentionGroupBlob,
+    /// `mention_group_blob` merged with `mention_group_overlay`.
+    mention_groups: MentionGroups,
     /// The user's own service rooms, primary first.
     service_rooms: Vec<String>,
 }

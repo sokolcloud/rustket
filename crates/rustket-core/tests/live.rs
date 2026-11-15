@@ -1028,3 +1028,81 @@ async fn read_all_through_the_read_queue() {
     })
     .await;
 }
+
+/// Mention groups end to end: the blob is stored next to the flags in a
+/// room shaped like a service room (a scratch room, never bound), read back,
+/// and a message expanded with it mentions every member but the sender,
+/// also one outside the room; the server ignores the group name.
+#[tokio::test(flavor = "multi_thread")]
+async fn mention_group_expansion_mentions_every_member() {
+    use rocketchat::models::{FLAGS_KEY, MENTION_GROUPS_KEY, ServiceFields};
+    use rustket_core::mention_groups::{ExpandOptions, MentionGroupBlob, MentionGroupEdit, expand};
+    use rustket_core::service_sync::SyncBlob;
+    with_fixture(|s, fx| async move {
+        let a = fx.user(&s, "core-mga").await;
+        let b = fx.user(&s, "core-mgb").await;
+        let c = fx.user(&s, "core-mgc").await;
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut blob = MentionGroupBlob::default();
+        let edit = MentionGroupEdit::Upsert {
+            id: rocketchat::ids::random_id(),
+            name: "backend".into(),
+            members: vec![c.username.clone(), b.username.clone(), a.username.clone()],
+        };
+        blob.edit(&MentionGroupBlob::default(), &edit, now, "dev")
+            .unwrap();
+        let mut fields = ServiceFields::new(&a.id);
+        fields.set(FLAGS_KEY, json!({ "v": 1, "rooms": {} }));
+        fields.set(MENTION_GROUPS_KEY, blob.to_value_at(now));
+        let svc = a
+            .rest
+            .create_service_room(&unique("core-mg-svc"), &fields)
+            .await
+            .unwrap();
+        fx.room(&svc.id);
+        let read = a
+            .rest
+            .read_service_subscription(&svc.id)
+            .await
+            .unwrap()
+            .flatten()
+            .unwrap();
+        assert!(read.get(FLAGS_KEY).is_some(), "the other key is kept");
+        let stored = MentionGroupBlob::from_value_at(read.get(MENTION_GROUPS_KEY), now);
+        assert_eq!(stored.view(), blob.view());
+        let groups = stored.view();
+
+        // Only b is in the room; c is mentioned all the same.
+        let mut req = CreateRoom::new(unique("core-mg"));
+        req.members = vec![b.username.clone()];
+        let room = a.rest.groups_create(&req).await.unwrap();
+        fx.room(&room.id);
+        let mut names = vec![b.username.clone(), c.username.clone()];
+        names.sort();
+        let text = {
+            let none = |_: &str| false;
+            let opts = ExpandOptions {
+                me: Some(&a.username),
+                is_user: &none,
+            };
+            let e = expand("ping @backend", &groups, &opts).unwrap();
+            assert!(expand(&e.text, &groups, &opts).is_none(), "idempotent");
+            e.text
+        };
+        assert_eq!(text, format!("ping @backend (@{} @{})", names[0], names[1]));
+        let sent = a
+            .rest
+            .send_message(&OutgoingMessage::new(&room.id, &text))
+            .await
+            .unwrap();
+        let mut mentioned: Vec<String> = sent
+            .mentions
+            .iter()
+            .flatten()
+            .filter_map(|m| m.username.clone())
+            .collect();
+        mentioned.sort();
+        assert_eq!(mentioned, names);
+    })
+    .await;
+}

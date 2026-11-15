@@ -2,6 +2,7 @@
 
 pub mod flag_menu;
 pub mod flags;
+pub mod mention_groups;
 pub mod rail;
 pub mod service_sync;
 pub mod sidebar;
@@ -19,6 +20,12 @@ use rustket_core::{ServerId, Workspace};
 use crate::room::RoomView;
 use crate::screens::login::Login;
 use crate::session::{SessionHandle, SessionSpec, tls_for};
+
+/// Each synced key's part of a combined push ([`ServerState::service_pushed`]).
+pub struct ServicePushed {
+    pub flags: Option<flags::Msg>,
+    pub mention_groups: Option<mention_groups::Msg>,
+}
 
 /// Everything the app keeps for one configured server.
 pub struct ServerState {
@@ -43,6 +50,8 @@ pub struct ServerState {
     pub threads: threads::SidebarThreads,
     /// Sync of the account's flags (`workspace::flags`).
     pub flags: flags::FlagSync,
+    /// Sync of the account's mention groups (`workspace::mention_groups`).
+    pub mention_groups: mention_groups::MentionGroupSync,
     /// What the synced keys of the account share: the write lock
     /// (`workspace::service_sync`).
     pub service: service_sync::Shared,
@@ -106,6 +115,7 @@ impl ServerState {
             omni: crate::omnichannel::Omni::default(),
             threads: threads::SidebarThreads::default(),
             flags: flags::FlagSync::default(),
+            mention_groups: mention_groups::MentionGroupSync::default(),
             service: service_sync::Shared::default(),
             rooms: HashMap::new(),
             active_room: None,
@@ -161,6 +171,7 @@ impl ServerState {
         self.omni.reset(&self.id);
         self.threads.reset();
         self.flags.reset();
+        self.mention_groups.reset();
         // `service` stays: a push of the old session may still hold its lock.
         self.reads.clear();
         self.syncing = false;
@@ -170,38 +181,63 @@ impl ServerState {
         self.start_error = None;
     }
 
+    /// The workspace and every synced key of the account. Keys added later
+    /// join here (and in [`Self::service_pushed`]'s `finish`es).
+    fn service_syncs(
+        &mut self,
+    ) -> (
+        &rustket_core::Workspace,
+        [&mut dyn service_sync::Syncing; 2],
+    ) {
+        (
+            &self.workspace,
+            [&mut self.flags.sync, &mut self.mention_groups],
+        )
+    }
+
     /// Starts one push of the account's synced keys when one of them is
-    /// due (after their `tick`s). Keys added later join here and in
-    /// [`Self::service_pushed`].
+    /// due (after their `tick`s).
     pub fn start_service_push(
         &mut self,
         now: std::time::Instant,
     ) -> Option<iced::Task<service_sync::Outcome>> {
-        let syncs: &mut [&mut dyn service_sync::Syncing] = &mut [&mut self.flags.sync];
-        service_sync::start_push(
+        self.session.as_ref()?;
+        let parts = self.service_parts(now)?;
+        let h = self.session.as_ref()?;
+        Some(service_sync::push_task(
             &self.workspace,
-            self.session.as_ref(),
+            h,
             &self.service,
-            syncs,
-            now,
-        )
+            parts,
+        ))
     }
 
-    /// Hands a combined push's result to the keys: the flags' part, for
-    /// their `update`. Every key learns the room the push used and keeps a
+    /// The parts of a push, when one key's time has come.
+    fn service_parts(&mut self, now: std::time::Instant) -> Option<Vec<service_sync::Outgoing>> {
+        let (ws, mut syncs) = self.service_syncs();
+        service_sync::take_parts(ws, &mut syncs, now)
+    }
+
+    /// Hands a combined push's result to the keys: each key's part, for
+    /// its `update`. Every key learns the room the push used and keeps a
     /// rate limit it hit.
     pub fn service_pushed(
         &mut self,
         o: &service_sync::Outcome,
         now: std::time::Instant,
-    ) -> Option<flags::Msg> {
-        let syncs: &mut [&mut dyn service_sync::Syncing] = &mut [&mut self.flags.sync];
-        service_sync::pause_on_rate_limit(o, syncs, now);
+    ) -> ServicePushed {
+        let (_, mut syncs) = self.service_syncs();
+        service_sync::pause_on_rate_limit(o, &mut syncs, now);
         let flags = self.flags.finish(o);
+        let groups = self.mention_groups.finish(o);
         if let Some(rid) = o.rid() {
             self.flags.adopt_created(rid);
+            self.mention_groups.adopt_created(rid);
         }
-        flags.map(|(epoch, res)| flags::Msg::Pushed { epoch, res })
+        ServicePushed {
+            flags: flags.map(|(epoch, res)| flags::Msg::Pushed { epoch, res }),
+            mention_groups: groups.map(|(epoch, res)| service_sync::Msg::Pushed { epoch, res }),
+        }
     }
 
     /// Whether a result tagged with `epoch` belongs to the current session.

@@ -922,3 +922,60 @@ fn unbound_service_rooms_hold_no_flags() {
     assert!(ws.service_rooms().is_empty());
     assert_eq!(ws.room_flag("A"), None);
 }
+
+/// Mention groups come from the bound service room, with this device's
+/// pending edits on top.
+#[test]
+fn mention_groups_come_from_the_service_room_and_the_overlay() {
+    use crate::mention_groups::{MentionGroupBlob, MentionGroupEdit};
+    use rocketchat::models::{MENTION_GROUPS_KEY, ServiceFields, UNBOUND_CUTOFF_MS};
+    use serde_json::json;
+
+    let mut fields = ServiceFields::new("u1");
+    fields.set(
+        MENTION_GROUPS_KEY,
+        json!({ "v": 1, "groups": {
+            "g1": { "n": "backend", "u": ["bob", "alice"], "t": 5, "d": "a" }
+        } }),
+    );
+    let mut svc = sub("SVC", "rustket-sync-u1", RoomType::Private);
+    svc.u.id = "u1".into();
+    svc.open = false;
+    svc.roles = Some(vec!["owner".into()]);
+    svc.custom_fields = Some(fields.to_custom_fields());
+    let mut svc_room = crate::test_util::service_room(&svc, "u1", 1);
+    svc_room.ts = Some(ts(UNBOUND_CUTOFF_MS + 1));
+    let mut bound = me("u1", "alice");
+    bound.settings = serde_json::from_value(json!({
+        "preferences": { "dontAskAgainList": [
+            { "action": "rustket-service-room:SVC", "label": "Rustket sync" },
+        ] },
+    }))
+    .unwrap();
+
+    let mut ws = Workspace::new();
+    ws.apply_me(me("u1", "alice"));
+    ws.apply_subscription(Change::Inserted, svc);
+    ws.apply_room(Change::Inserted, svc_room);
+    assert!(ws.mention_groups().is_empty(), "not bound: not trusted");
+    let rev = ws.revision(Dirty::MENTION_GROUPS);
+    ws.apply_me(bound);
+    assert!(ws.revision(Dirty::MENTION_GROUPS) > rev);
+    assert_eq!(
+        ws.mention_groups().get("backend").unwrap().members,
+        ["alice", "bob"]
+    );
+
+    let mut overlay = MentionGroupBlob::default();
+    let edit = MentionGroupEdit::Upsert {
+        id: "g2".into(),
+        name: "qa".into(),
+        members: vec!["carol".into()],
+    };
+    overlay
+        .edit(ws.mention_group_blob(), &edit, 20, "dev")
+        .unwrap();
+    ws.set_mention_group_overlay(overlay);
+    assert_eq!(ws.mention_groups().all().len(), 2);
+    assert_eq!(ws.mention_group_overlay().groups.len(), 1);
+}

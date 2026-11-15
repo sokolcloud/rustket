@@ -81,6 +81,7 @@ impl App {
             Nav::Settings
                 | Nav::SidebarSettings { .. }
                 | Nav::SecretStoreSettings
+                | Nav::MentionGroupSettings
                 | Nav::Workspace
                 | Nav::Account
                 | Nav::Directory
@@ -123,7 +124,13 @@ impl App {
 
     fn navigate_to(&mut self, nav: Nav, sid: Option<ServerId>) -> Task<Message> {
         match (nav, sid) {
-            (nav @ (Nav::Settings | Nav::SidebarSettings { .. } | Nav::SecretStoreSettings), _) => {
+            (
+                nav @ (Nav::Settings
+                | Nav::SidebarSettings { .. }
+                | Nav::SecretStoreSettings
+                | Nav::MentionGroupSettings),
+                _,
+            ) => {
                 // The real autostart location only with real desktop integration.
                 let at = self
                     .desktop
@@ -135,6 +142,7 @@ impl App {
                 let tab = match nav {
                     Nav::SidebarSettings { .. } => settings::Tab::Sidebar,
                     Nav::SecretStoreSettings => settings::Tab::Privacy,
+                    Nav::MentionGroupSettings => settings::Tab::Mentions,
                     _ => self.settings_tab,
                 };
                 self.settings_tab = tab;
@@ -327,6 +335,11 @@ impl App {
                 }
                 Effect::SetFlag(sid, edit) => self.set_flag(&sid, edit),
                 Effect::StarKeptThreads => self.star_kept_threads(),
+                Effect::EditMentionGroup(sid, edit) => self.edit_mention_group(&sid, edit),
+                Effect::CheckMentionGroup(sid, check) => self.check_mention_group(sid, *check),
+                Effect::SuggestMentionMembers(sid, seq, term) => {
+                    self.suggest_mention_members(&sid, seq, term)
+                }
                 Effect::SetSecretsMemoryOnly(on) => self.on_secrets_memory_only(on),
                 Effect::UiKit(m) => match sid {
                     Some(sid) => {
@@ -864,6 +877,7 @@ impl App {
                 .then_some((self.offline.size, self.offline.clearing)),
             flags: self.flag_accounts(),
             star_kept_busy: !self.star_kept.is_empty(),
+            mention_groups: self.mention_accounts(),
             #[cfg(feature = "self-update")]
             updater: crate::updater::view::settings_data(
                 &self.updater,
@@ -873,9 +887,8 @@ impl App {
         }
     }
 
-    /// The signed-in accounts' flags for the Settings, the active server's
-    /// first.
-    fn flag_accounts(&self) -> Vec<settings::FlagAccount<'_>> {
+    /// The signed-in accounts, the active server's first.
+    fn signed_in(&self) -> Vec<&ServerState> {
         let mut servers: Vec<&ServerState> = self
             .servers
             .values()
@@ -883,6 +896,32 @@ impl App {
             .collect();
         servers.sort_by_key(|s| (Some(&s.id) != self.active.as_ref(), s.name.to_lowercase()));
         servers
+    }
+
+    /// The signed-in accounts' mention groups for the Settings.
+    fn mention_accounts(&self) -> Vec<settings::MentionAccount<'_>> {
+        self.signed_in()
+            .into_iter()
+            .map(|s| settings::MentionAccount {
+                sid: s.id.clone(),
+                label: t!(
+                    "settings.flags_account",
+                    user = s.workspace.username().unwrap_or_default(),
+                    server = s.name
+                )
+                .into_owned(),
+                groups: s.workspace.mention_groups(),
+                status: s.mention_groups.status(),
+                online: s.session.is_some()
+                    && *s.workspace.connection() == ConnectionState::Connected,
+            })
+            .collect()
+    }
+
+    /// The signed-in accounts' flags for the Settings, the active server's
+    /// first.
+    fn flag_accounts(&self) -> Vec<settings::FlagAccount<'_>> {
+        self.signed_in()
             .into_iter()
             .map(|s| settings::FlagAccount {
                 sid: s.id.clone(),

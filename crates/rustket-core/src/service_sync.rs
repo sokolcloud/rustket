@@ -450,6 +450,11 @@ pub struct KeyCheck {
 }
 
 impl KeyCheck {
+    /// The `customFields` key checked.
+    pub fn key(&self) -> &'static str {
+        self.key
+    }
+
     pub fn of<B: SyncBlob>() -> Self {
         Self {
             key: B::KEY,

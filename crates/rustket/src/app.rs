@@ -4,6 +4,7 @@ mod after_update;
 mod components;
 mod keys;
 mod links;
+mod mention_groups;
 mod rooms;
 mod secrets;
 mod session;
@@ -658,6 +659,10 @@ impl App {
             Message::Threads(sid, epoch, m) => self.on_threads(sid, epoch, m),
             Message::Flags(sid, epoch, m) => self.on_flags(sid, epoch, m),
             Message::ServicePushed(sid, epoch, o) => self.on_service_pushed(sid, epoch, o),
+            Message::MentionGroups(sid, epoch, m) => self.on_mention_groups(sid, epoch, m),
+            Message::MentionGroupChecked(sid, check, report) => {
+                self.mention_group_checked(sid, *check, report)
+            }
             Message::SetFlag(sid, edit) => self.set_flag(&sid, edit),
             Message::InitialLoaded(sid, epoch, r) => self.on_initial_loaded(sid, epoch, r),
             Message::Resynced(sid, epoch, delta, rooms) => {

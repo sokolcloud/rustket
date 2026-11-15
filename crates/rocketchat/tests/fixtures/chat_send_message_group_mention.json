@@ -1,0 +1,75 @@
+{
+    "message": {
+        "rid": "6af9c39cd5de71deb45c4428",
+        "msg": "ping @backend (@bob @carol)",
+        "ts": "2026-11-15T14:38:09.406Z",
+        "u": {
+            "_id": "Er3h8XYKahaopbSA7",
+            "username": "alice",
+            "name": "Alice"
+        },
+        "_id": "fyqv792TuX357xJ7o",
+        "_updatedAt": "2026-11-15T14:38:09.413Z",
+        "md": [
+            {
+                "type": "PARAGRAPH",
+                "value": [
+                    {
+                        "type": "PLAIN_TEXT",
+                        "value": "ping "
+                    },
+                    {
+                        "type": "MENTION_USER",
+                        "value": {
+                            "type": "PLAIN_TEXT",
+                            "value": "backend"
+                        }
+                    },
+                    {
+                        "type": "PLAIN_TEXT",
+                        "value": " ("
+                    },
+                    {
+                        "type": "MENTION_USER",
+                        "value": {
+                            "type": "PLAIN_TEXT",
+                            "value": "bob"
+                        }
+                    },
+                    {
+                        "type": "PLAIN_TEXT",
+                        "value": " "
+                    },
+                    {
+                        "type": "MENTION_USER",
+                        "value": {
+                            "type": "PLAIN_TEXT",
+                            "value": "carol"
+                        }
+                    },
+                    {
+                        "type": "PLAIN_TEXT",
+                        "value": ")"
+                    }
+                ]
+            }
+        ],
+        "mentions": [
+            {
+                "_id": "SLiu9igvh94B9T9Xu",
+                "username": "bob",
+                "name": "Bob",
+                "type": "user"
+            },
+            {
+                "_id": "qJWw3ByDhRtx8mN4p",
+                "username": "carol",
+                "name": "Carol",
+                "type": "user"
+            }
+        ],
+        "channels": [],
+        "urls": []
+    },
+    "success": true
+}

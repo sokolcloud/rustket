@@ -380,13 +380,13 @@ impl Uploads {
                 if file.error.is_some() {
                     return Action::none();
                 }
+                // Mention groups expand first, as in the composer: the
+                // `@all` check and the upload see the same text.
+                let text = caption(ctx.workspace, ctx.server_id, ctx.rid, &d.message);
                 if !d.broad_ok
                     && ctx.prefs.confirm_broad_mentions
-                    && let Some(mut c) = super::composer::broad::broad_check(
-                        ctx.workspace,
-                        ctx.rid,
-                        d.message.trim(),
-                    )
+                    && let Some(mut c) =
+                        super::composer::broad::broad_check(ctx.workspace, ctx.rid, &text)
                 {
                     d.broad_seq += 1;
                     c.seq = d.broad_seq;
@@ -423,7 +423,7 @@ impl Uploads {
                     n => n.to_owned(),
                 };
                 let description = Some(d.description.trim().to_owned()).filter(|s| !s.is_empty());
-                let message = Some(d.message.trim().to_owned()).filter(|s| !s.is_empty());
+                let message = Some(text).filter(|s| !s.is_empty());
                 if !d.advance() {
                     self.dialog = None;
                 }
@@ -661,6 +661,19 @@ fn field<'a>(label: String, input: Element<'a, Message>) -> Element<'a, Message>
     ]
     .spacing(SPACE_1)
     .into()
+}
+
+/// The upload's message as sent: trimmed, mention groups expanded (the
+/// dialog keeps what was typed).
+pub(super) fn caption(
+    ws: &rustket_core::Workspace,
+    server: &rustket_core::ServerId,
+    rid: &str,
+    message: &str,
+) -> String {
+    let typed = message.trim();
+    super::composer::expand_groups(ws, server, rid, typed)
+        .map_or_else(|| typed.to_owned(), |e| e.text)
 }
 
 fn toast_error(body: String) -> Effect {
