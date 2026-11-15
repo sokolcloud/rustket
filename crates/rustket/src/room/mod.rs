@@ -625,6 +625,27 @@ impl RoomView {
         self.handle_effects(Action::effect(Effect::Compose(intent)), ctx)
     }
 
+    /// Shows message `m` of this room (its thread for a reply, else its
+    /// place in the timeline) from a local copy, without fetching it.
+    pub fn show(
+        &mut self,
+        m: rocketchat::models::Message,
+        ctx: &mut UpdateCtx<'_>,
+    ) -> Action<Message> {
+        self.handle_effects(Action::effect(Effect::ShowMessage(Box::new(m))), ctx)
+    }
+
+    /// Effects other components raised for this room (e.g. a message body
+    /// shown outside the room): the room's own ones run here, the rest are
+    /// returned.
+    pub fn run_effects(
+        &mut self,
+        effects: Vec<Effect>,
+        ctx: &mut UpdateCtx<'_>,
+    ) -> Action<Message> {
+        self.handle_effects(Action::effects(effects), ctx)
+    }
+
     /// The room timeline is selecting messages (Esc clears the selection).
     pub fn picking(&self) -> bool {
         self.timeline.picking()

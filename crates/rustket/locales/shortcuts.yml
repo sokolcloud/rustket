@@ -161,3 +161,21 @@ shortcuts.read_all_failed_many:
   es: "No se pudieron marcar como leídas %{failed} de %{count} salas"
   th: "ทำเครื่องหมายว่าอ่านแล้วไม่ได้ %{failed} จาก %{count} ห้อง"
   zh: "%{count} 个聊天室中有 %{failed} 个无法标记为已读"
+shortcuts.all_unreads:
+  en: "All unreads"
+  ru: "Все непрочитанные"
+  es: "Todos los no leídos"
+  th: "ยังไม่ได้อ่านทั้งหมด"
+  zh: "全部未读"
+shortcuts.activity:
+  en: "Activity: mentions and threads"
+  ru: "Активность: упоминания и треды"
+  es: "Actividad: menciones e hilos"
+  th: "กิจกรรม: การกล่าวถึงและเธรด"
+  zh: "动态：提及和讨论串"
+shortcuts.group_catch_up:
+  en: "Catch up"
+  ru: "Наверстать"
+  es: "Ponerse al día"
+  th: "ไล่อ่าน"
+  zh: "逐个查看"

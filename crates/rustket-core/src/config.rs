@@ -578,6 +578,11 @@ pub struct UiPrefs {
     /// Publish the local UTC offset to the server after sign-in (as the web
     /// client does), so others see the user's local time.
     pub share_utc_offset: bool,
+    /// The pinned rows at the top of the sidebar (All unreads, Activity;
+    /// the views' shortcuts work either way).
+    pub sidebar_pinned_views: bool,
+    /// All unreads lists rooms with notifications disabled too.
+    pub inbox_include_muted: bool,
 }
 
 impl Default for UiPrefs {
@@ -615,6 +620,8 @@ impl Default for UiPrefs {
             escape_marks_read: true,
             confirm_broad_mentions: true,
             share_utc_offset: true,
+            sidebar_pinned_views: true,
+            inbox_include_muted: false,
         }
     }
 }
@@ -736,6 +743,8 @@ const UI_KEYS: &[&str] = &[
     "escape_marks_read",
     "confirm_broad_mentions",
     "share_utc_offset",
+    "sidebar_pinned_views",
+    "inbox_include_muted",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -1755,6 +1764,19 @@ mod tests {
         assert!(text.contains("future_section"));
         let c = AppConfig::parse("[ui]\nsidebar_sort = \"activity_asc\"").unwrap();
         assert_eq!(c.ui.sidebar_sort, SidebarSort::ActivityAsc);
+    }
+
+    #[test]
+    fn inbox_prefs_default_and_round_trip() {
+        let d = UiPrefs::default();
+        assert!(d.sidebar_pinned_views && !d.inbox_include_muted);
+        let c = AppConfig::parse("[ui]\nunread_on_top = true").unwrap();
+        assert!(c.ui.sidebar_pinned_views);
+        let mut c = AppConfig::default();
+        c.ui.sidebar_pinned_views = false;
+        c.ui.inbox_include_muted = true;
+        let back = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
+        assert!(!back.ui.sidebar_pinned_views && back.ui.inbox_include_muted);
     }
 
     #[test]

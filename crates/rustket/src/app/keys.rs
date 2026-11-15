@@ -47,8 +47,10 @@ impl App {
             }
             Shortcut::MarkAllRead => self.ask_read_all(),
             Shortcut::ReactLast => self.react_last(),
-            // Reserved: `keymap::global` does not produce these yet.
-            Shortcut::AllUnreads | Shortcut::Activity | Shortcut::Later => Task::none(),
+            Shortcut::AllUnreads => self.inbox_shortcut(crate::inbox::InboxKind::Unreads),
+            Shortcut::Activity => self.inbox_shortcut(crate::inbox::InboxKind::Activity),
+            // Reserved: `keymap::global` does not produce it yet.
+            Shortcut::Later => Task::none(),
         }
     }
 
@@ -89,7 +91,8 @@ impl App {
     }
 
     /// Escape no widget took, on the server view. In order:
-    /// 1. a view in place of the room area closes (the contact center);
+    /// 1. a view in place of the room area closes (`MainView`, the contact
+    ///    center);
     /// 2. the room timeline's message selection is cleared;
     /// 3. the right panel closes;
     /// 4. an unread room is marked read with its threads (Slack;
@@ -100,6 +103,12 @@ impl App {
             return Task::none();
         };
         let (sid, epoch) = (s.id.clone(), s.generation);
+        if s.main_view.is_some() {
+            if let Some(s) = self.servers.get_mut(&sid) {
+                s.close_main_view();
+            }
+            return Task::none();
+        }
         if s.omni.contact_center.is_some() {
             return Task::done(Message::Omni(
                 sid,
@@ -219,7 +228,7 @@ impl App {
         };
         let (task, done) = crate::reads::pump(&mut s.reads, s.session.as_ref());
         let task = Self::reads_task(sid, s.generation, task);
-        Task::batch([task, self.reads_done(done)])
+        Task::batch([task, self.reads_done(sid, done)])
     }
 
     pub(super) fn on_reads(
@@ -233,7 +242,7 @@ impl App {
         };
         let (task, done) = crate::reads::update(&mut s.reads, m, s.session.as_ref());
         let task = Self::reads_task(&sid, epoch, task);
-        Task::batch([task, self.reads_done(done)])
+        Task::batch([task, self.reads_done(&sid, done)])
     }
 
     fn reads_task(sid: &ServerId, epoch: u64, task: Task<crate::reads::Msg>) -> Task<Message> {
@@ -242,12 +251,13 @@ impl App {
     }
 
     /// Hands finished read marks to whoever asked for them.
-    fn reads_done(&mut self, done: Vec<Done<Origin>>) -> Task<Message> {
+    fn reads_done(&mut self, sid: &ServerId, done: Vec<Done<Origin>>) -> Task<Message> {
         let mut tasks = Vec::new();
         for d in done {
             for origin in &d.origins {
                 match origin {
                     Origin::ReadAll(stamp) => tasks.push(self.read_all_progress(*stamp, d.ok)),
+                    Origin::Inbox => tasks.push(self.inbox_read_done(sid, &d.req, d.ok)),
                 }
             }
         }

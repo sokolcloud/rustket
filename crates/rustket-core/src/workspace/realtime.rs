@@ -266,6 +266,9 @@ impl Workspace {
             if state != ConnectionState::Connected {
                 self.typing.clear();
                 self.mark(Dirty::TYPING);
+                if self.feeds.mark_all_stale() {
+                    self.mark(Dirty::FEEDS);
+                }
             }
             self.connection = state;
             self.mark(Dirty::CONNECTION);
@@ -316,6 +319,9 @@ impl Workspace {
     }
 
     fn drop_room_timelines(&mut self, rid: &str) {
+        if self.feeds.drop_room(rid) {
+            self.mark(Dirty::FEEDS);
+        }
         self.outbox.retain(|_, i| i.message.rid != rid);
         self.ephemeral.remove(rid);
         if self.timelines.remove(rid).is_some() {
@@ -388,8 +394,16 @@ impl Workspace {
     }
 
     pub(super) fn apply_message_from(&mut self, m: Message, realtime: bool) {
-        // Before the hidden check: a parent that becomes hidden leaves the index.
+        // Before the hidden check: a parent that becomes hidden leaves the
+        // index, a hidden message leaves the inbox feeds.
         self.index_message(&m);
+        let me = self
+            .me
+            .as_ref()
+            .and_then(|u| Some((u.username.as_deref()?, u.id.as_str())));
+        if self.feeds.apply(&m, me) {
+            self.mark(Dirty::FEEDS);
+        }
         if m.hidden == Some(true) {
             return;
         }
@@ -454,6 +468,9 @@ impl Workspace {
 
     pub fn apply_message_deleted(&mut self, rid: &str, id: &str) {
         self.forget_ephemeral(rid, id);
+        if self.feeds.remove(rid, id) {
+            self.mark(Dirty::FEEDS);
+        }
         if self.thread_index.remove_message(rid, id) {
             self.mark(Dirty::THREAD_INDEX);
         }

@@ -124,6 +124,10 @@ pub enum Message {
     Shortcut(crate::keymap::Shortcut),
     /// Read queue of a server (`crate::reads`): server, session epoch, message.
     Reads(ServerId, u64, crate::reads::Msg),
+    /// The inbox views (`crate::inbox`): server, session epoch, message.
+    Inbox(ServerId, u64, crate::inbox::Msg),
+    /// Enter / Left / Right that no widget took (the catch-up view).
+    CatchUpKey(crate::inbox::CatchUpKey),
     /// Tab / Shift+Tab that no widget handled (modal dialogs cycle their own
     /// focus): move focus to the next (`true`) or previous input.
     FocusNext(bool),

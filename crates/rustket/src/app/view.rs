@@ -215,6 +215,7 @@ impl App {
                 .as_ref()
                 .and_then(|r| s.rooms.get(r))
                 .and_then(|rv| rv.panel.thread_tmid()),
+            inbox_open: s.inbox_view().map(crate::inbox::InboxScreen::kind),
             now,
         };
         // The cached workspace is shown instead of the placeholder.
@@ -261,7 +262,10 @@ impl App {
                 .height(Length::Fill)
                 .into(),
             };
-        let room_area = self.omni_screen(s).unwrap_or(room_area);
+        let room_area = self
+            .inbox_screen(s)
+            .or_else(|| self.omni_screen(s))
+            .unwrap_or(room_area);
         // Strips above the room (connection, E2E banner, app banners) come
         // and go in one slot; the room keeps its widget state (composer
         // focus, timeline scroll) meanwhile. The UIKit busy pill floats.

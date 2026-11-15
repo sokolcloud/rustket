@@ -27,6 +27,29 @@ pub struct ServicePushed {
     pub mention_groups: Option<mention_groups::Msg>,
 }
 
+/// A view shown in place of the room area (the active room stays open
+/// behind it). Opening one closes the other and the contact center;
+/// opening a room closes it.
+#[derive(Debug)]
+pub enum MainView {
+    /// All unreads, Catch up or Activity (`crate::inbox`).
+    Inbox(crate::inbox::InboxScreen),
+}
+
+impl MainView {
+    pub fn inbox(&self) -> Option<&crate::inbox::InboxScreen> {
+        match self {
+            MainView::Inbox(i) => Some(i),
+        }
+    }
+
+    pub fn inbox_mut(&mut self) -> Option<&mut crate::inbox::InboxScreen> {
+        match self {
+            MainView::Inbox(i) => Some(i),
+        }
+    }
+}
+
 /// Everything the app keeps for one configured server.
 pub struct ServerState {
     pub id: ServerId,
@@ -78,6 +101,10 @@ pub struct ServerState {
     pub cache: crate::cache::ServerCache,
     /// Read marks waiting to be sent (`crate::reads`).
     pub reads: crate::reads::Queue,
+    /// The view in place of the room area, if any.
+    pub main_view: Option<MainView>,
+    /// What the inbox views keep while closed (skipped rooms, loader).
+    pub inbox: crate::inbox::InboxState,
 }
 
 impl ServerState {
@@ -130,6 +157,8 @@ impl ServerState {
             e2e: Default::default(),
             cache: Default::default(),
             reads: Default::default(),
+            main_view: None,
+            inbox: Default::default(),
         })
     }
 
@@ -174,6 +203,8 @@ impl ServerState {
         self.mention_groups.reset();
         // `service` stays: a push of the old session may still hold its lock.
         self.reads.clear();
+        self.main_view = None;
+        self.inbox.reset();
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;
@@ -249,11 +280,25 @@ impl ServerState {
         self.credentials.is_some()
     }
 
-    /// Another view replaces the room area (today the omnichannel contact
-    /// center): the active room is not on screen, so it is not marked read,
-    /// takes no dropped files and its notifications still show. Main-area
-    /// views added later (All unreads, Activity, Later) belong here too.
+    /// Another view replaces the room area (a [`MainView`] or the
+    /// omnichannel contact center): the active room is not on screen, so it
+    /// is not marked read, takes no dropped files and its notifications
+    /// still show.
     pub fn room_area_taken(&self) -> bool {
-        self.omni.contact_center.is_some()
+        self.main_view.is_some() || self.omni.contact_center.is_some()
+    }
+
+    /// The open inbox view, if any.
+    pub fn inbox_view(&self) -> Option<&crate::inbox::InboxScreen> {
+        self.main_view.as_ref().and_then(MainView::inbox)
+    }
+
+    /// Closes the view in place of the room area (a room opens, Esc).
+    pub fn close_main_view(&mut self) {
+        self.main_view = None;
+        self.workspace.keep_feeds(&[]);
+        // A view opened next starts at the same revision: the loader must
+        // plan for it rather than take the old view's key as current.
+        self.inbox.plan_key = None;
     }
 }

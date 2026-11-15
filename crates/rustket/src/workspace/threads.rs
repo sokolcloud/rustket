@@ -54,6 +54,7 @@ use rocketchat::models::{Message, Paginated, RoomType, Subscription};
 use rocketchat::{Error, RcDate};
 use rustket_core::cache::{CachedFollowed, CachedParentsSynced, CachedStarred, CachedThreads};
 use rustket_core::config::{SidebarSort, ThreadsMode, UiPrefs};
+use rustket_core::inbox::load::retry_delay;
 use rustket_core::room_list::{SectionKind, display_name, thread_unread};
 use rustket_core::sidebar_layout::{SectionId, section_sort, section_unread_first};
 use rustket_core::thread_index::{FOLLOWED_PER_ROOM, FollowedRoom, ShortCrawl, follows};
@@ -103,13 +104,6 @@ pub const STARRED_RESCAN_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 /// error page, an unreadable body) before it is given up for the session.
 const MAX_OTHER_FAILURES: u32 = 3;
 
-/// Wait after `failures` (1-based) transient failures of one request: 5 s,
-/// doubling, at most 5 min.
-fn retry_delay(failures: u32) -> Duration {
-    let secs = 5u64.saturating_mul(1 << failures.saturating_sub(1).min(6));
-    Duration::from_secs(secs.min(300))
-}
-
 /// What the Threads section shows at most, which bounds the loads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cap {
@@ -119,6 +113,9 @@ pub struct Cap {
     pub unread_first: bool,
     /// `ui.use_real_names` (room names order the by-name sort).
     pub real_names: Option<bool>,
+    /// Every unread thread is loaded, past the limit (the Activity view is
+    /// open); the Following crawl stays bounded.
+    pub unread_all: bool,
 }
 
 impl Default for Cap {
@@ -129,6 +126,7 @@ impl Default for Cap {
             sort: SidebarSort::Activity,
             unread_first: true,
             real_names: None,
+            unread_all: false,
         }
     }
 }
@@ -141,6 +139,7 @@ impl Cap {
             sort: section_sort(p, &id),
             unread_first: section_unread_first(p, &id),
             real_names: p.use_real_names,
+            unread_all: false,
         }
     }
 
@@ -163,6 +162,8 @@ struct Bound {
     limit: Option<usize>,
     sort: SidebarSort,
     unread_first: bool,
+    /// Unread rows always reach (`Cap::unread_all`).
+    unread_all: bool,
     /// Unread rows, loaded or not.
     unread: usize,
     /// Activity of loaded unread / read rows, ascending.
@@ -205,6 +206,7 @@ impl Bound {
             limit: Some(limit),
             sort: cap.sort,
             unread_first: cap.unread_first,
+            unread_all: cap.unread_all,
             followed_hint,
             ..Self::default()
         };
@@ -325,6 +327,9 @@ impl Bound {
         let Some(limit) = self.limit else {
             return true;
         };
+        if unread && self.unread_all {
+            return true;
+        }
         let before = match (self.unread_first, unread) {
             (true, true) => self.before(true, rid, lr),
             // Every unread row, loaded or not, comes first.
@@ -1851,7 +1856,7 @@ pub fn cached_threads(ws: &Workspace, st: &SidebarThreads) -> CachedThreads {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Class {
+pub(crate) enum Class {
     RateLimited(Duration),
     /// Network, timeout, 5xx: retried with back-off.
     Transient,
@@ -1863,7 +1868,7 @@ enum Class {
     Other,
 }
 
-fn classify(f: &Failure) -> Class {
+pub(crate) fn classify(f: &Failure) -> Class {
     match f.error() {
         Error::RateLimited { retry_after, .. } => Class::RateLimited(
             retry_after
@@ -2287,6 +2292,23 @@ mod tests {
         unread_done(&mut fx, 12_100, "c", Vec::new());
         // Not in the list: fetched singly, within the limit too.
         assert_eq!(fx.start(14_000), Next::Fetch(get("c", "c1")));
+    }
+
+    /// The Activity view needs every unread thread: past the limit.
+    #[test]
+    fn unread_all_loads_past_the_limit() {
+        let mut fx = Fx::new(ThreadsMode::Unread);
+        fx.cap = Cap {
+            unread_all: true,
+            ..capped(1, SidebarSort::Activity)
+        };
+        add(&mut fx.ws, "a", Some(300), &["a1"]);
+        add(&mut fx.ws, "b", Some(200), &["b1"]);
+        fx.plan(0);
+        assert_eq!(fx.start(1000), Next::Fetch(unread("a", 0)));
+        unread_done(&mut fx, 1100, "a", vec![parent("a1", "a", 290)]);
+        // One row fills the limit; b1 still loads.
+        assert_eq!(fx.start(3100), Next::Fetch(unread("b", 0)));
     }
 
     #[test]
@@ -3964,6 +3986,7 @@ mod tests {
             sort: SidebarSort::Activity,
             unread_first: false,
             real_names: None,
+            unread_all: false,
         };
         add(&mut fx.ws, "k", Some(500), &[]);
         add(&mut fx.ws, "u", Some(100), &["u1"]);

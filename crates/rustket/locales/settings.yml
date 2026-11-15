@@ -1151,3 +1151,15 @@ settings.share_utc_offset_help:
   es: "Como el cliente web, Rustket actualiza tu desfase UTC en el servidor al iniciar sesión, para que otros vean tu hora local. Si está desactivado, el servidor conserva el último valor."
   th: "เช่นเดียวกับเว็บไคลเอนต์ Rustket จะอัปเดตค่าเวลาต่างจาก UTC ของคุณบนเซิร์ฟเวอร์หลังเข้าสู่ระบบ เพื่อให้ผู้อื่นเห็นเวลาท้องถิ่นของคุณ เมื่อปิดไว้ เซิร์ฟเวอร์จะเก็บค่าล่าสุดไว้"
   zh: "与网页客户端一样，Rustket 会在你登录后更新服务器上的 UTC 偏移，让其他人看到你的当地时间。关闭后，服务器保留最后一次的值。"
+settings.pinned_views:
+  en: "Pinned views at the top of the sidebar"
+  ru: "Закреплённые разделы вверху боковой панели"
+  es: "Vistas fijadas en la parte superior de la barra lateral"
+  th: "มุมมองที่ปักหมุดไว้ด้านบนของแถบด้านข้าง"
+  zh: "侧边栏顶部的固定视图"
+settings.pinned_views_help:
+  en: "All unreads and Activity. Their shortcuts open them either way."
+  ru: "«Все непрочитанные» и «Активность». Сочетания клавиш открывают их в любом случае."
+  es: "Todos los no leídos y Actividad. Sus atajos los abren de todos modos."
+  th: "ยังไม่ได้อ่านทั้งหมดและกิจกรรม ปุ่มลัดเปิดได้เสมอ"
+  zh: "全部未读和动态。无论是否显示，都可以用快捷键打开。"

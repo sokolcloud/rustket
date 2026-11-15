@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Forward a message, or select up to 20 messages and forward them or copy
   their links: pick a room or person, add an optional comment and send. The
   old "forward" entry of 0.1 meant copying a link.
+- All unreads (Ctrl+Shift+A): every room with unread messages in one list,
+  direct mentions and DMs first, then @all/@here, then the rest, with the
+  unread messages of each room; reply, reply in thread, show in the room,
+  mark a room read or skip it. "Mark all as read" there marks the listed
+  rooms and leaves unread threads for Activity. Catch up goes through the
+  rooms one at a time (Enter: read and next, →: skip, ←: back).
+- Activity (Ctrl+Shift+M): unread mentions, @all/@here and thread mentions,
+  then unread threads across rooms. Both views have pinned rows at the top of
+  the sidebar (Settings → Sidebar can hide them); only mentions get a loud
+  badge.
 
 ### Changed
 

@@ -2,6 +2,7 @@
 
 mod after_update;
 mod components;
+mod inbox;
 mod keys;
 mod links;
 mod mention_groups;
@@ -631,6 +632,8 @@ impl App {
             Message::Calls(m) => self.on_calls(m),
             Message::Shortcut(s) => self.on_shortcut(s),
             Message::Reads(sid, epoch, m) => self.on_reads(sid, epoch, m),
+            Message::Inbox(sid, epoch, m) => self.on_inbox(sid, epoch, m),
+            Message::CatchUpKey(k) => self.on_catch_up_key(k),
             Message::FocusNext(forward) => rustket_ui::widget::focus_cycle(forward),
             Message::FocusRegion(forward) => self.focus_region(forward),
             Message::Escape => self.on_escape(),

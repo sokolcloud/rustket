@@ -209,6 +209,8 @@ pub enum Message {
     SetSidebarSort(SidebarSort),
     SetThreadsMode(ThreadsMode),
     SetStarredThreads(bool),
+    /// `UiPrefs::sidebar_pinned_views`.
+    SetPinnedViews(bool),
     /// The section list, the group editor and the layout reset.
     Sidebar(SidebarMessage),
     /// The Mentions tab: mention groups and their editor.
@@ -457,6 +459,7 @@ impl Settings {
             Message::SetSidebarSort(s) => Self::pref(ctx, |p| p.sidebar_sort = s),
             Message::SetThreadsMode(m) => Self::pref(ctx, |p| p.sidebar_threads = m),
             Message::SetStarredThreads(v) => Self::pref(ctx, |p| p.sidebar_starred_threads = v),
+            Message::SetPinnedViews(v) => Self::pref(ctx, |p| p.sidebar_pinned_views = v),
             Message::Sidebar(m) => self.update_sidebar(m, ctx),
             Message::Mentions(m) => self.update_mentions(m),
             #[cfg(feature = "self-update")]
@@ -584,6 +587,7 @@ mod tests {
             (Message::SetStarredThreads(false), |c| {
                 !c.sidebar_starred_threads
             }),
+            (Message::SetPinnedViews(false), |c| !c.sidebar_pinned_views),
             (
                 Message::Sidebar(SidebarMessage::Layout(LayoutEdit::SetThreadsLimit(50))),
                 |c| c.sidebar_threads_limit == 50,

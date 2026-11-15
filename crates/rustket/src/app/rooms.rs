@@ -176,6 +176,7 @@ impl App {
             }
             sidebar::Out::Status(m) => self.on_status_menu(sid, m),
             sidebar::Out::Omni(m) => self.on_omni_sidebar(sid, m),
+            sidebar::Out::Inbox(kind) => self.open_inbox(&sid, kind, false),
             sidebar::Out::Directory => self.navigate(component::Nav::Directory),
             sidebar::Out::Create => self.navigate(component::Nav::CreateRoom(
                 crate::dialogs::create_room::Kind::Channel,
@@ -257,6 +258,7 @@ impl App {
             return Task::none();
         }
         s.omni.close_contact_center();
+        s.close_main_view();
         if s.active_room.as_deref() == Some(rid) && s.rooms.contains_key(rid) {
             return Task::none();
         }

@@ -30,6 +30,7 @@ pub mod focus;
 pub mod format;
 pub mod i18n;
 pub mod images;
+pub mod inbox;
 pub mod keymap;
 pub mod locales;
 #[cfg(target_os = "macos")]

@@ -288,6 +288,7 @@ impl App {
                     return Task::none();
                 };
                 s.status_menu.open = false;
+                s.close_main_view();
                 s.omni.open_contact_center();
                 let rest = s.session.as_ref().map(|h| h.rest().clone());
                 let epoch = s.generation;

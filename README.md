@@ -242,6 +242,9 @@ ICED_BACKEND=tiny-skia rustket
 - Ctrl+K jumps to a room or person, Ctrl+, opens the preferences and Ctrl+/
   shows every shortcut.
 - Ctrl+Shift+\ reacts to the last message (in a thread: its last reply).
+- Ctrl+Shift+A opens All unreads (in Catch up: Enter marks the room read and
+  goes on, → skips, ← goes back) and Ctrl+Shift+M opens Activity; the same
+  shortcut closes them again.
 - In the message field: Ctrl+B bold, Ctrl+I italic, Ctrl+Shift+X
   strikethrough, Ctrl+Shift+C inline code, Ctrl+Alt+Shift+C code block,
   Ctrl+Shift+U link, Ctrl+Shift+9 quote.

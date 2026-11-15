@@ -1179,6 +1179,52 @@ pub fn room_is_unread(e: &RoomEntry) -> bool {
     is_unread(e)
 }
 
+/// The kind of a room (icon, omnichannel or not).
+pub fn room_kind(e: &RoomEntry) -> RoomKind {
+    kind_of(e)
+}
+
+/// Whether the sidebar lists rows of room `rid` (subscribed, open, not
+/// archived, not a service room); the All unreads and Activity views agree.
+pub fn is_listed(ws: &Workspace, rid: &str) -> bool {
+    listed(ws, rid).is_some()
+}
+
+/// Every unread thread of the listed rooms, whatever the Threads mode,
+/// starred threads and flags are (the Activity view): unknown parents give
+/// placeholder rows. Newest activity first.
+pub fn unread_thread_items(ws: &Workspace, use_real_names: bool) -> Vec<ThreadListItem> {
+    if !ws.settings().threads_enabled() {
+        return Vec::new();
+    }
+    let opts = RoomListOptions {
+        use_real_names,
+        ..RoomListOptions::default()
+    };
+    let mut wanted: std::collections::BTreeMap<&str, &str> = Default::default();
+    for e in ws.rooms().values() {
+        let Some(s) = e.sub.as_ref().filter(|_| listed(ws, e.rid()).is_some()) else {
+            continue;
+        };
+        for v in [&s.tunread, &s.tunread_user, &s.tunread_group]
+            .into_iter()
+            .flatten()
+        {
+            for t in v {
+                if thread_unread(s, t).is_some() {
+                    wanted.insert(t, e.rid());
+                }
+            }
+        }
+    }
+    let mut out: Vec<ThreadListItem> = wanted
+        .into_iter()
+        .filter_map(|(tmid, rid)| thread_item(ws, listed(ws, rid)?, tmid, &opts, ""))
+        .collect();
+    out.sort_by(|a, b| b.tlm.cmp(&a.tlm).then_with(|| a.tmid.cmp(&b.tmid)));
+    out
+}
+
 /// Rooms "Mark all as read" (Shift+Esc) covers: open, non-archived,
 /// non-service subscriptions with anything unread or mentioned, unread
 /// threads included; muted rooms and hidden unread status included. Sorted

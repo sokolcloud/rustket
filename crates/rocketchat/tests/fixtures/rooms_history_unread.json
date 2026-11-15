@@ -1,0 +1,93 @@
+{
+ "messages": [
+  {
+   "_id": "ALkhuAjnsbya2vpQd",
+   "rid": "6af983fdd5de71deb45c381a",
+   "msg": "unread 2",
+   "ts": "2026-11-15T10:05:51.136Z",
+   "u": {
+    "_id": "SLiu9igvh94B9T9Xu",
+    "username": "bob",
+    "name": "Bob"
+   },
+   "_updatedAt": "2026-11-15T10:05:51.141Z",
+   "md": [
+    {
+     "type": "PARAGRAPH",
+     "value": [
+      {
+       "type": "PLAIN_TEXT",
+       "value": "unread 2"
+      }
+     ]
+    }
+   ],
+   "mentions": [],
+   "channels": [],
+   "urls": []
+  },
+  {
+   "_id": "wi4XAFojqWp5dnpkn",
+   "rid": "6af983fdd5de71deb45c381a",
+   "msg": "unread 1",
+   "ts": "2026-11-15T10:05:51.066Z",
+   "u": {
+    "_id": "SLiu9igvh94B9T9Xu",
+    "username": "bob",
+    "name": "Bob"
+   },
+   "_updatedAt": "2026-11-15T10:05:51.070Z",
+   "md": [
+    {
+     "type": "PARAGRAPH",
+     "value": [
+      {
+       "type": "PLAIN_TEXT",
+       "value": "unread 1"
+      }
+     ]
+    }
+   ],
+   "mentions": [],
+   "channels": [],
+   "urls": []
+  }
+ ],
+ "cursor": {
+  "next": null,
+  "previous": "1794737151066"
+ },
+ "firstUnread": {
+  "_id": "6kZanthNRXkzYgyTN",
+  "rid": "6af983fdd5de71deb45c381a",
+  "msg": "parent",
+  "ts": "2026-11-15T10:05:50.917Z",
+  "u": {
+   "_id": "SLiu9igvh94B9T9Xu",
+   "username": "bob",
+   "name": "Bob"
+  },
+  "_updatedAt": "2026-11-15T10:05:51.224Z",
+  "md": [
+   {
+    "type": "PARAGRAPH",
+    "value": [
+     {
+      "type": "PLAIN_TEXT",
+      "value": "parent"
+     }
+    ]
+   }
+  ],
+  "mentions": [],
+  "channels": [],
+  "urls": [],
+  "replies": [
+   "SLiu9igvh94B9T9Xu"
+  ],
+  "tcount": 1,
+  "tlm": "2026-11-15T10:05:51.210Z"
+ },
+ "unreadNotLoaded": 2,
+ "success": true
+}

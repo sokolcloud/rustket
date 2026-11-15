@@ -5,13 +5,33 @@ use std::time::Instant;
 use iced::Task;
 use rocketchat::RestClient;
 use rustket_core::ServerId;
-use rustket_core::config::SectionId;
+use rustket_core::config::{SectionId, ThreadsMode, UiPrefs};
 use rustket_core::room_list;
 
 use super::{AVATAR_PREFETCH_ROWS, App};
 use crate::images;
 use crate::message::Message;
 use crate::room::UpdateCtx;
+
+/// How the sidebar Threads loader runs: mode, cap and whether the section
+/// counts as collapsed, from the prefs. While Activity is open (`activity`)
+/// every unread thread is loaded, with the section off, capped or
+/// collapsed too.
+fn threads_load(
+    prefs: &UiPrefs,
+    collapsed: bool,
+    activity: bool,
+) -> (ThreadsMode, crate::workspace::threads::Cap, bool) {
+    let mode = match prefs.sidebar_threads {
+        ThreadsMode::Off if activity => ThreadsMode::Unread,
+        m => m,
+    };
+    let cap = crate::workspace::threads::Cap {
+        unread_all: activity,
+        ..crate::workspace::threads::Cap::from_prefs(prefs)
+    };
+    (mode, cap, collapsed && !activity)
+}
 
 impl App {
     /// Applies pending workspace changes to derived views and fetches wanted images.
@@ -37,7 +57,16 @@ impl App {
                 .and_then(|e| e.last_room.as_deref());
             tasks.push(crate::cache::after_update(s, &self.offline, last_room));
             // Sidebar Threads: mode and kept threads from the config, loads.
-            let mode = self.config.ui.sidebar_threads;
+            let activity = s
+                .inbox_view()
+                .is_some_and(|i| i.shows(crate::inbox::InboxKind::Activity));
+            let threads_collapsed = self.ui_state.collapsed_sections.contains(
+                SectionId::Builtin(room_list::SectionKind::Threads)
+                    .collapse_key()
+                    .as_ref(),
+            );
+            let (mode, cap, threads_collapsed) =
+                threads_load(&self.config.ui, threads_collapsed, activity);
             let kept = self
                 .config
                 .server(&sid)
@@ -81,16 +110,11 @@ impl App {
             {
                 save_synced |= e.set_pending_blob(&uid, &blob);
             }
-            let threads_collapsed = self.ui_state.collapsed_sections.contains(
-                SectionId::Builtin(room_list::SectionKind::Threads)
-                    .collapse_key()
-                    .as_ref(),
-            );
             let task = s.threads.tick(
                 &s.workspace,
                 s.session.as_ref(),
                 mode,
-                crate::workspace::threads::Cap::from_prefs(&self.config.ui),
+                cap,
                 threads_collapsed,
                 Instant::now(),
             );
@@ -121,6 +145,10 @@ impl App {
                 &s.url,
                 AVATAR_PREFETCH_ROWS,
             );
+            tasks.push(self.tick_inbox(&sid));
+            let Some(s) = self.servers.get_mut(&sid) else {
+                continue;
+            };
             if s.workspace.pending_changes().is_empty() {
                 continue;
             }
@@ -240,5 +268,34 @@ impl App {
             }));
         }
         Task::batch(tasks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Activity open: the Threads loader loads every unread thread, with
+    /// the section off or collapsed; closed, the prefs rule.
+    #[test]
+    fn activity_loads_every_unread_thread() {
+        let prefs = UiPrefs {
+            sidebar_threads: ThreadsMode::Off,
+            ..UiPrefs::default()
+        };
+        let (mode, cap, collapsed) = threads_load(&prefs, true, false);
+        assert_eq!(mode, ThreadsMode::Off);
+        assert!(!cap.unread_all && collapsed);
+        let (mode, cap, collapsed) = threads_load(&prefs, true, true);
+        assert_eq!(mode, ThreadsMode::Unread);
+        assert!(cap.unread_all && !collapsed);
+        let following = UiPrefs {
+            sidebar_threads: ThreadsMode::Following,
+            ..UiPrefs::default()
+        };
+        assert_eq!(
+            threads_load(&following, false, true).0,
+            ThreadsMode::Following
+        );
     }
 }

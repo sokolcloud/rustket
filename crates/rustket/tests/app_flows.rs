@@ -3512,3 +3512,177 @@ async fn mark_all_read_dialog() {
     let _ = app.update(Message::Noop);
     assert!(app.modals.is_empty());
 }
+
+/// All unreads and Activity replace the room area like the contact center:
+/// their shortcuts toggle them, the sidebar rows switch between them, the
+/// covered room is not marked read, Esc closes them without marking the
+/// room, and opening a room closes them.
+#[test]
+fn inbox_views_cover_the_room_area() {
+    use rustket::inbox::{CatchUpKey, InboxKind};
+    use rustket::keymap::Shortcut;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let kind = |app: &App| app.servers[&sid].inbox_view().map(|i| i.kind());
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::MarkedRead(Ok(())),
+    ));
+    let _ = app.update(Message::Shortcut(Shortcut::AllUnreads));
+    assert_eq!(kind(&app), Some(InboxKind::Unreads));
+    assert!(app.servers[&sid].room_area_taken());
+    let _ = app.view();
+    // The covered room is not read when messages arrive.
+    deliver(&mut app, &sid, rc_msg("m1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 11);
+    deliver(&mut app, &sid, rc_msg("m2", "r2", T0 + 12, "B"));
+    set_unread(&mut app, &sid, "r2", 1, T0 + 13);
+    {
+        let s = &app.servers[&sid];
+        assert!(s.rooms["r1"].wants_auto_read(&s.workspace));
+    }
+    // A feed with a message renders in every view.
+    {
+        let s = app.servers.get_mut(&sid).unwrap();
+        let req = s.workspace.begin_feed("r2", false).unwrap();
+        s.workspace.finish_feed(
+            &req,
+            Ok(rocketchat::models::History {
+                messages: vec![rc_msg("m2", "r2", T0 + 12, "B")],
+                raw_len: 1,
+                ..Default::default()
+            }),
+        );
+    }
+    let _ = app.view();
+    // The shortcut again closes it; Activity, then the sidebar's row.
+    let _ = app.update(Message::Shortcut(Shortcut::AllUnreads));
+    assert_eq!(kind(&app), None);
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    assert_eq!(kind(&app), Some(InboxKind::Activity));
+    let _ = app.view();
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Inbox(InboxKind::Unreads),
+    ));
+    assert_eq!(kind(&app), Some(InboxKind::Unreads));
+    // Catch up from the Unread section's menu; its keys walk the rooms.
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Header(sidebar::HeaderAct::CatchUp),
+    ));
+    assert_eq!(kind(&app), Some(InboxKind::CatchUp));
+    let _ = app.view();
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Right));
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Right));
+    let _ = app.view();
+    // Esc closes the view and leaves the covered room alone.
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert_eq!(kind(&app), None);
+    assert!(!outs.iter().any(|m| matches!(
+        m,
+        Message::Room(_, _, _, rustket::room::Message::MarkAllRead)
+    )));
+    // Opening a room (or the contact center) closes it.
+    let _ = app.update(Message::Shortcut(Shortcut::AllUnreads));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    assert_eq!(kind(&app), None);
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    assert_eq!(kind(&app), None, "the open room closes it too");
+    // Hidden rows: the shortcuts still work.
+    app.config.ui.sidebar_pinned_views = false;
+    let _ = app.view();
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    assert_eq!(kind(&app), Some(InboxKind::Activity));
+}
+
+/// Esc with an inbox view over a room whose right panel is open closes
+/// only the view; the catch-up keys do nothing outside catch-up or under a
+/// modal; a view reopened as another kind starts its loads at once.
+#[test]
+fn inbox_esc_order_keys_and_reopen() {
+    use rustket::inbox::{CatchUpKey, InboxKind};
+    use rustket::keymap::Shortcut;
+    use rustket::room::panel::{Kind, Message as Pm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let kind = |app: &App| app.servers[&sid].inbox_view().map(|i| i.kind());
+    deliver(&mut app, &sid, rc_msg("m2", "r2", T0 + 12, "B"));
+    set_unread(&mut app, &sid, "r2", 1, T0 + 13);
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 14, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Thread("p1".into()))),
+    ));
+    assert!(app.servers[&sid].rooms["r1"].panel.kind().is_some());
+
+    // Activity's loader settles (its inputs recorded); Esc closes it and
+    // leaves the panel. A view opened next starts at the same revision, so
+    // the loader must not take the old inputs as current. (No session
+    // here: the key stands for a settled loader.)
+    let settled = Some([1, 1, 1, 1, 1]);
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    assert_eq!(kind(&app), Some(InboxKind::Activity));
+    app.servers.get_mut(&sid).unwrap().inbox.plan_key = settled;
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert_eq!(kind(&app), None);
+    assert!(app.servers[&sid].rooms["r1"].panel.kind().is_some());
+    assert!(!outs.iter().any(|m| matches!(
+        m,
+        Message::Room(_, _, _, rustket::room::Message::Panel(Pm::Close))
+    )));
+    assert_eq!(app.servers[&sid].inbox.plan_key, None);
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    app.servers.get_mut(&sid).unwrap().inbox.plan_key = settled;
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Inbox(InboxKind::Unreads),
+    ));
+    assert_eq!(kind(&app), Some(InboxKind::Unreads));
+    assert_eq!(app.servers[&sid].inbox.plan_key, None);
+
+    // Enter in All unreads (not catch-up) reads nothing.
+    let reads = |app: &App| {
+        app.servers[&sid]
+            .reads
+            .has_origin(&rustket::reads::Origin::Inbox)
+    };
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Enter));
+    assert!(!reads(&app));
+    assert_eq!(kind(&app), Some(InboxKind::Unreads));
+    // In catch-up under a modal the keys are the modal's.
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Header(sidebar::HeaderAct::CatchUp),
+    ));
+    assert_eq!(kind(&app), Some(InboxKind::CatchUp));
+    let current = |app: &App| {
+        app.servers[&sid]
+            .inbox_view()
+            .and_then(|i| i.catch_up())
+            .and_then(|c| c.current().map(str::to_owned))
+    };
+    let at = current(&app);
+    assert!(at.is_some());
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Create));
+    assert!(!app.modals.is_empty());
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Right));
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Enter));
+    assert_eq!(current(&app), at);
+    assert!(!reads(&app));
+}

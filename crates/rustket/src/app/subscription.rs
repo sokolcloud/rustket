@@ -144,7 +144,8 @@ impl App {
             crate::keymap::from_event(&event, status).map(Message::Shortcut)
         }));
         // Tab: focus traversal (modal dialogs keep Tab). F6: regions.
-        // Escape: `App::on_escape`. Only keys no widget took.
+        // Escape: `App::on_escape`. Enter, Left, Right: catch-up. Only keys
+        // no widget took.
         subs.push(iced::keyboard::listen().filter_map(|ev| match ev {
             iced::keyboard::Event::KeyPressed {
                 key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
@@ -165,6 +166,13 @@ impl App {
                 modifiers,
                 ..
             } if modifiers.is_empty() => Some(Message::Escape),
+            // Enter / Left / Right: the catch-up view (ignored elsewhere).
+            iced::keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                repeat: false,
+                ..
+            } => crate::inbox::CatchUpKey::of(&key, modifiers).map(Message::CatchUpKey),
             _ => None,
         }));
         subs.push(self.desktop.subscription().map(Message::Desktop));

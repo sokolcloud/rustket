@@ -204,3 +204,89 @@ pub fn focus_after<M: Send + 'static>(
     ui.operate(&renderer, &mut ids);
     ids.0
 }
+
+fn probe_ui<'a, M>(
+    view: Element<'a, M>,
+) -> (
+    iced_runtime::user_interface::UserInterface<'a, M, iced::Theme, iced::Renderer>,
+    iced::Renderer,
+) {
+    use iced::{Pixels, Size};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+        rustket_ui::theme::font_regular(),
+        Pixels(rustket_ui::theme::TEXT_BODY),
+    ));
+    let ui = UserInterface::build(
+        view,
+        Size::new(1280.0, 800.0),
+        Cache::default(),
+        &mut renderer,
+    );
+    (ui, renderer)
+}
+
+/// The texts of the text widgets of `view` laid out at 1280x800.
+pub fn texts<M>(view: Element<'_, M>) -> Vec<String> {
+    use iced::Rectangle;
+    use iced::advanced::widget::{Id, Operation};
+
+    struct Texts(Vec<String>);
+    impl Operation for Texts {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn text(&mut self, _: Option<&Id>, _: Rectangle, text: &str) {
+            self.0.push(text.to_owned());
+        }
+    }
+
+    let (mut ui, renderer) = probe_ui(view);
+    let mut texts = Texts(Vec::new());
+    ui.operate(&renderer, &mut texts);
+    texts.0
+}
+
+/// Whether a press of `key` (no modifiers) is captured by `view` once the
+/// widget `focused` has the focus: an uncaptured key reaches the app's
+/// `keyboard::listen()`.
+pub fn key_captured<M>(
+    view: Element<'_, M>,
+    focused: &'static str,
+    key: iced::keyboard::Key,
+) -> bool {
+    use iced::advanced::widget::Id;
+    use iced::keyboard;
+
+    struct NoClip;
+    impl iced::advanced::Clipboard for NoClip {
+        fn read(&self, _: iced::advanced::clipboard::Kind) -> Option<String> {
+            None
+        }
+        fn write(&mut self, _: iced::advanced::clipboard::Kind, _: String) {}
+    }
+
+    let (mut ui, mut renderer) = probe_ui(view);
+    let mut op = iced::advanced::widget::operation::focusable::focus::<()>(Id::new(focused));
+    ui.operate(&renderer, &mut op);
+    let event = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+        key: key.clone(),
+        modified_key: key.clone(),
+        physical_key: keyboard::key::Physical::Unidentified(
+            keyboard::key::NativeCode::Unidentified,
+        ),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::empty(),
+        text: None,
+        repeat: false,
+    });
+    let mut out = Vec::new();
+    let (_, status) = ui.update(
+        &[event],
+        iced::mouse::Cursor::Unavailable,
+        &mut renderer,
+        &mut NoClip,
+        &mut out,
+    );
+    status.first() == Some(&iced::event::Status::Captured)
+}

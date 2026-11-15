@@ -297,7 +297,9 @@ its thread is closed included).
   unread mark made elsewhere is not undone. Own and pending messages never
   count. It runs only while the room is readable (`RoomView::readable`):
   the app sets `RoomView::set_visible` after every update (window focused,
-  server active, `Screen::Server`, no contact center or app dialog, the
+  server active, `Screen::Server`, no view in place of the room area
+  (`ServerState::room_area_taken`: a `MainView` or the contact center) or
+  app dialog, the
   server's active room); the timeline must be at the bottom, not under the
   E2E cover or an expanded thread. Opening an unread room marks it once
   it is readable; becoming readable again catches up; a failed mark is
@@ -485,3 +487,27 @@ while the server is unreachable, seeds opened timelines without a first page
   interrupted uploads reported on the next start), `cache::view::strip`
   replaces the connection strip while cached data is shown (one strip with
   Retry).
+
+### Inbox views (`src/inbox/`, `rustket_core::inbox`, glue `src/app/inbox.rs`)
+
+All unreads, Catch up and Activity replace the room area like the contact
+center: `ServerState::main_view = Some(MainView::Inbox(InboxScreen))` (one
+slot for every such view; opening one closes the others and the contact
+center, `App::open_room` closes it, Esc closes it first, and
+`room_area_taken()` keeps the covered room from auto-reading, taking dropped
+files or hiding its notifications). `InboxScreen::update(Msg, ws, state,
+include_muted, online) -> Vec<Out>` turns input into requests (`Out::{Close,
+OpenRoom, Reveal, OpenThread, Compose, Read, SetIncludeMuted, Effects}`); the
+glue runs them (`Reveal`: `RoomView::show` with the local copy, no fetch;
+`Compose`: `RoomView::compose`; `Read`: the read queue with `Origin::Inbox`,
+All unreads without threads; `Effects` of message bodies: room-local ones open
+the room). Feeds (unread messages per room, thread mentions) live in the
+workspace (`Workspace::feeds`, `Dirty::FEEDS`), so live messages, deletions,
+hidden messages, `ls` moves, E2E decryption and renames
+(`rewrite_messages` / `rooms_with_timelines`) reach them; nothing is
+persisted. `InboxState` (skipped rooms, the loader's pacing) lives on
+`ServerState` for the session; `App::tick_inbox` (from `after_update`) plans
+one fetch at a time (`rustket_core::inbox::load::plan`) while a view is open.
+While Activity is open the sidebar Threads loader also runs with the section
+off and past its row limit (`Cap::unread_all`).
+

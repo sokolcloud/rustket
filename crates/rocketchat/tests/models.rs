@@ -851,3 +851,28 @@ fn forwarded_message_has_quote_attachments() {
             .all(|u| u.ignore_parse == Some(true))
     );
 }
+
+/// `rooms.history` with `lastSeen` (All unreads' feeds): newest first, the
+/// unread messages older than the page counted, the first unread one sent.
+#[test]
+fn rooms_history_with_last_seen() {
+    let h: History = get("rooms_history_unread", "");
+    assert_eq!(h.messages.len(), 2);
+    assert!(h.messages[0].ts > h.messages[1].ts, "newest first");
+    assert_eq!(h.unread_not_loaded, Some(2));
+    assert!(h.first_unread.is_some());
+    assert!(h.messages.iter().all(|m| m.tmid.is_none()));
+}
+
+/// `chat.getMentionedMessages` (Activity's thread mentions): direct
+/// mentions only, thread replies included with their `tmid`.
+#[test]
+fn mentioned_messages_include_thread_replies() {
+    let v = raw("chat_get_mentioned_inbox");
+    let list: Vec<Message> = serde_json::from_value(v["messages"].clone()).unwrap();
+    assert_eq!(v["total"], 2);
+    let reply = list.iter().find(|m| m.tmid.is_some()).unwrap();
+    let m = &reply.mentions.as_ref().unwrap()[0];
+    assert_eq!(m.username.as_deref(), Some("alice"));
+    assert!(list.iter().any(|m| m.tmid.is_none()));
+}

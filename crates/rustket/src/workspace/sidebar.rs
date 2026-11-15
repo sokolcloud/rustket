@@ -41,6 +41,9 @@ pub const LIST_ID: &str = "sidebar-list";
 #[derive(Debug, Clone)]
 pub enum Message {
     Filter(String),
+    /// Enter in the search field: nothing to do, but the field takes the
+    /// key (left uncaptured it would reach the catch-up view's Enter).
+    SubmitFilter,
     ClearFilter,
     Toggle(SectionId),
     Open(String),
@@ -78,6 +81,8 @@ pub enum Message {
     },
     /// A header drag is at the list's edge: scroll by this much.
     AutoScroll(f32),
+    /// A pinned row (All unreads, Activity).
+    Inbox(crate::inbox::InboxKind),
 }
 
 /// Context menu actions of a section header.
@@ -96,6 +101,8 @@ pub enum HeaderAct {
     RenameFlag(FlagColor),
     /// Settings, scrolled to the Sidebar card.
     OpenSettings,
+    /// Catch up with the unread rooms (the Unread section).
+    CatchUp,
 }
 
 /// Context menu actions of a thread row.
@@ -186,6 +193,8 @@ pub enum Out {
     },
     /// Scroll the room list ([`LIST_ID`]) by this much.
     ScrollBy(f32),
+    /// Open an inbox view (pinned rows, "Catch up").
+    Inbox(crate::inbox::InboxKind),
 }
 
 #[derive(Clone, Copy)]
@@ -199,6 +208,9 @@ pub struct SidebarCtx<'a> {
     pub active_room: Option<&'a str>,
     /// The thread open in the active room's panel.
     pub active_thread: Option<&'a str>,
+    /// The inbox view in place of the room area (its pinned row is
+    /// highlighted).
+    pub inbox_open: Option<crate::inbox::InboxKind>,
     pub now: Instant,
 }
 
@@ -388,6 +400,7 @@ impl Sidebar {
                 self.filter.clear();
                 Out::None
             }
+            Message::SubmitFilter => Out::None,
             Message::Toggle(id) => Out::ToggleSection(id.collapse_key().into_owned()),
             Message::Open(rid) => Out::OpenRoom(rid),
             Message::Status(super::status_menu::Message::Omni(
@@ -409,6 +422,7 @@ impl Sidebar {
             Message::OpenThread { rid, tmid } => Out::OpenThread { rid, tmid },
             Message::Reorder { dragged, before } => self.reorder(dragged, before),
             Message::AutoScroll(dy) => Out::ScrollBy(dy),
+            Message::Inbox(kind) => Out::Inbox(kind),
             Message::Header(act) => match act {
                 HeaderAct::Layout(e) => Out::Layout(e),
                 HeaderAct::Refresh => Out::RefreshThreads,
@@ -425,6 +439,7 @@ impl Sidebar {
                     ungroup: None,
                     flag: None,
                 },
+                HeaderAct::CatchUp => Out::Inbox(crate::inbox::InboxKind::CatchUp),
             },
             Message::ThreadAct { rid, tmid, act } => match act {
                 ThreadAct::OpenRoom => Out::OpenRoom(rid),
@@ -711,6 +726,7 @@ impl Sidebar {
                 text_input(&t!("sidebar.search"), &self.filter)
                     .id(SEARCH_INPUT_ID)
                     .on_input(Message::Filter)
+                    .on_submit(Message::SubmitFilter)
                     .style(style::text_input_bare)
                     .size(TEXT_BODY)
                     .padding([6, 0]),
@@ -794,16 +810,16 @@ impl Sidebar {
                 .style(style::scrollable)
                 .into()
         };
-        container(
-            column![header, container(search).padding([0.0, SPACE_3]), body]
-                .spacing(SPACE_2)
-                .height(Length::Fill),
-        )
-        .id(crate::focus::SIDEBAR)
-        .height(Length::Fill)
-        .width(Length::Fill)
-        .style(style::container_sidebar)
-        .into()
+        let mut top = column![header, container(search).padding([0.0, SPACE_3])].spacing(SPACE_2);
+        if ctx.prefs.sidebar_pinned_views {
+            top = top.push(pinned_rows(ctx));
+        }
+        container(column![top, body].spacing(SPACE_2).height(Length::Fill))
+            .id(crate::focus::SIDEBAR)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .style(style::container_sidebar)
+            .into()
     }
 
     /// Scrolls the list so that the row of `rid` is visible (after
@@ -1257,6 +1273,83 @@ fn collapsed_unread_status(section: &Section) -> Option<Element<'static, Message
     ))
 }
 
+/// One pinned row: icon, label, the badge (counter or dot) and its
+/// tooltip with the shortcut; highlighted while its view is open.
+fn pinned_row<'a>(
+    icon_: Icon,
+    label: String,
+    shortcut: Option<String>,
+    badge: Option<(u64, BadgeKind)>,
+    selected: bool,
+    on: Message,
+) -> Element<'a, Message> {
+    let mut r = row![
+        icon::sized(icon_, 16.0).style(style::text_secondary),
+        iced::widget::text(label.clone())
+            .size(TEXT_BODY)
+            .width(Length::Fill),
+    ]
+    .spacing(SPACE_2)
+    .align_y(Alignment::Center);
+    match badge {
+        Some((n, kind)) if n > 0 => r = r.push(rustket_ui::widget::badge(count_u32(n), kind)),
+        Some((_, kind)) => r = r.push(rustket_ui::widget::dot(kind, 8.0)),
+        None => {}
+    }
+    let b = iced::widget::button(r)
+        .width(Length::Fill)
+        .padding([6.0, SPACE_2])
+        .style(style::button_list_item(selected))
+        .on_press(on);
+    match shortcut {
+        Some(k) => tooltip(b, format!("{label} ({k})"), TooltipPosition::Right),
+        None => b.into(),
+    }
+}
+
+/// The badge of the Activity row: red counter of direct mentions, else an
+/// orange one of group mentions, else a quiet dot for unread threads.
+pub(crate) fn activity_badge(c: &rustket_core::inbox::InboxCounts) -> Option<(u64, BadgeKind)> {
+    if c.mentions > 0 {
+        Some((c.mentions, BadgeKind::Mention))
+    } else if c.group_mentions > 0 {
+        Some((c.group_mentions, BadgeKind::GroupMention))
+    } else if c.threads > 0 {
+        Some((0, BadgeKind::Thread))
+    } else {
+        None
+    }
+}
+
+/// The rows pinned under the search (`UiPrefs::sidebar_pinned_views`).
+fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
+    use crate::inbox::InboxKind;
+    use crate::keymap::{Shortcut, chord_of};
+    let c = rustket_core::inbox::counts(ctx.workspace);
+    let open = ctx.inbox_open;
+    let unreads = pinned_row(
+        Icon::Inbox,
+        t!("inbox.all_unreads").into_owned(),
+        chord_of(Shortcut::AllUnreads),
+        (c.unread_rooms > 0).then_some((c.unread_rooms, BadgeKind::Unread)),
+        matches!(open, Some(InboxKind::Unreads | InboxKind::CatchUp)),
+        Message::Inbox(InboxKind::Unreads),
+    );
+    let activity = pinned_row(
+        Icon::AtSign,
+        t!("inbox.activity").into_owned(),
+        chord_of(Shortcut::Activity),
+        activity_badge(&c),
+        open == Some(InboxKind::Activity),
+        Message::Inbox(InboxKind::Activity),
+    );
+    // The Later row joins here.
+    column![unreads, activity]
+        .spacing(0)
+        .padding([0.0, SPACE_2])
+        .into()
+}
+
 /// How loud a badge kind is: mentions, then plain unread, then the quiet kinds.
 fn badge_rank(k: BadgeKind) -> u8 {
     match k {
@@ -1307,19 +1400,25 @@ fn row_badge(b: &room_list::Badge) -> RowBadge {
 
 /// The badge kind of a room row (the same as [`RoomListItemProps::badge_kind`]).
 fn room_badge_kind(item: &RoomListItem) -> Option<BadgeKind> {
-    let b = row_badge(&item.badge);
+    badge_kind(&item.badge, item.muted)
+}
+
+/// The badge kind of a room with badge `b` (`muted`: notifications off), as
+/// its sidebar row shows it.
+pub(crate) fn badge_kind(b: &room_list::Badge, muted: bool) -> Option<BadgeKind> {
+    let b = row_badge(b);
     BadgeKind::for_room(
         b.user_mentions,
         b.group_mentions,
         b.unread.saturating_sub(b.thread_count),
         b.thread_unread,
-        item.muted,
+        muted,
     )
 }
 
 /// The dot of a thread row: red/orange for mentions, a quiet grey for
 /// plain replies (blue reads like a mention next to room badges).
-fn thread_badge_kind(t: &ThreadListItem) -> Option<BadgeKind> {
+pub(crate) fn thread_badge_kind(t: &ThreadListItem) -> Option<BadgeKind> {
     t.unread.map(|v| match v {
         BadgeVariant::Mention => BadgeKind::Mention,
         BadgeVariant::GroupMention => BadgeKind::GroupMention,
@@ -1668,6 +1767,12 @@ fn header_menu(m: &HeaderMenu<'_>) -> Vec<MenuEntry<Message>> {
     } else if unread {
         entries.extend([
             MenuItem::new(
+                t!("sidebar.menu_catch_up"),
+                Message::Header(HeaderAct::CatchUp),
+            )
+            .icon(Icon::ListChecks)
+            .into(),
+            MenuItem::new(
                 t!("sidebar.menu_hide_unread"),
                 edit(LayoutEdit::SetUnreadOnTop(false)),
             )
@@ -1903,6 +2008,7 @@ mod tests {
                     collapsed: &self.collapsed,
                     active_room: None,
                     active_thread: None,
+                    inbox_open: None,
                     now: Instant::now(),
                 };
                 self.sidebar.view(&ctx, iced::widget::space().into())
@@ -2151,6 +2257,7 @@ mod tests {
                 collapsed: &fx.collapsed,
                 active_room: None,
                 active_thread: None,
+                inbox_open: None,
                 now: Instant::now(),
             });
             assert!(start > 200 && end <= ROOMS + 3, "{start}..{end}");
@@ -2174,6 +2281,7 @@ mod tests {
                 collapsed: &fx.collapsed,
                 active_room: None,
                 active_thread: None,
+                inbox_open: None,
                 now: Instant::now(),
             };
             assert_eq!(fx.sidebar.window(&ctx), (0, 2));
@@ -2486,6 +2594,7 @@ mod tests {
                 collapsed: &fx.collapsed,
                 active_room: None,
                 active_thread: None,
+                inbox_open: None,
                 now: Instant::now(),
             }
         }
@@ -3765,6 +3874,12 @@ mod tests {
                 .is_empty(),
                 "always unread"
             );
+            let catch_up = items(unread, |m| matches!(m, Message::Header(HeaderAct::CatchUp)));
+            assert_eq!(catch_up.len(), 1);
+            assert!(matches!(
+                fx.sidebar.update(catch_up[0].on_select.clone()),
+                Out::Inbox(crate::inbox::InboxKind::CatchUp)
+            ));
             let group = menu_of(&menus, &format!("group:{gid}"));
             let ungroup = items(group, |m| {
                 matches!(m, Message::Header(HeaderAct::Ungroup(_)))
@@ -3841,5 +3956,95 @@ mod tests {
             ts: None,
         };
         assert_eq!(preview_text(&p), "System message");
+    }
+}
+
+#[cfg(test)]
+mod pinned_tests {
+    use super::*;
+    use rustket_core::inbox::InboxCounts;
+
+    /// The Activity row: direct mentions (red) beat group mentions
+    /// (orange), unread threads only get a quiet dot.
+    #[test]
+    fn activity_badge_is_loud_only_for_mentions() {
+        let c = |mentions, group_mentions, threads| InboxCounts {
+            unread_rooms: 0,
+            mentions,
+            group_mentions,
+            threads,
+        };
+        assert_eq!(activity_badge(&c(2, 3, 4)), Some((2, BadgeKind::Mention)));
+        assert_eq!(
+            activity_badge(&c(0, 3, 4)),
+            Some((3, BadgeKind::GroupMention))
+        );
+        assert_eq!(activity_badge(&c(0, 0, 4)), Some((0, BadgeKind::Thread)));
+        assert_eq!(activity_badge(&c(0, 0, 0)), None);
+    }
+
+    /// The pinned rows follow `sidebar_pinned_views`; the search field
+    /// takes Enter, so it never reaches the catch-up view's keys.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn pinned_rows_follow_the_pref_and_search_keeps_enter() {
+        let ws = Workspace::new();
+        let images = Images::new(None);
+        let collapsed = BTreeSet::new();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://localhost:3000").unwrap();
+        let sb = Sidebar::default();
+        let view = |prefs: &UiPrefs| -> Vec<String> {
+            let ctx = SidebarCtx {
+                server_id: &sid,
+                server: &url,
+                workspace: &ws,
+                images: &images,
+                prefs,
+                collapsed: &collapsed,
+                active_room: None,
+                active_thread: None,
+                inbox_open: None,
+                now: Instant::now(),
+            };
+            crate::tree_probe::texts(sb.view(&ctx, iced::widget::space().into()))
+        };
+        let labels = [t!("inbox.all_unreads"), t!("inbox.activity")];
+        let mut prefs = UiPrefs {
+            sidebar_pinned_views: true,
+            ..UiPrefs::default()
+        };
+        let shown = view(&prefs);
+        assert!(labels.iter().all(|l| shown.iter().any(|t| t == l)));
+        prefs.sidebar_pinned_views = false;
+        let hidden = view(&prefs);
+        assert!(!labels.iter().any(|l| hidden.iter().any(|t| t == l)));
+
+        let ctx = SidebarCtx {
+            server_id: &sid,
+            server: &url,
+            workspace: &ws,
+            images: &images,
+            prefs: &prefs,
+            collapsed: &collapsed,
+            active_room: None,
+            active_thread: None,
+            inbox_open: None,
+            now: Instant::now(),
+        };
+        assert!(crate::tree_probe::key_captured(
+            sb.view(&ctx, iced::widget::space().into()),
+            SEARCH_INPUT_ID,
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+        ));
+    }
+
+    #[test]
+    fn rows_open_their_views() {
+        let mut s = Sidebar::default();
+        assert!(matches!(
+            s.update(Message::Inbox(crate::inbox::InboxKind::Activity)),
+            Out::Inbox(crate::inbox::InboxKind::Activity)
+        ));
     }
 }

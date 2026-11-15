@@ -1,9 +1,9 @@
 //! The per-account read queue (`rustket_core::reads`) wired to the session:
 //! DDP `readMessages` / `readThreads`, REST `subscriptions.read` /
 //! `chat.readThread` as the fallback. One request at a time, paced, with
-//! one rate-limit handling for every caller ("Mark all as read" now; the
-//! All unreads and Activity views later). Callers tag requests with an
-//! [`Origin`] and get it back when the request is done.
+//! one rate-limit handling for every caller ("Mark all as read", the All
+//! unreads and Activity views). Callers tag requests with an [`Origin`] and
+//! get it back when the request is done.
 
 use std::time::Instant;
 
@@ -18,6 +18,8 @@ use crate::session::SessionHandle;
 pub enum Origin {
     /// "Mark all as read" (Shift+Esc), run `stamp`.
     ReadAll(u64),
+    /// The All unreads / Catch up / Activity views (`crate::inbox`).
+    Inbox,
 }
 
 pub type Queue = ReadQueue<Origin>;

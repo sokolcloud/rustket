@@ -32,9 +32,9 @@ pub enum Shortcut {
     /// Ctrl/Cmd+Shift+\: react to the newest message of the focused
     /// composer's timeline (the room's when no composer has the focus).
     ReactLast,
-    /// Ctrl/Cmd+Shift+A, reserved for "All unreads".
+    /// Ctrl/Cmd+Shift+A: "All unreads" (toggles).
     AllUnreads,
-    /// Ctrl/Cmd+Shift+M, reserved for "Activity".
+    /// Ctrl/Cmd+Shift+M: "Activity" (toggles).
     Activity,
     /// Ctrl/Cmd+Shift+S, reserved for "Later".
     Later,
@@ -45,7 +45,7 @@ impl Shortcut {
     /// come are not matched (the key press passes through untouched) and
     /// are left out of the cheat sheet.
     pub const fn is_available(self) -> bool {
-        !matches!(self, Self::AllUnreads | Self::Activity | Self::Later)
+        !matches!(self, Self::Later)
     }
 }
 
@@ -173,6 +173,8 @@ pub enum Token {
     Enter,
     Up,
     Down,
+    Left,
+    Right,
     Tab,
     F6,
 }
@@ -297,6 +299,26 @@ pub const GROUPS: &[Group] = &[
         ],
     },
     Group {
+        label: "shortcuts.group_catch_up",
+        entries: &[
+            Entry {
+                label: "inbox.mark_read_next",
+                chords: &[&[Token::Enter]],
+                bound: Bound::Other,
+            },
+            Entry {
+                label: "inbox.skip",
+                chords: &[&[Token::Right]],
+                bound: Bound::Other,
+            },
+            Entry {
+                label: "inbox.back",
+                chords: &[&[Token::Left]],
+                bound: Bound::Other,
+            },
+        ],
+    },
+    Group {
         label: "shortcuts.group_composer",
         entries: &[
             Entry {
@@ -373,12 +395,28 @@ fn display_for(chord: &[Token], mac: bool) -> String {
             (Token::Enter, _) => "Enter".into(),
             (Token::Up, _) => "↑".into(),
             (Token::Down, _) => "↓".into(),
+            (Token::Left, _) => "←".into(),
+            (Token::Right, _) => "→".into(),
             (Token::Tab, _) => "Tab".into(),
             (Token::F6, _) => "F6".into(),
         }
     };
     let parts: Vec<String> = chord.iter().map(name).collect();
     parts.join(if mac { "" } else { "+" })
+}
+
+/// The chord of an app-wide shortcut, as printed (tooltips), if it is
+/// available.
+pub fn chord_of(s: Shortcut) -> Option<String> {
+    if !s.is_available() {
+        return None;
+    }
+    GROUPS
+        .iter()
+        .flat_map(|g| g.entries)
+        .find(|e| e.bound == Bound::Global(s))
+        .and_then(|e| e.chords.first())
+        .map(|c| display(c))
 }
 
 /// The chord of a formatting action, as printed (composer tooltips).
@@ -466,10 +504,14 @@ mod tests {
         );
         assert_eq!(global(&esc, NONE, Modifiers::empty()), None);
         assert_eq!(global(&esc, NONE, cs), None);
+        assert_eq!(global(&ch("a"), NONE, cs), Some(Shortcut::AllUnreads));
+        assert_eq!(global(&ch("m"), NONE, cs), Some(Shortcut::Activity));
+        // Russian layout: Cyrillic `ф` on the A key.
+        let a = Physical::Code(Code::KeyA);
+        assert_eq!(global(&ch("ф"), a, cs), Some(Shortcut::AllUnreads));
+        assert_eq!(global(&ch("a"), NONE, cmd), None, "needs Shift");
         // Reserved chords pass through until their features land.
-        for c in ["a", "m", "s"] {
-            assert_eq!(global(&ch(c), NONE, cs), None, "{c}");
-        }
+        assert_eq!(global(&ch("s"), NONE, cs), None);
         // Alt (AltGr) is never part of an app-wide chord.
         assert_eq!(global(&ch("k"), NONE, cmd | Modifiers::ALT), None);
     }
@@ -547,30 +589,44 @@ mod tests {
     fn catalog_matches_the_bindings() {
         let mut seen: Vec<String> = Vec::new();
         let mut reserved = Vec::new();
-        for e in GROUPS.iter().flat_map(|g| g.entries) {
-            for chord in e.chords {
-                let shown = display_for(chord, false);
-                assert!(!seen.contains(&shown), "{shown} bound twice");
-                seen.push(shown.clone());
-                match e.bound {
-                    Bound::Global(s) => {
-                        let (k, p, m) = press(chord).unwrap();
-                        let want = s.is_available().then_some(s);
-                        assert_eq!(global(&k, p, m), want, "{shown}");
-                        if !s.is_available() {
-                            reserved.push(shown);
+        for g in GROUPS {
+            // Catch-up keys only act in that view: Enter is the composer's
+            // elsewhere.
+            let scoped = g.label == "shortcuts.group_catch_up";
+            for e in g.entries {
+                for chord in e.chords {
+                    let shown = display_for(chord, false);
+                    if scoped {
+                        assert_eq!(e.bound, Bound::Other, "{shown}");
+                        continue;
+                    }
+                    assert!(!seen.contains(&shown), "{shown} bound twice");
+                    seen.push(shown.clone());
+                    match e.bound {
+                        Bound::Global(s) => {
+                            let (k, p, m) = press(chord).unwrap();
+                            let want = s.is_available().then_some(s);
+                            assert_eq!(global(&k, p, m), want, "{shown}");
+                            if !s.is_available() {
+                                reserved.push(shown);
+                            }
                         }
+                        Bound::Format(f) => {
+                            let (k, p, m) = press(chord).unwrap();
+                            assert_eq!(format(&k, p, m, None), Some(f), "{shown}");
+                            assert_eq!(global(&k, p, m), None, "{shown}");
+                        }
+                        Bound::Other => {}
                     }
-                    Bound::Format(f) => {
-                        let (k, p, m) = press(chord).unwrap();
-                        assert_eq!(format(&k, p, m, None), Some(f), "{shown}");
-                        assert_eq!(global(&k, p, m), None, "{shown}");
-                    }
-                    Bound::Other => {}
                 }
             }
         }
-        assert_eq!(reserved, ["Ctrl+Shift+A", "Ctrl+Shift+M", "Ctrl+Shift+S"]);
+        assert_eq!(reserved, ["Ctrl+Shift+S"]);
+        assert_eq!(
+            chord_of(Shortcut::AllUnreads).as_deref(),
+            Some(display_for(&[Cmd, Shift, Token::Char('a')], cfg!(target_os = "macos")).as_str())
+        );
+        assert_eq!(chord_of(Shortcut::Later), None);
         for f in Format::ALL {
             assert!(format_chord(f).is_some(), "{f:?}");
         }

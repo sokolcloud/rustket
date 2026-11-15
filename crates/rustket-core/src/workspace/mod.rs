@@ -77,7 +77,7 @@ impl Dirty {
     /// Synced mention groups: the stored blob, the pending overlay or the
     /// effective groups (see [`Workspace::mention_groups`]).
     pub const MENTION_GROUPS: Self = Self(1 << 19);
-    /// All unreads / Activity feeds (reserved).
+    /// All unreads / Activity feeds (see [`Workspace::feeds`]).
     pub const FEEDS: Self = Self(1 << 20);
     pub const ALL: Self = Self((1 << 21) - 1);
     const BITS: usize = 21;
@@ -309,6 +309,10 @@ pub struct Workspace {
     mention_groups: MentionGroups,
     /// The user's own service rooms, primary first.
     service_rooms: Vec<String>,
+    /// Unread messages and thread mentions of the All unreads and Activity
+    /// views (memory only). Kept while the views are closed, so reopening
+    /// one fetches nothing loaded; dropped with the workspace on sign-out.
+    feeds: crate::inbox::feeds::FeedStore,
 }
 
 /// When a realtime event touched something.
@@ -422,6 +426,11 @@ impl Workspace {
     fn mark_room(&mut self, rid: &str) {
         self.mark(Dirty::ROOMS);
         self.changes.rooms.insert(rid.to_owned());
+        // Whatever moved the room's `ls` (read here, elsewhere, a sync).
+        let ls = self.subscription(rid).and_then(|s| s.ls);
+        if self.feeds.prune(rid, ls) {
+            self.mark(Dirty::FEEDS);
+        }
         if self.service_rooms.iter().any(|r| r == rid)
             || self.rooms.get(rid).is_some_and(RoomEntry::is_service_room)
         {
@@ -650,21 +659,26 @@ impl Workspace {
         self.e2e = manager;
     }
 
-    /// Rooms with an open room or thread timeline.
+    /// Rooms with an open room or thread timeline, or with an inbox feed.
     pub fn rooms_with_timelines(&self) -> HashSet<String> {
         self.timelines
             .keys()
             .cloned()
             .chain(self.threads.values().map(|t| t.rid().to_owned()))
+            .chain(self.feeds.rooms().cloned())
             .collect()
     }
 
     /// Rewrites the messages of room `rid` in place: its room timeline, its
-    /// thread timelines and the room's last message (see
+    /// thread timelines, its inbox feed and the room's last message (see
     /// [`Timeline::rewrite`]). Changed timelines and rooms are marked. Returns
     /// whether anything changed.
     pub fn rewrite_messages(&mut self, rid: &str, f: &mut dyn FnMut(&mut Message) -> bool) -> bool {
         let mut changed = false;
+        if self.feeds.rewrite(rid, f) {
+            self.mark(Dirty::FEEDS);
+            changed = true;
+        }
         if let Some(t) = self.timelines.get_mut(rid)
             && t.rewrite(f)
         {
@@ -700,6 +714,60 @@ impl Workspace {
             changed = true;
         }
         changed
+    }
+
+    // --- inbox feeds (All unreads, Activity) ------------------------------------
+
+    pub fn feeds(&self) -> &crate::inbox::feeds::FeedStore {
+        &self.feeds
+    }
+
+    /// The rooms the open inbox view wants: their feeds are not evicted
+    /// (empty: the view closed). Changes nothing shown.
+    pub fn keep_feeds<'a>(&mut self, rids: impl IntoIterator<Item = &'a String>) {
+        self.feeds.keep(rids);
+    }
+
+    /// Starts a page of room `rid`'s feed (`earlier`: the next older one),
+    /// against the subscription's current `ls`.
+    pub fn begin_feed(&mut self, rid: &str, earlier: bool) -> Option<crate::inbox::feeds::FeedReq> {
+        let ls = self.subscription(rid).and_then(|s| s.ls);
+        let req = self.feeds.begin(rid, earlier, ls)?;
+        self.mark(Dirty::FEEDS);
+        Some(req)
+    }
+
+    /// A feed page ended (see [`crate::inbox::feeds::FeedStore::finish`]).
+    pub fn finish_feed(
+        &mut self,
+        req: &crate::inbox::feeds::FeedReq,
+        res: Result<rocketchat::models::History, Option<String>>,
+    ) {
+        let ls = self.subscription(&req.rid).and_then(|s| s.ls);
+        if self.feeds.finish(req, res, ls) {
+            self.mark(Dirty::FEEDS);
+        }
+    }
+
+    /// Forgets a failed feed so it loads again.
+    pub fn reset_feed(&mut self, rid: &str) {
+        if self.feeds.reset(rid) {
+            self.mark(Dirty::FEEDS);
+        }
+    }
+
+    pub fn begin_thread_mentions(&mut self, rid: &str) -> bool {
+        let started = self.feeds.begin_mentions(rid);
+        if started {
+            self.mark(Dirty::FEEDS);
+        }
+        started
+    }
+
+    pub fn finish_thread_mentions(&mut self, rid: &str, res: Result<Vec<Message>, Option<String>>) {
+        if self.feeds.finish_mentions(rid, res) {
+            self.mark(Dirty::FEEDS);
+        }
     }
 
     /// Rewrites the last message of every room (sidebar previews).
