@@ -89,6 +89,8 @@ impl Workspace {
             self.update_flags();
         }
         self.set_mention_group_blob(crate::service_sync::stored(&copies, now_ms));
+        self.set_later_blob(crate::service_sync::stored(&copies, now_ms));
+        self.set_reminder_blob(crate::service_sync::stored(&copies, now_ms));
     }
 
     /// Recomputes the effective flags and the pinned flagged threads.
@@ -160,9 +162,10 @@ impl Workspace {
     }
 
     /// A page of a `chat.getStarredMessages` scan of `rid` requested at
-    /// `started`: thread parents are indexed (their star state applies unless
-    /// it changed since `started`). Returns the starred thread parents of the
-    /// page (collect them over every page for
+    /// `started`: every starred message goes to the Later index (while it
+    /// tracks stars) and thread parents are indexed (their star state applies
+    /// unless it changed since `started`). Returns the starred thread parents
+    /// of the page (collect them over every page for
     /// [`finish_starred_scan`](Self::finish_starred_scan)).
     pub fn apply_starred_page(
         &mut self,
@@ -170,6 +173,7 @@ impl Workspace {
         msgs: Vec<Message>,
         started: Instant,
     ) -> Vec<String> {
+        self.later_scan_page(rid, &msgs, started);
         if !self.thread_index.pins_enabled() {
             return Vec::new();
         }
@@ -222,6 +226,7 @@ impl Workspace {
             scanned_at: Some(RcDate::now()),
             lm,
         };
+        self.later_finish_scan(rid, started, scan);
         if self
             .thread_index
             .finish_starred_scan(rid, found.into_iter().collect(), started, scan)
@@ -232,6 +237,7 @@ impl Workspace {
 
     /// Forgets a room's starred scan (scanned again).
     pub fn forget_starred_scan(&mut self, rid: &str) {
+        self.later_forget_scan(rid);
         if self.thread_index.forget_starred_scan(rid) {
             self.mark(Dirty::THREAD_INDEX);
         }

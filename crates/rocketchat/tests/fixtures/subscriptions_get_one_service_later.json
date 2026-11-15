@@ -1,0 +1,93 @@
+{
+    "subscription": {
+        "_id": "6af9f140d5de71deb45c4eca",
+        "open": true,
+        "alert": false,
+        "unread": 0,
+        "userMentions": 0,
+        "groupMentions": 0,
+        "ts": "2026-11-15T17:52:00.458Z",
+        "rid": "6af9f140d5de71deb45c4ec9",
+        "name": "rk-later-probe-1794765120",
+        "fname": "rk-later-probe-1794765120",
+        "t": "p",
+        "u": {
+            "_id": "Er3h8XYKahaopbSA7",
+            "username": "alice",
+            "name": "Alice"
+        },
+        "ls": "2026-11-15T17:52:00.458Z",
+        "roles": [
+            "owner"
+        ],
+        "_updatedAt": "2026-11-15T17:52:00.537Z",
+        "customFields": {
+            "rustketService": {
+                "v": 1,
+                "owner": "Er3h8XYKahaopbSA7"
+            },
+            "rustketFlags": {
+                "v": 1,
+                "rooms": {},
+                "threads": {},
+                "names": {}
+            },
+            "rustketLater": {
+                "v": 1,
+                "seeded": {
+                    "t": 1794700000000,
+                    "d": "dev-a"
+                },
+                "status": {
+                    "Ab3cD4eF5gH6iJ7kL": {
+                        "r": "GENERAL",
+                        "s": "done",
+                        "t": 1794738000000,
+                        "d": "dev-a"
+                    },
+                    "Mn8oP9qR0sT1uV2wX": {
+                        "r": "GENERAL",
+                        "s": "open",
+                        "t": 1794738000100,
+                        "d": "dev-b"
+                    },
+                    "Yz3aB4cD5eF6gH7iJ": {
+                        "t": 1794738000200,
+                        "d": "dev-a"
+                    }
+                },
+                "due": {
+                    "Ab3cD4eF5gH6iJ7kL": {
+                        "r": "GENERAL",
+                        "at": 1794800000000,
+                        "t": 1794738000300,
+                        "d": "dev-b"
+                    }
+                }
+            },
+            "rustketReminders": {
+                "v": 1,
+                "items": {
+                    "Kl8mN9oP0qR1sT2uV": {
+                        "r": "GENERAL",
+                        "at": 1794810000000,
+                        "t": 1794738000400,
+                        "d": "dev-a"
+                    },
+                    "Wx3yZ4aB5cD6eF7gH": {
+                        "r": "GENERAL",
+                        "m": "Kl8mN9oP0qR1sT2uV",
+                        "at": 1794820000000,
+                        "t": 1794738000500,
+                        "d": "dev-b"
+                    },
+                    "Ij8kL9mN0oP1qR2sT": {
+                        "t": 1794738000600,
+                        "d": "dev-a"
+                    }
+                }
+            }
+        }
+    },
+    "success": true
+}

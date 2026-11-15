@@ -37,7 +37,7 @@ fn load_failure(f: &Failure) -> LoadFailure {
 }
 
 /// Effects a room view handles itself (they need the room open).
-fn room_local(e: &room::Effect) -> bool {
+pub(super) fn room_local(e: &room::Effect) -> bool {
     matches!(
         e,
         room::Effect::LoadOlder
@@ -114,6 +114,9 @@ impl App {
         let Some(s) = self.active.as_ref().and_then(|sid| self.servers.get(sid)) else {
             return Task::none();
         };
+        if s.later_view().is_some() && k == CatchUpKey::Enter {
+            return self.on_later_key(crate::later::LaterKey::Enter);
+        }
         if !s.inbox_view().is_some_and(InboxScreen::is_catch_up) {
             return Task::none();
         }
@@ -293,7 +296,7 @@ impl App {
     }
 
     /// Shows message `m` in the open view of `rid` from a local copy.
-    fn room_show(
+    pub(super) fn room_show(
         &mut self,
         sid: &ServerId,
         rid: &str,
@@ -302,7 +305,7 @@ impl App {
         self.room_run(sid, rid, |rv, ctx| rv.show(m, ctx))
     }
 
-    fn room_run_effects(
+    pub(super) fn room_run_effects(
         &mut self,
         sid: &ServerId,
         rid: &str,

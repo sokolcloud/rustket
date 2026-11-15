@@ -50,7 +50,7 @@ impl App {
             Shortcut::AllUnreads => self.inbox_shortcut(crate::inbox::InboxKind::Unreads),
             Shortcut::Activity => self.inbox_shortcut(crate::inbox::InboxKind::Activity),
             // Reserved: `keymap::global` does not produce it yet.
-            Shortcut::Later => Task::none(),
+            Shortcut::Later => self.later_shortcut(),
         }
     }
 

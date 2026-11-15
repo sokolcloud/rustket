@@ -179,3 +179,15 @@ shortcuts.group_catch_up:
   es: "Ponerse al día"
   th: "ไล่อ่าน"
   zh: "逐个查看"
+shortcuts.later:
+  en: "Later: saved messages and reminders"
+  ru: "Позже: отложенные сообщения и напоминания"
+  es: "Más tarde: mensajes guardados y recordatorios"
+  th: "ภายหลัง: ข้อความที่บันทึกไว้และการเตือน"
+  zh: "稍后：已保存的消息和提醒"
+shortcuts.group_later:
+  en: "Later"
+  ru: "Позже"
+  es: "Más tarde"
+  th: "ภายหลัง"
+  zh: "稍后"

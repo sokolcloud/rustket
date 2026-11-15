@@ -42,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then unread threads across rooms. Both views have pinned rows at the top of
   the sidebar (Settings → Sidebar can hide them); only mentions get a loud
   badge.
+- Message reminders: "Remind me…" in a message's menu (in 20 minutes, 1 or
+  3 hours, tomorrow, next week or a custom time). Reminders are synced
+  between your Rustket devices and show a desktop notification while
+  Rustket runs (Open, Snooze 1 hour, Done); ones missed while it was closed
+  are summed up at the next start. Settings → Notifications has their
+  switches and the morning hour of "Tomorrow" and "Next week".
+- Later (Ctrl+Shift+S, a third pinned sidebar row with a count of overdue
+  reminders): your starred messages from every room as a to-do list with In
+  progress, Reminders, Done and Archived tabs, due dates and "Remove done
+  items". Stars that existed before go to Archived. Status, due dates and
+  reminders sync through your hidden service room as ids and times only,
+  never message text.
 
 ### Changed
 

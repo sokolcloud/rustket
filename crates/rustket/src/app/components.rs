@@ -749,11 +749,7 @@ impl App {
                         crate::videoconf::CallAction::Join(call_id),
                     ))
                 }
-                desktop::Request::ForeignSignal(id, signal) => {
-                    self.on_calls(crate::videoconf::Message::Notify(
-                        crate::videoconf::notify::Msg::Signal(id, signal),
-                    ))
-                }
+                desktop::Request::ForeignSignal(id, signal) => self.on_foreign_signal(id, signal),
             });
         }
         Task::batch(tasks)

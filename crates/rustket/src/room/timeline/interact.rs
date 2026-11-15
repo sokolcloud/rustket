@@ -63,6 +63,8 @@ pub enum Msg {
     Reported(String, Res<()>),
     /// An app action button of the message menu (`crate::uikit::buttons`).
     UiKit(Box<crate::uikit::UiKitMsg>),
+    /// The reminder dialog's time picker.
+    Remind(crate::later::when::Msg),
 }
 
 impl Msg {
@@ -136,7 +138,12 @@ impl Interactions {
             Some(Dialog::Report {
                 description, busy, ..
             }) => Some((2, dialogs::report(description, *busy), Msg::CloseDialog)),
-            // Key 4 is reserved for the reminder dialog.
+            Some(Dialog::Remind { mid, picker, .. }) => {
+                let excerpt = find_item(ctx.workspace, ctx.rid, &self.source, mid)
+                    .map(|i| crate::room::ForwardRef::of(&i.message).excerpt)
+                    .unwrap_or_default();
+                Some((4, dialogs::remind(excerpt, picker, ctx), Msg::CloseDialog))
+            }
             Some(Dialog::Reactions { mid, tab }) => {
                 let groups = find_item(ctx.workspace, ctx.rid, &self.source, mid)
                     .map(|i| rustket_core::reactions::groups(&i.message, ctx.workspace.presence()))
@@ -157,7 +164,10 @@ impl Interactions {
     /// Forgets state of messages that are gone (`contains` tells which exist).
     pub fn prune(&mut self, contains: impl Fn(&str) -> bool) {
         if let Some(
-            Dialog::Delete { mid, .. } | Dialog::Report { mid, .. } | Dialog::Reactions { mid, .. },
+            Dialog::Delete { mid, .. }
+            | Dialog::Report { mid, .. }
+            | Dialog::Reactions { mid, .. }
+            | Dialog::Remind { mid, .. },
         ) = &self.dialog
             && !contains(mid)
         {
@@ -182,6 +192,31 @@ impl Interactions {
             Msg::UiKit(m) => {
                 self.menu = None;
                 Action::effect(Effect::UiKit(m))
+            }
+            Msg::Remind(m) => {
+                let Some(Dialog::Remind { picker, .. }) = &mut self.dialog else {
+                    return Action::none();
+                };
+                let Some(picked) = picker.update(m, chrono::Local::now(), ctx.prefs.morning_hour())
+                else {
+                    return Action::none();
+                };
+                let Some(Dialog::Remind { mid, rid, tmid, .. }) = self.dialog.take() else {
+                    return Action::none();
+                };
+                Action::effect(Effect::Reminder(match picked {
+                    crate::later::when::Picked::At(at_ms) => {
+                        rustket_core::reminders::ReminderEdit::Set {
+                            rid,
+                            tmid,
+                            mid,
+                            at_ms,
+                        }
+                    }
+                    crate::later::when::Picked::Clear => {
+                        rustket_core::reminders::ReminderEdit::Clear { mid }
+                    }
+                }))
             }
             Msg::React(mid, emoji) => {
                 if !rustket_core::permissions::can_react(ctx.workspace, ctx.rid) {
@@ -400,9 +435,47 @@ impl Interactions {
                 });
                 Action::task(iced::widget::operation::focus(dialogs::REPORT_INPUT_ID))
             }
-            Act::Pin | Act::Unpin | Act::Star | Act::Unstar | Act::Follow | Act::Unfollow => {
-                rest_act(ctx, act)
+            Act::Remind | Act::EditReminder => {
+                let current = ctx.workspace.reminders().get(&mid).map(|r| r.at_ms);
+                self.dialog = Some(Dialog::Remind {
+                    rid: m.rid.clone(),
+                    tmid: m.tmid.clone(),
+                    mid,
+                    picker: crate::later::when::WhenPicker::new(
+                        crate::later::when::Kind::Reminder,
+                        current,
+                    ),
+                });
+                Action::none()
             }
+            Act::LaterDone | Act::LaterReopen => {
+                Action::effect(Effect::Later(rustket_core::later::LaterEdit::Status {
+                    rid: m.rid.clone(),
+                    mid,
+                    ts_ms: rustket_core::later::ts_ms(&m),
+                    status: if act == Act::LaterDone {
+                        rustket_core::later::LaterStatus::Done
+                    } else {
+                        rustket_core::later::LaterStatus::InProgress
+                    },
+                }))
+            }
+            // Later follows the star: an older message than Later's seed
+            // goes to In progress explicitly, an unstarred one leaves.
+            Act::Star => {
+                rest_act(ctx, act).with(Effect::Later(rustket_core::later::LaterEdit::Status {
+                    rid: m.rid.clone(),
+                    mid: mid.clone(),
+                    ts_ms: rustket_core::later::ts_ms(&m),
+                    status: rustket_core::later::LaterStatus::InProgress,
+                }))
+            }
+            Act::Unstar => {
+                rest_act(ctx, act).with(Effect::Later(rustket_core::later::LaterEdit::Forget {
+                    mid: mid.clone(),
+                }))
+            }
+            Act::Pin | Act::Unpin | Act::Follow | Act::Unfollow => rest_act(ctx, act),
         }
     }
 }
@@ -710,6 +783,76 @@ mod tests {
                 excerpt: "first line".into(),
             }]
         );
+    }
+
+    /// Remind me… opens the dialog; a preset sets the reminder. With one
+    /// set the entry is Edit reminder… and the dialog's Remove clears it;
+    /// a deleted message closes the dialog.
+    #[test]
+    fn the_reminder_dialog_sets_and_clears() {
+        use crate::later::when;
+        use rustket_core::reminders::{Preset, ReminderBlob, ReminderEdit};
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let sid = rustket_core::ServerId("s".into());
+        let url = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let mut ws = joined();
+        let mut m = reply("m1", "x");
+        m.tmid = None;
+        m.u.id = "bob".into();
+        ws.apply_message(m);
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "r",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let mut i = Interactions::new(Source::Room);
+        let _ = i.update(Msg::Act("m1".into(), Act::Remind), &mut ctx);
+        assert!(matches!(i.dialog, Some(Dialog::Remind { .. })));
+        let before = chrono::Utc::now().timestamp_millis();
+        let a = i.update(Msg::Remind(when::Msg::Preset(Preset::In1Hour)), &mut ctx);
+        let [
+            Effect::Reminder(ReminderEdit::Set {
+                mid,
+                rid,
+                tmid,
+                at_ms,
+            }),
+        ] = a.effects.as_slice()
+        else {
+            panic!("{:?}", a.effects);
+        };
+        assert_eq!((mid.as_str(), rid.as_str(), tmid), ("m1", "r", &None));
+        assert!(*at_ms >= before + 3_600_000 && *at_ms < before + 3_660_000);
+        assert!(i.dialog.is_none());
+        // Stored: Remind me… is not offered, Edit reminder… is.
+        let mut blob = ReminderBlob::default();
+        let set = ReminderEdit::Set {
+            rid: "r".into(),
+            tmid: None,
+            mid: "m1".into(),
+            at_ms: *at_ms,
+        };
+        blob.edit(&ReminderBlob::default(), &set, before, "dev")
+            .unwrap();
+        ctx.workspace.set_reminder_overlay(blob);
+        let a = i.update(Msg::Act("m1".into(), Act::Remind), &mut ctx);
+        assert!(matches!(a.effects.as_slice(), [Effect::Toast(..)]));
+        let _ = i.update(Msg::Act("m1".into(), Act::EditReminder), &mut ctx);
+        let a = i.update(Msg::Remind(when::Msg::Clear), &mut ctx);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::Reminder(ReminderEdit::Clear { mid })] if mid == "m1"
+        ));
+        // A deleted message closes the dialog.
+        let _ = i.update(Msg::Act("m1".into(), Act::EditReminder), &mut ctx);
+        assert!(i.has_overlay());
+        i.prune(|_| false);
+        assert!(!i.has_overlay());
     }
 
     #[test]

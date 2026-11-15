@@ -124,7 +124,13 @@ impl App {
             tasks.push(self.on_flags(sid.clone(), epoch, m));
         }
         if let Some(m) = parts.mention_groups {
-            tasks.push(self.on_mention_groups(sid, epoch, m));
+            tasks.push(self.on_mention_groups(sid.clone(), epoch, m));
+        }
+        if let Some(m) = parts.later {
+            tasks.push(self.on_later_sync(sid.clone(), epoch, m));
+        }
+        if let Some(m) = parts.reminders {
+            tasks.push(self.on_reminder_sync(sid, epoch, m));
         }
         Task::batch(tasks)
     }
@@ -177,6 +183,7 @@ impl App {
             sidebar::Out::Status(m) => self.on_status_menu(sid, m),
             sidebar::Out::Omni(m) => self.on_omni_sidebar(sid, m),
             sidebar::Out::Inbox(kind) => self.open_inbox(&sid, kind, false),
+            sidebar::Out::Later => self.open_later(&sid, None, false),
             sidebar::Out::Directory => self.navigate(component::Nav::Directory),
             sidebar::Out::Create => self.navigate(component::Nav::CreateRoom(
                 crate::dialogs::create_room::Kind::Channel,
@@ -430,6 +437,8 @@ impl App {
                 }
                 room::Effect::StarThread { rid, tmid, on } => self.star_thread(sid, rid, tmid, on),
                 room::Effect::SetFlag(edit) => self.set_flag(sid, edit),
+                room::Effect::Later(edit) => self.set_later(sid, edit),
+                room::Effect::Reminder(edit) => self.set_reminder(sid, edit),
                 room::Effect::E2e(req) => self.on_e2e_room(sid, req),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
@@ -465,7 +474,12 @@ impl App {
         tmid: String,
         on: bool,
     ) -> Task<Message> {
-        self.star_thread_call(sid, rid, tmid, on, false)
+        let ts = self
+            .servers
+            .get(sid)
+            .and_then(|s| super::later::message_ts(&s.workspace, &rid, &tmid));
+        let later = self.later_starred(sid, &rid, &tmid, ts, on);
+        Task::batch([later, self.star_thread_call(sid, rid, tmid, on, false)])
     }
 
     /// [`Self::star_thread`]; `queued`: for "Move kept threads to

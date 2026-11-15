@@ -10,8 +10,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    Batch, CacheError, CachedState, CachedThreads, CachedTimeline, DEFAULT_MAX_MESSAGE_BYTES,
-    FILE_NAME, MAX_TIMELINES, MESSAGES_PER_TIMELINE, OutboxEntry, Result, TimelineKey, sanitize,
+    Batch, CacheError, CachedLater, CachedState, CachedThreads, CachedTimeline,
+    DEFAULT_MAX_MESSAGE_BYTES, FILE_NAME, MAX_TIMELINES, MESSAGES_PER_TIMELINE, OutboxEntry,
+    Result, TimelineKey, sanitize,
 };
 
 /// Current schema (`PRAGMA user_version`).
@@ -80,6 +81,9 @@ const THREAD_KINDS: [&str; 4] = [
     KIND_THREAD_SYNCED,
     KIND_THREAD_STARRED,
 ];
+/// The Later view's data (`CachedLater`): not part of a full snapshot.
+const KIND_LATER_MSG: &str = "later_msg";
+const KIND_LATER_SCAN: &str = "later_scan";
 
 const META_USER: &str = "user_id";
 const META_SAVED_AT: &str = "saved_at";
@@ -427,10 +431,14 @@ impl CacheDb {
             if sub.is_none() && room.is_none() {
                 drop_room_timelines(&tx, rid)?;
                 drop_room_threads(&tx, rid)?;
+                drop_room_later(&tx, rid)?;
             }
         }
         if let Some(threads) = &batch.threads {
             write_threads(&tx, threads)?;
+        }
+        if let Some(later) = &batch.later {
+            write_later(&tx, later)?;
         }
         for (t, stamp) in batch.timelines.iter().zip(stamps) {
             write_timeline(&tx, t, stamp)?;
@@ -495,6 +503,10 @@ impl CacheDb {
                 parents: self.docs(KIND_THREAD_PARENT)?,
                 parents_synced: self.docs(KIND_THREAD_SYNCED)?,
                 starred: self.docs(KIND_THREAD_STARRED)?,
+            },
+            later: CachedLater {
+                messages: self.docs(KIND_LATER_MSG)?,
+                scans: self.docs(KIND_LATER_SCAN)?,
             },
         })
     }
@@ -638,8 +650,15 @@ fn replace_kind<'a, T: Serialize + 'a>(
 
 fn write_full(tx: &Transaction<'_>, s: &CachedState) -> Result<()> {
     tx.execute(
-        "DELETE FROM docs WHERE kind NOT IN (?1, ?2, ?3, ?4)",
-        THREAD_KINDS,
+        "DELETE FROM docs WHERE kind NOT IN (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            KIND_THREAD_ROOM,
+            KIND_THREAD_PARENT,
+            KIND_THREAD_SYNCED,
+            KIND_THREAD_STARRED,
+            KIND_LATER_MSG,
+            KIND_LATER_SCAN
+        ],
     )?;
     if let Some(me) = &s.me {
         put_doc(tx, KIND_ME, "me", &sanitize::user(me))?;
@@ -694,6 +713,57 @@ fn write_full(tx: &Transaction<'_>, s: &CachedState) -> Result<()> {
     };
     for rid in rids.iter().filter(|r| !known.contains(r.as_str())) {
         drop_room_threads(tx, rid)?;
+    }
+    let rids: Vec<String> = {
+        let mut st = tx.prepare(
+            "SELECT DISTINCT id FROM docs WHERE kind = ?1
+             UNION SELECT DISTINCT json_extract(json, '$.rid') FROM docs WHERE kind = ?2",
+        )?;
+        st.query_map(params![KIND_LATER_SCAN, KIND_LATER_MSG], |r| {
+            r.get::<_, Option<String>>(0)
+        })?
+        .filter_map(|r| r.transpose())
+        .collect::<rusqlite::Result<_>>()?
+    };
+    for rid in rids.iter().filter(|r| !known.contains(r.as_str())) {
+        drop_room_later(tx, rid)?;
+    }
+    Ok(())
+}
+
+fn drop_room_later(tx: &Transaction<'_>, rid: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM docs WHERE (kind = ?1 AND id = ?3)
+             OR (kind = ?2 AND json_extract(json, '$.rid') = ?3)",
+        params![KIND_LATER_SCAN, KIND_LATER_MSG, rid],
+    )?;
+    Ok(())
+}
+
+/// Replaces the Later view's data; messages pass [`sanitize`] like every
+/// message. Only documents that changed are written.
+fn write_later(tx: &Transaction<'_>, l: &CachedLater) -> Result<()> {
+    let mut stored: HashMap<(String, String), String> = {
+        let mut st = tx.prepare("SELECT kind, id, json FROM docs WHERE kind IN (?1, ?2)")?;
+        st.query_map(params![KIND_LATER_MSG, KIND_LATER_SCAN], |r| {
+            Ok(((r.get(0)?, r.get(1)?), r.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    let mut put = |kind: &str, id: &str, json: String| -> Result<()> {
+        if stored.remove(&(kind.to_owned(), id.to_owned())).as_ref() != Some(&json) {
+            put_json(tx, kind, id, &json)?;
+        }
+        Ok(())
+    };
+    for m in l.messages.iter().filter_map(sanitize::message) {
+        put(KIND_LATER_MSG, &m.id, to_json(&m)?)?;
+    }
+    for s in &l.scans {
+        put(KIND_LATER_SCAN, &s.rid, to_json(s)?)?;
+    }
+    for (kind, id) in stored.into_keys() {
+        delete_doc(tx, &kind, &id)?;
     }
     Ok(())
 }

@@ -313,7 +313,12 @@ impl App {
     }
 
     /// Opens room `rid` and shows message `mid` in it, if given.
-    fn open_room_at(&mut self, sid: &ServerId, rid: &str, mid: Option<&str>) -> Task<Message> {
+    pub(super) fn open_room_at(
+        &mut self,
+        sid: &ServerId,
+        rid: &str,
+        mid: Option<&str>,
+    ) -> Task<Message> {
         let open = self.open_room(sid, rid);
         let focus = match mid {
             Some(mid) => self.focus_message(sid, rid, mid),

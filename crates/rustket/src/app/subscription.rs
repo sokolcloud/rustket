@@ -144,36 +144,41 @@ impl App {
             crate::keymap::from_event(&event, status).map(Message::Shortcut)
         }));
         // Tab: focus traversal (modal dialogs keep Tab). F6: regions.
-        // Escape: `App::on_escape`. Enter, Left, Right: catch-up. Only keys
-        // no widget took.
-        subs.push(iced::keyboard::listen().filter_map(|ev| match ev {
-            iced::keyboard::Event::KeyPressed {
-                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
-                modifiers,
-                ..
-            } if !modifiers.command() && !modifiers.alt() => {
-                Some(Message::FocusNext(!modifiers.shift()))
+        // Escape: `App::on_escape`. Enter, Left, Right: catch-up; Enter, Up,
+        // Down, E: Later. Only keys no widget took.
+        subs.push(iced::keyboard::listen().filter_map(|ev| {
+            match ev {
+                iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
+                    modifiers,
+                    ..
+                } if !modifiers.command() && !modifiers.alt() => {
+                    Some(Message::FocusNext(!modifiers.shift()))
+                }
+                iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::F6),
+                    modifiers,
+                    ..
+                } if !modifiers.command() && !modifiers.alt() => {
+                    Some(Message::FocusRegion(!modifiers.shift()))
+                }
+                iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    modifiers,
+                    ..
+                } if modifiers.is_empty() => Some(Message::Escape),
+                // Enter / Left / Right: the catch-up view; Enter, Up, Down, E:
+                // the Later view (ignored elsewhere).
+                iced::keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    repeat: false,
+                    ..
+                } => crate::inbox::CatchUpKey::of(&key, modifiers)
+                    .map(Message::CatchUpKey)
+                    .or_else(|| crate::later::LaterKey::of(&key, modifiers).map(Message::LaterKey)),
+                _ => None,
             }
-            iced::keyboard::Event::KeyPressed {
-                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::F6),
-                modifiers,
-                ..
-            } if !modifiers.command() && !modifiers.alt() => {
-                Some(Message::FocusRegion(!modifiers.shift()))
-            }
-            iced::keyboard::Event::KeyPressed {
-                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
-                modifiers,
-                ..
-            } if modifiers.is_empty() => Some(Message::Escape),
-            // Enter / Left / Right: the catch-up view (ignored elsewhere).
-            iced::keyboard::Event::KeyPressed {
-                key,
-                modifiers,
-                repeat: false,
-                ..
-            } => crate::inbox::CatchUpKey::of(&key, modifiers).map(Message::CatchUpKey),
-            _ => None,
         }));
         subs.push(self.desktop.subscription().map(Message::Desktop));
         subs.push(self.calls.subscription().map(Message::Calls));

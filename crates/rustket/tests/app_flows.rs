@@ -3686,3 +3686,263 @@ fn inbox_esc_order_keys_and_reopen() {
     assert_eq!(current(&app), at);
     assert!(!reads(&app));
 }
+
+/// Later covers the room area like the inbox views: the covered room is not
+/// read, Esc closes the view and leaves the room alone, the shortcut
+/// toggles it, the sidebar row opens it and opening a room closes it.
+/// "Remind me…" from a message's menu sets a reminder the Reminders tab
+/// lists; it waits in the config until the service room stores it.
+#[test]
+fn later_view_and_reminders() {
+    use rustket::keymap::Shortcut;
+    use rustket::later::when::Msg as Wm;
+    use rustket::room::Message as Rm;
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    use rustket_core::reminders::{Preset, ReminderBlob};
+    use rustket_core::workspace::LaterTab;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let tab = |app: &App| app.servers[&sid].later_view().map(|v| v.tab);
+    let _ = app.update(room_msg(&app, &sid, "r1", Rm::MarkedRead(Ok(()))));
+    let _ = app.update(Message::Shortcut(Shortcut::Later));
+    assert_eq!(tab(&app), Some(LaterTab::InProgress));
+    assert!(app.servers[&sid].room_area_taken());
+    let _ = app.view();
+    // The covered room is not read when messages arrive.
+    deliver(&mut app, &sid, rc_msg("m1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 11);
+    assert!(!app.servers[&sid].rooms["r1"].is_visible());
+    // Esc closes it and does not mark the covered room read.
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert_eq!(tab(&app), None);
+    assert!(!outs.iter().any(|m| matches!(
+        m,
+        Message::Room(_, _, _, rustket::room::Message::MarkAllRead)
+    )));
+    // The shortcut toggles; the sidebar row opens; a room closes it.
+    let _ = app.update(Message::Shortcut(Shortcut::Later));
+    let _ = app.update(Message::Shortcut(Shortcut::Later));
+    assert_eq!(tab(&app), None);
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Later));
+    assert_eq!(tab(&app), Some(LaterTab::InProgress));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    assert_eq!(tab(&app), None);
+    // Back in r1: "Remind me…" on a new message, then "In 1 hour".
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r1".into()),
+    ));
+    deliver(&mut app, &sid, rc_msg("m3", "r1", T0 + 20, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Act("m3".into(), Act::Remind))),
+    ));
+    let _ = app.view();
+    let before = chrono::Utc::now().timestamp_millis();
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Remind(Wm::Preset(Preset::In1Hour)))),
+    ));
+    let s = &app.servers[&sid];
+    let r = s.workspace.reminders().get("m3").expect("reminder set");
+    assert_eq!(r.rid, "r1");
+    assert!(r.at_ms >= before + 3_599_000);
+    // The message's copy is kept for the notification.
+    assert!(s.workspace.later_message("m3").is_some());
+    // The Reminders tab lists it; the sidebar row shows no overdue count.
+    let _ = app.update(Message::Shortcut(Shortcut::Later));
+    let epoch = app.servers[&sid].generation;
+    let _ = app.update(Message::Later(
+        sid.clone(),
+        epoch,
+        rustket::later::Msg::Tab(LaterTab::Reminders),
+    ));
+    let rows = app.servers[&sid].workspace.later_rows(LaterTab::Reminders);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].mid, "m3");
+    let _ = app.view();
+    // The edit waits in the config (`pending_service`) until stored.
+    let _ = app.update(Message::Noop);
+    let entry = app.config.server(&sid).unwrap();
+    let pending: ReminderBlob = entry.pending_blob("A");
+    assert!(pending.view().get("m3").is_some());
+    // Removing it from the view clears it.
+    let _ = app.update(Message::Later(
+        sid.clone(),
+        epoch,
+        rustket::later::Msg::RemoveReminder("m3".into()),
+    ));
+    assert!(app.servers[&sid].workspace.reminders().get("m3").is_none());
+}
+
+/// A due reminder gets one notification (its text from the local copy);
+/// clicking it opens the message and marks the reminder done; one cleared
+/// elsewhere closes its notification; with reminder notifications off
+/// nothing is shown.
+#[test]
+fn due_reminders_notify_once_and_a_click_opens_and_clears() {
+    use rustket::desktop::notifications::{
+        self as dn, ACTION_DEFAULT, MockNotifier, Notifications, Signal,
+    };
+    use rustket_core::reminders::ReminderEdit;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let mock = MockNotifier::default();
+    app.desktop.notifications = Notifications::with_backend(Arc::new(mock.clone()));
+    deliver(&mut app, &sid, rc_msg("m3", "r1", T0 + 20, "B"));
+    let _ = app.update(Message::Noop);
+    // A reminder due in a moment (the dialog refuses times this close), on
+    // a reply in thread m3 known only from its local copy.
+    let soon = chrono::Utc::now().timestamp_millis() + 150;
+    {
+        let s = app.servers.get_mut(&sid).unwrap();
+        let set = ReminderEdit::Set {
+            rid: "r1".into(),
+            tmid: Some("m3".into()),
+            mid: "t1".into(),
+            at_ms: soon,
+        };
+        s.reminders
+            .edit(&mut s.workspace, &set, "dev", std::time::Instant::now())
+            .unwrap();
+        let mut reply = rc_msg("t1", "r1", T0 + 30, "B");
+        reply.tmid = Some("m3".into());
+        s.workspace.keep_reminder_copy(&reply);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let task = app.update(Message::Noop);
+    {
+        let shown = mock.shown.lock().unwrap();
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert!(shown[0].body.contains("text t1"), "{:?}", shown[0]);
+        assert!(shown[0].actions.iter().any(|(k, _)| k == "snooze"));
+    }
+    // Its id comes back; later passes show nothing more.
+    for m in outputs_within(task, 300) {
+        if matches!(m, Message::ReminderNotify(_)) {
+            let _ = app.update(m);
+        }
+    }
+    let _ = app.update(Message::Noop);
+    assert_eq!(mock.shown.lock().unwrap().len(), 1);
+    // A click: the room opens with the thread at the reply (from the local
+    // copy, no fetch) and the reminder is done.
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    let _ = app.update(Message::Desktop(rustket::desktop::Message::Notifications(
+        dn::Message::Signal {
+            id: 1,
+            signal: Signal::Action(ACTION_DEFAULT.into()),
+        },
+    )));
+    let s = &app.servers[&sid];
+    assert_eq!(s.active_room.as_deref(), Some("r1"));
+    let panel = &s.rooms["r1"].panel;
+    assert_eq!(panel.thread_tmid(), Some("m3"));
+    assert_eq!(panel.thread_focus(), Some("t1"), "shown at the reply");
+    assert!(s.workspace.reminders().get("t1").is_none(), "marked done");
+    assert!(s.workspace.later_message("t1").is_none(), "copy dropped");
+
+    // Another reminder, cleared elsewhere after it fired: closed.
+    let soon = chrono::Utc::now().timestamp_millis() + 150;
+    let set = |s: &mut rustket::workspace::ServerState, mid: &str, at: i64| {
+        let e = ReminderEdit::Set {
+            rid: "r1".into(),
+            tmid: None,
+            mid: mid.into(),
+            at_ms: at,
+        };
+        s.reminders
+            .edit(&mut s.workspace, &e, "dev", std::time::Instant::now())
+            .unwrap();
+    };
+    set(app.servers.get_mut(&sid).unwrap(), "m4", soon);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let task = app.update(Message::Noop);
+    assert_eq!(mock.shown.lock().unwrap().len(), 2);
+    for m in outputs_within(task, 300) {
+        if matches!(m, Message::ReminderNotify(_)) {
+            let _ = app.update(m);
+        }
+    }
+    {
+        let s = app.servers.get_mut(&sid).unwrap();
+        s.reminders
+            .edit(
+                &mut s.workspace,
+                &ReminderEdit::Clear { mid: "m4".into() },
+                "dev",
+                std::time::Instant::now(),
+            )
+            .unwrap();
+    }
+    let _ = app.update(Message::Noop);
+    assert_eq!(*mock.closed.lock().unwrap(), [2]);
+
+    // Notifications off: a due reminder shows nothing.
+    app.config.ui.reminder_notifications = false;
+    let soon = chrono::Utc::now().timestamp_millis() + 150;
+    set(app.servers.get_mut(&sid).unwrap(), "m5", soon);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let _ = app.update(Message::Noop);
+    assert_eq!(mock.shown.lock().unwrap().len(), 2);
+}
+
+/// Later's first run seeds the account (older stars count as archived);
+/// a kept thread starred by "Move kept threads to Favorites" is archived;
+/// a star from the message menu goes to In progress, an unstar forgets it.
+#[test]
+fn later_seed_kept_threads_and_menu_stars() {
+    use rustket::room::Message as Rm;
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    use rustket_core::later::LaterStatus;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(Message::Noop);
+    let later = |app: &App| app.servers[&sid].workspace.later().clone();
+    assert!(later(&app).is_seeded());
+    assert_eq!(later(&app).default_status(Some(T0)), LaterStatus::Archived);
+    // A queued star of a kept thread succeeded.
+    let _ = app.update(Message::ThreadStarred {
+        sid: sid.clone(),
+        epoch: app.servers[&sid].generation,
+        rid: "r1".into(),
+        tmid: "t9".into(),
+        on: true,
+        queued: true,
+        result: Ok(()),
+    });
+    assert_eq!(later(&app).status_of("t9", None), LaterStatus::Archived);
+    // The menu's star of an old message: In progress explicitly.
+    deliver(&mut app, &sid, rc_msg("m6", "r1", T0 + 30, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Act("m6".into(), Act::Star))),
+    ));
+    assert_eq!(
+        later(&app).status_of("m6", Some(T0 + 30)),
+        LaterStatus::InProgress
+    );
+    // The pending edits wait in the config.
+    let _ = app.update(Message::Noop);
+    let pending: rustket_core::later::LaterBlob =
+        app.config.server(&sid).unwrap().pending_blob("A");
+    assert!(pending.is_seeded() && pending.status.contains_key("m6"));
+}

@@ -33,6 +33,12 @@ pub enum Act {
     /// the same call, worded for what the user sees.
     StarThread,
     UnstarThread,
+    /// "Remind me…" / "Edit reminder…" (the reminder dialog).
+    Remind,
+    EditReminder,
+    /// Later status of a message the user starred.
+    LaterDone,
+    LaterReopen,
     MarkUnread,
     StartDiscussion,
     Follow,
@@ -61,6 +67,10 @@ impl Act {
             Act::Unpin => Icon::PinOff,
             Act::Star | Act::StarThread => Icon::Star,
             Act::Unstar | Act::UnstarThread => Icon::StarOff,
+            Act::Remind => Icon::Clock,
+            Act::EditReminder => Icon::AlarmClock,
+            Act::LaterDone => Icon::CircleCheck,
+            Act::LaterReopen => Icon::RotateCcw,
             Act::MarkUnread => Icon::MailOpen,
             Act::StartDiscussion => Icon::MessagesSquare,
             Act::Follow => Icon::Bell,
@@ -89,6 +99,10 @@ impl Act {
             Act::Unstar => "room_timeline.act_unstar",
             Act::StarThread => "sidebar.star_thread",
             Act::UnstarThread => "sidebar.unstar_thread",
+            Act::Remind => "later.act_remind",
+            Act::EditReminder => "later.act_edit_reminder",
+            Act::LaterDone => "later.act_done",
+            Act::LaterReopen => "later.act_reopen",
             Act::MarkUnread => "room_timeline.act_mark_unread",
             Act::StartDiscussion => "room_timeline.act_start_discussion",
             Act::Follow => "room_timeline.act_follow",
@@ -107,7 +121,8 @@ impl Act {
     }
 
     /// Menu group; menus put a separator between groups. Respond, share,
-    /// organise (later: Remind me…, Mark as done after the star), destructive.
+    /// organise (Star, then Later's Mark as done and Remind me…),
+    /// destructive.
     pub fn group(self) -> u8 {
         match self {
             Act::React | Act::ReplyInThread | Act::Quote | Act::Reactions => 0,
@@ -175,6 +190,24 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
     } else if perm::can_star(ws, rid) {
         let starred = me.is_some_and(|id| m.is_starred_by(id));
         v.push(if starred { Act::Unstar } else { Act::Star });
+    }
+    let omni = ws
+        .room(rid)
+        .is_some_and(|e| matches!(e.room_type(), RoomType::Livechat | RoomType::Voip));
+    if ws.later_tracking() && !omni && me.is_some_and(|id| m.is_starred_by(id)) {
+        let status = ws.later().status_of(&m.id, rustket_core::later::ts_ms(m));
+        v.push(if status == rustket_core::later::LaterStatus::InProgress {
+            Act::LaterDone
+        } else {
+            Act::LaterReopen
+        });
+    }
+    if me.is_some() && subscribed && !omni {
+        v.push(if ws.reminders().get(&m.id).is_some() {
+            Act::EditReminder
+        } else {
+            Act::Remind
+        });
     }
     if subscribed && !own && !omnichannel {
         v.push(Act::MarkUnread);
@@ -698,6 +731,76 @@ mod tests {
             .map(|(i, _)| i)
             .collect();
         assert_eq!(seps, [2, 6, 9]);
+    }
+
+    /// Later's entries follow the star and its status; Remind me… becomes
+    /// Edit reminder… with a reminder set; neither in omnichannel rooms.
+    #[test]
+    fn later_and_reminder_entries() {
+        use rustket_core::later::{LaterBlob, LaterEdit, LaterStatus};
+        use rustket_core::reminders::{ReminderBlob, ReminderEdit};
+        use serde_json::json;
+        let starring = [("Message_AllowStarring", json!(true))];
+        let mut w = ws(&[], &starring, RoomType::Channel);
+        w.set_later_tracking(true);
+        let has = |w: &Workspace, m: &Message, a: Act| available(w, m, now()).contains(&a);
+        let plain = msg("a", "bob");
+        let mut starred = msg("b", "bob");
+        starred.starred = Some(vec![rocketchat::models::IdRef { id: "me".into() }]);
+        // Not starred: no Later status; a reminder is offered.
+        assert!(!has(&w, &plain, Act::LaterDone) && !has(&w, &plain, Act::LaterReopen));
+        assert!(has(&w, &plain, Act::Remind) && !has(&w, &plain, Act::EditReminder));
+        // Starred, in progress: Mark as done, right after Unstar.
+        let acts = available(&w, &starred, now());
+        let at = acts.iter().position(|a| *a == Act::Unstar).unwrap();
+        assert_eq!(acts[at + 1], Act::LaterDone);
+        assert!(!acts.contains(&Act::LaterReopen));
+        // Done: Move to In progress.
+        let mut later = LaterBlob::default();
+        let done = LaterEdit::Status {
+            rid: "r1".into(),
+            mid: "b".into(),
+            ts_ms: None,
+            status: LaterStatus::Done,
+        };
+        later
+            .edit(&LaterBlob::default(), &done, NOW, "dev")
+            .unwrap();
+        w.set_later_overlay(later);
+        assert!(has(&w, &starred, Act::LaterReopen) && !has(&w, &starred, Act::LaterDone));
+        // A reminder set: Edit reminder….
+        let mut reminders = ReminderBlob::default();
+        let set = ReminderEdit::Set {
+            rid: "r1".into(),
+            tmid: None,
+            mid: "a".into(),
+            at_ms: NOW + 60_000,
+        };
+        reminders
+            .edit(&ReminderBlob::default(), &set, NOW, "dev")
+            .unwrap();
+        w.set_reminder_overlay(reminders);
+        assert!(has(&w, &plain, Act::EditReminder) && !has(&w, &plain, Act::Remind));
+        // Later does not track (starring off): no status entries.
+        let mut off = ws(
+            &[],
+            &[("Message_AllowStarring", json!(false))],
+            RoomType::Channel,
+        );
+        off.set_later_tracking(true);
+        assert!(!has(&off, &starred, Act::LaterDone) && !has(&off, &starred, Act::LaterReopen));
+        assert!(has(&off, &plain, Act::Remind), "reminders still work");
+        // Omnichannel: neither.
+        let mut live = ws(&[], &starring, RoomType::Livechat);
+        live.set_later_tracking(true);
+        for a in [
+            Act::Remind,
+            Act::EditReminder,
+            Act::LaterDone,
+            Act::LaterReopen,
+        ] {
+            assert!(!has(&live, &starred, a), "{a:?}");
+        }
     }
 
     #[test]

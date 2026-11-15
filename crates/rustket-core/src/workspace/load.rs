@@ -151,6 +151,7 @@ impl Workspace {
             custom_statuses,
             saved_at: _,
             threads,
+            later,
         } = state;
         if self.me.is_none() {
             // Not connected: the own status is not known.
@@ -196,6 +197,8 @@ impl Workspace {
         // only while pins are on.
         self.apply_starred_threads();
         self.restore_threads(threads);
+        self.apply_later_tracking();
+        self.restore_later(later);
         self.from_cache = true;
         self.changes.rooms.extend(self.rooms.keys().cloned());
         self.mark(Dirty::ALL);

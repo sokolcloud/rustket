@@ -563,3 +563,21 @@ room_timeline.links_copied:
   es: "Enlaces copiados"
   th: "คัดลอกลิงก์แล้ว"
   zh: "链接已复制"
+room_timeline.remind_title:
+  en: "Remind me about this message"
+  ru: "Напомнить об этом сообщении"
+  es: "Recordarme este mensaje"
+  th: "เตือนฉันเกี่ยวกับข้อความนี้"
+  zh: "提醒我查看此消息"
+room_timeline.remind_set:
+  en: "Reminder set for %{time}"
+  ru: "Напоминание на %{time}"
+  es: "Recordatorio para %{time}"
+  th: "ตั้งการเตือนไว้ที่ %{time}"
+  zh: "已设置提醒：%{time}"
+room_timeline.remind_removed:
+  en: "Reminder removed"
+  ru: "Напоминание удалено"
+  es: "Recordatorio quitado"
+  th: "ลบการเตือนแล้ว"
+  zh: "提醒已删除"

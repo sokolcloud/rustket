@@ -578,11 +578,32 @@ pub struct UiPrefs {
     /// Publish the local UTC offset to the server after sign-in (as the web
     /// client does), so others see the user's local time.
     pub share_utc_offset: bool,
-    /// The pinned rows at the top of the sidebar (All unreads, Activity;
-    /// the views' shortcuts work either way).
+    /// The pinned rows at the top of the sidebar (All unreads, Activity,
+    /// Later; the views' shortcuts work either way).
     pub sidebar_pinned_views: bool,
     /// All unreads lists rooms with notifications disabled too.
     pub inbox_include_muted: bool,
+    /// Desktop notifications for message reminders (independent of the
+    /// message notifications).
+    pub reminder_notifications: bool,
+    /// Reminder notifications play a sound (with `sound` on).
+    pub reminder_sound: bool,
+    /// Hour the "Tomorrow" and "Next week" reminder presets use
+    /// ([`Self::morning_hour`] clamps it).
+    pub reminder_morning_hour: u8,
+}
+
+/// Hours the reminder presets may start at.
+pub const REMINDER_MORNING_HOURS: std::ops::RangeInclusive<u8> = 5..=12;
+
+impl UiPrefs {
+    /// The reminder presets' morning hour, within [`REMINDER_MORNING_HOURS`].
+    pub fn morning_hour(&self) -> u32 {
+        u32::from(self.reminder_morning_hour.clamp(
+            *REMINDER_MORNING_HOURS.start(),
+            *REMINDER_MORNING_HOURS.end(),
+        ))
+    }
 }
 
 impl Default for UiPrefs {
@@ -622,6 +643,9 @@ impl Default for UiPrefs {
             share_utc_offset: true,
             sidebar_pinned_views: true,
             inbox_include_muted: false,
+            reminder_notifications: true,
+            reminder_sound: true,
+            reminder_morning_hour: 9,
         }
     }
 }
@@ -745,6 +769,9 @@ const UI_KEYS: &[&str] = &[
     "share_utc_offset",
     "sidebar_pinned_views",
     "inbox_include_muted",
+    "reminder_notifications",
+    "reminder_sound",
+    "reminder_morning_hour",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -1777,6 +1804,23 @@ mod tests {
         c.ui.inbox_include_muted = true;
         let back = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
         assert!(!back.ui.sidebar_pinned_views && back.ui.inbox_include_muted);
+    }
+
+    #[test]
+    fn reminder_prefs_default_round_trip_and_clamp() {
+        let d = UiPrefs::default();
+        assert!(d.reminder_notifications && d.reminder_sound);
+        assert_eq!(d.morning_hour(), 9);
+        let c = AppConfig::parse("[ui]\nreminder_morning_hour = 3").unwrap();
+        assert_eq!(c.ui.morning_hour(), 5);
+        let c = AppConfig::parse("[ui]\nreminder_morning_hour = 20").unwrap();
+        assert_eq!(c.ui.morning_hour(), 12);
+        let mut c = AppConfig::default();
+        c.ui.reminder_sound = false;
+        c.ui.reminder_morning_hour = 7;
+        let back = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
+        assert!(!back.ui.reminder_sound && back.ui.reminder_notifications);
+        assert_eq!(back.ui.morning_hour(), 7);
     }
 
     #[test]

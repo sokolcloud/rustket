@@ -36,7 +36,7 @@ pub enum Shortcut {
     AllUnreads,
     /// Ctrl/Cmd+Shift+M: "Activity" (toggles).
     Activity,
-    /// Ctrl/Cmd+Shift+S, reserved for "Later".
+    /// Ctrl/Cmd+Shift+S: "Later" (toggles).
     Later,
 }
 
@@ -45,7 +45,7 @@ impl Shortcut {
     /// come are not matched (the key press passes through untouched) and
     /// are left out of the cheat sheet.
     pub const fn is_available(self) -> bool {
-        !matches!(self, Self::Later)
+        true
     }
 }
 
@@ -319,6 +319,26 @@ pub const GROUPS: &[Group] = &[
         ],
     },
     Group {
+        label: "shortcuts.group_later",
+        entries: &[
+            Entry {
+                label: "later.key_select",
+                chords: &[&[Token::Up], &[Token::Down]],
+                bound: Bound::Other,
+            },
+            Entry {
+                label: "later.act_open",
+                chords: &[&[Token::Enter]],
+                bound: Bound::Other,
+            },
+            Entry {
+                label: "later.key_toggle_done",
+                chords: &[&[Token::Char('e')]],
+                bound: Bound::Other,
+            },
+        ],
+    },
+    Group {
         label: "shortcuts.group_composer",
         entries: &[
             Entry {
@@ -510,8 +530,7 @@ mod tests {
         let a = Physical::Code(Code::KeyA);
         assert_eq!(global(&ch("ф"), a, cs), Some(Shortcut::AllUnreads));
         assert_eq!(global(&ch("a"), NONE, cmd), None, "needs Shift");
-        // Reserved chords pass through until their features land.
-        assert_eq!(global(&ch("s"), NONE, cs), None);
+        assert_eq!(global(&ch("s"), NONE, cs), Some(Shortcut::Later));
         // Alt (AltGr) is never part of an app-wide chord.
         assert_eq!(global(&ch("k"), NONE, cmd | Modifiers::ALT), None);
     }
@@ -590,9 +609,12 @@ mod tests {
         let mut seen: Vec<String> = Vec::new();
         let mut reserved = Vec::new();
         for g in GROUPS {
-            // Catch-up keys only act in that view: Enter is the composer's
-            // elsewhere.
-            let scoped = g.label == "shortcuts.group_catch_up";
+            // Catch-up and Later keys only act in their views: Enter and
+            // Up are the composer's elsewhere.
+            let scoped = matches!(
+                g.label,
+                "shortcuts.group_catch_up" | "shortcuts.group_later"
+            );
             for e in g.entries {
                 for chord in e.chords {
                     let shown = display_for(chord, false);
@@ -621,12 +643,15 @@ mod tests {
                 }
             }
         }
-        assert_eq!(reserved, ["Ctrl+Shift+S"]);
+        assert!(reserved.is_empty(), "{reserved:?}");
         assert_eq!(
             chord_of(Shortcut::AllUnreads).as_deref(),
             Some(display_for(&[Cmd, Shift, Token::Char('a')], cfg!(target_os = "macos")).as_str())
         );
-        assert_eq!(chord_of(Shortcut::Later), None);
+        assert_eq!(
+            chord_of(Shortcut::Later).as_deref(),
+            Some(display_for(&[Cmd, Shift, Token::Char('s')], cfg!(target_os = "macos")).as_str())
+        );
         for f in Format::ALL {
             assert!(format_chord(f).is_some(), "{f:?}");
         }

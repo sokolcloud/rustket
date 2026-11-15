@@ -243,6 +243,11 @@ pub enum Effect {
     /// Open the Settings on the mention groups ("Manage mention groups…" in
     /// the composer's `@` popup).
     ManageMentionGroups,
+    /// A Later edit (status of a starred message; the app's Later sync
+    /// stores it).
+    Later(rustket_core::later::LaterEdit),
+    /// A reminder edit (the app's reminder sync stores it).
+    Reminder(rustket_core::reminders::ReminderEdit),
 }
 
 /// Requests other room components make to the composer.

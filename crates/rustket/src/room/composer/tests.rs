@@ -1199,17 +1199,17 @@ fn app_wide_chords_are_swallowed_by_the_composer() {
         .as_deref(),
         Some("ReactLast")
     );
-    // All unreads and Activity work from the composer too.
-    for c in ["a", "m"] {
+    // All unreads, Activity and Later work from the composer too.
+    for c in ["a", "m", "s"] {
         assert!(swallowed(press(
             Key::Character(c.into()),
             Modifiers::COMMAND | Modifiers::SHIFT,
             Keys::default()
         )));
     }
-    // Reserved chords still reach the editor.
+    // Other chords still reach the editor.
     assert!(!swallowed(press(
-        Key::Character("s".into()),
+        Key::Character("d".into()),
         Modifiers::COMMAND | Modifiers::SHIFT,
         Keys::default()
     )));

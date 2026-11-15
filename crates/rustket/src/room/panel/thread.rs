@@ -177,6 +177,11 @@ impl Thread {
         self.tshow
     }
 
+    /// The reply to highlight.
+    pub fn focus(&self) -> Option<&str> {
+        self.focus.as_deref()
+    }
+
     /// Highlights reply `mid` once it is loaded.
     pub fn set_focus(&mut self, mid: Option<String>) {
         self.focus = mid;

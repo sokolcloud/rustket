@@ -139,6 +139,39 @@ pub struct CachedState {
     pub saved_at: Option<i64>,
     /// The sidebar's thread data.
     pub threads: CachedThreads,
+    /// The Later view's messages and scans.
+    pub later: CachedLater,
+}
+
+/// What the Later view had loaded: starred messages (and copies of messages
+/// with a reminder) and each room's last starred-messages scan.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CachedLater {
+    pub messages: Vec<Message>,
+    pub scans: Vec<CachedLaterScan>,
+}
+
+impl CachedLater {
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty() && self.scans.is_empty()
+    }
+
+    /// Drops what belongs to rooms `keep` rejects.
+    pub fn retain_rooms(&mut self, keep: impl Fn(&str) -> bool) {
+        self.messages.retain(|m| keep(&m.rid));
+        self.scans.retain(|s| keep(&s.rid));
+    }
+}
+
+/// A room's last starred-messages scan for Later.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CachedLaterScan {
+    #[serde(default)]
+    pub rid: String,
+    #[serde(default)]
+    pub scanned_at: Option<RcDate>,
+    #[serde(default)]
+    pub scanned_lm: Option<RcDate>,
 }
 
 /// What the sidebar's thread rows had loaded: followed sets of crawled
@@ -271,6 +304,8 @@ pub struct Batch {
     pub interrupted_uploads: Option<Vec<String>>,
     /// Replaces the sidebar's thread data.
     pub threads: Option<CachedThreads>,
+    /// Replaces the Later view's data.
+    pub later: Option<CachedLater>,
 }
 
 impl Batch {
@@ -288,6 +323,7 @@ impl Batch {
             && self.outbox.is_none()
             && self.interrupted_uploads.is_none()
             && self.threads.is_none()
+            && self.later.is_none()
     }
 
     /// Folds a later batch into this one (later values win).
@@ -315,6 +351,9 @@ impl Batch {
                 if let Some(t) = self.threads.as_mut() {
                     t.retain_rooms(|rid| listed.contains(rid));
                 }
+                if let Some(l) = self.later.as_mut() {
+                    l.retain_rooms(|rid| listed.contains(rid));
+                }
             }
             self.full = later.full;
         }
@@ -331,7 +370,8 @@ impl Batch {
             custom_statuses,
             outbox,
             interrupted_uploads,
-            threads
+            threads,
+            later
         );
         for r in later.rooms {
             if r.1.is_none() && r.2.is_none() {
@@ -340,6 +380,9 @@ impl Batch {
                 self.timelines.retain(|t| t.key.rid != r.0);
                 if let Some(t) = self.threads.as_mut() {
                     t.retain_rooms(|rid| rid != r.0);
+                }
+                if let Some(l) = self.later.as_mut() {
+                    l.retain_rooms(|rid| rid != r.0);
                 }
             }
             self.rooms.retain(|(rid, _, _)| *rid != r.0);

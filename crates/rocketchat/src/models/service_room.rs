@@ -2,7 +2,7 @@
 //!
 //! A private group owned by the user, hidden from the sidebar with `rooms.hide`.
 //! Its `customFields` hold client data that Rustket syncs between the user's
-//! devices (flags, mention groups). The server copies a room's `customFields` into every
+//! devices (flags, mention groups, Later status and reminders). The server copies a room's `customFields` into every
 //! member's subscription and notifies it, so each device reads them from its
 //! subscriptions, live and offline, without extra requests. Works on CE: only
 //! `create-p` (default for `user`) and the owner's `edit-room` are needed.
@@ -30,6 +30,12 @@ pub const SERVICE_FORMAT: u64 = 1;
 pub const FLAGS_KEY: &str = "rustketFlags";
 /// `customFields` key of the synced mention groups (names and usernames).
 pub const MENTION_GROUPS_KEY: &str = "rustketMentionGroups";
+/// `customFields` key of the synced Later state (status and due date of
+/// starred messages, by message id; no text).
+pub const LATER_KEY: &str = "rustketLater";
+/// `customFields` key of the synced message reminders (room, thread and
+/// message ids with a due time; no text).
+pub const REMINDERS_KEY: &str = "rustketReminders";
 /// Name prefix of the service room (see [`service_room_name`]).
 pub const SERVICE_ROOM_PREFIX: &str = "rustket-sync-";
 
@@ -404,6 +410,8 @@ mod tests {
         assert!(f.set(FLAGS_KEY, json!({ "rooms": {} })));
         assert_eq!(f.get(FLAGS_KEY), Some(&json!({ "rooms": {} })));
         assert!(f.set(MENTION_GROUPS_KEY, json!({ "groups": {} })));
+        assert!(f.set(LATER_KEY, json!({ "status": {}, "due": {} })));
+        assert!(f.set(REMINDERS_KEY, json!({ "items": {} })));
         assert_eq!(
             f.to_custom_fields(),
             json!({
@@ -411,6 +419,8 @@ mod tests {
                 "rustketOther": { "a": 1 },
                 "rustketFlags": { "rooms": {} },
                 "rustketMentionGroups": { "groups": {} },
+                "rustketLater": { "status": {}, "due": {} },
+                "rustketReminders": { "items": {} },
             })
         );
         let mut old = ServiceFields::parse(Some(&json!({

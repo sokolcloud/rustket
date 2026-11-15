@@ -134,6 +134,13 @@ pub fn is_decrypted(m: &Message) -> bool {
     )
 }
 
+/// Whether `m` is encrypted and not shown decrypted by this process: its
+/// server text (an old format's ciphertext, or plaintext next to an
+/// envelope) must not be shown as the message.
+pub fn undecrypted(m: &Message) -> bool {
+    super::room::is_encrypted_message(m) && !is_decrypted(m)
+}
+
 /// Where quoted messages come from.
 pub trait Quotes {
     /// A quoted message by id (decrypted when it is encrypted), if known.

@@ -322,6 +322,7 @@ impl Workspace {
         if self.feeds.drop_room(rid) {
             self.mark(Dirty::FEEDS);
         }
+        self.later_forget_room(rid);
         self.outbox.retain(|_, i| i.message.rid != rid);
         self.ephemeral.remove(rid);
         if self.timelines.remove(rid).is_some() {
@@ -404,6 +405,7 @@ impl Workspace {
         if self.feeds.apply(&m, me) {
             self.mark(Dirty::FEEDS);
         }
+        self.later_observe(&m);
         if m.hidden == Some(true) {
             return;
         }
@@ -468,6 +470,7 @@ impl Workspace {
 
     pub fn apply_message_deleted(&mut self, rid: &str, id: &str) {
         self.forget_ephemeral(rid, id);
+        self.later_remove(id);
         if self.feeds.remove(rid, id) {
             self.mark(Dirty::FEEDS);
         }

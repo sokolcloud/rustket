@@ -178,6 +178,9 @@ pub enum Message {
     SetPreview(bool),
     SetSound(bool),
     TestNotification,
+    SetReminderNotifications(bool),
+    SetReminderSound(bool),
+    SetReminderMorningHour(u8),
     /// Shows a tab (scrolled to its top).
     Tab(Tab),
     SetCloseToTray(bool),
@@ -381,6 +384,11 @@ impl Settings {
             Message::SetNotifications(v) => Self::pref(ctx, |p| p.desktop_notifications = v),
             Message::SetPreview(v) => Self::pref(ctx, |p| p.notification_preview = v),
             Message::SetSound(v) => Self::pref(ctx, |p| p.sound = v),
+            Message::SetReminderNotifications(v) => {
+                Self::pref(ctx, |p| p.reminder_notifications = v)
+            }
+            Message::SetReminderSound(v) => Self::pref(ctx, |p| p.reminder_sound = v),
+            Message::SetReminderMorningHour(h) => Self::pref(ctx, |p| p.reminder_morning_hour = h),
             Message::TestNotification => Action::effect(Effect::TestNotification),
             Message::Tab(tab) => {
                 self.tab = tab;
@@ -559,6 +567,13 @@ mod tests {
             }),
             (Message::SetPreview(false), |c| !c.notification_preview),
             (Message::SetSound(false), |c| !c.sound),
+            (Message::SetReminderNotifications(false), |c| {
+                !c.reminder_notifications
+            }),
+            (Message::SetReminderSound(false), |c| !c.reminder_sound),
+            (Message::SetReminderMorningHour(7), |c| {
+                c.reminder_morning_hour == 7
+            }),
             (Message::SetCloseToTray(false), |c| !c.close_to_tray),
             (Message::SetMinimizeToTray(true), |c| c.minimize_to_tray),
             (Message::SetStartMinimized(true), |c| c.start_minimized),

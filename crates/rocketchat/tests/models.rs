@@ -798,6 +798,33 @@ fn service_room_fields_with_mention_groups() {
     assert_eq!(out[SERVICE_MARKER_KEY]["owner"], "Er3h8XYKahaopbSA7");
 }
 
+/// A service room holding Later's state and the reminders next to the
+/// flags (captured from the dev server): writing one key keeps the others,
+/// tombstones (`null`-free entries with only `t`/`d`) round-trip.
+#[test]
+fn service_room_fields_with_later_and_reminders() {
+    let sub: Subscription = get("subscriptions_get_one_service_later", "subscription");
+    assert!(sub.is_service_room_of("Er3h8XYKahaopbSA7"));
+    let mut fields = sub.service_fields().unwrap();
+    let later = fields.get(LATER_KEY).unwrap();
+    assert_eq!(later["status"]["Ab3cD4eF5gH6iJ7kL"]["s"], "done");
+    assert!(later["status"]["Yz3aB4cD5eF6gH7iJ"].get("s").is_none());
+    assert_eq!(later["seeded"]["t"], 1_794_700_000_000i64);
+    let reminders = fields.get(REMINDERS_KEY).unwrap();
+    assert_eq!(
+        reminders["items"]["Wx3yZ4aB5cD6eF7gH"]["m"],
+        "Kl8mN9oP0qR1sT2uV"
+    );
+    fields.set(REMINDERS_KEY, serde_json::json!({ "v": 1, "items": {} }));
+    let out = fields.to_custom_fields();
+    assert_eq!(
+        out[LATER_KEY]["due"]["Ab3cD4eF5gH6iJ7kL"]["at"],
+        1_794_800_000_000i64
+    );
+    assert_eq!(out[REMINDERS_KEY]["items"], serde_json::json!({}));
+    assert!(out.get(FLAGS_KEY).is_some());
+}
+
 /// A sent group mention `@backend (@bob @carol)`: the server takes the
 /// parenthesised names as mentions (an unknown `@backend` is ignored).
 #[test]

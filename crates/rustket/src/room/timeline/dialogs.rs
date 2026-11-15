@@ -39,6 +39,13 @@ pub enum Dialog {
         mid: String,
         tab: Option<String>,
     },
+    /// "Remind me about this message".
+    Remind {
+        mid: String,
+        rid: String,
+        tmid: Option<String>,
+        picker: crate::later::when::WhenPicker,
+    },
 }
 
 pub const REPORT_INPUT_ID: &str = "timeline-report-description";
@@ -56,6 +63,33 @@ pub fn delete(busy: bool) -> Element<'static, Message> {
             danger_button(
                 t!("room_timeline.delete_confirm").into_owned(),
                 (!busy).then_some(Message::ConfirmDelete),
+            )
+            .into(),
+        ],
+        Some(Message::CloseDialog),
+    )
+}
+
+/// The reminder dialog: a line of the message and the time picker.
+pub fn remind<'a>(
+    excerpt: String,
+    picker: &'a crate::later::when::WhenPicker,
+    ctx: &ViewCtx<'a>,
+) -> Element<'a, Message> {
+    let now = chrono::Local::now();
+    dialog(
+        t!("room_timeline.remind_title").into_owned(),
+        column![
+            text(excerpt).size(TEXT_SMALL).style(style::text_secondary),
+            picker
+                .view(now, ctx.prefs.morning_hour(), ctx.prefs.clock_24h)
+                .map(Message::Remind),
+        ]
+        .spacing(SPACE_3),
+        vec![
+            secondary_button(
+                t!("room_timeline.cancel").into_owned(),
+                Some(Message::CloseDialog),
             )
             .into(),
         ],

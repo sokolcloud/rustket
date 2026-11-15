@@ -32,11 +32,14 @@ use std::time::{Duration, Instant};
 
 use iced::Task;
 use rocketchat::models::{
-    FLAGS_KEY, MENTION_GROUPS_KEY, Room, ServiceBinding, ServiceFields, service_room_name,
+    FLAGS_KEY, LATER_KEY, MENTION_GROUPS_KEY, REMINDERS_KEY, Room, ServiceBinding, ServiceFields,
+    service_room_name,
 };
 use rocketchat::{Error, RestClient};
 use rustket_core::flags::{FlagBlob, FlagStore};
+use rustket_core::later::LaterBlob;
 use rustket_core::mention_groups::MentionGroupBlob;
+use rustket_core::reminders::ReminderBlob;
 use rustket_core::service_sync::{
     self as core, EditBlob, FieldsStore, KeyCheck, LastWrite, Part, Remembering, SyncBlob,
 };
@@ -444,6 +447,12 @@ pub trait ServiceKey: std::fmt::Debug + Default + Send + 'static {
     /// The pending edits the workspace shows.
     fn overlay(ws: &Workspace) -> &Self::Blob;
     fn set_overlay(ws: &mut Workspace, overlay: Self::Blob);
+    /// The overlay holds bookkeeping only (Later's seed): it does not count
+    /// as pending and never creates the service room on its own; it goes
+    /// out once a service room exists.
+    fn bookkeeping(_overlay: &Self::Blob) -> bool {
+        false
+    }
 }
 
 /// What every synced key as this device shows it (stored entries with its
@@ -456,6 +465,14 @@ fn charged(ws: &Workspace, now_ms: i64) -> Vec<(&'static str, usize)> {
             MENTION_GROUPS_KEY,
             shown_bytes::<super::mention_groups::MentionGroupsKey>(ws, now_ms),
         ),
+        (
+            LATER_KEY,
+            shown_bytes::<super::later_sync::LaterKey>(ws, now_ms),
+        ),
+        (
+            REMINDERS_KEY,
+            shown_bytes::<super::later_sync::RemindersKey>(ws, now_ms),
+        ),
     ]
 }
 
@@ -465,6 +482,8 @@ pub fn key_checks() -> Vec<KeyCheck> {
     vec![
         KeyCheck::of::<FlagBlob>(),
         KeyCheck::of::<MentionGroupBlob>(),
+        KeyCheck::of::<LaterBlob>(),
+        KeyCheck::of::<ReminderBlob>(),
     ]
 }
 
@@ -558,7 +577,7 @@ impl<K: ServiceKey> BlobSync<K> {
     pub fn status(&self) -> Status {
         if let Some(e) = &self.failed {
             Status::Failed(e.clone())
-        } else if self.overlay.is_empty() {
+        } else if self.overlay.is_empty() || K::bookkeeping(&self.overlay) {
             Status::Synced
         } else {
             Status::Pending
@@ -698,11 +717,15 @@ impl<K: ServiceKey> BlobSync<K> {
 
     /// The overlay has entries to store and nothing keeps it from going out
     /// with the next push of the server (it may still wait for its own
-    /// time, [`Self::plan`]).
+    /// time, [`Self::plan`]). Bookkeeping alone waits for a service room
+    /// ([`ServiceKey::bookkeeping`]).
     pub(super) fn ready(&self, ws: &Workspace) -> bool {
         !self.in_flight
             && self.failed.is_none()
             && !self.overlay.is_empty()
+            && !(K::bookkeeping(&self.overlay)
+                && self.created.is_none()
+                && ws.service_rooms().is_empty())
             && !self.confirmed.covers_at(&self.overlay, now_ms())
             && self.live(ws)
     }

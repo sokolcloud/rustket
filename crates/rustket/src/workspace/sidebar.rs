@@ -81,8 +81,10 @@ pub enum Message {
     },
     /// A header drag is at the list's edge: scroll by this much.
     AutoScroll(f32),
-    /// A pinned row (All unreads, Activity).
+    /// A pinned row (All unreads, Activity; Later is `Later`).
     Inbox(crate::inbox::InboxKind),
+    /// The Later pinned row.
+    Later,
 }
 
 /// Context menu actions of a section header.
@@ -195,6 +197,8 @@ pub enum Out {
     ScrollBy(f32),
     /// Open an inbox view (pinned rows, "Catch up").
     Inbox(crate::inbox::InboxKind),
+    /// Open the Later view (its pinned row).
+    Later,
 }
 
 #[derive(Clone, Copy)]
@@ -211,6 +215,8 @@ pub struct SidebarCtx<'a> {
     /// The inbox view in place of the room area (its pinned row is
     /// highlighted).
     pub inbox_open: Option<crate::inbox::InboxKind>,
+    /// The Later view is in place of the room area.
+    pub later_open: bool,
     pub now: Instant,
 }
 
@@ -423,6 +429,7 @@ impl Sidebar {
             Message::Reorder { dragged, before } => self.reorder(dragged, before),
             Message::AutoScroll(dy) => Out::ScrollBy(dy),
             Message::Inbox(kind) => Out::Inbox(kind),
+            Message::Later => Out::Later,
             Message::Header(act) => match act {
                 HeaderAct::Layout(e) => Out::Layout(e),
                 HeaderAct::Refresh => Out::RefreshThreads,
@@ -1321,6 +1328,11 @@ pub(crate) fn activity_badge(c: &rustket_core::inbox::InboxCounts) -> Option<(u6
     }
 }
 
+/// The badge of the Later row: a red counter of overdue reminders.
+pub(crate) fn later_badge(overdue: usize) -> Option<(u64, BadgeKind)> {
+    (overdue > 0).then_some((overdue as u64, BadgeKind::Mention))
+}
+
 /// The rows pinned under the search (`UiPrefs::sidebar_pinned_views`).
 fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
     use crate::inbox::InboxKind;
@@ -1343,8 +1355,18 @@ fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
         open == Some(InboxKind::Activity),
         Message::Inbox(InboxKind::Activity),
     );
-    // The Later row joins here.
-    column![unreads, activity]
+    let overdue = ctx
+        .workspace
+        .overdue_reminders(chrono::Utc::now().timestamp_millis());
+    let later = pinned_row(
+        Icon::BookmarkCheck,
+        t!("later.title").into_owned(),
+        chord_of(Shortcut::Later),
+        later_badge(overdue),
+        ctx.later_open,
+        Message::Later,
+    );
+    column![unreads, activity, later]
         .spacing(0)
         .padding([0.0, SPACE_2])
         .into()
@@ -2009,6 +2031,7 @@ mod tests {
                     active_room: None,
                     active_thread: None,
                     inbox_open: None,
+                    later_open: false,
                     now: Instant::now(),
                 };
                 self.sidebar.view(&ctx, iced::widget::space().into())
@@ -2258,6 +2281,7 @@ mod tests {
                 active_room: None,
                 active_thread: None,
                 inbox_open: None,
+                later_open: false,
                 now: Instant::now(),
             });
             assert!(start > 200 && end <= ROOMS + 3, "{start}..{end}");
@@ -2282,6 +2306,7 @@ mod tests {
                 active_room: None,
                 active_thread: None,
                 inbox_open: None,
+                later_open: false,
                 now: Instant::now(),
             };
             assert_eq!(fx.sidebar.window(&ctx), (0, 2));
@@ -2595,6 +2620,7 @@ mod tests {
                 active_room: None,
                 active_thread: None,
                 inbox_open: None,
+                later_open: false,
                 now: Instant::now(),
             }
         }
@@ -4005,11 +4031,16 @@ mod pinned_tests {
                 active_room: None,
                 active_thread: None,
                 inbox_open: None,
+                later_open: false,
                 now: Instant::now(),
             };
             crate::tree_probe::texts(sb.view(&ctx, iced::widget::space().into()))
         };
-        let labels = [t!("inbox.all_unreads"), t!("inbox.activity")];
+        let labels = [
+            t!("inbox.all_unreads"),
+            t!("inbox.activity"),
+            t!("later.title"),
+        ];
         let mut prefs = UiPrefs {
             sidebar_pinned_views: true,
             ..UiPrefs::default()
@@ -4030,6 +4061,7 @@ mod pinned_tests {
             active_room: None,
             active_thread: None,
             inbox_open: None,
+            later_open: false,
             now: Instant::now(),
         };
         assert!(crate::tree_probe::key_captured(
@@ -4046,5 +4078,13 @@ mod pinned_tests {
             s.update(Message::Inbox(crate::inbox::InboxKind::Activity)),
             Out::Inbox(crate::inbox::InboxKind::Activity)
         ));
+        assert!(matches!(s.update(Message::Later), Out::Later));
+    }
+
+    /// The Later row counts overdue reminders in red; none, no badge.
+    #[test]
+    fn later_row_badge_counts_overdue_reminders() {
+        assert_eq!(later_badge(0), None);
+        assert_eq!(later_badge(3), Some((3, BadgeKind::Mention)));
     }
 }

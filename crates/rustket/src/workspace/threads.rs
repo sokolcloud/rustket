@@ -32,7 +32,8 @@
 //! dropped threads (deleted, hidden) or when its set shrank since.
 //!
 //! Starred threads (Favorites) are tracked whatever the Threads mode is,
-//! while the thread index has pins on. Live updates and every parent copy
+//! while the thread index has pins on, and every starred message is for
+//! Later (`Workspace::scans_starred`; Later keeps its own scan records). Live updates and every parent copy
 //! keep their star state current; stars made while this device was away,
 //! or on threads it never indexed, are found by scanning each listed room's
 //! starred messages (`chat.getStarredMessages`, its own route and limit:
@@ -591,6 +592,9 @@ struct TickKey {
     sync: u64,
     connection: u64,
     me: u64,
+    /// Later's state (its starred-message scans).
+    later: u64,
+    scans_starred: bool,
     from_cache: bool,
 }
 
@@ -607,6 +611,8 @@ impl TickKey {
             sync: ws.revision(Dirty::SYNC),
             connection: ws.revision(Dirty::CONNECTION),
             me: ws.revision(Dirty::ME),
+            later: ws.revision(Dirty::LATER),
+            scans_starred: ws.scans_starred(),
             from_cache: ws.from_cache(),
         }
     }
@@ -695,10 +701,12 @@ pub fn plan(
     st: &SidebarThreads,
     now: Instant,
 ) -> Next {
-    let pins = ws.thread_index().pins_enabled();
-    if !ws.thread_index().indexing()
+    // Starred scans serve the starred threads in Favorites and Later
+    // (`Workspace::scans_starred`); the other loads need the thread index.
+    let stars = ws.scans_starred();
+    let threads = ws.thread_index().indexing() && ws.settings().threads_enabled();
+    if !(stars || threads)
         || st.in_flight.is_some()
-        || !ws.settings().threads_enabled()
         || ws.from_cache()
         || *ws.connection() != ConnectionState::Connected
         || ws.user_id().is_none()
@@ -706,9 +714,9 @@ pub fn plan(
         return Next::Idle;
     }
     let mut wake = None;
-    if let Some(p) = st.paused_until.filter(|p| *p > now) {
+    if let Some(p) = st.paused_until.filter(|p| threads && *p > now) {
         wake = Some(p);
-    } else {
+    } else if threads {
         let bound = Bound::new(ws, mode, cap);
         let page = cap.followed_page();
         let list = (mode != ThreadsMode::Off)
@@ -730,7 +738,7 @@ pub fn plan(
             wake = earliest(wake, at);
         }
     }
-    if pins {
+    if stars {
         if let Some(p) = st.starred_paused_until.filter(|p| *p > now) {
             wake = earliest(wake, p);
         } else if let Some(f) = st.starred_candidate(ws, now, &mut wake) {
@@ -894,11 +902,7 @@ impl SidebarThreads {
         match self.starred_passes.get(rid) {
             Some(p) if p.pages > 0 && p.pages % STARRED_PAGES_PER_TURN == 0 => Some(2),
             Some(_) => Some(0),
-            None if self.starred_due.contains(rid)
-                || ws.thread_index().starred_scan(rid).is_none() =>
-            {
-                Some(1)
-            }
+            None if self.starred_due.contains(rid) || ws.starred_scan(rid).is_none() => Some(1),
             None => None,
         }
     }
@@ -1162,14 +1166,14 @@ impl SidebarThreads {
         }
     }
 
-    /// Starred-scan bookkeeping: everything goes with pins off; scans under
+    /// Starred-scan bookkeeping: everything goes with scans off (neither
+    /// starred threads nor Later, `Workspace::scans_starred`); scans under
     /// way of rooms left are dropped; once the workspace is live, each scan
     /// not checked yet in this session (restored from the offline cache) is
     /// due when the room had messages since or it is older than
     /// [`STARRED_RESCAN_TTL`].
     fn observe_starred(&mut self, ws: &Workspace) {
-        let idx = ws.thread_index();
-        if !idx.pins_enabled() {
+        if !ws.scans_starred() {
             self.starred_due.clear();
             self.starred_passes.clear();
             self.starred_checked.clear();
@@ -1183,16 +1187,16 @@ impl SidebarThreads {
         }
         let now_ms = RcDate::now().timestamp_millis();
         let ttl_ms = STARRED_RESCAN_TTL.as_millis() as i64;
-        for (rid, scan) in idx.starred_scans() {
-            if self.starred_checked.contains(rid) {
+        for (rid, scan) in ws.starred_scans() {
+            if self.starred_checked.contains(&rid) {
                 continue;
             }
-            self.starred_checked.insert(rid.to_owned());
+            self.starred_checked.insert(rid.clone());
             let old = scan
                 .scanned_at
                 .is_none_or(|at| now_ms.saturating_sub(at.timestamp_millis()) > ttl_ms);
-            if old || ws.room(rid).and_then(room_lm) > scan.lm {
-                self.starred_due.insert(rid.to_owned());
+            if old || ws.room(&rid).and_then(room_lm) > scan.lm {
+                self.starred_due.insert(rid);
                 self.changed = true;
             }
         }
@@ -1220,7 +1224,7 @@ impl SidebarThreads {
         self.starred_passes.clear();
         let idx = ws.thread_index();
         for (e, s) in scanned_rooms(ws) {
-            if idx.starred_scan(&s.rid).is_some()
+            if ws.starred_scan(&s.rid).is_some()
                 && lm_before.get(&s.rid).is_some_and(|lm| *lm != room_lm(e))
             {
                 self.starred_due.insert(s.rid.clone());
@@ -1362,6 +1366,26 @@ impl SidebarThreads {
     /// Following crawl progress as of the last `tick`.
     pub fn progress(&self) -> Option<(usize, usize)> {
         self.progress
+    }
+
+    /// Starred-message scans while rooms are still to be scanned: (rooms
+    /// done, rooms in all). `None` when every room is scanned or scans are
+    /// off (the Later view's progress line).
+    pub fn starred_progress(&self, ws: &Workspace) -> Option<(usize, usize)> {
+        if !ws.scans_starred() || *ws.connection() != ConnectionState::Connected {
+            return None;
+        }
+        let (mut done, mut total) = (0, 0);
+        for (_, s) in scanned_rooms(ws) {
+            if self.starred_failed.contains(&s.rid) {
+                continue;
+            }
+            total += 1;
+            if self.starred_tier(ws, &s.rid).is_none() {
+                done += 1;
+            }
+        }
+        (done < total).then_some((done, total))
     }
 
     /// Sets the pacing timer unless one fires earlier.
@@ -1678,9 +1702,9 @@ impl SidebarThreads {
         self.changed = true;
         self.starred_failed.clear();
         self.backoff.retain(|k, _| !matches!(k, Key::Starred(_)));
-        for (rid, _) in ws.thread_index().starred_scans() {
-            if !self.starred_passes.contains_key(rid) {
-                self.starred_due.insert(rid.to_owned());
+        for (rid, _) in ws.starred_scans() {
+            if !self.starred_passes.contains_key(&rid) {
+                self.starred_due.insert(rid);
             }
         }
     }
@@ -3821,6 +3845,24 @@ mod tests {
         fx.ws.set_starred_threads(false);
         add_lm(&mut fx.ws, "c", 50);
         assert_eq!(fx.plan(50_000), Next::Idle);
+    }
+
+    /// Later keeps scanning with the starred threads off; turned on again,
+    /// every room is scanned for them once more (Later's records do not
+    /// hide that the thread index has none).
+    #[test]
+    fn starred_threads_turned_on_again_rescan_while_later_tracks() {
+        let mut fx = pinned(ThreadsMode::Off);
+        fx.ws.set_later_tracking(true);
+        add_lm(&mut fx.ws, "a", 100);
+        assert_eq!(fx.start(0), Next::Fetch(scan("a", 0, Some(100))));
+        scan_done(&mut fx, 100, "a", 0, starred_page(Vec::new(), 0, 0, 0));
+        assert_eq!(fx.plan(20_000), Next::Idle);
+        fx.ws.set_starred_threads(false);
+        assert!(fx.ws.scans_starred());
+        assert_eq!(fx.plan(30_000), Next::Idle, "Later's scan stands");
+        fx.ws.set_starred_threads(true);
+        assert_eq!(fx.start(40_000), Next::Fetch(scan("a", 0, Some(100))));
     }
 
     #[test]

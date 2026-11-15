@@ -2,6 +2,7 @@
 
 pub mod flag_menu;
 pub mod flags;
+pub mod later_sync;
 pub mod mention_groups;
 pub mod rail;
 pub mod service_sync;
@@ -25,6 +26,8 @@ use crate::session::{SessionHandle, SessionSpec, tls_for};
 pub struct ServicePushed {
     pub flags: Option<flags::Msg>,
     pub mention_groups: Option<mention_groups::Msg>,
+    pub later: Option<later_sync::LaterMsg>,
+    pub reminders: Option<later_sync::ReminderMsg>,
 }
 
 /// A view shown in place of the room area (the active room stays open
@@ -34,18 +37,36 @@ pub struct ServicePushed {
 pub enum MainView {
     /// All unreads, Catch up or Activity (`crate::inbox`).
     Inbox(crate::inbox::InboxScreen),
+    /// Starred messages and reminders (`crate::later`).
+    Later(crate::later::LaterView),
 }
 
 impl MainView {
     pub fn inbox(&self) -> Option<&crate::inbox::InboxScreen> {
         match self {
             MainView::Inbox(i) => Some(i),
+            MainView::Later(_) => None,
         }
     }
 
     pub fn inbox_mut(&mut self) -> Option<&mut crate::inbox::InboxScreen> {
         match self {
             MainView::Inbox(i) => Some(i),
+            MainView::Later(_) => None,
+        }
+    }
+
+    pub fn later(&self) -> Option<&crate::later::LaterView> {
+        match self {
+            MainView::Later(l) => Some(l),
+            MainView::Inbox(_) => None,
+        }
+    }
+
+    pub fn later_mut(&mut self) -> Option<&mut crate::later::LaterView> {
+        match self {
+            MainView::Later(l) => Some(l),
+            MainView::Inbox(_) => None,
         }
     }
 }
@@ -75,6 +96,10 @@ pub struct ServerState {
     pub flags: flags::FlagSync,
     /// Sync of the account's mention groups (`workspace::mention_groups`).
     pub mention_groups: mention_groups::MentionGroupSync,
+    /// Sync of the account's Later state (`workspace::later_sync`).
+    pub later: later_sync::LaterSync,
+    /// Sync of the account's reminders (`workspace::later_sync`).
+    pub reminders: later_sync::ReminderSync,
     /// What the synced keys of the account share: the write lock
     /// (`workspace::service_sync`).
     pub service: service_sync::Shared,
@@ -105,6 +130,8 @@ pub struct ServerState {
     pub main_view: Option<MainView>,
     /// What the inbox views keep while closed (skipped rooms, loader).
     pub inbox: crate::inbox::InboxState,
+    /// What Later keeps while closed (the fetch of reminder copies).
+    pub later_state: crate::later::LaterState,
 }
 
 impl ServerState {
@@ -143,6 +170,8 @@ impl ServerState {
             threads: threads::SidebarThreads::default(),
             flags: flags::FlagSync::default(),
             mention_groups: mention_groups::MentionGroupSync::default(),
+            later: later_sync::LaterSync::default(),
+            reminders: later_sync::ReminderSync::default(),
             service: service_sync::Shared::default(),
             rooms: HashMap::new(),
             active_room: None,
@@ -159,6 +188,7 @@ impl ServerState {
             reads: Default::default(),
             main_view: None,
             inbox: Default::default(),
+            later_state: Default::default(),
         })
     }
 
@@ -201,10 +231,13 @@ impl ServerState {
         self.threads.reset();
         self.flags.reset();
         self.mention_groups.reset();
+        self.later.reset();
+        self.reminders.reset();
         // `service` stays: a push of the old session may still hold its lock.
         self.reads.clear();
         self.main_view = None;
         self.inbox.reset();
+        self.later_state = Default::default();
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;
@@ -218,11 +251,16 @@ impl ServerState {
         &mut self,
     ) -> (
         &rustket_core::Workspace,
-        [&mut dyn service_sync::Syncing; 2],
+        [&mut dyn service_sync::Syncing; 4],
     ) {
         (
             &self.workspace,
-            [&mut self.flags.sync, &mut self.mention_groups],
+            [
+                &mut self.flags.sync,
+                &mut self.mention_groups,
+                &mut self.later,
+                &mut self.reminders,
+            ],
         )
     }
 
@@ -244,7 +282,10 @@ impl ServerState {
     }
 
     /// The parts of a push, when one key's time has come.
-    fn service_parts(&mut self, now: std::time::Instant) -> Option<Vec<service_sync::Outgoing>> {
+    pub(crate) fn service_parts(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<Vec<service_sync::Outgoing>> {
         let (ws, mut syncs) = self.service_syncs();
         service_sync::take_parts(ws, &mut syncs, now)
     }
@@ -261,13 +302,19 @@ impl ServerState {
         service_sync::pause_on_rate_limit(o, &mut syncs, now);
         let flags = self.flags.finish(o);
         let groups = self.mention_groups.finish(o);
+        let later = self.later.finish(o);
+        let reminders = self.reminders.finish(o);
         if let Some(rid) = o.rid() {
             self.flags.adopt_created(rid);
             self.mention_groups.adopt_created(rid);
+            self.later.adopt_created(rid);
+            self.reminders.adopt_created(rid);
         }
         ServicePushed {
             flags: flags.map(|(epoch, res)| flags::Msg::Pushed { epoch, res }),
             mention_groups: groups.map(|(epoch, res)| service_sync::Msg::Pushed { epoch, res }),
+            later: later.map(|(epoch, res)| service_sync::Msg::Pushed { epoch, res }),
+            reminders: reminders.map(|(epoch, res)| service_sync::Msg::Pushed { epoch, res }),
         }
     }
 
@@ -291,6 +338,11 @@ impl ServerState {
     /// The open inbox view, if any.
     pub fn inbox_view(&self) -> Option<&crate::inbox::InboxScreen> {
         self.main_view.as_ref().and_then(MainView::inbox)
+    }
+
+    /// The open Later view, if any.
+    pub fn later_view(&self) -> Option<&crate::later::LaterView> {
+        self.main_view.as_ref().and_then(MainView::later)
     }
 
     /// Closes the view in place of the room area (a room opens, Esc).

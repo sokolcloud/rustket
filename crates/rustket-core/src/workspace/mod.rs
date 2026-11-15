@@ -29,7 +29,10 @@ use crate::timeline::{Timeline, TimelineItem};
 use crate::typing::{TypingLabel, TypingState};
 use crate::uikit::UiKitStore;
 
+mod later;
 mod load;
+
+pub use later::{LaterRow, LaterTab};
 mod mention_groups;
 mod realtime;
 mod thread_parents;
@@ -70,9 +73,12 @@ impl Dirty {
     /// Synced flags: the stored blob, the pending overlay or the effective
     /// flags (see [`Workspace::flags`]).
     pub const FLAGS: Self = Self(1 << 16);
-    /// Synced Later state of starred messages (reserved).
+    /// Later: the synced state of starred messages (stored blob, overlay)
+    /// and the index of starred messages and their scans (see
+    /// [`Workspace::later`], [`Workspace::later_index`]).
     pub const LATER: Self = Self(1 << 17);
-    /// Synced message reminders (reserved).
+    /// Synced message reminders: the stored blob, the overlay or the live
+    /// reminders (see [`Workspace::reminders`]).
     pub const REMINDERS: Self = Self(1 << 18);
     /// Synced mention groups: the stored blob, the pending overlay or the
     /// effective groups (see [`Workspace::mention_groups`]).
@@ -307,6 +313,25 @@ pub struct Workspace {
     mention_group_overlay: MentionGroupBlob,
     /// `mention_group_blob` merged with `mention_group_overlay`.
     mention_groups: MentionGroups,
+    /// The Later blob of the user's service rooms.
+    later_blob: crate::later::LaterBlob,
+    /// This device's Later edits not known to be stored yet.
+    later_overlay: crate::later::LaterBlob,
+    /// `later_blob` merged with `later_overlay`.
+    later: crate::later::LaterBlob,
+    /// The reminders blob of the user's service rooms.
+    reminder_blob: crate::reminders::ReminderBlob,
+    /// This device's reminder edits not known to be stored yet.
+    reminder_overlay: crate::reminders::ReminderBlob,
+    /// The live reminders of `reminder_blob` merged with `reminder_overlay`.
+    reminders: crate::reminders::Reminders,
+    /// Starred messages and reminder copies for the Later view.
+    later_index: crate::later::LaterIndex,
+    /// The app wants starred messages tracked for Later.
+    later_wanted: bool,
+    /// Starred messages are tracked for Later (wanted, and starring allowed
+    /// on the server).
+    later_tracking: bool,
     /// The user's own service rooms, primary first.
     service_rooms: Vec<String>,
     /// Unread messages and thread mentions of the All unreads and Activity
@@ -659,24 +684,30 @@ impl Workspace {
         self.e2e = manager;
     }
 
-    /// Rooms with an open room or thread timeline, or with an inbox feed.
+    /// Rooms with an open room or thread timeline, an inbox feed or a
+    /// message in the Later index.
     pub fn rooms_with_timelines(&self) -> HashSet<String> {
         self.timelines
             .keys()
             .cloned()
             .chain(self.threads.values().map(|t| t.rid().to_owned()))
             .chain(self.feeds.rooms().cloned())
+            .chain(self.later_index.rooms().cloned())
             .collect()
     }
 
     /// Rewrites the messages of room `rid` in place: its room timeline, its
-    /// thread timelines, its inbox feed and the room's last message (see
-    /// [`Timeline::rewrite`]). Changed timelines and rooms are marked. Returns
-    /// whether anything changed.
+    /// thread timelines, its inbox feed, its Later messages and the room's
+    /// last message (see [`Timeline::rewrite`]). Changed timelines and rooms
+    /// are marked. Returns whether anything changed.
     pub fn rewrite_messages(&mut self, rid: &str, f: &mut dyn FnMut(&mut Message) -> bool) -> bool {
         let mut changed = false;
         if self.feeds.rewrite(rid, f) {
             self.mark(Dirty::FEEDS);
+            changed = true;
+        }
+        if self.later_index.rewrite(rid, f) {
+            self.mark(Dirty::LATER);
             changed = true;
         }
         if let Some(t) = self.timelines.get_mut(rid)

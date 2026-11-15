@@ -128,6 +128,30 @@ pub enum Message {
     Inbox(ServerId, u64, crate::inbox::Msg),
     /// Enter / Left / Right that no widget took (the catch-up view).
     CatchUpKey(crate::inbox::CatchUpKey),
+    /// The Later view (`crate::later`): server, session epoch, message.
+    Later(ServerId, u64, crate::later::Msg),
+    /// Up / Down / E that no widget took (the Later view).
+    LaterKey(crate::later::LaterKey),
+    /// A reminder copy fetched for the Later view (`None`: the pacing
+    /// timer): server, session epoch, result.
+    LaterCopy(ServerId, u64, Option<Res<Box<rocketchat::models::Message>>>),
+    /// Later sync message: server, session epoch, message.
+    LaterSync(ServerId, u64, crate::workspace::later_sync::LaterMsg),
+    /// Reminder sync message: server, session epoch, message.
+    ReminderSync(ServerId, u64, crate::workspace::later_sync::ReminderMsg),
+    /// The reminder timer armed for this time fired.
+    RemindersDue(std::time::Instant),
+    /// Reminder notifications (`crate::later::notify`).
+    ReminderNotify(crate::later::notify::Msg),
+    /// A due reminder's message was fetched for its notification: server,
+    /// session epoch, message id, due time, result.
+    ReminderFetched(
+        ServerId,
+        u64,
+        String,
+        i64,
+        Res<Box<rocketchat::models::Message>>,
+    ),
     /// Tab / Shift+Tab that no widget handled (modal dialogs cycle their own
     /// focus): move focus to the next (`true`) or previous input.
     FocusNext(bool),
@@ -197,8 +221,20 @@ pub enum Message {
         on: bool,
         result: Res<()>,
     },
-    /// "Move kept threads to Favorites": time for the next star.
+    /// The star queue ("Move kept threads to Favorites", Later's "Remove
+    /// done items"): time for the next change.
     StarKeptNext,
+    /// `chat.starMessage`/`chat.unStarMessage` of a message ended (Later
+    /// reverts it on failure).
+    MessageStarred {
+        sid: ServerId,
+        epoch: u64,
+        m: Box<rocketchat::models::Message>,
+        on: bool,
+        /// Queued (failures are reported together).
+        job: Option<crate::app::StarJob>,
+        result: Res<()>,
+    },
     /// Current handler, whether it is Rustket, and the executable check
     /// (warnings to confirm, or why registration is refused).
     HandlerQueried(Option<String>, bool, Result<Vec<String>, String>),

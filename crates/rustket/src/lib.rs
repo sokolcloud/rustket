@@ -32,6 +32,7 @@ pub mod i18n;
 pub mod images;
 pub mod inbox;
 pub mod keymap;
+pub mod later;
 pub mod locales;
 #[cfg(target_os = "macos")]
 pub mod macos_events;

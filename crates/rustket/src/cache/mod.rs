@@ -148,6 +148,10 @@ pub struct ServerCache {
     threads_rev: Option<u64>,
     /// When the thread data was last written.
     threads_written: Option<Instant>,
+    /// The `LATER` revision last written.
+    later_rev: Option<u64>,
+    /// When the Later data was last written.
+    later_written: Option<Instant>,
 }
 
 impl ServerCache {
@@ -284,6 +288,7 @@ pub fn after_update(
         collect_documents(&s.workspace, full, &mut batch);
         collect_timelines(&s.workspace, &mut s.cache, full, &mut batch);
         collect_threads(s, full, Instant::now(), &mut batch);
+        collect_later(s, full, Instant::now(), &mut batch);
     }
     collect_outbox(s, &mut batch);
     handle.write(batch);
@@ -317,6 +322,44 @@ fn collect_threads(s: &mut ServerState, full: bool, now: Instant, batch: &mut Ba
     ));
 }
 
+/// The Later view's data ([`cached_later`]) once the workspace is live,
+/// when it changed, at most every [`THREADS_WRITE_INTERVAL`] (right away
+/// with a full write).
+fn collect_later(s: &mut ServerState, full: bool, now: Instant, batch: &mut Batch) {
+    if !live(&s.workspace) {
+        return;
+    }
+    let rev = s.workspace.revision(Dirty::LATER);
+    let changed = s.cache.later_rev != Some(rev);
+    let due = s
+        .cache
+        .later_written
+        .is_none_or(|t| now.duration_since(t) >= THREADS_WRITE_INTERVAL);
+    if !full && !(changed && due) {
+        return;
+    }
+    s.cache.later_rev = Some(rev);
+    s.cache.later_written = Some(now);
+    batch.later = Some(cached_later(&s.workspace));
+}
+
+/// What the Later index holds: starred messages, reminder copies and the
+/// rooms' scans (messages pass `sanitize` when written).
+pub fn cached_later(ws: &Workspace) -> rustket_core::cache::CachedLater {
+    let idx = ws.later_index();
+    rustket_core::cache::CachedLater {
+        messages: idx.starred().chain(idx.copies()).cloned().collect(),
+        scans: idx
+            .scans()
+            .map(|(rid, s)| rustket_core::cache::CachedLaterScan {
+                rid: rid.to_owned(),
+                scanned_at: s.scanned_at,
+                scanned_lm: s.lm,
+            })
+            .collect(),
+    }
+}
+
 fn full_state(ws: &Workspace) -> CachedState {
     CachedState {
         me: ws.me().cloned(),
@@ -334,8 +377,9 @@ fn full_state(ws: &Workspace) -> CachedState {
         custom_emoji: ws.emoji().custom().cloned().collect(),
         custom_statuses: ws.custom_statuses().cloned().collect(),
         saved_at: None,
-        // Written separately (`collect_threads`).
+        // Written separately (`collect_threads`, `collect_later`).
         threads: Default::default(),
+        later: Default::default(),
     }
 }
 
@@ -1016,9 +1060,11 @@ fn quit_batch(s: &ServerState) -> Batch {
     let names = crate::room::upload::running_names(s.id.as_str());
     let threads = live(&s.workspace)
         .then(|| crate::workspace::threads::cached_threads(&s.workspace, &s.threads));
+    let later = live(&s.workspace).then(|| cached_later(&s.workspace));
     Batch {
         interrupted_uploads: (!names.is_empty()).then_some(names),
         threads,
+        later,
         ..Default::default()
     }
 }

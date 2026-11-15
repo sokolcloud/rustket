@@ -15,7 +15,7 @@ pub mod buttons;
 mod cache;
 pub mod commands;
 pub mod controller;
-mod elements;
+pub(crate) mod elements;
 pub mod modal;
 pub mod mrkdwn;
 pub mod render;

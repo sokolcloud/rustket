@@ -73,10 +73,16 @@ impl App {
                 .into_iter()
                 .flat_map(|e| e.kept_threads().map(|k| (k.rid.as_str(), k.tmid.as_str())));
             s.workspace.set_thread_config(mode, kept);
+            // Starred-message scans serve the starred threads in Favorites
+            // and Later, which always tracks stars (`Workspace::scans_starred`
+            // is what the loader's `plan` follows, together with the
+            // Activity override above).
             s.workspace
                 .set_starred_threads(self.config.ui.sidebar_starred_threads);
-            // Synced keys (flags, mention groups): the account's pending
-            // edits, one push of every key that has some, persisting them.
+            s.workspace.set_later_tracking(true);
+            // Synced keys (flags, mention groups, Later, reminders): the
+            // account's pending edits, one push of every key that has some,
+            // persisting them.
             let entry = self.config.server(&sid);
             let uid = entry
                 .and_then(|e| e.user_id.as_deref())
@@ -87,7 +93,25 @@ impl App {
             s.mention_groups.follow_account(uid, |u| {
                 entry.map(|e| e.pending_blob(u)).unwrap_or_default()
             });
+            s.later.follow_account(uid, |u| {
+                entry.map(|e| e.pending_blob(u)).unwrap_or_default()
+            });
+            s.reminders.follow_account(uid, |u| {
+                entry.map(|e| e.pending_blob(u)).unwrap_or_default()
+            });
             let now = Instant::now();
+            // First use of Later on this account: stars made before now
+            // count as archived (`rustket_core::later::Seed`).
+            if s.later.needs_seed(&s.workspace) {
+                let (device, created) = self.config.ensure_device_id();
+                save_synced |= created;
+                let seed = rustket_core::later::LaterEdit::Seed {
+                    at_ms: chrono::Utc::now().timestamp_millis(),
+                };
+                if let Err(e) = s.later.edit(&mut s.workspace, &seed, &device, now) {
+                    tracing::warn!(server = %sid, error = %e, "Later seed refused");
+                }
+            }
             let task = s.flags.tick(&mut s.workspace, s.session.as_ref(), now);
             let (fsid, epoch) = (sid.clone(), s.generation);
             tasks.push(task.map(move |m| Message::Flags(fsid.clone(), epoch, m)));
@@ -96,6 +120,12 @@ impl App {
                 .tick(&mut s.workspace, s.session.as_ref(), now);
             let gsid = sid.clone();
             tasks.push(task.map(move |m| Message::MentionGroups(gsid.clone(), epoch, m)));
+            let task = s.later.tick(&mut s.workspace, s.session.as_ref(), now);
+            let lsid = sid.clone();
+            tasks.push(task.map(move |m| Message::LaterSync(lsid.clone(), epoch, m)));
+            let task = s.reminders.tick(&mut s.workspace, s.session.as_ref(), now);
+            let rsid = sid.clone();
+            tasks.push(task.map(move |m| Message::ReminderSync(rsid.clone(), epoch, m)));
             if let Some(task) = s.start_service_push(now) {
                 let psid = sid.clone();
                 tasks.push(task.map(move |o| Message::ServicePushed(psid.clone(), epoch, o)));
@@ -106,6 +136,16 @@ impl App {
                 save_synced |= e.set_pending_blob(&uid, &blob);
             }
             if let Some((uid, blob)) = s.mention_groups.take_save()
+                && let Some(e) = self.config.server_mut(&sid)
+            {
+                save_synced |= e.set_pending_blob(&uid, &blob);
+            }
+            if let Some((uid, blob)) = s.later.take_save()
+                && let Some(e) = self.config.server_mut(&sid)
+            {
+                save_synced |= e.set_pending_blob(&uid, &blob);
+            }
+            if let Some((uid, blob)) = s.reminders.take_save()
                 && let Some(e) = self.config.server_mut(&sid)
             {
                 save_synced |= e.set_pending_blob(&uid, &blob);
@@ -146,6 +186,7 @@ impl App {
                 AVATAR_PREFETCH_ROWS,
             );
             tasks.push(self.tick_inbox(&sid));
+            tasks.push(self.tick_later(&sid));
             let Some(s) = self.servers.get_mut(&sid) else {
                 continue;
             };
@@ -225,6 +266,7 @@ impl App {
         self.images.set_working_set(working);
         tasks.push(self.fetch_images());
         tasks.push(crate::videoconf::fetch_wanted(self));
+        tasks.push(self.reminders_tick());
         if save_synced {
             tasks.push(self.save_config());
         }

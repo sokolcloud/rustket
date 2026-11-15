@@ -4,8 +4,10 @@ mod after_update;
 mod components;
 mod inbox;
 mod keys;
+mod later;
 mod links;
 mod mention_groups;
+mod reminders;
 mod rooms;
 mod secrets;
 mod session;
@@ -47,6 +49,7 @@ use crate::url_handler;
 use crate::workspace::sidebar;
 use crate::workspace::{ServerState, rail};
 use secrets::open_secrets;
+pub use star_kept::StarJob;
 use subscription::{query_handler_task, query_maximized};
 
 /// How long a toast stays.
@@ -205,8 +208,10 @@ pub struct App {
     pub decorated: bool,
     /// Offline cache (`crate::cache`).
     pub offline: crate::cache::Caches,
-    /// "Move kept threads to Favorites" in progress.
+    /// The paced star queue ("Move kept threads to Favorites", Later).
     star_kept: star_kept::StarKept,
+    /// Reminder firing and notifications (`app::reminders`).
+    reminder_timer: reminders::ReminderTimer,
     /// In-app updates (`crate::updater`).
     #[cfg(feature = "self-update")]
     pub updater: crate::updater::Updater,
@@ -304,6 +309,7 @@ impl App {
             decorated,
             offline: crate::cache::Caches::new(flags.offline_cache.clone()),
             star_kept: Default::default(),
+            reminder_timer: Default::default(),
             #[cfg(feature = "self-update")]
             updater: crate::updater::Updater::new(flags.desktop),
         };
@@ -634,6 +640,24 @@ impl App {
             Message::Reads(sid, epoch, m) => self.on_reads(sid, epoch, m),
             Message::Inbox(sid, epoch, m) => self.on_inbox(sid, epoch, m),
             Message::CatchUpKey(k) => self.on_catch_up_key(k),
+            Message::Later(sid, epoch, m) => self.on_later(sid, epoch, m),
+            Message::LaterKey(k) => self.on_later_key(k),
+            Message::LaterCopy(sid, epoch, r) => self.on_later_copy(sid, epoch, r),
+            Message::LaterSync(sid, epoch, m) => self.on_later_sync(sid, epoch, m),
+            Message::ReminderSync(sid, epoch, m) => self.on_reminder_sync(sid, epoch, m),
+            Message::RemindersDue(at) => self.on_reminders_due(at),
+            Message::ReminderNotify(m) => self.on_reminder_notify(m),
+            Message::ReminderFetched(sid, epoch, mid, at, r) => {
+                self.on_reminder_fetched(sid, epoch, mid, at, r)
+            }
+            Message::MessageStarred {
+                sid,
+                epoch,
+                m,
+                on,
+                job,
+                result,
+            } => self.on_message_starred(sid, epoch, *m, on, job, result),
             Message::FocusNext(forward) => rustket_ui::widget::focus_cycle(forward),
             Message::FocusRegion(forward) => self.focus_region(forward),
             Message::Escape => self.on_escape(),
@@ -869,7 +893,9 @@ impl App {
                 queued,
                 result,
             } => match result {
-                // The parent's realtime update confirms it.
+                // The parent's realtime update confirms it; a queued star
+                // of a kept thread is archived in Later.
+                Ok(()) if queued => self.star_kept_done(&sid, &rid, &tmid),
                 Ok(()) => Task::none(),
                 Err(e) => {
                     tracing::warn!(server = %sid, %rid, %tmid, on, error = %e, "thread star failed");

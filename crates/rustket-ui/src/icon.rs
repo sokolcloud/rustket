@@ -112,6 +112,17 @@ pub const APP_ICONS: &[Icon] = &[
     Icon::Square,
     Icon::Flag,
     Icon::FlagOff,
+    Icon::Clock,
+    Icon::AlarmClock,
+    Icon::AlarmClockPlus,
+    Icon::AlarmClockOff,
+    Icon::CalendarClock,
+    Icon::CircleCheck,
+    Icon::RotateCcw,
+    Icon::Archive,
+    Icon::ArrowUpRight,
+    Icon::BookmarkCheck,
+    Icon::StarOff,
 ];
 
 #[cfg(test)]

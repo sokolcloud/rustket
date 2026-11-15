@@ -511,3 +511,25 @@ one fetch at a time (`rustket_core::inbox::load::plan`) while a view is open.
 While Activity is open the sidebar Threads loader also runs with the section
 off and past its row limit (`Cap::unread_all`).
 
+### Later and reminders (`src/later/`, `rustket_core::{later, reminders}`, glue `src/app/later.rs`, `src/app/reminders.rs`)
+
+Later is the second kind of main view (`MainView::Later(LaterView)`, the
+same slot, Esc and `room_area_taken()` rules as the inbox views).
+`LaterView::update(Msg, ctx) -> Vec<Out>` (`Out::{Close, Open, Later,
+Reminder, Unstar, Refresh, Effects}`); rows are `Workspace::later_rows(tab)`
+over the Later index (`Workspace::later_index`: starred messages from the
+paced `chat.getStarredMessages` scans of `workspace::threads`, which run
+whenever `Workspace::scans_starred()`, plus live updates and reminder
+copies; it takes part in `rewrite_messages` and is cached as `later_msg` /
+`later_scan` docs). Status, due dates (`rustketLater`) and reminders
+(`rustketReminders`) are two keys of the generic service sync
+(`workspace::later_sync`). `Open` reveals with the local copy
+(`RoomView::show`), else `open_room_at`. The shared time picker is
+`later::when` (also the message menu's reminder dialog, overlay key 4).
+`app::reminders` arms one timer (at most a minute, so a suspend is noticed),
+fires due reminders through `later::notify::ReminderNotifier` (foreign
+notification signals are routed there by id before the calls'), sums up
+missed ones once per server and closes notifications of reminders changed
+elsewhere. Unstarring ("Remove done items") goes through the paced star
+queue (`app::star_kept`, shared with "Move kept threads to Favorites").
+

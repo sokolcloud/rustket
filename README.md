@@ -245,6 +245,7 @@ ICED_BACKEND=tiny-skia rustket
 - Ctrl+Shift+A opens All unreads (in Catch up: Enter marks the room read and
   goes on, → skips, ← goes back) and Ctrl+Shift+M opens Activity; the same
   shortcut closes them again.
+- Ctrl+Shift+S opens Later (↑/↓ select, Enter opens, E marks done).
 - In the message field: Ctrl+B bold, Ctrl+I italic, Ctrl+Shift+X
   strikethrough, Ctrl+Shift+C inline code, Ctrl+Alt+Shift+C code block,
   Ctrl+Shift+U link, Ctrl+Shift+9 quote.
