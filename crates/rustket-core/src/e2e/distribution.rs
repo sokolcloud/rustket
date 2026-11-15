@@ -1,10 +1,18 @@
 //! The key distribution loop (§7.4): every ~10 s, provide the room key to
 //! members waiting for it in up to 10 random rooms where this client holds it.
 
-use std::sync::Weak;
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use super::{E2eApi, E2eManager, Inner, random_u64};
+use rocketchat::RcDate;
+use rocketchat::e2e::RoomKey;
+use rocketchat::rest::SuggestedKey;
+
+use super::distribution;
+use super::{
+    E2eApi, E2eManager, Inner, Result, RoomE2eState, lock, random_u64, read, wrap_for_users,
+};
 
 /// Rooms per round (web `ROOM_KEY_EXCHANGE_SIZE`).
 pub const ROOM_KEY_EXCHANGE_SIZE: usize = 10;
@@ -45,6 +53,95 @@ pub(crate) async fn run_loop<A: E2eApi>(inner: Weak<Inner<A>>, period: Duration)
             }
         }
         tokio::time::sleep(jittered(period)).await;
+    }
+}
+
+impl<A: E2eApi> E2eManager<A> {
+    // ----- distribution -----------------------------------------------------------
+
+    pub(super) fn start_distribution(&self) {
+        let mut slot = lock(&self.inner.distribution);
+        if slot.as_ref().is_some_and(|h| !h.is_finished()) {
+            return;
+        }
+        let weak = Arc::downgrade(&self.inner);
+        let period = self.inner.config.distribution_interval;
+        *slot = Some(tokio::spawn(distribution::run_loop(weak, period)));
+    }
+
+    /// One distribution round over up to 10 random candidate rooms (§7.4).
+    /// Returns the number of keys provided.
+    pub async fn run_distribution_once(&self) -> Result<usize> {
+        if !self.writable() || self.private_key().is_none() {
+            return Ok(0);
+        }
+        let me = &self.inner.user_id;
+        let mut candidates: Vec<String> = read(&self.inner.summaries)
+            .iter()
+            .filter(|(_, s)| {
+                s.has_key
+                    && s.state == RoomE2eState::Ready
+                    && s.waiting.as_ref().is_some_and(|w| !w.contains(me))
+            })
+            .map(|(rid, _)| rid.clone())
+            .collect();
+        distribution::sample(&mut candidates, distribution::ROOM_KEY_EXCHANGE_SIZE);
+        self.distribute_rooms(candidates).await
+    }
+
+    /// Provides keys to the waiting members of `rids` (rooms without a loaded key
+    /// are skipped).
+    pub async fn distribute_rooms(&self, rids: Vec<String>) -> Result<usize> {
+        if rids.is_empty() || !self.writable() || self.private_key().is_none() {
+            return Ok(0);
+        }
+        let t = self.token();
+        let waiting = self.inner.api.users_waiting_for_group_key(&rids).await?;
+        self.check(t)?;
+        let mut map: HashMap<String, Vec<SuggestedKey>> = HashMap::new();
+        for (rid, users) in waiting {
+            let users: Vec<_> = users
+                .into_iter()
+                .filter(|u| u.user_id != self.inner.user_id)
+                .collect();
+            if users.is_empty() {
+                continue;
+            }
+            let (current, old) = {
+                let cell = self.room_cell(&rid);
+                let rc = cell.lock().await;
+                let Some(cur) = rc
+                    .current
+                    .clone()
+                    .filter(|_| rc.state == RoomE2eState::Ready && self.attached(&rid, &rc))
+                else {
+                    continue;
+                };
+                let old: Vec<(RoomKey, String)> = rc
+                    .old_keys()
+                    .into_iter()
+                    .filter_map(|o| {
+                        let ts = o.ts.unwrap_or_else(RcDate::now).to_iso();
+                        o.key.clone().map(|k| (k, ts))
+                    })
+                    .collect();
+                (cur, old)
+            };
+            let entries = wrap_for_users(current, old, users).await;
+            if !entries.is_empty() {
+                map.insert(rid, entries);
+            }
+        }
+        let count = map.values().map(Vec::len).sum();
+        if count > 0 {
+            self.check(t)?;
+            self.inner
+                .api
+                .provide_users_suggested_group_keys(&map)
+                .await?;
+            tracing::debug!(rooms = map.len(), count, "provided room keys");
+        }
+        Ok(count)
     }
 }
 
