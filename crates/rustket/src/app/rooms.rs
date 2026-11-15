@@ -105,6 +105,25 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// A push of the synced keys finished: each key takes its part.
+    pub(super) fn on_service_pushed(
+        &mut self,
+        sid: ServerId,
+        epoch: u64,
+        o: crate::workspace::service_sync::Outcome,
+    ) -> Task<Message> {
+        let Some(s) = self.servers.get_mut(&sid) else {
+            return Task::none();
+        };
+        if !s.is_current(epoch) {
+            return Task::none();
+        }
+        match s.service_pushed(&o, Instant::now()) {
+            Some(m) => self.on_flags(sid, epoch, m),
+            None => Task::none(),
+        }
+    }
+
     /// Applies a flag edit of the user: shown at once, stored on the server
     /// by the flag sync (`after_update` persists it until then).
     pub(super) fn set_flag(

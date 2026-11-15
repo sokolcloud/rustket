@@ -149,6 +149,16 @@ pub struct ServerEntry {
         deserialize_with = "lenient_vec"
     )]
     pub pending_flags_all_accounts: Vec<PendingFlags>,
+    /// Edits of the other synced blobs (`crate::service_sync`) not known to
+    /// be stored yet, per account and key; read them through
+    /// [`Self::pending_blob()`]. Flags keep `pending_flags`, which older
+    /// versions read.
+    #[serde(
+        rename = "pending_service",
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_vec"
+    )]
+    pub pending_service_all_accounts: Vec<PendingBlob>,
     /// Unix seconds.
     pub added_at: i64,
     pub sort_order: i32,
@@ -160,6 +170,64 @@ pub struct ServerEntry {
 pub struct PendingFlags {
     pub user_id: String,
     pub blob: String,
+}
+
+/// An account's pending edits of one synced blob: its `customFields` key
+/// and the blob as JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingBlob {
+    pub user_id: String,
+    pub key: String,
+    pub blob: String,
+}
+
+/// A pending-edits list entry (`PendingFlags`, `PendingBlob`).
+trait PendingSlot {
+    fn blob_mut(&mut self) -> &mut String;
+}
+
+impl PendingSlot for PendingFlags {
+    fn blob_mut(&mut self) -> &mut String {
+        &mut self.blob
+    }
+}
+
+impl PendingSlot for PendingBlob {
+    fn blob_mut(&mut self) -> &mut String {
+        &mut self.blob
+    }
+}
+
+/// Puts `json` into the entry at `pos` (a new one from `new` when there is
+/// none), or removes the entry when `json` is `None`. Returns whether the
+/// list changed.
+fn set_pending<T: PendingSlot>(
+    list: &mut Vec<T>,
+    pos: Option<usize>,
+    json: Option<String>,
+    new: impl FnOnce() -> T,
+) -> bool {
+    match (pos, json) {
+        (Some(i), None) => {
+            list.remove(i);
+            true
+        }
+        (None, None) => false,
+        (Some(i), Some(json)) => {
+            let slot = list[i].blob_mut();
+            if *slot == json {
+                return false;
+            }
+            *slot = json;
+            true
+        }
+        (None, Some(json)) => {
+            let mut entry = new();
+            *entry.blob_mut() = json;
+            list.push(entry);
+            true
+        }
+    }
 }
 
 impl Default for ServerId {
@@ -262,48 +330,71 @@ impl ServerEntry {
         }
     }
 
+    /// Pending edits of `uid` of the synced blob `B` (empty when there are
+    /// none or they do not parse).
+    pub fn pending_blob<B: crate::service_sync::SyncBlob>(&self, uid: &str) -> B {
+        let json = if B::KEY == rocketchat::models::FLAGS_KEY {
+            self.pending_flags_all_accounts
+                .iter()
+                .find(|p| p.user_id == uid)
+                .map(|p| p.blob.as_str())
+        } else {
+            self.pending_service_all_accounts
+                .iter()
+                .find(|p| p.user_id == uid && p.key == B::KEY)
+                .map(|p| p.blob.as_str())
+        };
+        json.and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+            .map(|v| B::from_value_at(Some(&v), chrono::Utc::now().timestamp_millis()))
+            .unwrap_or_default()
+    }
+
+    /// Stores the pending edits of `uid` of the synced blob `B` (an empty
+    /// blob removes them). Returns whether the entry changed.
+    pub fn set_pending_blob<B: crate::service_sync::SyncBlob>(
+        &mut self,
+        uid: &str,
+        blob: &B,
+    ) -> bool {
+        let json = (!blob.is_empty()).then(|| {
+            blob.to_value_at(chrono::Utc::now().timestamp_millis())
+                .to_string()
+        });
+        if B::KEY == rocketchat::models::FLAGS_KEY {
+            let pos = self
+                .pending_flags_all_accounts
+                .iter()
+                .position(|p| p.user_id == uid);
+            return set_pending(&mut self.pending_flags_all_accounts, pos, json, || {
+                PendingFlags {
+                    user_id: uid.to_owned(),
+                    blob: String::new(),
+                }
+            });
+        }
+        let pos = self
+            .pending_service_all_accounts
+            .iter()
+            .position(|p| p.user_id == uid && p.key == B::KEY);
+        set_pending(&mut self.pending_service_all_accounts, pos, json, || {
+            PendingBlob {
+                user_id: uid.to_owned(),
+                key: B::KEY.to_owned(),
+                blob: String::new(),
+            }
+        })
+    }
+
     /// Pending flag edits of `uid` (empty when there are none or they do
     /// not parse).
     pub fn pending_flags(&self, uid: &str) -> crate::flags::FlagBlob {
-        self.pending_flags_all_accounts
-            .iter()
-            .find(|p| p.user_id == uid)
-            .and_then(|p| serde_json::from_str::<serde_json::Value>(&p.blob).ok())
-            .map(|v| crate::flags::FlagBlob::from_value(Some(&v)))
-            .unwrap_or_default()
+        self.pending_blob(uid)
     }
 
     /// Stores the pending flag edits of `uid` (an empty blob removes them).
     /// Returns whether the entry changed.
     pub fn set_pending_flags(&mut self, uid: &str, blob: &crate::flags::FlagBlob) -> bool {
-        let pos = self
-            .pending_flags_all_accounts
-            .iter()
-            .position(|p| p.user_id == uid);
-        if blob.is_empty() {
-            return match pos {
-                Some(i) => {
-                    self.pending_flags_all_accounts.remove(i);
-                    true
-                }
-                None => false,
-            };
-        }
-        let json = blob.to_value().to_string();
-        match pos {
-            Some(i) if self.pending_flags_all_accounts[i].blob == json => false,
-            Some(i) => {
-                self.pending_flags_all_accounts[i].blob = json;
-                true
-            }
-            None => {
-                self.pending_flags_all_accounts.push(PendingFlags {
-                    user_id: uid.to_owned(),
-                    blob: json,
-                });
-                true
-            }
-        }
+        self.set_pending_blob(uid, blob)
     }
 
     pub fn new(url: impl Into<String>, display_name: impl Into<String>) -> Self {
@@ -657,6 +748,7 @@ const SERVER_KEYS: &[&str] = &[
     "pinned_certificates",
     "kept_threads",
     "pending_flags",
+    "pending_service",
     "added_at",
     "sort_order",
 ];
@@ -1348,6 +1440,10 @@ mod tests {
             )
             .unwrap();
         s.set_pending_flags("u", &pending);
+        s.set_pending_blob(
+            "u",
+            &crate::service_sync::tests::toy(&[("a", Some("1"), 1)]),
+        );
         c.add_server(s);
         c.ensure_device_id();
         c.mark_secret_deletion("rustket:s:u");
@@ -1440,6 +1536,62 @@ mod tests {
         .unwrap();
         assert_eq!(c.device_id, None);
         assert!(c.servers[0].pending_flags("u").is_empty());
+    }
+
+    #[test]
+    fn pending_service_blobs_are_per_account_and_key() {
+        use crate::service_sync::SyncBlob;
+        use crate::service_sync::tests::{Toy, toy};
+        let mut s = ServerEntry::new("https://a", "A");
+        // Recent enough for the toy's tombstone TTL; older ones are not saved.
+        let now = chrono::Utc::now().timestamp_millis();
+        let a = toy(&[("a", Some("1"), 5), ("gone", None, now)]);
+        let b = toy(&[("b", Some("2"), 7)]);
+        assert!(s.set_pending_blob("u1", &a));
+        assert!(!s.set_pending_blob("u1", &a));
+        assert!(s.set_pending_blob("u2", &b));
+        // Flags stay in their own list, other keys do not touch it.
+        let mut flags = crate::flags::FlagBlob::default();
+        flags
+            .edit(
+                &crate::flags::FlagBlob::default(),
+                &crate::flags::FlagEdit::Room {
+                    rid: "r1".into(),
+                    color: Some(crate::flags::FlagColor::Red),
+                },
+                1,
+                "d",
+            )
+            .unwrap();
+        assert!(s.set_pending_blob("u1", &flags));
+        assert_eq!(s.pending_flags_all_accounts.len(), 1);
+        assert_eq!(s.pending_service_all_accounts.len(), 2);
+        let mut c = AppConfig::default();
+        c.add_server(s);
+        let mut c = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
+        let s = &mut c.servers[0];
+        assert_eq!(s.pending_blob::<Toy>("u1"), a, "tombstones survive TOML");
+        let mut stale = ServerEntry::new("https://a", "A");
+        stale.set_pending_blob("u1", &toy(&[("a", Some("1"), 5), ("gone", None, 6)]));
+        assert_eq!(stale.pending_blob::<Toy>("u1"), toy(&[("a", Some("1"), 5)]));
+        assert_eq!(s.pending_blob::<Toy>("u2"), b);
+        assert!(s.pending_blob::<Toy>("u3").is_empty());
+        assert_eq!(s.pending_flags("u1").to_value(), flags.to_value());
+        assert!(s.set_pending_blob("u1", &Toy::default()));
+        assert!(!s.set_pending_blob("u1", &Toy::default()));
+        assert_eq!(s.pending_service_all_accounts.len(), 1);
+        assert_eq!(s.pending_flags_all_accounts.len(), 1);
+        // Junk is ignored.
+        let c = AppConfig::parse(
+            r#"
+            [[servers]]
+            id = "s"
+            pending_service = [{ user_id = "u", key = "rustketToy", blob = "not json" }, "junk", { user_id = "u" }]
+            "#,
+        )
+        .unwrap();
+        assert!(c.servers[0].pending_blob::<Toy>("u").is_empty());
+        assert_eq!(c.servers[0].pending_service_all_accounts.len(), 1);
     }
 
     fn with_sidebar_layout() -> AppConfig {

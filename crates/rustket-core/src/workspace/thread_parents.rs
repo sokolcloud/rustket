@@ -62,10 +62,11 @@ impl Workspace {
         self.rooms.get(rid).is_some_and(RoomEntry::is_service_room)
     }
 
-    /// Reads the flags blob from the user's service rooms: those the account
-    /// bound in its preferences (`rocketchat::models::ServiceBinding`).
-    pub(super) fn refresh_flags(&mut self) {
-        let (rids, blob) = match self.me.as_ref() {
+    /// Reads the synced blobs from the user's service rooms: those the
+    /// account bound in its preferences (`rocketchat::models::ServiceBinding`).
+    /// One pass over the trusted subscriptions fills every blob.
+    pub(super) fn refresh_service_data(&mut self) {
+        let (rids, copies) = match self.me.as_ref() {
             Some(me) => {
                 let subs = rocketchat::models::trusted_service_subscriptions(
                     self.rooms
@@ -74,19 +75,16 @@ impl Workspace {
                     &me.id,
                     &rocketchat::models::ServiceBinding::of(me),
                 );
-                let mut blob = FlagBlob::default();
-                for s in &subs {
-                    if let Some(f) = s.service_fields() {
-                        blob.merge(&FlagBlob::from_value(f.get(rocketchat::models::FLAGS_KEY)));
-                    }
-                }
-                (subs.into_iter().map(|s| s.rid.clone()).collect(), blob)
+                let copies: Vec<_> = subs.iter().filter_map(|s| s.service_fields()).collect();
+                (subs.into_iter().map(|s| s.rid.clone()).collect(), copies)
             }
-            None => (Vec::new(), FlagBlob::default()),
+            None => (Vec::new(), Vec::new()),
         };
         self.service_rooms = rids;
-        if self.flag_blob != blob {
-            self.flag_blob = blob;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let flags: FlagBlob = crate::service_sync::stored(&copies, now_ms);
+        if self.flag_blob != flags {
+            self.flag_blob = flags;
             self.mark(Dirty::FLAGS);
             self.update_flags();
         }

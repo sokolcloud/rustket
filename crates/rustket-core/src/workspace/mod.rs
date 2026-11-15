@@ -68,8 +68,16 @@ impl Dirty {
     /// Synced flags: the stored blob, the pending overlay or the effective
     /// flags (see [`Workspace::flags`]).
     pub const FLAGS: Self = Self(1 << 16);
-    pub const ALL: Self = Self((1 << 17) - 1);
-    const BITS: usize = 17;
+    /// Synced Later state of starred messages (reserved).
+    pub const LATER: Self = Self(1 << 17);
+    /// Synced message reminders (reserved).
+    pub const REMINDERS: Self = Self(1 << 18);
+    /// Synced mention groups (reserved).
+    pub const MENTION_GROUPS: Self = Self(1 << 19);
+    /// All unreads / Activity feeds (reserved).
+    pub const FEEDS: Self = Self(1 << 20);
+    pub const ALL: Self = Self((1 << 21) - 1);
+    const BITS: usize = 21;
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -408,7 +416,7 @@ impl Workspace {
         if self.service_rooms.iter().any(|r| r == rid)
             || self.rooms.get(rid).is_some_and(RoomEntry::is_service_room)
         {
-            self.refresh_flags();
+            self.refresh_service_data();
         }
     }
 

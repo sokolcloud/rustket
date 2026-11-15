@@ -3,6 +3,7 @@
 pub mod flag_menu;
 pub mod flags;
 pub mod rail;
+pub mod service_sync;
 pub mod sidebar;
 pub mod status_menu;
 pub mod threads;
@@ -42,6 +43,9 @@ pub struct ServerState {
     pub threads: threads::SidebarThreads,
     /// Sync of the account's flags (`workspace::flags`).
     pub flags: flags::FlagSync,
+    /// What the synced keys of the account share: the write lock
+    /// (`workspace::service_sync`).
+    pub service: service_sync::Shared,
     /// Open room views (currently only the active one is kept open).
     pub rooms: HashMap<String, RoomView>,
     pub active_room: Option<String>,
@@ -102,6 +106,7 @@ impl ServerState {
             omni: crate::omnichannel::Omni::default(),
             threads: threads::SidebarThreads::default(),
             flags: flags::FlagSync::default(),
+            service: service_sync::Shared::default(),
             rooms: HashMap::new(),
             active_room: None,
             syncing: false,
@@ -156,12 +161,47 @@ impl ServerState {
         self.omni.reset(&self.id);
         self.threads.reset();
         self.flags.reset();
+        // `service` stays: a push of the old session may still hold its lock.
         self.reads.clear();
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;
         self.sync_error = None;
         self.start_error = None;
+    }
+
+    /// Starts one push of the account's synced keys when one of them is
+    /// due (after their `tick`s). Keys added later join here and in
+    /// [`Self::service_pushed`].
+    pub fn start_service_push(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<iced::Task<service_sync::Outcome>> {
+        let syncs: &mut [&mut dyn service_sync::Syncing] = &mut [&mut self.flags.sync];
+        service_sync::start_push(
+            &self.workspace,
+            self.session.as_ref(),
+            &self.service,
+            syncs,
+            now,
+        )
+    }
+
+    /// Hands a combined push's result to the keys: the flags' part, for
+    /// their `update`. Every key learns the room the push used and keeps a
+    /// rate limit it hit.
+    pub fn service_pushed(
+        &mut self,
+        o: &service_sync::Outcome,
+        now: std::time::Instant,
+    ) -> Option<flags::Msg> {
+        let syncs: &mut [&mut dyn service_sync::Syncing] = &mut [&mut self.flags.sync];
+        service_sync::pause_on_rate_limit(o, syncs, now);
+        let flags = self.flags.finish(o);
+        if let Some(rid) = o.rid() {
+            self.flags.adopt_created(rid);
+        }
+        flags.map(|(epoch, res)| flags::Msg::Pushed { epoch, res })
     }
 
     /// Whether a result tagged with `epoch` belongs to the current session.

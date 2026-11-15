@@ -108,6 +108,8 @@ pub enum Message {
     Threads(ServerId, u64, crate::workspace::threads::Msg),
     /// Flag sync message: server, session epoch, message.
     Flags(ServerId, u64, crate::workspace::flags::Msg),
+    /// A push of the synced keys finished: server, session epoch, result.
+    ServicePushed(ServerId, u64, crate::workspace::service_sync::Outcome),
     /// A flag edit of the user (sidebar, room header, thread panel).
     SetFlag(ServerId, rustket_core::flags::FlagEdit),
     /// An app-wide keyboard shortcut (`crate::keymap`).

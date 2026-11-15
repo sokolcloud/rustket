@@ -657,6 +657,7 @@ impl App {
             Message::Omni(sid, epoch, m) => self.on_omni(sid, epoch, m),
             Message::Threads(sid, epoch, m) => self.on_threads(sid, epoch, m),
             Message::Flags(sid, epoch, m) => self.on_flags(sid, epoch, m),
+            Message::ServicePushed(sid, epoch, o) => self.on_service_pushed(sid, epoch, o),
             Message::SetFlag(sid, edit) => self.set_flag(&sid, edit),
             Message::InitialLoaded(sid, epoch, r) => self.on_initial_loaded(sid, epoch, r),
             Message::Resynced(sid, epoch, delta, rooms) => {

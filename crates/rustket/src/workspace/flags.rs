@@ -1,303 +1,68 @@
 //! Syncs the account's flags with its hidden service room
 //! (`rocketchat::models::service_room`, [`rustket_core::flags`]).
 //!
-//! Edits go into a pending overlay ([`FlagBlob`]) that the sidebar shows at
-//! once and the app persists in the config (`pending_flags`), so offline
-//! edits survive a restart. While live, the overlay is pushed after
-//! [`COALESCE`] with [`rustket_core::flags::push`] over [`ServiceStore`]:
-//! read the room's `customFields`, merge, write the whole object, read
-//! again, at most [`PUSH_ATTEMPTS`] times. The first push creates the room
-//! (a deterministic name, so a second device racing gets a duplicate-name
-//! error and finds it), binds it to the account (`ServiceBinding`: a room is
-//! only trusted when the user's own preferences name it) and hides it; a
-//! service room seen open again is hidden again.
-//!
-//! The overlay shrinks only when the workspace's blob, which comes from the
-//! subscriptions (the server copies the fields into them and notifies them
-//! live), holds an entry at least as new: a push's own read does not prune
-//! it, so a flag never flickers back while the echo is on its way. Another
-//! device that read before this one's write and wrote after its last read
-//! drops the entries silently; written entries are therefore watched for
-//! [`VERIFY_AFTER`] and written again when the subscriptions stop showing
-//! them.
+//! The flags are one key of the generic service sync
+//! ([`super::service_sync`], [`FlagsKey`]): edits go into a pending overlay
+//! ([`FlagBlob`]) that the sidebar shows at once and the app persists in the
+//! config (`pending_flags`), and the server's keys are pushed together. On
+//! top of that the flag sync hides the service rooms: a service room seen
+//! open again is hidden again.
 //!
 //! Nothing is ever unflagged automatically (a parent that is gone for this
 //! device may be fine for another one).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
 use iced::Task;
-use rocketchat::models::{FLAGS_KEY, Room, ServiceBinding, ServiceFields, service_room_name};
-use rocketchat::{Error, RestClient};
-use rustket_core::flags::{self, FlagBlob, FlagEdit, FlagError, FlagStore, PushError};
-use rustket_core::workspace::ConnectionState;
+use rocketchat::Error;
+use rustket_core::flags::FlagBlob;
 use rustket_core::{Dirty, Workspace};
 
+use super::service_sync::{BlobSync, MAX_PAUSE, RATE_LIMIT_PAUSE, ServiceKey, retry_delay};
+pub use super::service_sync::{
+    COALESCE, Out, PUSH_ATTEMPTS, PushFailure, ServiceStore, Status, VERIFY_AFTER,
+};
 use crate::error::{Failure, Res};
 use crate::session::SessionHandle;
 
-/// Edits within this time go out in one write (a push makes one
-/// `groups.setCustomFields` and one `subscriptions.getOne` call, each rate
-/// limited per IP and route, by default to 10 a minute). The overlay shows
-/// and persists edits at once, so waiting costs nothing.
-pub const COALESCE: Duration = Duration::from_secs(5);
-/// Read-merge-write rounds of one push before it counts as a conflict.
-pub const PUSH_ATTEMPTS: usize = 4;
-/// How long written entries are watched for being dropped by another
-/// device's write.
-pub const VERIFY_AFTER: Duration = Duration::from_secs(30);
-/// Names tried for a new service room (another user may hold the first).
-const NAME_ATTEMPTS: u32 = 3;
-/// Tries of a push whose failure is not recognised before giving up.
-const MAX_OTHER_FAILURES: u32 = 3;
-/// Pause after a rate-limit response without a reset time.
-const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(10);
-const MAX_PAUSE: Duration = Duration::from_secs(300);
+// Used by the tests below (`use super::*`).
+#[cfg(test)]
+use {
+    super::service_sync::Next,
+    rocketchat::models::{FLAGS_KEY, Room, ServiceFields},
+    rustket_core::flags::FlagEdit,
+    rustket_core::workspace::ConnectionState,
+};
 
-/// Wait after `failures` (1-based) failed pushes: 2 s, doubling, at most
-/// 5 min.
-fn retry_delay(failures: u32) -> Duration {
-    let secs = 2u64.saturating_mul(1 << failures.saturating_sub(1).min(8));
-    Duration::from_secs(secs.min(300))
-}
+/// The flags as a synced key.
+#[derive(Debug, Default)]
+pub struct FlagsKey;
 
-/// The service room as a [`FlagStore`]: the primary room, plus the user's
-/// other service rooms (two devices created one each), whose blobs are
-/// read and so folded into the primary on the next write.
-///
-/// Reads cost no `rooms.info` (rate limited per IP and route, and shared
-/// with other screens): the first read of a room uses the fields its
-/// subscription showed when the push started ([`Self::with_seeds`]), later
-/// ones `subscriptions.getOne`, which the server updates together with the
-/// room.
-pub struct ServiceStore {
-    rest: RestClient,
-    uid: String,
-    rid: Option<String>,
-    extra: Vec<String>,
-    /// Fields known without a request, by room: the primary's is used once,
-    /// the others' for every read (only the primary is ever written).
-    seeds: HashMap<String, ServiceFields>,
-    /// The primary's fields as last read: keys this version does not know
-    /// are written back.
-    fields: Option<ServiceFields>,
-    /// The account's binding as the workspace knew it when the push started.
-    binding: ServiceBinding,
-    /// The rooms were checked against the account's current binding.
-    vetted: bool,
-}
+impl ServiceKey for FlagsKey {
+    type Blob = FlagBlob;
+    const DIRTY: Dirty = Dirty::FLAGS;
+    const LOG: &'static str = "flags";
+    // Flags keep their own cap (`MAX_FLAGGED_ITEMS`); their live entries
+    // still count against the other keys.
+    const BUDGETED: bool = false;
 
-impl ServiceStore {
-    /// `rooms`: the user's service rooms, primary first (none yet: the first
-    /// write creates one).
-    pub fn new(rest: RestClient, uid: impl Into<String>, rooms: &[String]) -> Self {
-        Self {
-            rest,
-            uid: uid.into(),
-            rid: rooms.first().cloned(),
-            extra: rooms.iter().skip(1).cloned().collect(),
-            seeds: HashMap::new(),
-            fields: None,
-            binding: ServiceBinding::default(),
-            vetted: false,
-        }
+    fn stored(ws: &Workspace) -> &FlagBlob {
+        ws.flag_blob()
     }
 
-    /// The account's binding as the workspace shows it. Rooms it names are
-    /// used as they are; any other is checked against a fresh `/me` first.
-    pub fn with_binding(mut self, binding: ServiceBinding) -> Self {
-        self.binding = binding;
-        self
+    fn overlay(ws: &Workspace) -> &FlagBlob {
+        ws.flag_overlay()
     }
 
-    /// Fields the subscriptions currently show for some of the rooms.
-    pub fn with_seeds(mut self, seeds: impl IntoIterator<Item = (String, ServiceFields)>) -> Self {
-        self.seeds.extend(seeds);
-        self
-    }
-
-    /// The primary room (after a write: also one it created or found).
-    pub fn rid(&self) -> Option<&str> {
-        self.rid.as_deref()
-    }
-
-    fn adopt(&mut self, room: &Room) {
-        self.rid = Some(room.id.clone());
-        self.fields = room.service_fields();
-    }
-
-    /// Checks rooms the workspace's binding does not name, once per store,
-    /// before anything is read from them. They are rooms from before
-    /// bindings existed (the account has none: they are bound now) or rooms
-    /// bound since the workspace last read `/me`; a room the account's
-    /// current binding does not name is dropped.
-    async fn vet(&mut self) -> Result<(), Error> {
-        if self.vetted {
-            return Ok(());
-        }
-        let rids: Vec<String> = self.rid.iter().chain(&self.extra).cloned().collect();
-        if rids.iter().any(|r| !self.binding.contains(r)) {
-            let fresh = self.rest.read_service_binding().await?;
-            if fresh.is_empty() {
-                self.binding = self.rest.bind_service_rooms(&rids).await?;
-                tracing::debug!(rooms = rids.len(), "flags: service rooms bound");
-            } else {
-                if self.rid.as_ref().is_some_and(|r| !fresh.contains(r)) {
-                    tracing::warn!("flags: the service room is not bound to the account");
-                    self.rid = None;
-                    self.fields = None;
-                }
-                self.extra.retain(|r| fresh.contains(r));
-                self.seeds.retain(|r, _| fresh.contains(r));
-                if self.rid.is_none() && !self.extra.is_empty() {
-                    self.rid = Some(self.extra.remove(0));
-                }
-                self.binding = fresh;
-            }
-        }
-        self.vetted = true;
-        Ok(())
-    }
-
-    /// Creates the service room holding `blob`, or finds the one another
-    /// device just created. A found room is not written: the caller's next
-    /// read shows what it holds.
-    async fn create(&mut self, blob: &FlagBlob) -> Result<(), Error> {
-        let mut fields = ServiceFields::new(&self.uid);
-        fields.set(FLAGS_KEY, blob.to_value());
-        for attempt in 0..NAME_ATTEMPTS {
-            let name = service_room_name(&self.uid, attempt);
-            match self.rest.create_service_room(&name, &fields).await {
-                Ok(room) => {
-                    tracing::debug!(rid = %room.id, "flags: service room created");
-                    let bound = self
-                        .rest
-                        .bind_service_rooms(std::slice::from_ref(&room.id))
-                        .await;
-                    match bound {
-                        Ok(binding) => self.binding = binding,
-                        Err(e) => {
-                            // Unbound it would never be trusted and would
-                            // keep its name taken.
-                            if let Err(e) = self.rest.rooms_delete(&room.id).await {
-                                tracing::warn!(rid = %room.id, error = %e, "flags: unbound room kept");
-                            }
-                            return Err(e);
-                        }
-                    }
-                    self.adopt(&room);
-                    return Ok(());
-                }
-                Err(e) if e.is_duplicate_room_name() => {
-                    // Not a member (someone else's room): not found.
-                    match self.rest.rooms_info_by_name(&name).await {
-                        Ok(room) if room.is_service_room_of(&self.uid) => {
-                            // A room with this name and shape may have been
-                            // created in the user's name by someone else.
-                            let fresh = self.rest.read_service_binding().await?;
-                            if fresh.trusts(&room) {
-                                tracing::debug!(rid = %room.id, "flags: service room found");
-                                self.binding = if fresh.contains(&room.id) {
-                                    fresh
-                                } else {
-                                    self.rest
-                                        .bind_service_rooms(std::slice::from_ref(&room.id))
-                                        .await?
-                                };
-                                self.adopt(&room);
-                                return Ok(());
-                            }
-                            tracing::warn!(rid = %room.id, "flags: unbound room holds the name");
-                        }
-                        Ok(_) => {}
-                        Err(e) if e.is_transient() => return Err(e),
-                        Err(_) => {}
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Err(Error::Protocol("no free name for the service room".into()))
+    fn set_overlay(ws: &mut Workspace, overlay: FlagBlob) {
+        ws.set_flag_overlay(overlay);
     }
 }
 
-impl FlagStore for ServiceStore {
-    type Error = Error;
-
-    async fn read(&mut self) -> Result<FlagBlob, Error> {
-        self.vet().await?;
-        let mut blob = FlagBlob::default();
-        if let Some(rid) = self.rid.clone() {
-            let read = match self.seeds.remove(&rid) {
-                Some(f) => Some(Some(f)),
-                None => self.rest.read_service_subscription(&rid).await?,
-            };
-            match read {
-                Some(Some(f)) => {
-                    blob.merge(&FlagBlob::from_value(f.get(FLAGS_KEY)));
-                    self.fields = Some(f);
-                }
-                Some(None) => {
-                    return Err(Error::Protocol("the service room lost its marker".into()));
-                }
-                // Deleted (e.g. from another client): a write makes a new one.
-                None => {
-                    tracing::debug!(%rid, "flags: service room gone");
-                    self.rid = None;
-                    self.fields = None;
-                }
-            }
-        }
-        for rid in &self.extra {
-            if let Some(f) = self.seeds.get(rid) {
-                blob.merge(&FlagBlob::from_value(f.get(FLAGS_KEY)));
-                continue;
-            }
-            match self.rest.read_service_subscription(rid).await {
-                Ok(f) => {
-                    if let Some(f) = f.flatten() {
-                        blob.merge(&FlagBlob::from_value(f.get(FLAGS_KEY)));
-                        self.seeds.insert(rid.clone(), f);
-                    }
-                }
-                Err(e) if e.is_transient() => return Err(e),
-                Err(e) => tracing::debug!(%rid, error = %e, "flags: extra service room unreadable"),
-            }
-        }
-        Ok(blob)
-    }
-
-    async fn write(&mut self, blob: &FlagBlob) -> Result<(), Error> {
-        self.vet().await?;
-        let (Some(rid), Some(mut fields)) = (self.rid.clone(), self.fields.take()) else {
-            return self.create(blob).await;
-        };
-        fields.set(FLAGS_KEY, blob.to_value());
-        self.fields = Some(self.rest.write_service_fields(&rid, &fields).await?);
-        Ok(())
-    }
-}
-
-/// Why a push failed.
-#[derive(Debug, Clone)]
-pub enum PushFailure {
-    Store(Failure),
-    /// Other devices kept replacing the blob.
-    Conflict,
-}
-
-/// A finished push.
-#[derive(Debug, Clone)]
-pub struct Pushed {
-    /// What was pushed.
-    pub written: FlagBlob,
-    /// The store's blob after the push (covers `written`).
-    pub stored: FlagBlob,
-    /// The primary service room.
-    pub rid: Option<String>,
-}
+/// A finished push of the flags.
+pub type Pushed = super::service_sync::Pushed<FlagBlob>;
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -314,289 +79,78 @@ pub enum Msg {
     Pace { at: Instant },
 }
 
-/// Requests to the app.
-#[derive(Debug, Clone)]
-pub enum Out {
-    /// Pushing was given up (until the next edit or session): tell the user.
-    Failed(Failure),
-}
-
-/// Sync state, for the UI.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Status {
-    /// Nothing pending.
-    Synced,
-    /// Edits wait to be stored (offline, or on their way).
-    Pending,
-    /// Pushing was given up: the error. Edits stay pending and are shown.
-    Failed(String),
-}
-
-/// What [`FlagSync::plan`] wants.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Next {
-    Push,
-    Wait(Instant),
-    Idle,
-}
-
-/// Per-server flag sync (`ServerState::flags`).
+/// Per-server flag sync (`ServerState::flags`): the flags' [`BlobSync`]
+/// (reached through `Deref`) plus hiding the service rooms.
 #[derive(Debug, Default)]
 pub struct FlagSync {
-    /// The session the state belongs to (`Arc` address).
-    session: Option<usize>,
-    /// Bumped with every new session: older results are dropped.
-    epoch: u64,
-    /// The account whose overlay is loaded.
-    account: Option<String>,
-    /// Edits the subscriptions do not show yet.
-    overlay: FlagBlob,
-    /// Bumped with every overlay change; `applied` is the one the workspace
-    /// has, `saved` the one the config has.
-    rev: u64,
-    applied: Option<u64>,
-    saved: u64,
-    /// `Dirty::FLAGS` revision the overlay was last pruned against.
-    blob_rev: Option<u64>,
-    /// The store's blob as the last push left it: the overlay needs a push
-    /// while this does not cover it.
-    confirmed: FlagBlob,
-    /// Not before this (coalescing edits).
-    due: Option<Instant>,
-    in_flight: bool,
-    failures: u32,
-    retry_at: Option<Instant>,
-    /// Given up with this error, until the next edit or session.
-    failed: Option<String>,
-    /// A service room the last push created or found (the subscription may
-    /// not have arrived yet).
-    created: Option<String>,
-    /// Entries written recently, watched until `verify_at`.
-    recent: FlagBlob,
-    /// The subscriptions showed `recent` since it was written.
-    recent_seen: bool,
-    verify_at: Option<Instant>,
+    pub(super) sync: BlobSync<FlagsKey>,
     /// Service rooms a hide was sent for in this session (a failed one is
     /// sent again).
     hide_sent: HashSet<String>,
     /// Failed hides: failures so far, and not before when to send again.
     hide_retry: HashMap<String, (u32, Instant)>,
-    timer: Option<Instant>,
+}
+
+impl Deref for FlagSync {
+    type Target = BlobSync<FlagsKey>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.sync
+    }
+}
+
+impl DerefMut for FlagSync {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.sync
+    }
 }
 
 impl FlagSync {
-    /// Loads the pending edits of the signed-in account (`uid`) when it
-    /// changed; `load` reads them from the config.
-    pub fn follow_account(&mut self, uid: Option<&str>, load: impl FnOnce(&str) -> FlagBlob) {
-        if self.account.as_deref() == uid {
-            return;
-        }
-        self.overlay = uid.map(load).unwrap_or_default();
-        self.account = uid.map(str::to_owned);
-        self.rev += 1;
-        self.saved = self.rev;
-        self.applied = None;
-        self.blob_rev = None;
-        self.confirmed = FlagBlob::default();
-        self.recent = FlagBlob::default();
-        self.recent_seen = false;
-        self.verify_at = None;
-        self.failed = None;
-        self.failures = 0;
-        self.retry_at = None;
-        self.due = None;
-    }
-
-    /// The pending edits.
-    pub fn overlay(&self) -> &FlagBlob {
-        &self.overlay
-    }
-
-    pub fn status(&self) -> Status {
-        if let Some(e) = &self.failed {
-            Status::Failed(e.clone())
-        } else if self.overlay.is_empty() {
-            Status::Synced
-        } else {
-            Status::Pending
-        }
-    }
-
-    /// Records a user's edit: shown at once, pushed after [`COALESCE`].
-    /// Returns whether anything changed (`false` also while signed out).
-    pub fn edit(
-        &mut self,
-        ws: &mut Workspace,
-        edit: &FlagEdit,
-        device: &str,
-        now: Instant,
-    ) -> Result<bool, FlagError> {
-        if self.account.is_none() {
-            return Ok(false);
-        }
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        if !self.overlay.edit(ws.flag_blob(), edit, now_ms, device)? {
-            return Ok(false);
-        }
-        self.rev += 1;
-        self.due = Some(now + COALESCE);
-        self.failed = None;
-        self.failures = 0;
-        self.retry_at = None;
-        self.apply(ws);
-        Ok(true)
-    }
-
-    /// The overlay to persist for its account, when it changed since the
-    /// last call.
-    pub fn take_save(&mut self) -> Option<(String, FlagBlob)> {
-        if self.saved == self.rev {
-            return None;
-        }
-        self.saved = self.rev;
-        Some((self.account.clone()?, self.overlay.clone()))
-    }
-
     /// Logout: everything goes.
     pub fn reset(&mut self) {
-        *self = Self {
-            epoch: self.epoch + 1,
-            ..Self::default()
-        };
-    }
-
-    fn reset_session(&mut self) {
-        self.epoch += 1;
-        self.in_flight = false;
-        self.timer = None;
-        self.created = None;
+        self.sync.reset();
         self.hide_sent.clear();
         self.hide_retry.clear();
-        self.failed = None;
-        self.failures = 0;
-        self.retry_at = None;
-        // The next session reads the store again.
-        self.confirmed = FlagBlob::default();
-    }
-
-    fn apply(&mut self, ws: &mut Workspace) {
-        if self.applied != Some(self.rev) {
-            ws.set_flag_overlay(self.overlay.clone());
-            self.applied = Some(self.rev);
-        }
-    }
-
-    /// Whether this device can push now: live, and signed in as the
-    /// overlay's account.
-    fn live(&self, ws: &Workspace) -> bool {
-        !ws.from_cache()
-            && *ws.connection() == ConnectionState::Connected
-            && self.account.is_some()
-            && ws.me().map(|m| m.id.as_str()) == self.account.as_deref()
-    }
-
-    /// Follows the workspace's blob: prunes the overlay and checks recently
-    /// written entries.
-    fn observe(&mut self, ws: &Workspace, now: Instant) {
-        let rev = ws.revision(Dirty::FLAGS);
-        if self.blob_rev != Some(rev) {
-            self.blob_rev = Some(rev);
-            let stored = ws.flag_blob();
-            if self.overlay.prune_covered(stored) {
-                self.rev += 1;
-            }
-            if !self.recent.is_empty() {
-                if stored.covers(&self.recent) {
-                    self.recent_seen = true;
-                } else if self.recent_seen {
-                    // Shown, then gone: another device's write dropped it.
-                    self.verify_at = Some(now);
-                }
-            }
-        }
-        if self.verify_at.is_some_and(|t| now >= t) && self.live(ws) {
-            self.verify_at = None;
-            let lost = std::mem::take(&mut self.recent).uncovered_by(ws.flag_blob());
-            self.recent_seen = false;
-            if !lost.is_empty() {
-                tracing::debug!(
-                    entries = lost.len(),
-                    "flags: written entries were dropped, writing again"
-                );
-                self.overlay.merge(&lost);
-                self.rev += 1;
-                self.confirmed = FlagBlob::default();
-            }
-        }
-    }
-
-    /// Whether the overlay has entries to push, and when.
-    fn plan(&self, ws: &Workspace, now: Instant) -> Next {
-        if self.in_flight
-            || self.failed.is_some()
-            || self.overlay.is_empty()
-            || self.confirmed.covers(&self.overlay)
-            || !self.live(ws)
-        {
-            return Next::Idle;
-        }
-        let at = self.due.into_iter().chain(self.retry_at).max();
-        match at {
-            Some(at) if now < at => Next::Wait(at),
-            _ => Next::Push,
-        }
     }
 
     /// The pending times the planner waits for, for the pacing timer.
     fn next_wake(&self, ws: &Workspace, now: Instant) -> Option<Instant> {
-        let push = match self.plan(ws, now) {
-            Next::Wait(at) => Some(at),
-            _ => None,
-        };
         let hide = self
             .hide_retry
             .values()
             .map(|&(_, at)| at)
             .filter(|&at| at > now)
             .min();
-        push.into_iter()
-            .chain(self.verify_at.filter(|_| self.live(ws)))
-            .chain(hide.filter(|_| self.live(ws)))
+        self.sync
+            .next_wake(ws, now)
+            .into_iter()
+            .chain(hide.filter(|_| self.sync.live(ws)))
             .min()
     }
 
     /// Per update: follows the session, prunes and applies the overlay,
-    /// hides service rooms seen open and starts a push when one is due.
+    /// hides service rooms seen open and sets the pacing timer. The push
+    /// starts with the server's other keys
+    /// ([`super::service_sync::start_push`]).
     pub fn tick(
         &mut self,
         ws: &mut Workspace,
         session: Option<&SessionHandle>,
         now: Instant,
     ) -> Task<Msg> {
-        let ptr = session.map(|h| Arc::as_ptr(&h.0) as usize);
-        if self.session != ptr {
-            self.reset_session();
-            self.session = ptr;
+        if self.sync.follow(ws, session, now) {
+            self.hide_sent.clear();
+            self.hide_retry.clear();
         }
-        self.observe(ws, now);
-        self.apply(ws);
         let Some(h) = session else {
             return Task::none();
         };
         let mut tasks = Vec::new();
-        if self.live(ws) {
+        if self.sync.live(ws) {
             tasks.extend(self.hide_open(ws, h, now));
         }
-        match self.plan(ws, now) {
-            Next::Push => {
-                self.in_flight = true;
-                self.due = None;
-                tasks.push(self.push_task(ws, h));
-            }
-            Next::Wait(_) | Next::Idle => {}
-        }
         if let Some(at) = self.next_wake(ws, now) {
-            tasks.push(self.schedule(at, now));
+            tasks.push(self.sync.schedule(at, now).map(|at| Msg::Pace { at }));
         }
         Task::batch(tasks)
     }
@@ -612,7 +166,7 @@ impl FlagSync {
             if !open || waiting || !self.hide_sent.insert(rid.clone()) {
                 continue;
             }
-            let (rest, epoch, rid) = (h.rest().clone(), self.epoch, rid.clone());
+            let (rest, epoch, rid) = (h.rest().clone(), self.sync.epoch, rid.clone());
             tasks.push(Task::perform(
                 {
                     let rid = rid.clone();
@@ -628,61 +182,15 @@ impl FlagSync {
         tasks
     }
 
-    fn push_task(&self, ws: &Workspace, h: &SessionHandle) -> Task<Msg> {
-        let mut rooms = ws.service_rooms().to_vec();
-        if rooms.is_empty() {
-            rooms.extend(self.created.clone());
-        }
-        let uid = self.account.clone().unwrap_or_default();
-        let seeds = rooms.iter().filter_map(|rid| {
-            let f = ws.room(rid)?.sub.as_ref()?.service_fields()?;
-            Some((rid.clone(), f))
-        });
-        let seeds: Vec<_> = seeds.collect();
-        let binding = ws.me().map(ServiceBinding::of).unwrap_or_default();
-        let mut store = ServiceStore::new(h.rest().clone(), uid, &rooms)
-            .with_seeds(seeds)
-            .with_binding(binding);
-        let pending = self.overlay.clone();
-        let epoch = self.epoch;
-        Task::perform(
-            async move {
-                let res = flags::push(&mut store, &pending, PUSH_ATTEMPTS).await;
-                match res {
-                    Ok(stored) => Ok(Pushed {
-                        written: pending,
-                        stored,
-                        rid: store.rid().map(str::to_owned),
-                    }),
-                    Err(PushError::Store(e)) => Err(PushFailure::Store(Failure::from(e))),
-                    Err(PushError::Conflict) => Err(PushFailure::Conflict),
-                }
-            },
-            move |res| Msg::Pushed { epoch, res },
-        )
-    }
-
-    /// Sets the pacing timer unless one fires earlier.
-    fn schedule(&mut self, at: Instant, now: Instant) -> Task<Msg> {
-        if self.timer.is_some_and(|t| t <= at && t >= now) {
-            return Task::none();
-        }
-        self.timer = Some(at);
-        let wait = at.saturating_duration_since(now);
-        Task::perform(tokio::time::sleep(wait), move |_| Msg::Pace { at })
-    }
-
     /// Applies a result.
     pub fn update(&mut self, msg: Msg, now: Instant) -> Vec<Out> {
         match msg {
             Msg::Pace { at } => {
-                if self.timer == Some(at) {
-                    self.timer = None;
-                }
+                self.sync.paced(at);
                 Vec::new()
             }
             Msg::Hidden { epoch, rid, res } => {
-                if epoch != self.epoch {
+                if epoch != self.sync.epoch {
                     return Vec::new();
                 }
                 match res {
@@ -705,74 +213,8 @@ impl FlagSync {
                 }
                 Vec::new()
             }
-            Msg::Pushed { epoch, res } => {
-                if epoch != self.epoch {
-                    return Vec::new();
-                }
-                self.in_flight = false;
-                match res {
-                    Ok(p) => {
-                        self.failures = 0;
-                        self.retry_at = None;
-                        if p.rid.is_some() {
-                            self.created = p.rid;
-                        }
-                        self.confirmed = p.stored;
-                        self.recent.merge(&p.written);
-                        self.recent_seen = false;
-                        self.verify_at = Some(now + VERIFY_AFTER);
-                        // The subscriptions' echo prunes the overlay.
-                        self.blob_rev = None;
-                        Vec::new()
-                    }
-                    Err(PushFailure::Conflict) => {
-                        tracing::debug!("flags: push lost to concurrent writes, retrying");
-                        self.retry(now, None);
-                        Vec::new()
-                    }
-                    Err(PushFailure::Store(f)) => self.failed_push(f, now),
-                }
-            }
+            Msg::Pushed { epoch, res } => self.sync.pushed(epoch, res, now),
         }
-    }
-
-    fn retry(&mut self, now: Instant, wait: Option<Duration>) {
-        self.failures += 1;
-        self.retry_at = Some(now + wait.unwrap_or_else(|| retry_delay(self.failures)));
-    }
-
-    fn failed_push(&mut self, f: Failure, now: Instant) -> Vec<Out> {
-        let e = f.error();
-        let give_up = match e {
-            Error::RateLimited { retry_after, .. } => {
-                let wait = retry_after
-                    .unwrap_or(RATE_LIMIT_PAUSE)
-                    .clamp(Duration::from_secs(1), MAX_PAUSE);
-                tracing::debug!(error = %f, "flags: rate limited");
-                // Refused before it ran: not a failure of its own.
-                self.retry_at = Some(now + wait);
-                return Vec::new();
-            }
-            e if e.is_transient() || matches!(e, Error::Http(_) | Error::Io(_)) => false,
-            e if e.is_unauthorized()
-                || matches!(
-                    e.api_error_code(),
-                    Some("error-not-allowed" | "error-action-not-allowed" | "unauthorized")
-                ) =>
-            {
-                true
-            }
-            _ => self.failures + 1 >= MAX_OTHER_FAILURES,
-        };
-        if give_up {
-            tracing::warn!(error = %f, "flags: cannot store flags on the server");
-            self.failed = Some(f.user_text());
-            self.retry_at = None;
-            return vec![Out::Failed(f)];
-        }
-        tracing::debug!(error = %f, failures = self.failures + 1, "flags: push failed, retrying");
-        self.retry(now, None);
-        Vec::new()
     }
 }
 

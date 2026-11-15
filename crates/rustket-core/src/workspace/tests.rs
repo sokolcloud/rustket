@@ -671,6 +671,27 @@ fn thread_index_is_marked_only_on_real_changes() {
     assert!(Dirty::ALL.contains(Dirty::THREAD_INDEX));
 }
 
+#[test]
+fn reserved_dirty_bits_have_their_own_revisions() {
+    let all = [
+        Dirty::FLAGS,
+        Dirty::LATER,
+        Dirty::REMINDERS,
+        Dirty::MENTION_GROUPS,
+        Dirty::FEEDS,
+    ];
+    let mut ws = Workspace::new();
+    for (i, d) in all.into_iter().enumerate() {
+        assert!(Dirty::ALL.contains(d));
+        assert!(all[..i].iter().all(|o| !o.intersects(d)), "{i}");
+        let rev = ws.revision(d);
+        ws.mark(d);
+        assert_eq!(ws.revision(d), rev + 1);
+        assert!(ws.take_changes().areas.contains(d));
+    }
+    assert_eq!(Dirty::ALL.bits().count_ones() as usize, Dirty::BITS);
+}
+
 fn starred(mut m: Message, by: &[&str]) -> Message {
     m.starred = Some(
         by.iter()

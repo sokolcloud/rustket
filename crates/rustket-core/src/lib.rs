@@ -22,6 +22,7 @@ pub mod reactions;
 pub mod reads;
 pub mod room_list;
 pub mod secrets;
+pub mod service_sync;
 pub mod settings;
 pub mod sidebar_layout;
 pub mod sync;

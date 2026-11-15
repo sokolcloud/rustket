@@ -12,11 +12,19 @@
 //! [`Flags`] is the effective view: the store's blob merged with the
 //! device's pending entries. One flag per item; [`FlagColor`] is the
 //! palette. Pure, except [`push`], which is generic over a [`FlagStore`].
+//! The LWW plumbing is shared with the other synced blobs
+//! ([`crate::service_sync`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 
 use serde_json::{Map, Value, json};
+
+use crate::service_sync::{
+    EditBlob, Entry, SyncBlob, covers_map, entries, merge_entry, merge_map, stamp_of, str_of,
+    uncovered_map,
+};
+pub use crate::service_sync::{MAX_FUTURE_MS, MAX_ID_CHARS, PushError, Stamp, valid_id};
 
 /// Longest flag name in characters.
 pub const MAX_FLAG_NAME_CHARS: usize = 40;
@@ -24,11 +32,6 @@ pub const MAX_FLAG_NAME_CHARS: usize = 40;
 pub const MAX_FLAGGED_ITEMS: usize = 1000;
 /// Format written into the blob's `v`. Readers accept any version.
 pub const FLAGS_FORMAT: u64 = 1;
-/// Longest room or message id accepted as a key.
-const MAX_ID_CHARS: usize = 128;
-/// How far ahead of the local clock a stored stamp may be (a year: clocks
-/// differ, but not by that much).
-pub const MAX_FUTURE_MS: i64 = 365 * 24 * 3600 * 1000;
 
 /// The flag palette, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -94,35 +97,6 @@ pub fn clean_flag_name(name: &str) -> Option<String> {
     (!n.is_empty()).then(|| n.to_owned())
 }
 
-/// Whether `id` can key a blob entry (Rocket.Chat ids are alphanumeric).
-pub fn valid_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.chars().count() <= MAX_ID_CHARS
-        && !id.chars().any(|c| c == '.' || c == '$' || c.is_control())
-}
-
-/// When an entry was written, and by which device: ordered by time, then
-/// device id (so every device picks the same winner).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Stamp {
-    /// Unix milliseconds of the writer's clock.
-    pub t: i64,
-    /// The writer's device id.
-    pub d: String,
-}
-
-impl Stamp {
-    /// A stamp for a new entry replacing `prev`: the local time, but always
-    /// after `prev` (clocks of devices differ).
-    pub fn after(prev: Option<&Stamp>, now_ms: i64, device: &str) -> Self {
-        let t = prev.map_or(now_ms, |p| now_ms.max(p.t.saturating_add(1)));
-        Self {
-            t,
-            d: device.to_owned(),
-        }
-    }
-}
-
 /// A room's entry. `color: None` is a tombstone (no flag). Colors are kept
 /// as stored, so ids a newer version added survive merges.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -145,6 +119,33 @@ pub struct ThreadMark {
 pub struct NameMark {
     pub stamp: Stamp,
     pub name: Option<String>,
+}
+
+impl Entry for RoomMark {
+    fn stamp(&self) -> &Stamp {
+        &self.stamp
+    }
+    fn is_tombstone(&self) -> bool {
+        self.color.is_none()
+    }
+}
+
+impl Entry for ThreadMark {
+    fn stamp(&self) -> &Stamp {
+        &self.stamp
+    }
+    fn is_tombstone(&self) -> bool {
+        self.color.is_none()
+    }
+}
+
+impl Entry for NameMark {
+    fn stamp(&self) -> &Stamp {
+        &self.stamp
+    }
+    fn is_tombstone(&self) -> bool {
+        self.name.is_none()
+    }
 }
 
 /// A change the user made.
@@ -191,86 +192,6 @@ pub struct FlagBlob {
 }
 
 const KNOWN_KEYS: [&str; 4] = ["v", "rooms", "threads", "names"];
-
-fn stamp_of(o: &Map<String, Value>) -> Stamp {
-    let t = o
-        .get("t")
-        .and_then(|t| t.as_i64().or_else(|| t.as_f64().map(|f| f as i64)))
-        .unwrap_or(0);
-    let d = o
-        .get("d")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    Stamp { t, d }
-}
-
-fn str_of(o: &Map<String, Value>, k: &str) -> Option<String> {
-    o.get(k)
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-}
-
-/// Entries of a map member, leniently: a bare string is an unstamped value
-/// (`t` 0, so any stamped entry wins); other non-objects are skipped.
-fn entries<'a>(
-    root: &'a Map<String, Value>,
-    key: &str,
-) -> impl Iterator<Item = (&'a String, Map<String, Value>)> + 'a {
-    root.get(key)
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .filter_map(|(k, v)| {
-            let o = match v {
-                Value::Object(o) => o.clone(),
-                Value::String(s) => {
-                    let mut o = Map::new();
-                    o.insert("c".into(), Value::String(s.clone()));
-                    o.insert("n".into(), Value::String(s.clone()));
-                    o
-                }
-                Value::Null => Map::new(),
-                _ => return None,
-            };
-            Some((k, o))
-        })
-}
-
-/// Puts `m` unless the stored entry is at least as large.
-fn merge_entry<M: Ord + Clone>(map: &mut BTreeMap<String, M>, k: &str, m: &M) -> bool {
-    match map.get(k) {
-        Some(cur) if cur >= m => false,
-        _ => {
-            map.insert(k.to_owned(), m.clone());
-            true
-        }
-    }
-}
-
-fn merge_map<M: Ord + Clone>(dst: &mut BTreeMap<String, M>, src: &BTreeMap<String, M>) -> bool {
-    let mut changed = false;
-    for (k, m) in src {
-        changed |= merge_entry(dst, k, m);
-    }
-    changed
-}
-
-fn covers_map<M: Ord>(have: &BTreeMap<String, M>, want: &BTreeMap<String, M>) -> bool {
-    want.iter()
-        .all(|(k, m)| have.get(k).is_some_and(|h| h >= m))
-}
-
-fn uncovered_map<M: Ord + Clone>(
-    mine: &BTreeMap<String, M>,
-    have: &BTreeMap<String, M>,
-) -> BTreeMap<String, M> {
-    mine.iter()
-        .filter(|(k, m)| have.get(*k).is_none_or(|h| h < *m))
-        .map(|(k, m)| (k.clone(), m.clone()))
-        .collect()
-}
 
 impl FlagBlob {
     /// Reads a stored blob. Lenient: anything that is not an object is
@@ -407,20 +328,14 @@ impl FlagBlob {
 
     /// Every entry of `other` is here, at least as new.
     pub fn covers(&self, other: &FlagBlob) -> bool {
-        covers_map(&self.rooms, &other.rooms)
-            && covers_map(&self.threads, &other.threads)
-            && covers_map(&self.names, &other.names)
+        // Flag tombstones never expire: the clock does not matter.
+        self.covers_at(other, 0)
     }
 
     /// The entries of this blob that `stored` does not hold (at least as
     /// new): what still has to be written.
     pub fn uncovered_by(&self, stored: &FlagBlob) -> FlagBlob {
-        FlagBlob {
-            rooms: uncovered_map(&self.rooms, &stored.rooms),
-            threads: uncovered_map(&self.threads, &stored.threads),
-            names: uncovered_map(&self.names, &stored.names),
-            ..FlagBlob::default()
-        }
+        self.uncovered_by_at(stored, 0)
     }
 
     /// Drops the entries `stored` holds (at least as new). Returns whether
@@ -560,6 +475,88 @@ impl FlagBlob {
     }
 }
 
+fn live_of<M: Entry>(map: &BTreeMap<String, M>) -> BTreeMap<String, M> {
+    map.iter()
+        .filter(|(_, m)| !m.is_tombstone())
+        .map(|(k, m)| (k.clone(), m.clone()))
+        .collect()
+}
+
+impl SyncBlob for FlagBlob {
+    const KEY: &'static str = rocketchat::models::FLAGS_KEY;
+
+    fn from_value_at(v: Option<&Value>, now_ms: i64) -> Self {
+        FlagBlob::from_value_at(v, now_ms)
+    }
+
+    fn to_value_over_at(&self, _copies: &[Self], _now_ms: i64) -> Value {
+        // Flag tombstones never expire.
+        self.to_value()
+    }
+
+    fn budget_bytes(&self, _now_ms: i64) -> usize {
+        let live = FlagBlob {
+            rooms: live_of(&self.rooms),
+            threads: live_of(&self.threads),
+            names: live_of(&self.names),
+            ..self.clone()
+        };
+        crate::service_sync::key_bytes(Self::KEY, &live.to_value())
+    }
+
+    fn merge(&mut self, other: &Self) -> bool {
+        FlagBlob::merge(self, other)
+    }
+
+    fn covers_at(&self, other: &Self, now_ms: i64) -> bool {
+        let ttl = Self::TOMBSTONE_TTL_MS;
+        covers_map(&self.rooms, &other.rooms, ttl, now_ms)
+            && covers_map(&self.threads, &other.threads, ttl, now_ms)
+            && covers_map(&self.names, &other.names, ttl, now_ms)
+    }
+
+    fn uncovered_by_at(&self, stored: &Self, now_ms: i64) -> Self {
+        let ttl = Self::TOMBSTONE_TTL_MS;
+        FlagBlob {
+            rooms: uncovered_map(&self.rooms, &stored.rooms, ttl, now_ms),
+            threads: uncovered_map(&self.threads, &stored.threads, ttl, now_ms),
+            names: uncovered_map(&self.names, &stored.names, ttl, now_ms),
+            ..FlagBlob::default()
+        }
+    }
+
+    fn prune_covered_at(&mut self, stored: &Self, _now_ms: i64) -> bool {
+        self.prune_covered(stored)
+    }
+
+    fn is_empty(&self) -> bool {
+        FlagBlob::is_empty(self)
+    }
+
+    fn len(&self) -> usize {
+        FlagBlob::len(self)
+    }
+}
+
+impl EditBlob for FlagBlob {
+    type Edit = FlagEdit;
+    type Error = FlagError;
+
+    fn apply_edit(
+        &mut self,
+        stored: &Self,
+        edit: &FlagEdit,
+        now_ms: i64,
+        device: &str,
+    ) -> Result<bool, FlagError> {
+        self.edit(stored, edit, now_ms, device)
+    }
+
+    fn too_large() -> FlagError {
+        FlagError::Full
+    }
+}
+
 /// The effective flags: room and thread colors and the colors' names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Flags {
@@ -625,18 +622,11 @@ pub trait FlagStore {
     fn write(&mut self, blob: &FlagBlob) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum PushError<E: std::error::Error + 'static> {
-    #[error(transparent)]
-    Store(#[from] E),
-    /// Other writers kept replacing the blob.
-    #[error("flags were changed elsewhere at the same time")]
-    Conflict,
-}
-
-/// Writes `pending` into the store: read, merge, write, read again, up to
-/// `attempts` times, until a read shows every pending entry (a concurrent
-/// whole-object write of another device may drop them). Returns the last
+/// Writes `pending` into a store that holds only the flags (the app writes
+/// every synced key together, [`crate::service_sync::push_all`]): read,
+/// merge, write, read again, up to `attempts` times, until a read shows
+/// every pending entry (a concurrent whole-object write of another device
+/// may drop them). Returns the last
 /// blob read, which covers `pending`. Prune the overlay with it
 /// ([`FlagBlob::prune_covered`]); a later write of another device that
 /// started from an older read can still drop entries, so compare later

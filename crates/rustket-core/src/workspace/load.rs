@@ -120,7 +120,7 @@ impl Workspace {
             self.mark(Dirty::THREAD_INDEX);
         }
         // Service rooms the snapshot dropped.
-        self.refresh_flags();
+        self.refresh_service_data();
         self.realtime.snapshot_applied();
         self.changes.rooms.extend(self.rooms.keys().cloned());
         self.mark(Dirty::ALL);
@@ -191,7 +191,7 @@ impl Workspace {
             self.cached_rooms.insert(rid);
         }
         // Flagged threads are pinned before the threads are restored.
-        self.refresh_flags();
+        self.refresh_service_data();
         // The settings may have come with the cache: stars are restored
         // only while pins are on.
         self.apply_starred_threads();
@@ -415,7 +415,7 @@ impl Workspace {
             self.me = Some(me);
             self.mark(Dirty::ME);
             // The user, or the service rooms their preferences bind, changed.
-            self.refresh_flags();
+            self.refresh_service_data();
         }
     }
 

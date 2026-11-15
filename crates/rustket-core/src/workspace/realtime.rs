@@ -37,7 +37,7 @@ impl Workspace {
             self.me = Some(me);
             self.mark(Dirty::ME);
             // The user, or the service rooms their preferences bind, changed.
-            self.refresh_flags();
+            self.refresh_service_data();
         }
     }
 

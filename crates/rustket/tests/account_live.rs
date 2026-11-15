@@ -847,3 +847,112 @@ async fn flag_store_in_the_service_room() {
     })
     .await;
 }
+
+/// Two synced keys pushed back to back from one client: the second push
+/// was planned from subscription fields older than the first push's write
+/// and must not put the first key's old value back.
+#[tokio::test]
+async fn service_keys_pushed_back_to_back_keep_each_other() {
+    use rocketchat::models::{FLAGS_KEY, ServiceFields};
+    use rustket::workspace::service_sync::{PUSH_ATTEMPTS, ServiceStore, key_checks};
+    use rustket_core::flags::{FlagBlob, FlagColor, FlagEdit};
+    use rustket_core::service_sync::{LastWrite, Part, push_all, push_locked, stored};
+
+    /// A key this test writes as a fixed value.
+    struct Raw(&'static str, Value);
+
+    impl Part for Raw {
+        fn key(&self) -> &'static str {
+            self.0
+        }
+        fn covered(&self, copies: &[ServiceFields], _: i64) -> bool {
+            copies.iter().any(|f| f.get(self.0) == Some(&self.1))
+        }
+        fn next(&self, _: &[ServiceFields], _: i64) -> Value {
+            self.1.clone()
+        }
+    }
+
+    async fn fields_of(rest: &RestClient, rid: &str) -> ServiceFields {
+        let sub = rest.subscriptions_get_one(rid).await.unwrap();
+        sub.service_fields().unwrap()
+    }
+
+    fn flag(rid: &str, t: i64) -> Box<dyn Part> {
+        let mut b = FlagBlob::default();
+        let edit = FlagEdit::Room {
+            rid: rid.into(),
+            color: Some(FlagColor::Red),
+        };
+        b.edit(&FlagBlob::default(), &edit, t, "devA").unwrap();
+        Box::new(b)
+    }
+
+    with_env(|env| async move {
+        let (rest, uid, _) = env.user("svckeys", "Svc-Keys-Pass-1").await;
+        let now = 1_000;
+        // The server's lock, as `ServerState::service` holds it.
+        let lock = tokio::sync::Mutex::new(LastWrite::Nothing);
+        let mut first = ServiceStore::new(rest.clone(), uid.clone(), &[]);
+        push_locked(&lock, &mut first, &[flag("R1", 10)], PUSH_ATTEMPTS, now)
+            .await
+            .unwrap();
+        let rid = first.rid().unwrap().to_owned();
+        env.room(&rid);
+        let rooms = [rid.clone()];
+        // Both later pushes start from this copy of the fields.
+        let stale = (rid.clone(), fields_of(&rest, &rid).await);
+        // The subscription shows a write as it was stored: such copies are
+        // used, saving a read.
+        let keys = key_checks();
+        assert!(lock.lock().await.trusts(&rid, &stale.1, &keys, now));
+        let probe = json!({"probe": 1});
+        let mut second =
+            ServiceStore::new(rest.clone(), uid.clone(), &rooms).with_seeds([stale.clone()]);
+        let parts: Vec<Box<dyn Part>> = vec![Box::new(Raw("rustketProbe", probe.clone()))];
+        push_locked(&lock, &mut second, &parts, PUSH_ATTEMPTS, now)
+            .await
+            .unwrap();
+        {
+            let last = lock.lock().await;
+            assert!(matches!(&*last, LastWrite::Wrote { .. }));
+            assert!(last.trusts(&rid, &fields_of(&rest, &rid).await, &keys, now));
+            assert!(!last.trusts(&rid, &stale.1, &keys, now));
+        }
+
+        // The copy predates the probe's write: read again, keep the probe.
+        let mut third =
+            ServiceStore::new(rest.clone(), uid.clone(), &rooms).with_seeds([stale.clone()]);
+        let copies = push_locked(&lock, &mut third, &[flag("R2", 20)], PUSH_ATTEMPTS, now)
+            .await
+            .unwrap();
+        let f = fields_of(&rest, &rid).await;
+        assert_eq!(f.get("rustketProbe"), Some(&probe));
+        let flags: FlagBlob = stored(&copies, now);
+        assert!(flags.view().room("R1").is_some() && flags.view().room("R2").is_some());
+        assert!(f.get(FLAGS_KEY).is_some() && f.is_owned_by(&uid));
+        // A copy showing another device's flag on top of that write is
+        // used as it is.
+        let mut newer = f.clone();
+        let mut theirs = flags.clone();
+        let edit = FlagEdit::Room {
+            rid: "R9".into(),
+            color: Some(FlagColor::Blue),
+        };
+        theirs
+            .edit(&FlagBlob::default(), &edit, 40, "devB")
+            .unwrap();
+        newer.set(FLAGS_KEY, theirs.to_value());
+        assert!(lock.lock().await.trusts(&rid, &newer, &keys, now));
+
+        // Without the lock's record, a client trusts the old copy and
+        // drops the probe: what the lock prevents.
+        let mut blind = ServiceStore::new(rest.clone(), uid.clone(), &rooms).with_seeds([stale]);
+        push_all(&mut blind, &[flag("R3", 30)], PUSH_ATTEMPTS, now)
+            .await
+            .unwrap();
+        let f = fields_of(&rest, &rid).await;
+        assert_eq!(f.get("rustketProbe"), None);
+    })
+    .await;
+}
