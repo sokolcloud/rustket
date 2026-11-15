@@ -27,7 +27,7 @@ pub use codec::{
 pub use events::{ROOM_KEY_REQUEST_EVENT, RoomE2eKeyRequest};
 pub use file::{
     AttachmentEncryption, FileCipher, FileKey, OctJwk, Sha256Hasher, decrypt_stream,
-    encrypt_stream, hashed_upload_name, sha256_hex,
+    encrypt_stream, random_upload_name, sha256_hex,
 };
 pub use keychain::{
     PASSPHRASE_MIN_LENGTH, PrivateKeyEnvelope, encrypt_v2, encrypt_v2_with, validate_new_passphrase,

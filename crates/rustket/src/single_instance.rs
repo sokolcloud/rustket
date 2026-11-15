@@ -2,9 +2,10 @@
 //! running instance and exits.
 //!
 //! - Linux and macOS ([`unix`]): a Unix socket in a private directory.
-//! - Windows (`windows`): a named pipe whose name holds a per-user secret.
+//! - Windows (`windows`): a named pipe; a per-user lock file elects the
+//!   primary and both ends authenticate with a per-user key ([`pipe_auth`]).
 //!
-//! Both use the same wire format: the arguments, one per line
+//! Both use the same payload format: the arguments, one per line
 //! ([`encode_payload`], [`parse_payload`]); an empty payload (a launch without
 //! links) raises the window.
 
@@ -14,6 +15,8 @@ use std::time::Duration;
 use iced::Subscription;
 use iced::futures::Stream;
 
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod pipe_auth;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod pipe_name;
 #[cfg(unix)]

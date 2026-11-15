@@ -30,6 +30,8 @@ pub const CONFIG_FILE: &str = "config.toml";
 pub const CONFIG_VERSION: u32 = 1;
 /// Maximum length of [`AppConfig::recent_emoji`].
 pub const MAX_RECENT_EMOJI: usize = 36;
+/// Maximum length of [`AppConfig::pending_secret_deletions`].
+const MAX_PENDING_SECRET_DELETIONS: usize = 256;
 /// Maximum length of [`AppConfig::recent_status_texts`].
 pub const MAX_RECENT_STATUS_TEXTS: usize = 5;
 /// Accepted range of [`UiPrefs::zoom`].
@@ -559,6 +561,12 @@ pub struct AppConfig {
         deserialize_with = "lenient_opt"
     )]
     pub device_id: Option<String>,
+    /// Secret-store keys (names, not values) of signed-out accounts that are
+    /// still to be deleted from the store: it was unreachable, the delete
+    /// failed, or another backend may hold a copy. A listed key is never
+    /// read back as a login ([`Self::mark_secret_deletion`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pending_secret_deletions: Vec<String>,
     #[serde(skip)]
     unknown: Unknown,
 }
@@ -574,6 +582,7 @@ impl Default for AppConfig {
             recent_status_texts: Vec::new(),
             window: None,
             device_id: None,
+            pending_secret_deletions: Vec::new(),
             unknown: Unknown::default(),
         }
     }
@@ -589,6 +598,7 @@ const APP_KEYS: &[&str] = &[
     "recent_status_texts",
     "window",
     "device_id",
+    "pending_secret_deletions",
 ];
 const UI_KEYS: &[&str] = &[
     "theme",
@@ -801,6 +811,14 @@ impl AppConfig {
         if let Some(t) = doc.get("window").and_then(toml::Value::as_table) {
             cfg.window = Some(lenient(t, "window"));
         }
+        if let Some(list) = doc
+            .get("pending_secret_deletions")
+            .and_then(toml::Value::as_array)
+        {
+            for key in list.iter().filter_map(toml::Value::as_str) {
+                cfg.mark_secret_deletion(key);
+            }
+        }
         dirty |= cfg.sanitize();
         cfg.unknown = Unknown(Some(doc));
         (cfg, dirty)
@@ -932,6 +950,32 @@ impl AppConfig {
             self.active_server = Some(id.clone());
         }
         id
+    }
+
+    /// Records that secret `key` must be deleted from the secret store and
+    /// never be restored. Returns whether the list changed.
+    pub fn mark_secret_deletion(&mut self, key: &str) -> bool {
+        if key.is_empty() || self.pending_secret_deletions.iter().any(|k| k == key) {
+            return false;
+        }
+        // Bounded: the oldest entry gives way.
+        if self.pending_secret_deletions.len() >= MAX_PENDING_SECRET_DELETIONS {
+            self.pending_secret_deletions.remove(0);
+        }
+        self.pending_secret_deletions.push(key.to_owned());
+        true
+    }
+
+    /// Drops `keys` from the pending deletions (deleted for good, or written
+    /// again by a new login). Returns whether the list changed.
+    pub fn clear_secret_deletions(&mut self, keys: &[String]) -> bool {
+        let before = self.pending_secret_deletions.len();
+        self.pending_secret_deletions.retain(|k| !keys.contains(k));
+        self.pending_secret_deletions.len() != before
+    }
+
+    pub fn is_secret_deletion_pending(&self, key: &str) -> bool {
+        self.pending_secret_deletions.iter().any(|k| k == key)
     }
 
     pub fn remove_server(&mut self, id: &ServerId) -> Option<ServerEntry> {
@@ -1291,6 +1335,7 @@ mod tests {
         s.set_pending_flags("u", &pending);
         c.add_server(s);
         c.ensure_device_id();
+        c.mark_secret_deletion("rustket:s:u");
         c.ui.use_real_names = Some(true);
         c.ui.theme_name = Some("forest".into());
         crate::sidebar_layout::apply(
@@ -1714,6 +1759,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.recent_status_texts, ["x", "2", "3", "4", "5"]);
+    }
+
+    #[test]
+    fn pending_secret_deletions_round_trip_and_survive_server_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = AppConfig::default();
+        let sid = c.add_server(ServerEntry::new("https://chat.example.com", "Chat"));
+        assert!(c.mark_secret_deletion("rustket:s:u"));
+        assert!(!c.mark_secret_deletion("rustket:s:u"), "no duplicates");
+        assert!(!c.mark_secret_deletion(""));
+        assert!(c.mark_secret_deletion("rustket-e2e:s:u:private_key"));
+        c.remove_server(&sid);
+        c.save(dir.path()).unwrap();
+        let mut back = AppConfig::load(dir.path()).unwrap();
+        assert_eq!(
+            back.pending_secret_deletions,
+            ["rustket:s:u", "rustket-e2e:s:u:private_key"]
+        );
+        assert!(back.is_secret_deletion_pending("rustket:s:u"));
+        assert!(back.clear_secret_deletions(&["rustket:s:u".to_owned()]));
+        assert!(!back.clear_secret_deletions(&["rustket:s:u".to_owned()]));
+        assert!(!back.is_secret_deletion_pending("rustket:s:u"));
+        // Older files without the key; invalid and repeated elements.
+        assert!(
+            AppConfig::parse("")
+                .unwrap()
+                .pending_secret_deletions
+                .is_empty()
+        );
+        let c = AppConfig::parse("pending_secret_deletions = [1, \"a\", \"a\", \"b\"]").unwrap();
+        assert_eq!(c.pending_secret_deletions, ["a", "b"]);
+        // An emptied list leaves the file.
+        back.clear_secret_deletions(&["rustket-e2e:s:u:private_key".to_owned()]);
+        back.save(dir.path()).unwrap();
+        let text = std::fs::read_to_string(dir.path().join(CONFIG_FILE)).unwrap();
+        assert!(!text.contains("pending_secret_deletions"), "{text}");
+    }
+
+    #[test]
+    fn pending_secret_deletions_are_bounded() {
+        let mut c = AppConfig::default();
+        for i in 0..MAX_PENDING_SECRET_DELETIONS + 3 {
+            c.mark_secret_deletion(&format!("k{i}"));
+        }
+        assert_eq!(
+            c.pending_secret_deletions.len(),
+            MAX_PENDING_SECRET_DELETIONS
+        );
+        let newest = format!("k{}", MAX_PENDING_SECRET_DELETIONS + 2);
+        assert!(c.is_secret_deletion_pending(&newest));
+        assert!(!c.is_secret_deletion_pending("k0"));
     }
 
     #[test]

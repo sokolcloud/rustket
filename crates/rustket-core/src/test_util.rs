@@ -76,6 +76,7 @@ pub fn room(rid: &str, name: &str, t: RoomType) -> Room {
 
 /// A service room created by `creator` with `users` members whose
 /// `customFields` are those of `sub` (see `rocketchat::models::service_room`).
+/// Old enough to be accepted without a binding.
 pub fn service_room(sub: &Subscription, creator: &str, users: u64) -> Room {
     Room {
         id: sub.rid.clone(),
@@ -84,6 +85,7 @@ pub fn service_room(sub: &Subscription, creator: &str, users: u64) -> Room {
         u: Some(user_ref(creator, creator)),
         users_count: Some(users),
         custom_fields: sub.custom_fields.clone(),
+        ts: rocketchat::RcDate::from_millis(1_700_000_000_000),
         ..Default::default()
     }
 }

@@ -469,6 +469,118 @@ fn e2e_plaintext_never_reaches_the_file() {
     scan("after checkpoint");
 }
 
+fn assert_not_on_disk(dir: &Path, needle: &str, stage: &str) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(
+            !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+            "{needle} found in {} ({stage})",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn private_settings_never_reach_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    let needle = "SMTPPASSWORDNEEDLE";
+    let setting = |id: &str, value: &str| Setting {
+        id: id.into(),
+        value: json!(value),
+        ..Default::default()
+    };
+    // `private-settings-changed` gives an admin the value in clear; the
+    // public event of another setting marks the settings dirty.
+    let mut ws = Workspace::new();
+    ws.apply_setting_event(crate::Change::Updated, setting("Site_Name", "Public"), true);
+    ws.apply_setting_event(
+        crate::Change::Inserted,
+        setting("SMTP_Password", needle),
+        false,
+    );
+    ws.apply_setting_event(
+        crate::Change::Updated,
+        setting("SMTP_Password", needle),
+        false,
+    );
+    // What the app hands to the cache: the workspace's settings.
+    let list = |ws: &Workspace| -> Vec<Setting> {
+        ws.settings()
+            .iter()
+            .map(|(id, value)| Setting {
+                id: id.to_owned(),
+                value: value.clone(),
+                ..Default::default()
+            })
+            .collect()
+    };
+    db.write(Batch {
+        settings: Some(list(&ws)),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_not_on_disk(tmp.path(), needle, "settings batch");
+    db.write(Batch {
+        full: Some(Box::new(CachedState {
+            settings: list(&ws),
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_not_on_disk(tmp.path(), needle, "full write");
+    let stored = db.load_state().unwrap().settings;
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].id, "Site_Name");
+    db.conn_checkpoint();
+    assert_not_on_disk(tmp.path(), needle, "after checkpoint");
+}
+
+#[test]
+fn settings_of_schema_1_are_purged_on_upgrade() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("srv");
+    let mut db = open(&dir, "u1");
+    db.write(Batch {
+        me: Some(me("u1", "alice")),
+        settings: Some(fixture_state().settings),
+        ..Default::default()
+    })
+    .unwrap();
+    drop(db);
+    // A schema 1 cache that stored a private setting.
+    let needle = "S3SECRETKEYNEEDLE";
+    let conn = Connection::open(dir.join(FILE_NAME)).unwrap();
+    conn.execute(
+        "INSERT INTO docs (kind, id, json) VALUES ('setting', 'FileUpload_S3_AWSSecretAccessKey', ?1)",
+        [json!({"_id": "FileUpload_S3_AWSSecretAccessKey", "value": needle}).to_string()],
+    )
+    .unwrap();
+    conn.pragma_update(None, "user_version", 1).unwrap();
+    drop(conn);
+    let on_disk = std::fs::read_dir(&dir).unwrap().any(|entry| {
+        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+        bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+    });
+    assert!(on_disk, "the old cache holds the value");
+
+    let (db, report) = CacheDb::open(&dir, "u1").unwrap();
+    assert_eq!(report, OpenReport::default());
+    let v: i64 = db
+        .conn_ref()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+    let state = db.load_state().unwrap();
+    assert!(state.settings.is_empty());
+    assert!(state.me.is_some(), "other documents stay");
+    assert_not_on_disk(&dir, needle, "after the upgrade");
+    drop(db);
+    assert_not_on_disk(&dir, needle, "after closing");
+}
+
 #[test]
 fn coalesced_batches_do_not_bring_back_a_removed_room() {
     let tmp = tempfile::tempdir().unwrap();

@@ -15,7 +15,7 @@ use super::{
 };
 
 /// Current schema (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 /// `PRAGMA application_id` of a Rustket cache ("RKTC").
 const APPLICATION_ID: i64 = 0x524B_5443;
 
@@ -54,6 +54,10 @@ const MIGRATIONS: &[&str] = &[
          queued INTEGER NOT NULL,
          error TEXT
      );",
+    // 2: settings cached before only public ones were kept may hold server
+    // secrets (private setting changes seen by an admin): dropped once, the
+    // next load stores the public ones again.
+    "DELETE FROM docs WHERE kind = 'setting';",
 ];
 
 const KIND_ME: &str = "me";
@@ -284,6 +288,10 @@ impl CacheDb {
         }
         tx.pragma_update(None, "application_id", APPLICATION_ID)?;
         tx.commit()?;
+        // Rows a migration deleted must not stay readable in the WAL.
+        if let Err(e) = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+            tracing::warn!(error = %e, "offline cache: checkpoint after migration failed");
+        }
         Ok(())
     }
 

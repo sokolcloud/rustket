@@ -204,10 +204,11 @@ impl RoomEntry {
         self.room.as_ref().and_then(|r| r.encrypted) == Some(true)
     }
 
-    /// The user's own Rustket service room (see
+    /// A room with the shape of the user's own Rustket service room (see
     /// `rocketchat::models::is_own_service_room`; the subscription names the
     /// user): never listed, searched or counted. Rooms anyone else marked
-    /// are ordinary rooms.
+    /// are ordinary rooms. Its data is used only when the account bound it
+    /// ([`Workspace::service_rooms`]).
     pub fn is_service_room(&self) -> bool {
         match (&self.sub, &self.room) {
             (Some(s), Some(r)) => rocketchat::models::is_own_service_room(s, r, &s.u.id),

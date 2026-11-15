@@ -9,10 +9,11 @@ pub fn short_time(ts: RcDate, now: DateTime<Local>, clock_24h: bool) -> String {
     let Some(local) = Local.timestamp_millis_opt(ts.timestamp_millis()).single() else {
         return String::new();
     };
-    let days = now
-        .date_naive()
-        .signed_duration_since(local.date_naive())
-        .num_days();
+    // `date_naive()` panics when the local time leaves chrono's range.
+    let Some(day) = rocketchat::date::local_date(&local) else {
+        return String::new();
+    };
+    let days = now.date_naive().signed_duration_since(day).num_days();
     if days <= 0 {
         if clock_24h {
             local.format("%H:%M").to_string()
@@ -129,6 +130,18 @@ mod tests {
         let old = RcDate::from_millis(d.timestamp_millis()).unwrap();
         let shown = short_time(old, now, true);
         assert!(shown == "Nov 8, 2025" || shown == "08.11.2025", "{shown}");
+    }
+
+    /// Dates the parser now rejects, built directly. With a non-UTC local
+    /// timezone their local date is out of chrono's range.
+    #[test]
+    fn short_time_survives_dates_at_chrono_limits() {
+        let now = at(2026, 11, 20);
+        for ms in [8_210_266_876_799_000_i64, -8_334_601_228_800_000] {
+            let d = RcDate(DateTime::from_timestamp_millis(ms).unwrap());
+            let _ = short_time(d, now, true);
+            let _ = short_time(d, now, false);
+        }
     }
 
     #[test]

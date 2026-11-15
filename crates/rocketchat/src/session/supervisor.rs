@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use meteor_ddp::{
     DdpClient, MeteorError, SubscribeError, SubscribeOptions, Subscription, SubscriptionState,
+    log_safe,
 };
 use serde_json::Value;
 use tokio::sync::watch;
@@ -352,7 +353,7 @@ pub(super) async fn supervise(
                 };
                 tracing::warn!(
                     stream = %name,
-                    error = %stopped.as_ref().map(MeteorError::code).unwrap_or_default(),
+                    error = %log_safe(stopped.as_ref().map(MeteorError::code).unwrap_or_default()),
                     "server stopped a stream subscription; retrying"
                 );
                 stopped
@@ -367,7 +368,7 @@ pub(super) async fn supervise(
                 }
                 tracing::warn!(
                     stream = %name,
-                    error = %e.as_ref().map(MeteorError::code).unwrap_or_default(),
+                    error = %log_safe(e.as_ref().map(MeteorError::code).unwrap_or_default()),
                     "stream subscription refused; retrying"
                 );
                 e

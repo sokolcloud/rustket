@@ -196,6 +196,9 @@ pub enum Message {
     SubmitUser,
     Submit,
     LoginDone(Res<LoginResult>),
+    /// Result of a login started by an unauthenticated link
+    /// ([`Login::complete_unconfirmed`]).
+    LinkLoginDone(Res<LoginResult>),
     Code(String),
     SubmitCode,
     ResendCode,
@@ -227,6 +230,7 @@ impl std::fmt::Debug for Message {
             Self::SubmitUser => "SubmitUser",
             Self::Submit => "Submit",
             Self::LoginDone(r) => return write!(f, "LoginDone(ok={})", r.is_ok()),
+            Self::LinkLoginDone(r) => return write!(f, "LinkLoginDone(ok={})", r.is_ok()),
             Self::Code(_) => "Code(<redacted>)",
             Self::SubmitCode => "SubmitCode",
             Self::ResendCode => "ResendCode",
@@ -256,6 +260,9 @@ impl std::fmt::Debug for Message {
 pub enum Out {
     None,
     LoggedIn(Box<LoginResult>, TokenKind),
+    /// A login started by an unauthenticated link succeeded: the account has
+    /// to be confirmed by the user before it is used.
+    Unconfirmed(Box<LoginResult>),
     OpenUrl(String),
     /// A pasted `rocketchat://auth` link: route it like a received deep link.
     DeepLink(String),
@@ -271,6 +278,9 @@ pub struct TwoFactor {
     pub busy: bool,
     pub error: Option<String>,
     pub resent: bool,
+    /// The challenged login was started by an unauthenticated link: its
+    /// result needs the account confirmation.
+    pub unconfirmed: bool,
 }
 
 #[derive(Debug)]
@@ -318,6 +328,8 @@ pub struct Login {
     /// Shown in the pending view: whether `rocketchat://` already opens Rustket.
     pub handler_registered: bool,
     last_request: Option<LoginRequest>,
+    /// The request of [`Self::complete_unconfirmed`], for its 2FA round.
+    link_request: Option<LoginRequest>,
 }
 
 impl Login {
@@ -356,6 +368,7 @@ impl Login {
                 pat_token: String::new(),
                 handler_registered: false,
                 last_request: None,
+                link_request: None,
             },
             task,
         ))
@@ -377,6 +390,18 @@ impl Login {
     pub fn complete_with(&mut self, request: LoginRequest) -> Task<Message> {
         self.cancel_pending();
         self.run_login(request, None)
+    }
+
+    /// Logs in with credentials from an unauthenticated link (a SAML token the
+    /// app did not generate). The result, also after a 2FA round, comes back
+    /// as [`Out::Unconfirmed`], never as [`Out::LoggedIn`]. The pending login
+    /// stays: the confirmation is bound to it.
+    pub fn complete_unconfirmed(&mut self, request: LoginRequest) -> Task<Message> {
+        if let Some(h) = self.pending.as_mut().and_then(|p| p.poll.take()) {
+            h.abort();
+        }
+        self.two_factor = None;
+        self.run_login_from(request, None, true)
     }
 
     /// An `error` deep link for this server while a browser login is pending:
@@ -421,16 +446,30 @@ impl Login {
         }
     }
 
-    /// The live pending login that accepted exactly `credentials`.
+    /// The live pending login that accepted exactly `credentials`: from a
+    /// Token link, or from the login with a link-supplied SAML token.
     pub fn token_claim_matches(&self, credentials: &Credentials, now: Instant) -> bool {
         self.pending.as_ref().is_some_and(|p| {
-            p.login.kind.expects_token()
+            let saml_link =
+                matches!(p.login.kind, PendingKind::Saml { .. }) && p.login.saml_claim.is_some();
+            (p.login.kind.expects_token() || saml_link)
                 && !p.login.is_expired(now)
                 && p.login.token_claim.as_ref() == Some(credentials)
         })
     }
 
     fn run_login(&mut self, request: LoginRequest, code: Option<TwoFactorCode>) -> Task<Message> {
+        self.run_login_from(request, code, false)
+    }
+
+    /// `link`: the request comes from an unauthenticated link; its result is
+    /// reported as [`Message::LinkLoginDone`].
+    fn run_login_from(
+        &mut self,
+        request: LoginRequest,
+        code: Option<TwoFactorCode>,
+        link: bool,
+    ) -> Task<Message> {
         self.busy = true;
         self.error = None;
         let rest = self.rest.clone();
@@ -439,15 +478,89 @@ impl Login {
             tf.error = None;
         }
         // Remember the request for a possible 2FA round.
-        self.last_request = Some(request.clone());
+        if link {
+            self.link_request = Some(request.clone());
+        } else {
+            self.last_request = Some(request.clone());
+        }
         Task::perform(
             async move {
                 rest.login(&request, code.as_ref())
                     .await
                     .map_err(Failure::from)
             },
-            Message::LoginDone,
+            move |r| {
+                if link {
+                    Message::LinkLoginDone(r)
+                } else {
+                    Message::LoginDone(r)
+                }
+            },
         )
+    }
+
+    /// A login call finished; `link`: it was started by an unauthenticated
+    /// link, so success is [`Out::Unconfirmed`] and the pending login stays.
+    fn login_done(&mut self, result: Res<LoginResult>, link: bool) -> (Task<Message>, Out) {
+        self.busy = false;
+        match result {
+            Ok(r) => {
+                self.two_factor = None;
+                if link {
+                    return (Task::none(), Out::Unconfirmed(Box::new(r)));
+                }
+                self.cancel_pending();
+                self.password.clear();
+                (Task::none(), Out::LoggedIn(Box::new(r), TokenKind::Login))
+            }
+            Err(f) => match f.error() {
+                RcError::TwoFactorRequired(ch) => {
+                    let request = if link {
+                        self.link_request.clone()
+                    } else {
+                        self.cancel_pending();
+                        self.last_request.clone()
+                    };
+                    let request = request.unwrap_or_else(|| self.form_request());
+                    self.two_factor = Some(TwoFactor {
+                        request,
+                        method: match &ch.method {
+                            TwoFactorMethod::Unknown => TwoFactorMethod::Totp,
+                            m => m.clone(),
+                        },
+                        email_or_username: ch.email_or_username.clone().or_else(|| {
+                            Some(self.user.trim().to_owned()).filter(|u| !u.is_empty())
+                        }),
+                        code: String::new(),
+                        busy: false,
+                        error: None,
+                        resent: false,
+                        unconfirmed: link,
+                    });
+                    (iced::widget::operation::focus(CODE_ID), Out::None)
+                }
+                RcError::TwoFactorInvalid(_) if self.two_factor.is_some() => {
+                    if let Some(tf) = self.two_factor.as_mut() {
+                        tf.busy = false;
+                        tf.error = Some(f.user_text());
+                    }
+                    (iced::widget::operation::focus(CODE_ID), Out::None)
+                }
+                _ => {
+                    if let Some(tf) = self.two_factor.as_mut() {
+                        tf.busy = false;
+                        tf.error = Some(f.user_text());
+                        return (iced::widget::operation::focus(CODE_ID), Out::None);
+                    } else if let Some(p) = self.pending.as_mut() {
+                        p.poll = None;
+                        p.error = Some(f.user_text());
+                    } else {
+                        self.error = Some(f.user_text());
+                    }
+                    (Task::none(), Out::None)
+                }
+            },
+        }
     }
 
     fn form_request(&self) -> LoginRequest {
@@ -517,60 +630,8 @@ impl Login {
                 let req = self.form_request();
                 return (self.run_login(req, None), Out::None);
             }
-            Message::LoginDone(result) => {
-                self.busy = false;
-                match result {
-                    Ok(r) => {
-                        self.cancel_pending();
-                        self.two_factor = None;
-                        self.password.clear();
-                        return (Task::none(), Out::LoggedIn(Box::new(r), TokenKind::Login));
-                    }
-                    Err(f) => match f.error() {
-                        RcError::TwoFactorRequired(ch) => {
-                            self.cancel_pending();
-                            let request = self
-                                .last_request
-                                .clone()
-                                .unwrap_or_else(|| self.form_request());
-                            self.two_factor = Some(TwoFactor {
-                                request,
-                                method: match &ch.method {
-                                    TwoFactorMethod::Unknown => TwoFactorMethod::Totp,
-                                    m => m.clone(),
-                                },
-                                email_or_username: ch.email_or_username.clone().or_else(|| {
-                                    Some(self.user.trim().to_owned()).filter(|u| !u.is_empty())
-                                }),
-                                code: String::new(),
-                                busy: false,
-                                error: None,
-                                resent: false,
-                            });
-                            return (iced::widget::operation::focus(CODE_ID), Out::None);
-                        }
-                        RcError::TwoFactorInvalid(_) if self.two_factor.is_some() => {
-                            if let Some(tf) = self.two_factor.as_mut() {
-                                tf.busy = false;
-                                tf.error = Some(f.user_text());
-                            }
-                            return (iced::widget::operation::focus(CODE_ID), Out::None);
-                        }
-                        _ => {
-                            if let Some(tf) = self.two_factor.as_mut() {
-                                tf.busy = false;
-                                tf.error = Some(f.user_text());
-                                return (iced::widget::operation::focus(CODE_ID), Out::None);
-                            } else if let Some(p) = self.pending.as_mut() {
-                                p.poll = None;
-                                p.error = Some(f.user_text());
-                            } else {
-                                self.error = Some(f.user_text());
-                            }
-                        }
-                    },
-                }
-            }
+            Message::LoginDone(result) => return self.login_done(result, false),
+            Message::LinkLoginDone(result) => return self.login_done(result, true),
             Message::Code(s) => {
                 if let Some(tf) = self.two_factor.as_mut() {
                     tf.code = s;
@@ -587,8 +648,8 @@ impl Login {
                     TwoFactorMethod::Password => TwoFactorCode::password(&tf.code),
                     m => TwoFactorCode::new(&tf.code, m.clone()),
                 };
-                let req = tf.request.clone();
-                return (self.run_login(req, Some(code)), Out::None);
+                let (req, link) = (tf.request.clone(), tf.unconfirmed);
+                return (self.run_login_from(req, Some(code), link), Out::None);
             }
             Message::ResendCode => {
                 let Some(who) = self
@@ -618,6 +679,11 @@ impl Login {
                 }
             }
             Message::CancelCode => {
+                // The pending login of a link-supplied token has nothing
+                // left to wait for.
+                if self.two_factor.as_ref().is_some_and(|tf| tf.unconfirmed) {
+                    self.cancel_pending();
+                }
                 self.two_factor = None;
                 self.busy = false;
             }
@@ -1217,6 +1283,100 @@ mod tests {
         ))));
         let tf = l.two_factor.as_ref().expect("2fa dialog");
         assert!(matches!(tf.request, LoginRequest::Saml { .. }));
+    }
+
+    fn totp_required() -> Res<LoginResult> {
+        let challenge = rocketchat::TwoFactorChallenge::from_details(Some(
+            &serde_json::json!({"method": "totp"}),
+        ));
+        Err(Failure::from(RcError::TwoFactorRequired(challenge)))
+    }
+
+    fn login_result(uid: &str, token: &str) -> LoginResult {
+        LoginResult {
+            user_id: uid.into(),
+            auth_token: token.into(),
+            me: None,
+        }
+    }
+
+    /// F13: a login with a link-supplied SAML token never ends in
+    /// `Out::LoggedIn`, also after its 2FA round, and keeps the pending login
+    /// its confirmation is bound to.
+    #[tokio::test]
+    async fn link_login_stays_unconfirmed_after_two_factor() {
+        let mut l = login_with(vec![LoginServiceConfig {
+            service: Some("saml".into()),
+            ..Default::default()
+        }]);
+        let _ = l.update(Message::Service(0));
+        l.claim_saml("ATTACKER");
+        let _ = l.complete_unconfirmed(LoginRequest::Saml {
+            credential_token: "ATTACKER".into(),
+        });
+        assert!(l.pending.as_ref().is_some_and(|p| p.poll.is_none()));
+        let (_, out) = l.update(Message::LinkLoginDone(totp_required()));
+        assert!(matches!(out, Out::None));
+        let tf = l.two_factor.as_ref().expect("2fa dialog");
+        assert!(tf.unconfirmed);
+        let LoginRequest::Saml { credential_token } = &tf.request else {
+            panic!("the 2FA round retries the SAML request");
+        };
+        assert_eq!(credential_token, "ATTACKER");
+        assert!(l.pending.is_some(), "the pending login stays");
+        let _ = l.update(Message::Code("123456".into()));
+        let _ = l.update(Message::SubmitCode);
+        let (_, out) = l.update(Message::LinkLoginDone(Ok(login_result("EVE", "T"))));
+        assert!(matches!(out, Out::Unconfirmed(_)), "{out:?}");
+        assert!(l.two_factor.is_none());
+        let creds = Credentials::new("EVE", "T");
+        assert!(!l.token_claim_matches(&creds, Instant::now()));
+        l.claim_token(&creds);
+        assert!(l.token_claim_matches(&creds, Instant::now()));
+        assert!(!l.token_claim_matches(&Credentials::new("EVE", "T2"), Instant::now()));
+    }
+
+    /// The 2FA round of a regular login is not affected.
+    #[tokio::test]
+    async fn regular_two_factor_logs_in() {
+        let mut l = login_with(vec![]);
+        l.user = "alice".into();
+        l.password = "pw".into();
+        let _ = l.update(Message::Submit);
+        let _ = l.update(Message::LoginDone(totp_required()));
+        assert!(l.two_factor.as_ref().is_some_and(|tf| !tf.unconfirmed));
+        let (_, out) = l.update(Message::LoginDone(Ok(login_result("U", "T"))));
+        assert!(matches!(out, Out::LoggedIn(_, TokenKind::Login)));
+    }
+
+    /// A SAML login without an accepted link holds no token claim.
+    #[tokio::test]
+    async fn saml_pending_without_link_matches_no_token() {
+        let mut l = login_with(vec![LoginServiceConfig {
+            service: Some("saml".into()),
+            ..Default::default()
+        }]);
+        let _ = l.update(Message::Service(0));
+        let creds = Credentials::new("EVE", "T");
+        l.claim_token(&creds);
+        assert!(!l.token_claim_matches(&creds, Instant::now()));
+    }
+
+    /// Cancelling the 2FA dialog of a link login ends its pending login.
+    #[tokio::test]
+    async fn cancelling_link_two_factor_cancels_pending() {
+        let mut l = login_with(vec![LoginServiceConfig {
+            service: Some("saml".into()),
+            ..Default::default()
+        }]);
+        let _ = l.update(Message::Service(0));
+        l.claim_saml("ATTACKER");
+        let _ = l.complete_unconfirmed(LoginRequest::Saml {
+            credential_token: "ATTACKER".into(),
+        });
+        let _ = l.update(Message::LinkLoginDone(totp_required()));
+        let _ = l.update(Message::CancelCode);
+        assert!(l.pending.is_none() && l.two_factor.is_none());
     }
 
     /// Review #6: an error link shows a quoted notice and keeps the login.

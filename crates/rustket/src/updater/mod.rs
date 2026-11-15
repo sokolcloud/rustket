@@ -15,7 +15,10 @@
 //! does not authenticate the release. Whoever can publish releases on the
 //! repository can ship an update to every user of the updater; packages are
 //! not signed. A process running as the same user can tamper with downloaded
-//! files and is out of scope.
+//! files and is out of scope, with one exception: what root installs (deb,
+//! rpm) is a copy root made and checked against the digest itself
+//! (`install::linux::ROOT_SCRIPT`). The other installers re-check the digest
+//! right before they use the file.
 //!
 //! UI strings live in `locales/updater.yml`.
 

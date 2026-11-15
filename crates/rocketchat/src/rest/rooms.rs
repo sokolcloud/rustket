@@ -7,7 +7,8 @@ use super::{Query, RestClient, field, paginated};
 use crate::RcDate;
 use crate::error::{Error, Result};
 use crate::models::{
-    Paginated, Room, RoomType, ServiceFields, Subscription, UpdatedSince, UserSummary,
+    BINDING_PREFERENCE, Paginated, Room, RoomType, ServiceBinding, ServiceFields, Subscription,
+    UpdatedSince, UserSummary,
 };
 
 /// Parameters of `channels.create` / `groups.create`.
@@ -263,6 +264,35 @@ impl RestClient {
         room.service_fields().ok_or_else(|| {
             Error::Protocol("groups.setCustomFields: no service marker in the response".into())
         })
+    }
+
+    /// The service rooms the account vouches for, from a fresh `/me` (see
+    /// [`ServiceBinding`]).
+    pub async fn read_service_binding(&self) -> Result<ServiceBinding> {
+        Ok(ServiceBinding::of(&self.me().await?))
+    }
+
+    /// Binds `rids` as the account's service rooms: adds the missing entries
+    /// to the user's own preference list (read from a fresh `/me`, other
+    /// entries untouched) and returns the binding read back. Fails when the
+    /// server did not keep them.
+    pub async fn bind_service_rooms(&self, rids: &[String]) -> Result<ServiceBinding> {
+        let me = self.me().await?;
+        let Some(list) = ServiceBinding::preference_with(me.preferences(), rids) else {
+            return Ok(ServiceBinding::of(&me));
+        };
+        let mut data = serde_json::Map::new();
+        data.insert(BINDING_PREFERENCE.into(), list);
+        self.post_ok("users.setPreferences", &json!({ "data": data }))
+            .await?;
+        let stored = self.read_service_binding().await?;
+        if rids.iter().all(|r| r.is_empty() || stored.contains(r)) {
+            Ok(stored)
+        } else {
+            Err(Error::Protocol(
+                "users.setPreferences: the service room binding was not stored".into(),
+            ))
+        }
     }
 
     /// Room members of any room type (`rooms.membersOrderedByRole`: owners,

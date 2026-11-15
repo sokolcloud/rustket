@@ -1,6 +1,6 @@
 //! Encrypted file uploads: AES-256-CTR with a 64-bit big-endian counter
 //! (WebCrypto `{name: 'AES-CTR', length: 64}`), SHA-256 of the plaintext and the
-//! hashed upload name (§3.8).
+//! opaque upload name (§3.8).
 
 use std::fmt;
 
@@ -188,9 +188,12 @@ pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(sha2::Sha256::digest(data))
 }
 
-/// The upload file name of an encrypted file: hex SHA-256 of the UTF-8 name.
-pub fn hashed_upload_name(name: &str) -> String {
-    sha256_hex(name.as_bytes())
+/// The upload file name of an encrypted file: 32 random bytes as hex. It has
+/// the shape of the web client's SHA-256 of the real name but is unrelated to
+/// it, so the server cannot test guessed names against it; the real name
+/// travels only in the encrypted metadata.
+pub fn random_upload_name() -> String {
+    hex::encode(random_bytes::<32>())
 }
 
 #[cfg(test)]
@@ -255,15 +258,16 @@ mod tests {
     }
 
     #[test]
-    fn hashed_names() {
-        assert_eq!(
-            hashed_upload_name("notes.txt"),
-            "e39538e7f27a7bf579cd9b85a103c0f0b86b60b788534295538d0301a9c5dce6"
-        );
-        assert_eq!(
-            hashed_upload_name("Отчёт.pdf"),
-            "2e2bc3fdfa1c462abcadcd3ca0ac2065699f7aa10076e3f9a71c485224c84e78"
-        );
+    fn upload_names_are_random() {
+        let a = random_upload_name();
+        let b = random_upload_name();
+        for n in [&a, &b] {
+            assert_eq!(n.len(), 64);
+            assert_eq!(hex::decode(n).unwrap().len(), 32);
+            assert_eq!(*n, n.to_lowercase());
+        }
+        assert_ne!(a, b);
+        assert_ne!(a, sha256_hex(b"notes.txt"));
     }
 
     #[test]

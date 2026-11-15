@@ -2942,6 +2942,7 @@ async fn flag_edits_persist_until_the_service_room_shows_them() {
         }),
         users_count: Some(1),
         custom_fields: Some(fields.to_custom_fields()),
+        ts: Some(ts(T0)),
         ..room("svc", T0)
     };
     let m = ev(

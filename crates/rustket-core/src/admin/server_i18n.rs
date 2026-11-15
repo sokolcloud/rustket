@@ -152,29 +152,63 @@ pub fn sprintf(s: &str, params: &[Value]) -> String {
     out
 }
 
-/// In-memory cache of parsed server translation files per server version and
-/// language (they are public data).
+/// In-memory cache of parsed server translation files, keyed by the server they
+/// were fetched from (its canonical base URL), the server version and the
+/// language. A file is only ever served back to the server it came from: the
+/// version string is server-reported and must not be the identity.
 #[derive(Debug, Default)]
 pub struct ServerI18nCache {
-    files: HashMap<(String, String), Arc<HashMap<String, String>>>,
+    files: HashMap<CacheKey, Arc<HashMap<String, String>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    server: String,
+    version: String,
+    lang: String,
+}
+
+impl CacheKey {
+    /// `None` without a server identity or a version: such files are not cached
+    /// (no shared empty key; an unknown version could not be invalidated).
+    fn new(server: &str, version: &str, lang: &str) -> Option<Self> {
+        if server.is_empty() || version.is_empty() {
+            return None;
+        }
+        Some(Self {
+            server: server.to_owned(),
+            version: version.to_owned(),
+            lang: lang.to_owned(),
+        })
+    }
 }
 
 impl ServerI18nCache {
-    pub fn get(&self, version: &str, lang: &str) -> Option<Arc<HashMap<String, String>>> {
-        self.files
-            .get(&(version.to_owned(), lang.to_owned()))
-            .cloned()
+    /// `server` is the base URL the file was fetched from
+    /// (`ServerUrl::as_str`).
+    pub fn get(
+        &self,
+        server: &str,
+        version: &str,
+        lang: &str,
+    ) -> Option<Arc<HashMap<String, String>>> {
+        let key = CacheKey::new(server, version, lang)?;
+        self.files.get(&key).cloned()
     }
 
+    /// Returns the shared file; it is stored only when both `server` and
+    /// `version` are known.
     pub fn insert(
         &mut self,
+        server: &str,
         version: &str,
         lang: &str,
         file: HashMap<String, String>,
     ) -> Arc<HashMap<String, String>> {
         let file = Arc::new(file);
-        self.files
-            .insert((version.to_owned(), lang.to_owned()), file.clone());
+        if let Some(key) = CacheKey::new(server, version, lang) {
+            self.files.insert(key, file.clone());
+        }
         file
     }
 }
@@ -318,11 +352,55 @@ mod tests {
             interpolate("Go to {{url}} now", &[("url", "https://x")]),
             "Go to https://x now"
         );
-        let mut c = ServerI18nCache::default();
-        c.insert("8.9.1", "en", HashMap::new());
-        assert!(c.get("8.9.1", "en").is_some());
-        assert!(c.get("8.9.0", "en").is_none());
         assert_eq!(LANGUAGES.len(), 68);
+    }
+
+    const KEY: &str = "Accounts_TwoFactorAuthentication_Enabled";
+
+    fn file(text: &str) -> HashMap<String, String> {
+        HashMap::from([(KEY.to_owned(), text.to_owned())])
+    }
+
+    #[test]
+    fn cache_hits_same_server_version_and_language() {
+        let mut c = ServerI18nCache::default();
+        c.insert("https://a.example", "8.9.1", "en", HashMap::new());
+        assert!(c.get("https://a.example", "8.9.1", "en").is_some());
+        assert!(c.get("https://a.example", "8.9.0", "en").is_none());
+        assert!(c.get("https://a.example", "8.9.1", "ru").is_none());
+    }
+
+    #[test]
+    fn cache_is_bound_to_the_server() {
+        let mut c = ServerI18nCache::default();
+        // Server A reports the same version as B and is opened first.
+        c.insert("https://evil.example", "8.9", "en", file("Disable 2FA"));
+        assert!(c.get("https://chat.example", "8.9", "en").is_none());
+        // A path prefix, port or scheme is part of the identity.
+        assert!(c.get("https://evil.example/chat", "8.9", "en").is_none());
+        assert!(c.get("https://evil.example:8443", "8.9", "en").is_none());
+        assert!(c.get("http://evil.example", "8.9", "en").is_none());
+
+        c.insert("https://chat.example", "8.9", "en", file("Enable 2FA"));
+        let b = c.get("https://chat.example", "8.9", "en").unwrap();
+        assert_eq!(b.get(KEY).map(String::as_str), Some("Enable 2FA"));
+        let a = c.get("https://evil.example", "8.9", "en").unwrap();
+        assert_eq!(a.get(KEY).map(String::as_str), Some("Disable 2FA"));
+    }
+
+    #[test]
+    fn cache_has_no_shared_empty_key() {
+        let mut c = ServerI18nCache::default();
+        // No version: the file is returned to the caller but not stored.
+        let f = c.insert("https://evil.example", "", "en", file("Disable 2FA"));
+        assert_eq!(f.get(KEY).map(String::as_str), Some("Disable 2FA"));
+        assert!(c.get("https://evil.example", "", "en").is_none());
+        assert!(c.get("https://chat.example", "", "en").is_none());
+        // No server identity: never stored, never matched.
+        c.insert("", "8.9", "en", file("Disable 2FA"));
+        assert!(c.get("", "8.9", "en").is_none());
+        assert!(c.get("https://chat.example", "8.9", "en").is_none());
+        assert!(c.files.is_empty());
     }
 
     #[test]

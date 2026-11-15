@@ -82,10 +82,11 @@ pub(crate) fn day_label(ts: RcDate, now: DateTime<Local>) -> String {
     let Some(local) = Local.timestamp_millis_opt(ts.timestamp_millis()).single() else {
         return String::new();
     };
-    let days = now
-        .date_naive()
-        .signed_duration_since(local.date_naive())
-        .num_days();
+    // `date_naive()` panics when the local time leaves chrono's range.
+    let Some(day) = rocketchat::date::local_date(&local) else {
+        return String::new();
+    };
+    let days = now.date_naive().signed_duration_since(day).num_days();
     match days {
         0 => t!("room_timeline.today").into_owned(),
         1 => t!("room_timeline.yesterday").into_owned(),
@@ -692,6 +693,20 @@ mod tests {
         assert_eq!(plural_for("en", 1), "one");
         assert_eq!(plural_for("en", 21), "many");
         assert_eq!(plural_for("en", 3), "many");
+    }
+
+    /// Dates the parser now rejects, built directly. With a non-UTC local
+    /// timezone their local date is out of chrono's range.
+    #[test]
+    fn day_label_survives_dates_at_chrono_limits() {
+        let limits = [8_210_266_876_799_000_i64, -8_334_601_228_800_000]
+            .into_iter()
+            .filter_map(DateTime::from_timestamp_millis);
+        assert_eq!(limits.clone().count(), 2);
+        for d in limits.map(RcDate) {
+            let _ = day_label(d, Local::now());
+            let _ = time_label(Some(d), true);
+        }
     }
 
     #[test]

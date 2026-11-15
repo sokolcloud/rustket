@@ -247,7 +247,7 @@ pub struct OutgoingEncrypted {
 
 /// An encrypted file ready for `rooms.media`.
 pub struct PreparedUpload {
-    /// Upload file name: hex SHA-256 of the real name.
+    /// Upload file name: random hex, unrelated to the real name.
     pub hashed_name: String,
     pub encrypted: rocketchat::rest::Bytes,
     pub key: FileKey,

@@ -933,10 +933,17 @@ async fn encrypted_upload_roundtrip() {
     let up = m
         .prepare_upload(RID, "Отчёт.pdf", "application/pdf", &data)
         .unwrap();
-    assert_eq!(
+    // The upload name must not be derivable from the real name.
+    assert_eq!(up.hashed_name.len(), 64);
+    assert!(up.hashed_name.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(
         up.hashed_name,
         "2e2bc3fdfa1c462abcadcd3ca0ac2065699f7aa10076e3f9a71c485224c84e78"
     );
+    let again = m
+        .prepare_upload(RID, "Отчёт.pdf", "application/pdf", &data)
+        .unwrap();
+    assert_ne!(again.hashed_name, up.hashed_name);
     assert_ne!(&up.encrypted[..], &data[..]);
     let meta = m.decrypt_file_metadata(RID, &up.file_content).unwrap();
     assert_eq!(meta.name, "Отчёт.pdf");

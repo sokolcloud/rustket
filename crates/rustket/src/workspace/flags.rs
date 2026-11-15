@@ -8,8 +8,9 @@
 //! read the room's `customFields`, merge, write the whole object, read
 //! again, at most [`PUSH_ATTEMPTS`] times. The first push creates the room
 //! (a deterministic name, so a second device racing gets a duplicate-name
-//! error and finds it) and hides it; a service room seen open again is
-//! hidden again.
+//! error and finds it), binds it to the account (`ServiceBinding`: a room is
+//! only trusted when the user's own preferences name it) and hides it; a
+//! service room seen open again is hidden again.
 //!
 //! The overlay shrinks only when the workspace's blob, which comes from the
 //! subscriptions (the server copies the fields into them and notifies them
@@ -28,7 +29,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iced::Task;
-use rocketchat::models::{FLAGS_KEY, Room, ServiceFields, service_room_name};
+use rocketchat::models::{FLAGS_KEY, Room, ServiceBinding, ServiceFields, service_room_name};
 use rocketchat::{Error, RestClient};
 use rustket_core::flags::{self, FlagBlob, FlagEdit, FlagError, FlagStore, PushError};
 use rustket_core::workspace::ConnectionState;
@@ -82,6 +83,10 @@ pub struct ServiceStore {
     /// The primary's fields as last read: keys this version does not know
     /// are written back.
     fields: Option<ServiceFields>,
+    /// The account's binding as the workspace knew it when the push started.
+    binding: ServiceBinding,
+    /// The rooms were checked against the account's current binding.
+    vetted: bool,
 }
 
 impl ServiceStore {
@@ -95,7 +100,16 @@ impl ServiceStore {
             extra: rooms.iter().skip(1).cloned().collect(),
             seeds: HashMap::new(),
             fields: None,
+            binding: ServiceBinding::default(),
+            vetted: false,
         }
+    }
+
+    /// The account's binding as the workspace shows it. Rooms it names are
+    /// used as they are; any other is checked against a fresh `/me` first.
+    pub fn with_binding(mut self, binding: ServiceBinding) -> Self {
+        self.binding = binding;
+        self
     }
 
     /// Fields the subscriptions currently show for some of the rooms.
@@ -114,6 +128,39 @@ impl ServiceStore {
         self.fields = room.service_fields();
     }
 
+    /// Checks rooms the workspace's binding does not name, once per store,
+    /// before anything is read from them. They are rooms from before
+    /// bindings existed (the account has none: they are bound now) or rooms
+    /// bound since the workspace last read `/me`; a room the account's
+    /// current binding does not name is dropped.
+    async fn vet(&mut self) -> Result<(), Error> {
+        if self.vetted {
+            return Ok(());
+        }
+        let rids: Vec<String> = self.rid.iter().chain(&self.extra).cloned().collect();
+        if rids.iter().any(|r| !self.binding.contains(r)) {
+            let fresh = self.rest.read_service_binding().await?;
+            if fresh.is_empty() {
+                self.binding = self.rest.bind_service_rooms(&rids).await?;
+                tracing::debug!(rooms = rids.len(), "flags: service rooms bound");
+            } else {
+                if self.rid.as_ref().is_some_and(|r| !fresh.contains(r)) {
+                    tracing::warn!("flags: the service room is not bound to the account");
+                    self.rid = None;
+                    self.fields = None;
+                }
+                self.extra.retain(|r| fresh.contains(r));
+                self.seeds.retain(|r, _| fresh.contains(r));
+                if self.rid.is_none() && !self.extra.is_empty() {
+                    self.rid = Some(self.extra.remove(0));
+                }
+                self.binding = fresh;
+            }
+        }
+        self.vetted = true;
+        Ok(())
+    }
+
     /// Creates the service room holding `blob`, or finds the one another
     /// device just created. A found room is not written: the caller's next
     /// read shows what it holds.
@@ -125,6 +172,21 @@ impl ServiceStore {
             match self.rest.create_service_room(&name, &fields).await {
                 Ok(room) => {
                     tracing::debug!(rid = %room.id, "flags: service room created");
+                    let bound = self
+                        .rest
+                        .bind_service_rooms(std::slice::from_ref(&room.id))
+                        .await;
+                    match bound {
+                        Ok(binding) => self.binding = binding,
+                        Err(e) => {
+                            // Unbound it would never be trusted and would
+                            // keep its name taken.
+                            if let Err(e) = self.rest.rooms_delete(&room.id).await {
+                                tracing::warn!(rid = %room.id, error = %e, "flags: unbound room kept");
+                            }
+                            return Err(e);
+                        }
+                    }
                     self.adopt(&room);
                     return Ok(());
                 }
@@ -132,9 +194,22 @@ impl ServiceStore {
                     // Not a member (someone else's room): not found.
                     match self.rest.rooms_info_by_name(&name).await {
                         Ok(room) if room.is_service_room_of(&self.uid) => {
-                            tracing::debug!(rid = %room.id, "flags: service room found");
-                            self.adopt(&room);
-                            return Ok(());
+                            // A room with this name and shape may have been
+                            // created in the user's name by someone else.
+                            let fresh = self.rest.read_service_binding().await?;
+                            if fresh.trusts(&room) {
+                                tracing::debug!(rid = %room.id, "flags: service room found");
+                                self.binding = if fresh.contains(&room.id) {
+                                    fresh
+                                } else {
+                                    self.rest
+                                        .bind_service_rooms(std::slice::from_ref(&room.id))
+                                        .await?
+                                };
+                                self.adopt(&room);
+                                return Ok(());
+                            }
+                            tracing::warn!(rid = %room.id, "flags: unbound room holds the name");
                         }
                         Ok(_) => {}
                         Err(e) if e.is_transient() => return Err(e),
@@ -152,6 +227,7 @@ impl FlagStore for ServiceStore {
     type Error = Error;
 
     async fn read(&mut self) -> Result<FlagBlob, Error> {
+        self.vet().await?;
         let mut blob = FlagBlob::default();
         if let Some(rid) = self.rid.clone() {
             let read = match self.seeds.remove(&rid) {
@@ -194,6 +270,7 @@ impl FlagStore for ServiceStore {
     }
 
     async fn write(&mut self, blob: &FlagBlob) -> Result<(), Error> {
+        self.vet().await?;
         let (Some(rid), Some(mut fields)) = (self.rid.clone(), self.fields.take()) else {
             return self.create(blob).await;
         };
@@ -562,7 +639,10 @@ impl FlagSync {
             Some((rid.clone(), f))
         });
         let seeds: Vec<_> = seeds.collect();
-        let mut store = ServiceStore::new(h.rest().clone(), uid, &rooms).with_seeds(seeds);
+        let binding = ws.me().map(ServiceBinding::of).unwrap_or_default();
+        let mut store = ServiceStore::new(h.rest().clone(), uid, &rooms)
+            .with_seeds(seeds)
+            .with_binding(binding);
         let pending = self.overlay.clone();
         let epoch = self.epoch;
         Task::perform(
@@ -750,6 +830,8 @@ mod tests {
             }),
             users_count: Some(1),
             custom_fields: Some(ServiceFields::new("me").to_custom_fields()),
+            // From before bindings existed: accepted without one.
+            ts: RcDate::from_millis(1_700_000_000_000),
             ..Default::default()
         }
     }

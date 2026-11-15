@@ -74,6 +74,7 @@ pub fn translocated(bundle: &Path) -> bool {
 pub fn install_dmg(
     bundle: &Path,
     file: &Path,
+    sha: [u8; 32],
     release: &crate::updater::Release,
 ) -> Result<super::Outcome, UpdateError> {
     use std::ffi::OsString;
@@ -92,6 +93,11 @@ pub fn install_dmg(
         // Running from the mounted dmg.
         return Err(UpdateError::Translocated);
     }
+    // The cached image may have changed since the download was verified.
+    let mut image =
+        std::fs::File::open(file).map_err(|e| UpdateError::io("read the package", &e))?;
+    super::verify_digest(&mut image, &sha)?;
+    drop(image);
     let mnt = work.join("mnt");
     std::fs::create_dir_all(&mnt).map_err(|e| UpdateError::io("create the mount point", &e))?;
     let hdiutil = Path::new("/usr/bin/hdiutil");

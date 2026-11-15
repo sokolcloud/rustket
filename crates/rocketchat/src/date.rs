@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, Offset, SecondsFormat, TimeZone, Utc};
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -10,15 +10,35 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 ///
 /// Serialises as an ISO-8601 string with milliseconds (`2026-11-07T15:55:01.324Z`);
 /// use [`RcDate::ddp`] or the [`ddp_date`] serde module for `{"$date": ms}`.
+///
+/// Parsed values are limited to years 0001..=9999 ([`MIN_MILLIS`]..=[`MAX_MILLIS`]):
+/// chrono's own range ends where adding a UTC offset or a margin panics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RcDate(pub DateTime<Utc>);
+
+/// `0001-01-01T00:00:00.000Z`.
+pub const MIN_MILLIS: i64 = -62_135_596_800_000;
+/// `9999-12-31T23:59:59.999Z`.
+pub const MAX_MILLIS: i64 = 253_402_300_799_999;
+
+/// Calendar date of `d` in its own timezone; `None` where chrono's
+/// `date_naive()` would panic (local time outside chrono's range).
+pub fn local_date<Tz: TimeZone>(d: &DateTime<Tz>) -> Option<NaiveDate> {
+    d.naive_utc()
+        .checked_add_offset(d.offset().fix())
+        .map(|n| n.date())
+}
 
 impl RcDate {
     pub fn now() -> Self {
         Self(Utc::now())
     }
 
+    /// `None` outside [`MIN_MILLIS`]..=[`MAX_MILLIS`].
     pub fn from_millis(ms: i64) -> Option<Self> {
+        if !(MIN_MILLIS..=MAX_MILLIS).contains(&ms) {
+            return None;
+        }
         Utc.timestamp_millis_opt(ms).single().map(Self)
     }
 
@@ -31,9 +51,9 @@ impl RcDate {
     }
 
     pub fn parse_iso(s: &str) -> Option<Self> {
-        DateTime::parse_from_rfc3339(s)
-            .ok()
-            .map(|d| Self(d.with_timezone(&Utc)))
+        let d = DateTime::parse_from_rfc3339(s).ok()?;
+        // An offset can move a four-digit year out of the accepted range.
+        Self::from_millis(d.timestamp_millis())
     }
 
     /// Wrapper that serialises as `{"$date": ms}` (EJSON, for DDP method params).
@@ -237,6 +257,60 @@ mod tests {
         ] {
             let r = std::panic::catch_unwind(|| serde_json::from_str::<RcDate>(j));
             assert!(r.is_ok(), "panicked on {j}");
+        }
+    }
+
+    /// One second inside chrono's limits: a local offset used to overflow
+    /// `date_naive()` and panic the UI thread.
+    #[test]
+    fn rejects_dates_outside_the_supported_range() {
+        for ms in [8_210_266_876_799_000_i64, -8_334_601_228_800_000] {
+            assert!(RcDate::from_millis(ms).is_none(), "{ms}");
+            for j in [
+                format!("{ms}"),
+                format!("\"{ms}\""),
+                format!("{ms}.0"),
+                format!("{{\"$date\": {ms}}}"),
+                format!("{{\"$date\": {ms}.0}}"),
+            ] {
+                assert!(serde_json::from_str::<RcDate>(&j).is_err(), "{j}");
+            }
+        }
+        assert!(RcDate::from_millis(MIN_MILLIS - 1).is_none());
+        assert!(RcDate::from_millis(MAX_MILLIS + 1).is_none());
+        let min = RcDate::from_millis(MIN_MILLIS).unwrap();
+        let max = RcDate::from_millis(MAX_MILLIS).unwrap();
+        assert_eq!(min.to_iso(), "0001-01-01T00:00:00.000Z");
+        assert_eq!(max.to_iso(), "9999-12-31T23:59:59.999Z");
+        assert_eq!(RcDate::parse_iso(&min.to_iso()), Some(min));
+        assert_eq!(RcDate::parse_iso(&max.to_iso()), Some(max));
+        // The offset moves these past either end.
+        assert!(RcDate::parse_iso("9999-12-31T23:59:59-01:00").is_none());
+        assert!(RcDate::parse_iso("0001-01-01T00:00:00+01:00").is_none());
+        assert!(serde_json::from_str::<RcDate>("\"9999-12-31T23:59:59-01:00\"").is_err());
+    }
+
+    #[test]
+    fn local_date_does_not_panic_at_chrono_limits() {
+        use chrono::FixedOffset;
+        let east = FixedOffset::east_opt(3 * 3600).unwrap();
+        let west = FixedOffset::west_opt(5 * 3600).unwrap();
+        let late = DateTime::from_timestamp_millis(8_210_266_876_799_000).unwrap();
+        let early = DateTime::from_timestamp_millis(-8_334_601_228_800_000).unwrap();
+        assert_eq!(local_date(&late.with_timezone(&east)), None);
+        assert_eq!(local_date(&early.with_timezone(&west)), None);
+        assert_eq!(local_date(&late), Some(late.date_naive()));
+        assert_eq!(
+            local_date(&early.with_timezone(&east)),
+            Some(early.date_naive())
+        );
+        // Every accepted date has a local date in any offset.
+        for ms in [MIN_MILLIS, MAX_MILLIS] {
+            let d = RcDate::from_millis(ms).unwrap().0;
+            for tz in [east, west] {
+                let l = d.with_timezone(&tz);
+                assert_eq!(local_date(&l), Some(l.date_naive()));
+            }
         }
     }
 

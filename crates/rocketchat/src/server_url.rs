@@ -3,7 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 
@@ -35,6 +35,27 @@ pub(crate) fn encode_segment(s: &str) -> String {
 
 pub(crate) fn encode_query(s: &str) -> String {
     utf8_percent_encode(s, QUERY).to_string()
+}
+
+/// Whether a URL path means the same to every hop that may normalise it: no
+/// percent-encoded separator or dot (also double-encoded), no empty, `.` or `..`
+/// segment (also with a `;` path parameter), no control characters. A reverse
+/// proxy that decodes and collapses such a path would route it elsewhere.
+fn is_canonical_path(path: &str) -> bool {
+    fn has_encoded_separator(s: &str) -> bool {
+        let lower = s.to_ascii_lowercase();
+        ["%2f", "%5c", "%2e"].iter().any(|e| lower.contains(e))
+    }
+    if has_encoded_separator(path) || path.contains("//") || path.contains('\\') {
+        return false;
+    }
+    let decoded = percent_decode_str(path).decode_utf8_lossy();
+    if has_encoded_separator(&decoded) || decoded.chars().any(char::is_control) {
+        return false;
+    }
+    !decoded
+        .split('/')
+        .any(|segment| matches!(segment.split(';').next(), Some("." | "..")))
 }
 
 /// Canonical server base URL: `scheme://host[:port][/prefix]`, without a trailing slash.
@@ -208,7 +229,9 @@ impl ServerUrl {
     /// (`/file-upload/`, `/ufs/`), avatars, custom emoji and sounds, assets.
     /// Only these get the user's credentials on a download; any other path
     /// (`/api/…`, app endpoints) may come from untrusted message content and
-    /// is fetched anonymously.
+    /// is fetched anonymously. So is a path that a normalising reverse proxy
+    /// could route off these routes (`/file-upload/..%2Fapi/…`) and a URL with
+    /// userinfo.
     pub fn is_credentialed_asset(&self, url: &str) -> bool {
         const ROUTES: [&str; 6] = [
             "/file-upload/",
@@ -222,6 +245,9 @@ impl ServerUrl {
             return false;
         };
         if !crate::rest::same_origin(&u, &self.url) {
+            return false;
+        }
+        if !u.username().is_empty() || u.password().is_some() || !is_canonical_path(u.path()) {
             return false;
         }
         let Some(path) = u.path().strip_prefix(self.path_prefix()) else {
@@ -374,6 +400,60 @@ mod tests {
                 false,
             ),
             ("https://example.com/chat/api/v1/x?u=/file-upload/", false),
+            (
+                "https://example.com/chat/file-upload/..%2Fapi/v1/logout",
+                false,
+            ),
+            (
+                "https://example.com/chat/file-upload/..%2fapi/v1/logout",
+                false,
+            ),
+            (
+                "https://example.com/chat/file-upload/..%5Capi/v1/logout",
+                false,
+            ),
+            (
+                "https://example.com/chat/file-upload/..%5capi/v1/logout",
+                false,
+            ),
+            (
+                "https://example.com/chat/file-upload/..\\api/v1/logout",
+                false,
+            ),
+            (
+                "https://example.com/chat/avatar/%2E%2E%2Fapi/v1/livechat/room.join?roomId=X",
+                false,
+            ),
+            ("https://example.com/chat/avatar/.%2E/api/v1/logout", false),
+            (
+                "https://example.com/chat/file-upload/x%2F..%2F..%2Fapi/v1/logout",
+                false,
+            ),
+            (
+                "https://example.com/chat/file-upload/..%252Fapi/v1/logout",
+                false,
+            ),
+            (
+                "https://example.com/chat/file-upload/%252e%252e/api/v1/logout",
+                false,
+            ),
+            (
+                "https://example.com/chat/file-upload/..;/api/v1/logout",
+                false,
+            ),
+            ("https://example.com/chat/file-upload//x.png", false),
+            ("https://example.com/chat/file-upload/a%00b.png", false),
+            ("https://u:p@example.com/chat/file-upload/x.png", false),
+            ("https://u@example.com/chat/file-upload/x.png", false),
+            (
+                "https://example.com/chat/file-upload/abc/100%25%20done%20(1).png",
+                true,
+            ),
+            (
+                "https://example.com/chat/file-upload/abc/%D1%84%D0%B0%D0%B9%D0%BB.png",
+                true,
+            ),
+            ("https://example.com/chat/avatar/alice.smith", true),
             ("https://example.com/chatfile-upload/x", false),
             ("https://example.com/file-upload/x", false),
             ("https://evil.com/chat/file-upload/x", false),

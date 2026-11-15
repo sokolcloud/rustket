@@ -45,7 +45,7 @@ pub use events::{
     NotificationMessage, NotificationPayload, ResyncReason, RoleAssignment, SessionEvent,
     TimeRange, decode_event, status_from_code, streams,
 };
-pub use meteor_ddp::{BackoffConfig, DataKind, DataMessage, HeartbeatConfig};
+pub use meteor_ddp::{BackoffConfig, DataKind, DataMessage, HeartbeatConfig, log_safe};
 pub use omnichannel::{
     OmnichannelEvent, StreamWatch, canned_responses_subscription, decode_omnichannel,
     inquiry_queue_subscriptions, room_data_subscription,
@@ -583,6 +583,7 @@ impl Core {
             .await;
         let fatal = |e: HookError| {
             if e.is_fatal() && !first {
+                // `HookError` messages are escaped and capped by its constructors.
                 tracing::warn!(reason = %e, "resume login rejected; session logged out");
                 *self
                     .logged_out

@@ -203,14 +203,22 @@ impl Admin {
         let lang = server_language(&rust_i18n::locale());
         let i18n = ctx.rest_task(
             move |r| async move {
-                let cached = |l: &str| I18N_CACHE.lock().ok().and_then(|c| c.get(&version, l));
+                // The cache is process-wide; files are bound to the server
+                // this client talks to.
+                let server = r.server().as_str().to_owned();
+                let cached = |l: &str| {
+                    I18N_CACHE
+                        .lock()
+                        .ok()
+                        .and_then(|c| c.get(&server, &version, l))
+                };
                 let en = match cached("en") {
                     Some(f) => f,
                     None => {
                         let f = r.server_translations("en").await?;
                         I18N_CACHE
                             .lock()
-                            .map(|mut c| c.insert(&version, "en", f.clone()))
+                            .map(|mut c| c.insert(&server, &version, "en", f.clone()))
                             .unwrap_or_else(|_| Arc::new(f))
                     }
                 };
@@ -223,7 +231,7 @@ impl Admin {
                         None => match r.server_translations(&lang).await {
                             Ok(f) => I18N_CACHE
                                 .lock()
-                                .map(|mut c| c.insert(&version, &lang, f.clone()))
+                                .map(|mut c| c.insert(&server, &version, &lang, f.clone()))
                                 .unwrap_or_else(|_| Arc::new(f)),
                             Err(_) => Arc::new(HashMap::new()),
                         },

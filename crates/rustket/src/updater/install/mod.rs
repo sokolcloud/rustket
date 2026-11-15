@@ -40,11 +40,11 @@ pub fn install(
         #[cfg(target_os = "linux")]
         InstallKind::AppImage { image } => linux::install_appimage(image, file, sha),
         #[cfg(windows)]
-        InstallKind::InnoSetup { scope, .. } => windows::install_inno(*scope, file),
+        InstallKind::InnoSetup { scope, .. } => windows::install_inno(*scope, file, sha),
         #[cfg(windows)]
-        InstallKind::PortableZip { dir } => windows::install_zip(dir, file),
+        InstallKind::PortableZip { dir } => windows::install_zip(dir, file, sha),
         #[cfg(target_os = "macos")]
-        InstallKind::MacApp { bundle } => macos::install_dmg(bundle, file, release),
+        InstallKind::MacApp { bundle } => macos::install_dmg(bundle, file, sha, release),
         #[allow(unreachable_patterns)]
         _ => {
             let _ = (file, sha);
@@ -229,6 +229,31 @@ pub(crate) fn copy_verified(
         .map_err(|e| UpdateError::io("copy the package", &e))
 }
 
+/// Hashes `input` to its end; it must have the digest `sha`.
+#[cfg(any(windows, target_os = "macos", test))]
+pub(crate) fn verify_digest(
+    input: &mut impl std::io::Read,
+    sha: &[u8; 32],
+) -> Result<(), UpdateError> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = input
+            .read(&mut buf)
+            .map_err(|e| UpdateError::io("read the package", &e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    if digest != *sha {
+        return Err(UpdateError::ChecksumMismatch);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -358,6 +383,28 @@ mod tests {
         let mut dst = std::fs::File::create(tmp.path().join("dst2")).unwrap();
         assert_eq!(
             copy_verified(&src, &mut dst, &[0; 32]),
+            Err(UpdateError::ChecksumMismatch)
+        );
+    }
+
+    #[test]
+    fn digest_of_an_open_file() {
+        use sha2::{Digest, Sha256};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("setup.exe");
+        std::fs::write(&path, b"installer").unwrap();
+        let sha: [u8; 32] = Sha256::digest(b"installer").into();
+        let mut file = std::fs::File::open(&path).unwrap();
+        assert_eq!(verify_digest(&mut file, &sha), Ok(()));
+        // Replaced after the download was verified.
+        std::fs::write(&path, b"another installer").unwrap();
+        let mut file = std::fs::File::open(&path).unwrap();
+        assert_eq!(
+            verify_digest(&mut file, &sha),
+            Err(UpdateError::ChecksumMismatch)
+        );
+        assert_eq!(
+            verify_digest(&mut std::io::empty(), &sha),
             Err(UpdateError::ChecksumMismatch)
         );
     }

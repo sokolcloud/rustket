@@ -346,7 +346,9 @@ if it has a string `text` and no `msg` → `msg = text`. EJSON wrappers (`{"$dat
 - Whole-file stream cipher, no padding, no MAC; integrity via `hashes.sha256` = lowercase hex
   SHA-256 of the **plaintext** file. The web service worker does not check it; RN does and
   discards on mismatch. Rustket: verify after download, show an error on mismatch.
-- Upload file name: lowercase hex SHA-256 of the UTF-8 original name; upload MIME type: none
+- Upload file name: web/RN send lowercase hex SHA-256 of the UTF-8 original name, which a server
+  can test guessed names against. Rustket sends 32 random bytes as hex instead (same shape; no
+  client reads the name back, the real one is in the encrypted metadata). Upload MIME type: none
   (the browser sends `application/octet-stream`; server stored `application/octet-stream` [live]).
   RN sends MIME `file`; the server stores that as `application/octet-stream` too (part
   `Content-Type: file` re-tested live), so every encrypted upload record has type
@@ -865,6 +867,11 @@ the previous key under its old kid to the room's old keys immediately (the serve
   `">@alice"`); the server strips only a leading `@`/`#` (`Mentions.ts:convertMentionsToUsers`), so
   such entries resolve to nobody [src]. Rustket may drop the leading `>` (harmless for interop:
   the lists are only used server-side for notifications).
+  Rustket does not splice `P` into these regexes: the setting is server-controlled and decides
+  what leaves the client in plaintext. Candidates are found by a fixed scan (`@`/`#` after line
+  start, whitespace or `>`, up to the next whitespace); `P` is used only as a start-anchored
+  filter on the name parts of such a token (default pattern when it does not compile on its own),
+  and entries are capped in length and count.
   The server turns them into `mentions`/`channels` (`RC:apps/meteor/server/lib/messaging/mentions/Mentions.ts:47`)
   — this leaks mentioned usernames/channels in plaintext by design. RN builds the same lists
   without stripping markdown links first (`RN:app/lib/encryption/utils.ts:getE2EEMentions`).
@@ -960,7 +967,7 @@ reproduced live:
 1. Preconditions: room instance exists and `E2E_Enable_Encrypt_Files`; else plain upload (or refusal
    as in §2.1). Room must be `READY` (`Error_encrypting_file` otherwise).
 2. `hash = sha256hex(plaintext)`; `iv = 16 random bytes`; random AES-256-CTR key; encrypt (§3.8);
-   upload name `sha256hex(utf8(name))`.
+   upload name `sha256hex(utf8(name))` (Rustket: 32 random bytes as hex, §3.8).
 3. `fileContentData = {type, typeGroup: type.split('/')[0], name, encryption: {key: JWK, iv: b64(iv)}, hashes: {sha256: hash}}`.
 4. `POST rooms.media/{rid}` multipart: part `file` (encrypted bytes, filename = hashed name, no
    MIME → `application/octet-stream`), text part `content` = `JSON.stringify(v2 envelope of fileContentData)`.
@@ -1370,7 +1377,7 @@ src/e2e/payload.rs    DecryptedMessage { msg: Option<String>, attachments: Optio
 src/e2e/file.rs       FileKey { key: Zeroizing<[u8; 32]>, iv: [u8; 16] }; AttachmentEncryption { key: OctJwk, iv: String }
                       FileKey::generate(); from_attachment(&AttachmentEncryption)
                       encrypt_stream / decrypt_stream adapters over Stream<Item = Result<Bytes>> (Ctr64BE)
-                      Sha256 streaming hasher -> lowercase hex; hashed_upload_name(&str) -> String
+                      Sha256 streaming hasher -> lowercase hex; random_upload_name() -> String
 src/e2e/mentions.rs   e2e_mentions(text, username_pattern) -> E2eMentions
 src/rest/e2e.rs       impl RestClient:
                         fetch_my_keys() -> MyKeys { public_key: Option<String>, private_key: Option<String> }

@@ -1,7 +1,7 @@
 //! Encrypted file uploads and downloads (§7.8).
 
 use rocketchat::e2e::{
-    DecryptedMessage, E2eError, FileKey, FileMetadata, RoomKey, Sha256Hasher, hashed_upload_name,
+    DecryptedMessage, E2eError, FileKey, FileMetadata, RoomKey, Sha256Hasher, random_upload_name,
 };
 use rocketchat::models::{FileInfo, MessageAttachment, UploadedFile};
 
@@ -27,7 +27,7 @@ pub(super) fn encrypt_file(
         .encrypt_json(&serde_json::to_value(&metadata).map_err(E2eError::from)?)?
         .to_json();
     Ok(PreparedUpload {
-        hashed_name: hashed_upload_name(name),
+        hashed_name: random_upload_name(),
         size,
         encrypted: data.into(),
         key,

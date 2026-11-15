@@ -1066,3 +1066,131 @@ fn modal_and_bar_with_the_same_view_id_stay_apart() {
     assert!(matches!(ch, UiKitChange::BarClosed { .. }));
     assert!(s.modal().is_some());
 }
+
+/// An element of an app's bar naming a core app (`mention-core` `add-users`
+/// would add users with the clicking user's rights) is not sent; another
+/// app's id is ignored and the action goes to the bar's own app.
+#[test]
+fn view_block_actions_never_leave_the_view_app() {
+    let now = Instant::now();
+    let mut s = UiKitStore::new();
+    let t = s.begin(
+        Some("app1"),
+        Origin::new(OriginKind::ActionButton(ButtonContext::RoomAction)).rid(Some("r1")),
+        now,
+    );
+    s.apply(si("synthetic_contextual_bar_open", &t), now);
+    assert_eq!(s.bar("bar-1").unwrap().app_id, "app1");
+    let busy = s.busy();
+    for core in ["mention-core", "nps-core", "videoconf-core"] {
+        assert!(
+            s.view_block_action(
+                ViewTarget::Bar,
+                "bar-1",
+                Some(core),
+                "some-message-id",
+                "add-users",
+                Some(json!("[{\"username\":\"mallory\"}]")),
+                now,
+            )
+            .is_none(),
+            "{core}"
+        );
+    }
+    // Nothing was registered for the refused actions.
+    assert_eq!(s.busy(), busy);
+    let (app, i) = s
+        .view_block_action(ViewTarget::Bar, "bar-1", Some("app2"), "b", "a", None, now)
+        .unwrap();
+    assert_eq!(app, "app1");
+    let trigger = s.triggers().get(i.trigger_id()).unwrap();
+    assert_eq!(trigger.app_id.as_deref(), Some("app1"));
+    let (app, _) = s
+        .view_block_action(ViewTarget::Bar, "bar-1", Some("app1"), "b", "a", None, now)
+        .unwrap();
+    assert_eq!(app, "app1");
+
+    // The same in a modal.
+    let mut s = with_modal(now);
+    assert!(
+        s.view_block_action(
+            ViewTarget::Modal,
+            "view-1",
+            Some("mention-core"),
+            "b",
+            "share-message",
+            None,
+            now,
+        )
+        .is_none()
+    );
+}
+
+/// `appId` inside the view (and on the interaction) is written by the app
+/// that answered: it must not make the view, and so its `viewSubmit`,
+/// `viewClosed` and block actions, belong to another app.
+#[test]
+fn view_app_id_cannot_redirect_the_view() {
+    let now = Instant::now();
+    let forged = |name: &str, t: &str| {
+        let mut v = fixture(&format!("uikit/{name}.json"));
+        v["triggerId"] = json!(t);
+        v["appId"] = json!("mention-core");
+        v["view"]["appId"] = json!("mention-core");
+        ServerInteraction::from_value(v)
+    };
+    let mut s = UiKitStore::new();
+    let t = s.slash_command_trigger(Some("app1"), "r1", None, now);
+    s.apply(forged("synthetic_modal_open", &t), now);
+    assert_eq!(s.modal().unwrap().app_id, "app1");
+    let (app, _) = s
+        .view_block_action(ViewTarget::Modal, "view-1", None, "b", "a", None, now)
+        .unwrap();
+    assert_eq!(app, "app1");
+    let (app, _) = s.view_submit(ViewTarget::Modal, "view-1", now).unwrap();
+    assert_eq!(app, "app1");
+    let (app, _, _) = s
+        .view_closed(ViewTarget::Modal, "view-1", true, now)
+        .unwrap();
+    assert_eq!(app, "app1");
+
+    let t = s.begin(
+        Some("app1"),
+        Origin::new(OriginKind::ViewBlock).rid(Some("r1")),
+        now,
+    );
+    s.apply(forged("synthetic_contextual_bar_open", &t), now);
+    assert_eq!(s.bar("bar-1").unwrap().app_id, "app1");
+    let (app, _, _) = s.view_closed(ViewTarget::Bar, "bar-1", true, now).unwrap();
+    assert_eq!(app, "app1");
+}
+
+#[test]
+fn banner_block_actions_go_to_the_banner_app() {
+    let now = Instant::now();
+    let mut s = UiKitStore::new();
+    let open = |s: &mut UiKitStore| {
+        let t = s.slash_command_trigger(Some("app1"), "r1", None, now);
+        // The banner's own `appId` (`banner-core` in the fixture) does not count.
+        s.apply(si("synthetic_banner_open", &t), now);
+        assert_eq!(s.current_banner().unwrap().app_id, "app1");
+    };
+    open(&mut s);
+    // An element naming a core app: not sent, the banner stays.
+    assert!(
+        s.banner_block_action("banner-1", Some("nps-core"), "b", "nps-score", None, now)
+            .is_none()
+    );
+    assert!(s.current_banner().is_some());
+    let (app, _, ch) = s
+        .banner_block_action("banner-1", Some("app2"), "b", "a", None, now)
+        .unwrap();
+    assert_eq!(app, "app1");
+    assert_eq!(ch, UiKitChange::BannerClosed("banner-1".into()));
+    assert!(s.current_banner().is_none());
+    open(&mut s);
+    let (app, _, _) = s
+        .banner_block_action("banner-1", None, "b", "a", None, now)
+        .unwrap();
+    assert_eq!(app, "app1");
+}

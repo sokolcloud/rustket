@@ -7,13 +7,20 @@
 //! subscriptions, live and offline, without extra requests. Works on CE: only
 //! `create-p` (default for `user`) and the owner's `edit-room` are needed.
 //!
+//! Nothing on a room proves who made it: a peer can get a private group
+//! created in the user's name, alone in it, with any `customFields`
+//! (`teams.create` with `owner`, also when the team itself then fails to be
+//! created and no team field is left). The account therefore vouches for its
+//! service rooms in its own preferences, which only the user can write
+//! ([`ServiceBinding`]); a room that is not bound there is never trusted.
+//!
 //! `groups.setCustomFields` replaces the whole object. Writers start from the
 //! latest [`ServiceFields`] they read, so keys they do not know survive.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::{Room, RoomType, Subscription, lenient};
+use super::{Room, RoomType, Subscription, User, lenient};
 
 /// `customFields` key whose object marks a room as a Rustket service room.
 pub const SERVICE_MARKER_KEY: &str = "rustketService";
@@ -23,6 +30,109 @@ pub const SERVICE_FORMAT: u64 = 1;
 pub const FLAGS_KEY: &str = "rustketFlags";
 /// Name prefix of the service room (see [`service_room_name`]).
 pub const SERVICE_ROOM_PREFIX: &str = "rustket-sync-";
+
+/// Preference holding the binding entries: a list of `{action, label}` that
+/// every user can write for themselves (`users.setPreferences`) and no one
+/// else can read.
+pub const BINDING_PREFERENCE: &str = "dontAskAgainList";
+/// `action` prefix of a binding entry; the room id follows.
+pub const BINDING_ACTION_PREFIX: &str = "rustket-service-room:";
+/// `label` of a binding entry (the web client lists the labels in the
+/// account preferences).
+pub const BINDING_LABEL: &str = "Rustket sync";
+/// 2026-12-01T00:00:00Z. Versions before the binding created service rooms
+/// without one: while an account has no binding at all, rooms the server
+/// created before this instant are still accepted, and bound by the next
+/// write.
+pub const UNBOUND_CUTOFF_MS: i64 = 1_796_083_200_000;
+
+/// The service rooms the account vouches for: the room ids recorded in the
+/// user's own preferences (`me.settings.preferences`, from `/me`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ServiceBinding {
+    rids: Vec<String>,
+}
+
+impl ServiceBinding {
+    pub fn from_preferences(preferences: Option<&Map<String, Value>>) -> Self {
+        let rids = preferences
+            .and_then(|p| p.get(BINDING_PREFERENCE))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(binding_rid)
+            .map(str::to_owned)
+            .collect();
+        Self { rids }
+    }
+
+    /// The binding in a `/me` document.
+    pub fn of(me: &User) -> Self {
+        Self::from_preferences(me.preferences())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rids.is_empty()
+    }
+
+    pub fn contains(&self, rid: &str) -> bool {
+        self.rids.iter().any(|r| r == rid)
+    }
+
+    /// Whether `room` may hold the account's data: it is bound, or the
+    /// account has no binding yet and the server created the room before
+    /// [`UNBOUND_CUTOFF_MS`] (the room's `ts` is set by the server). The
+    /// caller still checks [`is_own_service_room`].
+    pub fn trusts(&self, room: &Room) -> bool {
+        if self.rids.is_empty() {
+            room.ts
+                .is_some_and(|t| t.timestamp_millis() < UNBOUND_CUTOFF_MS)
+        } else {
+            self.contains(&room.id)
+        }
+    }
+
+    /// The [`BINDING_PREFERENCE`] value that also binds `rids`: the current
+    /// list, other entries untouched, plus the missing ones. `None` when all
+    /// of them are bound already.
+    pub fn preference_with(
+        preferences: Option<&Map<String, Value>>,
+        rids: &[String],
+    ) -> Option<Value> {
+        let bound = Self::from_preferences(preferences);
+        let mut list = preferences
+            .and_then(|p| p.get(BINDING_PREFERENCE))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let before = list.len();
+        for rid in rids {
+            let entry = binding_entry(rid);
+            if !rid.is_empty() && !bound.contains(rid) && !list.contains(&entry) {
+                list.push(entry);
+            }
+        }
+        (list.len() > before).then_some(Value::Array(list))
+    }
+}
+
+fn binding_rid(entry: &Value) -> Option<&str> {
+    entry
+        .get("action")?
+        .as_str()?
+        .strip_prefix(BINDING_ACTION_PREFIX)
+        .filter(|rid| !rid.is_empty())
+}
+
+fn binding_entry(rid: &str) -> Value {
+    let mut entry = Map::new();
+    entry.insert(
+        "action".into(),
+        format!("{BINDING_ACTION_PREFIX}{rid}").into(),
+    );
+    entry.insert("label".into(), BINDING_LABEL.into());
+    Value::Object(entry)
+}
 
 /// Value of [`SERVICE_MARKER_KEY`].
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -126,14 +236,22 @@ impl Room {
         ServiceFields::parse(self.custom_fields.as_ref())
     }
 
-    /// `uid`'s own service room: a private group created by `uid`, with no
-    /// other member, whose marker names `uid`. Anyone with `edit-room` can
-    /// write a marker naming `uid`, and an owner can make `uid` an owner too,
-    /// but nobody else can create a room as `uid`; the member count keeps out
+    /// Whether the room has the shape of `uid`'s service room: a private
+    /// group created by `uid`, with no other member, whose marker names
+    /// `uid`, and which is neither a team nor a discussion (a `prid` would
+    /// let the members of the parent read it). The member count keeps out
     /// rooms that someone (an admin) added others to.
+    ///
+    /// Necessary, not sufficient: `teams.create` with `owner` creates such a
+    /// room in someone else's name, and leaves no team field on it when the
+    /// team insert fails after the room was made. Only a room the account
+    /// bound is trusted ([`ServiceBinding::trusts`]).
     pub fn is_service_room_of(&self, uid: &str) -> bool {
         !uid.is_empty()
             && self.t == RoomType::Private
+            && self.prid.is_none()
+            && self.team_id.is_none()
+            && self.team_main != Some(true)
             && self.u.as_ref().is_some_and(|u| u.id == uid)
             && self.users_count.is_some_and(|n| n <= 1)
             && self.service_fields().is_some_and(|f| f.is_owned_by(uid))
@@ -147,11 +265,16 @@ impl Subscription {
     }
 
     /// Whether this subscription may be `uid`'s own service room: a private
-    /// group `uid` owns whose marker names `uid`. Not enough on its own: the
-    /// owner of someone else's group can make `uid` an owner and write such a
-    /// marker. [`is_own_service_room`] also checks the room.
+    /// group `uid` owns whose marker names `uid`, not a team or a discussion.
+    /// Not enough on its own: the owner of someone else's group can make
+    /// `uid` an owner and write such a marker. [`is_own_service_room`] also
+    /// checks the room.
     pub fn is_service_room_of(&self, uid: &str) -> bool {
-        self.t == RoomType::Private
+        !uid.is_empty()
+            && self.t == RoomType::Private
+            && self.prid.is_none()
+            && self.team_id.is_none()
+            && self.team_main != Some(true)
             && self.u.id == uid
             && self
                 .roles
@@ -161,18 +284,21 @@ impl Subscription {
     }
 }
 
-/// Whether `sub` and `room` are `uid`'s own service room: both pass their
-/// checks (the room's creator, members and type cannot be forged by others).
+/// Whether `sub` and `room` have the shape of `uid`'s own service room: both
+/// pass their checks. Enough to keep the room out of lists; its data is only
+/// used when the account bound it ([`trusted_service_subscriptions`]).
 pub fn is_own_service_room(sub: &Subscription, room: &Room, uid: &str) -> bool {
     sub.rid == room.id && sub.is_service_room_of(uid) && room.is_service_room_of(uid)
 }
 
-/// `uid`'s service rooms among the subscriptions with their rooms (see
-/// [`is_own_service_room`]), the primary one first.
+/// The subscriptions with their rooms that have the shape of `uid`'s service
+/// room (see [`is_own_service_room`]), the primary one first. Candidates
+/// only: use [`trusted_service_subscriptions`] to read or write data.
 ///
 /// Two devices may create one each at the same time; every device then picks
-/// the same primary (oldest `ts`, then smallest rid) and can fold the others
-/// into it.
+/// the same primary (oldest room `ts`, then smallest rid) and can fold the
+/// others into it. The room's `ts` is set by the server; the subscription's
+/// can be chosen by whoever creates the room, so it is not used.
 pub fn service_subscriptions<'a>(
     entries: impl IntoIterator<Item = (&'a Subscription, &'a Room)>,
     uid: &str,
@@ -180,13 +306,20 @@ pub fn service_subscriptions<'a>(
     let mut found: Vec<_> = entries
         .into_iter()
         .filter(|(s, r)| is_own_service_room(s, r, uid))
-        .map(|(s, _)| s)
+        .map(|(s, r)| (r.ts.map_or(i64::MAX, |t| t.timestamp_millis()), s))
         .collect();
-    found.sort_by(|a, b| {
-        let ts = |s: &Subscription| s.ts.map_or(i64::MAX, |t| t.timestamp_millis());
-        ts(a).cmp(&ts(b)).then_with(|| a.rid.cmp(&b.rid))
-    });
-    found
+    found.sort_by(|(a_ts, a), (b_ts, b)| a_ts.cmp(b_ts).then_with(|| a.rid.cmp(&b.rid)));
+    found.into_iter().map(|(_, s)| s).collect()
+}
+
+/// `uid`'s service rooms: the candidates of [`service_subscriptions`] that
+/// `binding` trusts, the primary one first.
+pub fn trusted_service_subscriptions<'a>(
+    entries: impl IntoIterator<Item = (&'a Subscription, &'a Room)>,
+    uid: &str,
+    binding: &ServiceBinding,
+) -> Vec<&'a Subscription> {
+    service_subscriptions(entries.into_iter().filter(|(_, r)| binding.trusts(r)), uid)
 }
 
 /// Name of `uid`'s service room. Deterministic, so a second device creating it
@@ -339,6 +472,207 @@ mod tests {
     }
 
     #[test]
+    fn teams_and_discussions_are_never_service_rooms() {
+        let fields = ServiceFields::new("U1").to_custom_fields();
+        let own = room("R1", "U1", 1, fields.clone());
+        let s = sub("R1", "U1", fields.clone(), &["owner"], 1);
+        assert!(is_own_service_room(&s, &own, "U1"));
+
+        // `teams.create` with `owner` set to U1 by someone else: creator,
+        // member count, owner role and marker all name U1.
+        let team: Room = serde_json::from_value(json!({
+            "_id": "R1", "t": "p", "name": "x",
+            "u": { "_id": "U1", "username": "u1" },
+            "usersCount": 1,
+            "teamMain": true, "teamId": "T1",
+            "customFields": fields.clone(),
+        }))
+        .unwrap();
+        assert!(!team.is_service_room_of("U1"));
+        assert!(!is_own_service_room(&s, &team, "U1"));
+        assert!(service_subscriptions([(&s, &team)], "U1").is_empty());
+
+        for forged in [
+            Room {
+                team_main: Some(true),
+                ..own.clone()
+            },
+            Room {
+                team_id: Some("T1".into()),
+                ..own.clone()
+            },
+            Room {
+                team_id: Some("T1".into()),
+                team_main: Some(false),
+                ..own.clone()
+            },
+            Room {
+                prid: Some("PARENT".into()),
+                ..own.clone()
+            },
+        ] {
+            assert!(!forged.is_service_room_of("U1"), "{forged:?}");
+            assert!(!is_own_service_room(&s, &forged, "U1"));
+        }
+        // An explicit `teamMain: false` without a team is still a plain group.
+        let plain = Room {
+            team_main: Some(false),
+            ..own.clone()
+        };
+        assert!(plain.is_service_room_of("U1"));
+
+        for forged in [
+            Subscription {
+                team_main: Some(true),
+                ..s.clone()
+            },
+            Subscription {
+                team_id: Some("T1".into()),
+                ..s.clone()
+            },
+            Subscription {
+                prid: Some("PARENT".into()),
+                ..s.clone()
+            },
+        ] {
+            assert!(!forged.is_service_room_of("U1"), "{forged:?}");
+            assert!(!is_own_service_room(&forged, &own, "U1"));
+        }
+        let mut nobody = s.clone();
+        nobody.u.id = String::new();
+        assert!(!nobody.is_service_room_of(""));
+    }
+
+    fn prefs(list: Value) -> Map<String, Value> {
+        let mut p = Map::new();
+        p.insert(BINDING_PREFERENCE.into(), list);
+        p
+    }
+
+    #[test]
+    fn binding_reads_only_its_own_entries() {
+        assert!(ServiceBinding::from_preferences(None).is_empty());
+        assert!(ServiceBinding::from_preferences(Some(&Map::new())).is_empty());
+        assert!(ServiceBinding::from_preferences(Some(&prefs(json!("[]")))).is_empty());
+        let p = prefs(json!([
+            { "action": "hideRoom", "label": "Hide room" },
+            { "action": "rustket-service-room:R1", "label": "Rustket sync" },
+            { "action": "rustket-service-room:", "label": "x" },
+            { "action": 7 },
+            "junk",
+            { "action": "rustket-service-room:R2" },
+        ]));
+        let b = ServiceBinding::from_preferences(Some(&p));
+        assert!(b.contains("R1") && b.contains("R2"));
+        assert!(!b.contains("") && !b.contains("hideRoom") && !b.contains("R3"));
+        assert!(!b.is_empty());
+        let me: User = serde_json::from_value(json!({
+            "_id": "U1", "settings": { "preferences": p },
+        }))
+        .unwrap();
+        assert_eq!(ServiceBinding::of(&me), b);
+    }
+
+    #[test]
+    fn binding_writes_keep_the_other_entries() {
+        let p = prefs(json!([
+            { "action": "hideRoom", "label": "Hide room" },
+            { "action": "rustket-service-room:R1", "label": "Rustket sync" },
+        ]));
+        assert_eq!(
+            ServiceBinding::preference_with(Some(&p), &["R1".into()]),
+            None
+        );
+        assert_eq!(ServiceBinding::preference_with(Some(&p), &[]), None);
+        assert_eq!(
+            ServiceBinding::preference_with(Some(&p), &[String::new()]),
+            None
+        );
+        assert_eq!(
+            ServiceBinding::preference_with(Some(&p), &["R1".into(), "R2".into(), "R2".into()]),
+            Some(json!([
+                { "action": "hideRoom", "label": "Hide room" },
+                { "action": "rustket-service-room:R1", "label": "Rustket sync" },
+                { "action": "rustket-service-room:R2", "label": "Rustket sync" },
+            ]))
+        );
+        let first = ServiceBinding::preference_with(None, &["R9".into()]).unwrap();
+        assert_eq!(
+            first,
+            json!([{ "action": "rustket-service-room:R9", "label": "Rustket sync" }])
+        );
+        assert!(ServiceBinding::from_preferences(Some(&prefs(first))).contains("R9"));
+    }
+
+    /// `teams.create` with `owner` whose team insert failed: the room is in
+    /// the victim's name and carries no team field, so its shape is that of
+    /// a real service room. Only the binding tells them apart.
+    #[test]
+    fn a_room_created_in_the_users_name_is_not_trusted_unbound() {
+        let fields = ServiceFields::new("U1").to_custom_fields();
+        let after = UNBOUND_CUTOFF_MS + 1;
+        let forged: Room = serde_json::from_value(json!({
+            "_id": "Rforged", "t": "p", "name": "q7", "fname": "q7 ",
+            "u": { "_id": "U1", "username": "u1" },
+            "usersCount": 1,
+            "ts": { "$date": after },
+            "customFields": fields.clone(),
+        }))
+        .unwrap();
+        let forged_sub = sub("Rforged", "U1", fields.clone(), &["owner"], 0);
+        assert!(is_own_service_room(&forged_sub, &forged, "U1"));
+
+        // No binding yet (the victim never stored a flag): not trusted.
+        let none = ServiceBinding::default();
+        assert!(!none.trusts(&forged));
+        assert!(trusted_service_subscriptions([(&forged_sub, &forged)], "U1", &none).is_empty());
+
+        // The victim's own room is bound; the forged one is not, older or not.
+        let own = Room {
+            ts: RcDate::from_millis(after + 1_000),
+            ..room("Rown", "U1", 1, fields.clone())
+        };
+        let own_sub = sub("Rown", "U1", fields.clone(), &["owner"], 5);
+        let bound = ServiceBinding::from_preferences(Some(&prefs(json!([binding_entry("Rown")]))));
+        let rids: Vec<_> =
+            trusted_service_subscriptions([(&forged_sub, &forged), (&own_sub, &own)], "U1", &bound)
+                .into_iter()
+                .map(|s| s.rid.as_str())
+                .collect();
+        assert_eq!(rids, ["Rown"]);
+
+        // A binding does not replace the shape checks.
+        let foreign = Room {
+            id: "Rown".into(),
+            ..room("Rown", "U9", 1, fields.clone())
+        };
+        assert!(trusted_service_subscriptions([(&own_sub, &foreign)], "U1", &bound).is_empty());
+    }
+
+    #[test]
+    fn unbound_rooms_are_accepted_only_from_before_the_binding() {
+        let fields = ServiceFields::new("U1").to_custom_fields();
+        let old = Room {
+            ts: RcDate::from_millis(UNBOUND_CUTOFF_MS - 1),
+            ..room("Rold", "U1", 1, fields.clone())
+        };
+        let new = Room {
+            ts: RcDate::from_millis(UNBOUND_CUTOFF_MS),
+            ..room("Rnew", "U1", 1, fields.clone())
+        };
+        let undated = room("Rundated", "U1", 1, fields.clone());
+        let none = ServiceBinding::default();
+        assert!(none.trusts(&old));
+        assert!(!none.trusts(&new));
+        assert!(!none.trusts(&undated));
+        // Once the account bound a room, age no longer counts.
+        let bound = ServiceBinding::from_preferences(Some(&prefs(json!([binding_entry("Rnew")]))));
+        assert!(!bound.trusts(&old));
+        assert!(bound.trusts(&new));
+        assert!(!bound.trusts(&undated));
+    }
+
+    #[test]
     fn primary_service_room_is_the_oldest() {
         let fields = ServiceFields::new("U1").to_custom_fields();
         let subs = [
@@ -352,7 +686,10 @@ mod tests {
             .iter()
             .map(|s| {
                 let creator = if s.rid == "Rf" { "U9" } else { "U1" };
-                room(&s.rid, creator, 1, s.custom_fields.clone().unwrap())
+                Room {
+                    ts: s.ts,
+                    ..room(&s.rid, creator, 1, s.custom_fields.clone().unwrap())
+                }
             })
             .collect();
         let rids: Vec<_> = service_subscriptions(subs.iter().zip(&rooms), "U1")
@@ -361,6 +698,33 @@ mod tests {
             .collect();
         assert_eq!(rids, ["Ra", "Rc", "Rb"]);
         assert!(service_subscriptions(subs.iter().zip(&rooms), "U2").is_empty());
+    }
+
+    #[test]
+    fn primary_ignores_the_subscription_ts() {
+        let fields = ServiceFields::new("U1").to_custom_fields();
+        // A backdated subscription (`subscriptionExtra.ts`) on a newer room.
+        let subs = [
+            sub("Rnew", "U1", fields.clone(), &["owner"], 0),
+            sub("Rold", "U1", fields.clone(), &["owner"], 500),
+            sub("Rnots", "U1", fields.clone(), &["owner"], 1),
+        ];
+        let rooms = [
+            Room {
+                ts: RcDate::from_millis(2_000),
+                ..room("Rnew", "U1", 1, fields.clone())
+            },
+            Room {
+                ts: RcDate::from_millis(1_000),
+                ..room("Rold", "U1", 1, fields.clone())
+            },
+            room("Rnots", "U1", 1, fields.clone()),
+        ];
+        let rids: Vec<_> = service_subscriptions(subs.iter().zip(&rooms), "U1")
+            .into_iter()
+            .map(|s| s.rid.as_str())
+            .collect();
+        assert_eq!(rids, ["Rold", "Rnew", "Rnots"]);
     }
 
     #[test]

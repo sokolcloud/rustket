@@ -6,3 +6,4 @@
 /packaging/out/
 *.deb
 *.AppImage
+/CLAUDE-SECURITY-*/

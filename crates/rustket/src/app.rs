@@ -563,6 +563,7 @@ impl App {
             Message::SecretsPolicyApplied(on, backend, error) => {
                 self.on_secrets_policy_applied(on, backend, error)
             }
+            Message::SecretsPurged(cleared, error) => self.on_secrets_purged(&cleared, error),
             Message::SecretsPendingFound(found) => {
                 if let Some(Modal::SecretsMemoryOnly { pending }) = self.modals.last_mut() {
                     for sid in found {

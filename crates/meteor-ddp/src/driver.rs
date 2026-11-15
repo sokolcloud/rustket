@@ -32,8 +32,12 @@ use crate::message::{
 type Ws = WebSocketStream<MaybeTlsStream<Tracked<TcpStream>>>;
 type HookFuture = BoxFuture<'static, Result<(), HookError>>;
 
-/// Longest frame excerpt written to debug logs.
+/// Longest frame excerpt written to debug logs, in characters.
 const LOG_FRAME_LIMIT: usize = 2000;
+/// Longest failure reason kept in the connection state and logs, in characters.
+const REASON_LIMIT: usize = 300;
+/// Longest server-chosen id or message kind written to logs, in characters.
+const LOG_FIELD_LIMIT: usize = 120;
 /// How long to wait for a graceful WebSocket close.
 const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -160,7 +164,9 @@ enum Outcome {
 }
 
 fn lost(reason: impl Into<String>) -> Outcome {
-    let reason = reason.into();
+    // The reason may quote the server (close frame); it also becomes the error
+    // returned for a failed first connection.
+    let reason = sanitize_reason(&reason.into());
     Outcome::Lost {
         error: ConnectError::Lost(reason.clone()),
         reason,
@@ -260,6 +266,7 @@ impl Driver {
                         let _ = first.send(Err(error));
                         break;
                     }
+                    let reason = sanitize_reason(&reason);
                     warn!(%reason, "DDP connection failed permanently");
                     self.enter_failed(reason);
                     match self.offline(std::future::pending::<()>()).await {
@@ -284,6 +291,7 @@ impl Driver {
                     }
                     attempt = attempt.saturating_add(1);
                     let retry_in = self.config.backoff.delay(attempt);
+                    let reason = sanitize_reason(&reason);
                     info!(%reason, attempt, ?retry_in, "DDP connection lost; reconnecting");
                     self.set_state(ConnectionState::Reconnecting {
                         attempt,
@@ -730,9 +738,13 @@ impl Driver {
             .map_err(|e| lost(format!("failed to encode DDP message: {e}")))?;
         match msg {
             ClientMessage::Method { method, id, .. } if self.is_redacted(method) => {
-                debug!(%id, %method, "DDP -> method (params redacted)");
+                debug!(
+                    %id,
+                    method = %LogSafe::new(method, LOG_FIELD_LIMIT),
+                    "DDP -> method (params redacted)"
+                );
             }
-            _ => debug!(frame = %excerpt(&text), "DDP ->"),
+            _ => debug!(frame = %LogSafe::new(&text, LOG_FRAME_LIMIT), "DDP ->"),
         }
         match tokio::time::timeout(self.config.write_timeout, ws.send(Message::text(text))).await {
             Ok(Ok(())) => Ok(()),
@@ -785,7 +797,7 @@ impl Driver {
         if redact {
             debug!("DDP <- result (redacted)");
         } else {
-            debug!(frame = %excerpt(text), "DDP <-");
+            debug!(frame = %LogSafe::new(text, LOG_FRAME_LIMIT), "DDP <-");
         }
 
         match msg {
@@ -825,7 +837,10 @@ impl Driver {
                     };
                     let _ = call.reply.send(outcome);
                 }
-                None => debug!(%id, "ignoring result for unknown method call"),
+                None => debug!(
+                    id = %LogSafe::new(&id, LOG_FIELD_LIMIT),
+                    "ignoring result for unknown method call"
+                ),
             },
             ServerMessage::Ready { subs } => {
                 for id in subs {
@@ -844,7 +859,11 @@ impl Driver {
             ServerMessage::Nosub { id, error } => {
                 if let Some(sub) = self.subs.remove(&id) {
                     self.sub_by_key.remove(&sub.key);
-                    info!(%id, name = %sub.name, "server stopped subscription");
+                    info!(
+                        id = %LogSafe::new(&id, LOG_FIELD_LIMIT),
+                        name = %LogSafe::new(&sub.name, LOG_FIELD_LIMIT),
+                        "server stopped subscription"
+                    );
                     for (handle_id, handle) in sub.handles {
                         self.sub_by_handle.remove(&handle_id);
                         if let Some(ready) = handle.ready {
@@ -864,7 +883,7 @@ impl Driver {
             ServerMessage::MovedBefore(raw) => self.route(raw.into_data(DataKind::MovedBefore)),
             ServerMessage::Error { reason } => {
                 warn!(
-                    reason = reason.as_deref().unwrap_or(""),
+                    reason = %LogSafe::new(reason.as_deref().unwrap_or(""), REASON_LIMIT),
                     "DDP error message from server"
                 );
             }
@@ -964,7 +983,10 @@ fn log_unparsed(text: &str, error: &serde_json::Error) {
         // Data errors may quote values (e.g. a result field), so no details.
         Ok(value) => match value.get("msg").and_then(Value::as_str) {
             None => trace!(len = text.len(), "ignoring DDP frame without msg"),
-            Some(kind) => debug!(msg = %kind, "ignoring unknown or malformed DDP message"),
+            Some(kind) => debug!(
+                msg = %LogSafe::new(kind, LOG_FIELD_LIMIT),
+                "ignoring unknown or malformed DDP message"
+            ),
         },
     }
 }
@@ -1148,11 +1170,64 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Tracked<S> {
     }
 }
 
-fn excerpt(text: &str) -> &str {
-    match text.char_indices().nth(LOG_FRAME_LIMIT) {
-        Some((i, _)) => &text[..i],
-        None => text,
+/// Remote-controlled text made safe for a log line or a terminal: control
+/// characters (C0, DEL, C1) and Unicode line/bidi controls are written as
+/// escapes, and the text is cut after `limit` characters.
+struct LogSafe<'a> {
+    text: &'a str,
+    limit: usize,
+}
+
+impl<'a> LogSafe<'a> {
+    fn new(text: &'a str, limit: usize) -> Self {
+        Self { text, limit }
     }
+}
+
+impl std::fmt::Display for LogSafe<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        let mut chars = self.text.chars();
+        for c in chars.by_ref().take(self.limit) {
+            if c.is_control() || is_layout_control(c) {
+                write!(f, "{}", c.escape_default())?;
+            } else {
+                f.write_char(c)?;
+            }
+        }
+        if chars.next().is_some() {
+            f.write_char('…')?;
+        }
+        Ok(())
+    }
+}
+
+/// Line/paragraph separators and bidirectional formatting characters.
+fn is_layout_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Failure reasons carry server text (close reason, login error message); they
+/// are published in [`ConnectionState`] and logged, so they are escaped once here.
+pub(crate) fn sanitize_reason(reason: &str) -> String {
+    LogSafe::new(reason, REASON_LIMIT).to_string()
+}
+
+/// Renders server-influenced text (an error, a close reason, an error code) for
+/// a log field: control characters and Unicode line/bidi controls are escaped
+/// and the text is capped. `tracing` escapes only the `message` field, so named
+/// `%` fields holding such text go through this.
+pub fn log_safe(text: impl std::fmt::Display) -> String {
+    sanitize_reason(&text.to_string())
 }
 
 #[cfg(test)]
@@ -1174,6 +1249,67 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, sub_key("t", &[json!("x"), json!({"a": 1, "b": []})]));
         assert_ne!(sub_key("s", &[json!("1")]), sub_key("s", &[json!(1)]));
+    }
+
+    #[test]
+    fn log_safe_escapes_terminal_and_line_controls() {
+        // Close reason forging a log line and driving the terminal (OSC 52, CSI).
+        let reason = "bye\r\n2026-01-01T00:00:00Z  INFO forged\u{1b}]52;c;AAAA\u{7}\u{1b}[2J\u{9b}1A\u{7f}\0";
+        let safe = sanitize_reason(reason);
+        assert!(!safe.chars().any(char::is_control), "{safe:?}");
+        assert_eq!(
+            safe,
+            "bye\\r\\n2026-01-01T00:00:00Z  INFO forged\\u{1b}]52;c;AAAA\\u{7}\\u{1b}[2J\\u{9b}1A\\u{7f}\\u{0}"
+        );
+        // Line separators and bidi overrides.
+        assert_eq!(
+            LogSafe::new("a\u{2028}b\u{202e}c\u{2066}d", 100).to_string(),
+            "a\\u{2028}b\\u{202e}c\\u{2066}d"
+        );
+        // Ordinary text, including non-ASCII, is unchanged.
+        let plain = "server closed the connection (1000 Привет, 世界 {\"a\":1})";
+        assert_eq!(sanitize_reason(plain), plain);
+    }
+
+    #[test]
+    fn lost_outcome_carries_a_sanitized_error() {
+        let Outcome::Lost { reason, error, .. } =
+            lost("server closed the connection (1000 bye\r\n\u{1b}[2Jforged)")
+        else {
+            unreachable!()
+        };
+        let expected = "server closed the connection (1000 bye\\r\\n\\u{1b}[2Jforged)";
+        assert_eq!(reason, expected);
+        // The error of a failed first connection is logged by the caller.
+        assert_eq!(error.to_string(), format!("connection lost: {expected}"));
+        // Sanitizing again (reconnect path) changes nothing.
+        assert_eq!(sanitize_reason(&reason), reason);
+        let long = sanitize_reason(&"x".repeat(REASON_LIMIT + 10));
+        assert_eq!(sanitize_reason(&long), long);
+    }
+
+    #[test]
+    fn log_safe_accepts_any_display() {
+        let error = ConnectError::InvalidUrl("no host in ws://\u{1b}]0;x\u{7}\n".to_owned());
+        assert_eq!(
+            log_safe(&error),
+            "invalid url: no host in ws://\\u{1b}]0;x\\u{7}\\n"
+        );
+        assert_eq!(log_safe("plain"), "plain");
+    }
+
+    #[test]
+    fn log_safe_caps_length() {
+        let long = "é".repeat(REASON_LIMIT + 50);
+        let safe = sanitize_reason(&long);
+        assert_eq!(safe.chars().count(), REASON_LIMIT + 1);
+        assert!(safe.ends_with('…'));
+        let exact = "x".repeat(REASON_LIMIT);
+        assert_eq!(sanitize_reason(&exact), exact);
+        assert_eq!(LogSafe::new("", 0).to_string(), "");
+        // The cap counts input characters, so an all-control payload stays bounded.
+        let controls = "\u{1b}".repeat(REASON_LIMIT * 4);
+        assert!(sanitize_reason(&controls).len() <= REASON_LIMIT * 6 + 3);
     }
 
     #[test]

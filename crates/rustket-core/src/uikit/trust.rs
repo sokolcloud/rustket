@@ -5,6 +5,10 @@
 //! delivered on `stream-notify-user` `{uid}/message` (ephemeral, never
 //! persisted, writable only by the server) can prove a core-app origin, so the
 //! "ephemeral" flag comes from the store, never from message fields.
+//!
+//! This does not exclude ephemerals sent by an installed app: apps choose the
+//! sender, so one with `message.write` can notify a user as `rocket.cat` and
+//! pass the core-app rule below. The client cannot tell those apart.
 
 use rocketchat::models::Message;
 
@@ -68,6 +72,21 @@ pub fn actions_allowed(
         None => false,
         Some(app) if app.ends_with("-core") => is_ephemeral && msg.u.id == ROCKET_CAT,
         Some(_) => true,
+    }
+}
+
+/// App a block action inside a view (modal, contextual bar, banner) is sent
+/// to: always the view's own app `view_app`. Element app ids come from
+/// whoever supplied the view, and core apps act with the caller's rights
+/// without checking the origin, so an element naming another `*-core` app is
+/// refused (`None`); any other differing id is ignored.
+pub fn view_action_app<'a>(view_app: &'a str, element_app: Option<&str>) -> Option<&'a str> {
+    if view_app.is_empty() {
+        return None;
+    }
+    match resolved(element_app) {
+        Some(e) if e != view_app && e.ends_with("-core") => None,
+        _ => Some(view_app),
     }
 }
 
@@ -222,6 +241,31 @@ mod tests {
         assert!(!actions_allowed(&m, false, false, None, "a"));
         assert!(!actions_allowed(&m, false, false, Some("core"), "a"));
         assert!(!actions_allowed(&m, true, false, Some(""), "a"));
+    }
+
+    #[test]
+    fn view_actions_go_to_the_view_app() {
+        assert_eq!(view_action_app("app1", None), Some("app1"));
+        assert_eq!(view_action_app("app1", Some("")), Some("app1"));
+        assert_eq!(view_action_app("app1", Some("core")), Some("app1"));
+        assert_eq!(view_action_app("app1", Some("app1")), Some("app1"));
+        // Another regular app is never the destination.
+        assert_eq!(view_action_app("app1", Some("app2")), Some("app1"));
+        // A core app's own view keeps working.
+        assert_eq!(
+            view_action_app("videoconf-core", Some("videoconf-core")),
+            Some("videoconf-core")
+        );
+        for core in ["mention-core", "nps-core", "banner-core"] {
+            assert_eq!(view_action_app("app1", Some(core)), None, "{core}");
+            assert_eq!(
+                view_action_app("videoconf-core", Some(core)),
+                None,
+                "{core}"
+            );
+        }
+        assert_eq!(view_action_app("", Some("app1")), None);
+        assert_eq!(view_action_app("", None), None);
     }
 
     #[test]

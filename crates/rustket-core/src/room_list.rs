@@ -15,6 +15,41 @@ use crate::workspace::{RoomEntry, Workspace};
 /// Maximum preview length in characters.
 pub const PREVIEW_MAX_CHARS: usize = 120;
 
+/// i18n key of a system message preview without its own text.
+pub const SYSTEM_PREVIEW_GENERIC: &str = "preview.system.generic";
+
+/// System message types with a `preview.system.<type>` text. The type comes
+/// from the server (the sender can set it), so it never becomes part of an
+/// i18n key: anything else is [`SYSTEM_PREVIEW_GENERIC`].
+pub const SYSTEM_PREVIEW_TYPES: &[&str] = &[
+    "uj",
+    "ujt",
+    "ul",
+    "ult",
+    "au",
+    "ru",
+    "r",
+    "room_changed_topic",
+    "room_changed_announcement",
+    "room_changed_description",
+    "message_pinned",
+    "discussion-created",
+    "user-muted",
+    "user-unmuted",
+    "room-archived",
+    "room-unarchived",
+    "subscription-role-added",
+    "subscription-role-removed",
+];
+
+/// The preview i18n key of system message type `t`.
+fn system_preview_key(t: &str) -> String {
+    match SYSTEM_PREVIEW_TYPES.iter().find(|known| **known == t) {
+        Some(known) => format!("preview.system.{known}"),
+        None => SYSTEM_PREVIEW_GENERIC.to_owned(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomListOptions {
     /// Section order, groups, per-section sorts (the global sort is
@@ -455,9 +490,9 @@ pub fn preview(
     let (kind, key, text): (PreviewKind, String, Option<String>) = if encrypted {
         (PreviewKind::Encrypted, "preview.encrypted".into(), None)
     } else if m.is_system() {
-        let t = m.t.clone().unwrap_or_default();
+        let key = system_preview_key(m.t.as_deref().unwrap_or_default());
         let arg = (!m.msg.is_empty()).then(|| truncate(&m.msg));
-        (PreviewKind::System, format!("preview.system.{t}"), arg)
+        (PreviewKind::System, key, arg)
     } else if let Some(text) = Some(m.plain_text()).filter(|t| !t.trim().is_empty()) {
         (
             PreviewKind::Text,
@@ -1513,6 +1548,33 @@ mod tests {
         assert_eq!(p.kind, PreviewKind::System);
         assert_eq!(p.i18n_key, "preview.system.uj");
         assert_eq!(p.system_type.as_deref(), Some("uj"));
+
+        // The type is server data: only known types reach an i18n key.
+        for t in [
+            "%é{text}",
+            "%{text}",
+            "x%{text}%é{text}",
+            "generic",
+            "uj.x",
+            "UJ",
+            " uj",
+            "some-new-type",
+        ] {
+            let mut s = msg("s", "r", 1, "bob");
+            s.t = Some(t.into());
+            s.msg = "я".into();
+            let p = preview(&ws, &s, RoomType::Channel, false, false);
+            assert_eq!(p.kind, PreviewKind::System, "{t}");
+            assert_eq!(p.i18n_key, SYSTEM_PREVIEW_GENERIC, "{t}");
+            assert!(!p.i18n_key.contains(['%', '{']), "{t}");
+            assert_eq!(p.text.as_deref(), Some("я"), "{t}");
+        }
+        for t in SYSTEM_PREVIEW_TYPES {
+            let mut s = msg("s", "r", 1, "bob");
+            s.t = Some((*t).into());
+            let p = preview(&ws, &s, RoomType::Channel, false, false);
+            assert_eq!(p.i18n_key, format!("preview.system.{t}"));
+        }
 
         let mut e = msg("e", "r", 1, "bob");
         e.t = Some("e2e".into());

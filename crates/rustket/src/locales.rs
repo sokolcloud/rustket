@@ -5,8 +5,9 @@
 //! to English.
 //!
 //! Parsing is tolerant like the theme files: unknown keys, non-string
-//! values, strings whose `%{placeholders}` differ from English and an
-//! unknown plural rule become [`LocaleWarning`]s. Only a TOML syntax error or
+//! values, strings whose `%{placeholders}` differ from English (or that
+//! have a `%` outside a placeholder) and an unknown plural rule become
+//! [`LocaleWarning`]s. Only a TOML syntax error or
 //! a missing `[meta] name` is an error.
 
 use std::collections::{BTreeMap, HashMap};
@@ -143,7 +144,7 @@ impl LocaleFile {
                         if s.is_empty() {
                             continue;
                         }
-                        if placeholders(s) != placeholders(en) {
+                        if !usable(&k, s, en) {
                             out.warnings.push(LocaleWarning::Placeholders(k.clone()));
                             out.rejected.insert(k, s.to_owned());
                             continue;
@@ -188,6 +189,40 @@ pub fn placeholders(s: &str) -> Vec<&str> {
         .collect();
     v.sort_unstable();
     v
+}
+
+/// Suffix of the keys holding a chrono date format.
+const DATE_FORMAT_SUFFIX: &str = "_fmt";
+
+/// Whether `s` can be installed as the translation of `key` (English text
+/// `en`). rust-i18n substitutes arguments with a permissive parser that also
+/// takes `%`, any bytes, `{name}` for a marker and cuts the byte before `{`
+/// (half of a multi-byte character), so a `%` is accepted only as the start
+/// of a `%{name}` of the English text. Date formats need a bare `%`; they
+/// are fetched without arguments and may not contain `{`, which leaves that
+/// parser no marker to find.
+fn usable(key: &str, s: &str, en: &str) -> bool {
+    if key.ends_with(DATE_FORMAT_SUFFIX) {
+        return !s.contains('{') && placeholders(en).is_empty();
+    }
+    strict_placeholders(s).is_some_and(|names| names == placeholders(en))
+}
+
+/// Sorted placeholders of `s` when every `%` in it starts a complete
+/// `%{name}` (`name`: ASCII letters, digits, `_`); `None` otherwise.
+fn strict_placeholders(s: &str) -> Option<Vec<&str>> {
+    let mut names = Vec::new();
+    let mut rest = s;
+    while let Some((_, after)) = rest.split_once('%') {
+        let (name, tail) = after.strip_prefix('{')?.split_once('}')?;
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return None;
+        }
+        names.push(name);
+        rest = tail;
+    }
+    names.sort_unstable();
+    Some(names)
 }
 
 fn bad(key: &str, v: &toml::Value) -> LocaleWarning {
@@ -439,8 +474,9 @@ pub fn dump_template(code: &str, file: Option<&LocaleFile>) -> Option<String> {
          # See docs/locales/README.md, then pick the language in Settings → Language.\n\
          #\n\
          # Keep every %{{placeholder}} of the English text: a string whose\n\
-         # placeholders differ is skipped. Missing, empty or commented-out\n\
-         # strings show in English. Keys ending in _one / _few / _many are plural\n\
+         # placeholders differ, or with a % anywhere else, is skipped. Missing,\n\
+         # empty or commented-out strings show in English.\n\
+         # Keys ending in _one / _few / _many are plural\n\
          # forms picked by [meta] plural: \"one-other\" (1 → _one, else _many),\n\
          # \"east-slavic\" (Russian-style _one / _few / _many) or \"none\" (always\n\
          # _many). Keys ending in _fmt are chrono date formats (%d, %m, %Y, %b…).\n\n\
@@ -643,6 +679,115 @@ bye = ""
             panic!("syntax error expected");
         };
         assert!(e.starts_with("line 2, column"), "{e}");
+    }
+
+    /// F6: rust-i18n's legacy replacer takes `%…{name}` for a marker and
+    /// drops the byte before `{`; such strings are never installed.
+    #[test]
+    fn stray_percent_is_rejected() {
+        let english: BTreeMap<&str, &str> = [
+            ("preview.you", "You: %{text}"),
+            ("a.title", "Title"),
+            ("a.two", "%{a} and %{b}"),
+            ("app.date_short_fmt", "%b %-d"),
+        ]
+        .into_iter()
+        .collect();
+        let parse = |key: &str, text: &str| {
+            let src = format!(
+                "[meta]\nname = \"X\"\n[strings]\n{} = {}\n",
+                quote(key),
+                quote(text)
+            );
+            LocaleFile::parse(&src, &english).unwrap()
+        };
+        for (key, text) in [
+            // The reported input: same `%{…}` list as English.
+            ("preview.you", "%{text}%é{text}"),
+            ("preview.you", "%é{text}"),
+            ("preview.you", "Вы: %{text} %я{x}"),
+            ("preview.you", "%{text} 100%"),
+            ("preview.you", "100% %{text}"),
+            ("preview.you", "%%{text}"),
+            ("preview.you", "%{text} %{"),
+            ("preview.you", "%{text"),
+            ("preview.you", "%{te%{text}"),
+            ("preview.you", "%{text} %{}"),
+            ("preview.you", "%{tеxt}"),
+            ("preview.you", "%{text} %{text}"),
+            ("preview.you", "text"),
+            ("a.title", "%é{text}"),
+            ("a.title", "50%"),
+            ("a.title", "% {x}"),
+            ("a.two", "%{a}%é{b}"),
+            ("a.two", "%{a} %{a}"),
+            ("app.date_short_fmt", "%d.%m %é{text}"),
+            ("app.date_short_fmt", "%{text}"),
+            ("app.date_short_fmt", "%d{}"),
+        ] {
+            let f = parse(key, text);
+            assert!(f.strings.is_empty(), "{key} = {text}");
+            assert_eq!(
+                f.warnings,
+                [LocaleWarning::Placeholders(key.to_owned())],
+                "{key} = {text}"
+            );
+            assert_eq!(f.rejected[key], text);
+        }
+        for (key, text) in [
+            ("preview.you", "Вы: %{text}"),
+            ("preview.you", "%{text}"),
+            ("preview.you", "{%{text}} é{x}"),
+            ("a.title", "Заголовок {x}"),
+            ("a.two", "%{b}, %{a}"),
+            ("app.date_short_fmt", "%d.%m"),
+            ("app.date_short_fmt", "%-m月%-d日"),
+        ] {
+            let f = parse(key, text);
+            assert!(f.warnings.is_empty(), "{key} = {text}: {:?}", f.warnings);
+            assert_eq!(f.strings[key], text);
+        }
+        assert_eq!(strict_placeholders("%{b} x %{a}"), Some(vec!["a", "b"]));
+        assert_eq!(strict_placeholders("no markers"), Some(vec![]));
+        assert_eq!(strict_placeholders("%é{a}"), None);
+    }
+
+    /// Every accepted string keeps rust-i18n on its checked path: the
+    /// substituted result is the plain concatenation.
+    #[test]
+    fn accepted_strings_substitute_cleanly() {
+        let s = "Вы: %{text}é";
+        assert!(usable("preview.you", s, "You: %{text}"));
+        assert_eq!(
+            rust_i18n::replace_patterns(s, &["text"], &["я".to_owned()]),
+            "Вы: яé"
+        );
+    }
+
+    /// The bundled texts of every locale pass the external-file grammar, and
+    /// the system preview keys of rustket-core exist.
+    #[test]
+    fn bundled_strings_are_usable() {
+        use rustket_core::room_list::{SYSTEM_PREVIEW_GENERIC, SYSTEM_PREVIEW_TYPES};
+        let english = i18n::english();
+        for b in i18n::BUNDLED {
+            for (k, v) in i18n::bundled_messages(b.code) {
+                let Some(en) = english.get(k) else { continue };
+                assert!(v.is_empty() || usable(k, v, en), "{}: {k} = {v}", b.code);
+            }
+        }
+        assert!(english.contains_key(SYSTEM_PREVIEW_GENERIC));
+        for t in SYSTEM_PREVIEW_TYPES {
+            let key = format!("preview.system.{t}");
+            assert!(english.contains_key(key.as_str()), "{key}");
+        }
+        for k in english.keys().filter(|k| k.starts_with("preview.system.")) {
+            let t = k.trim_start_matches("preview.system.");
+            assert!(
+                *k == SYSTEM_PREVIEW_GENERIC || SYSTEM_PREVIEW_TYPES.contains(&t),
+                "{k} is not in SYSTEM_PREVIEW_TYPES"
+            );
+        }
     }
 
     #[test]

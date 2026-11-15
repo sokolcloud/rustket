@@ -34,12 +34,10 @@ impl Workspace {
             self.mark(Dirty::PRESENCE);
         }
         if self.me.as_ref() != Some(&me) {
-            let new_user = self.user_id() != Some(me.id.as_str());
             self.me = Some(me);
             self.mark(Dirty::ME);
-            if new_user {
-                self.refresh_flags();
-            }
+            // The user, or the service rooms their preferences bind, changed.
+            self.refresh_flags();
         }
     }
 
@@ -50,7 +48,17 @@ impl Workspace {
         }
     }
 
-    /// Realtime setting change (kept over REST snapshots that started earlier).
+    /// A settings stream event. Only public ones are kept: the private stream
+    /// (`private-settings-changed`) carries admin-only values in clear, server
+    /// secrets included, and this store is written to the offline cache.
+    pub fn apply_setting_event(&mut self, change: Change, setting: Setting, public: bool) {
+        if public {
+            self.apply_setting(change, setting);
+        }
+    }
+
+    /// Realtime change of a public setting (kept over REST snapshots that
+    /// started earlier).
     pub fn apply_setting(&mut self, change: Change, setting: Setting) {
         let m = self.realtime.next();
         match change {

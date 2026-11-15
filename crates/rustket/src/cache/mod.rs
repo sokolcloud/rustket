@@ -392,6 +392,8 @@ fn collect_documents(ws: &Workspace, full: bool, batch: &mut Batch) {
     }
 }
 
+/// Public settings only: the workspace never takes private ones
+/// (`Workspace::apply_setting_event`).
 fn settings(ws: &Workspace) -> Vec<Setting> {
     ws.settings()
         .iter()

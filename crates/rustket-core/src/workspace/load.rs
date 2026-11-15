@@ -412,12 +412,10 @@ impl Workspace {
             self.mark(Dirty::PRESENCE);
         }
         if self.me.as_ref() != Some(&me) {
-            let new_user = self.user_id() != Some(me.id.as_str());
             self.me = Some(me);
             self.mark(Dirty::ME);
-            if new_user {
-                self.refresh_flags();
-            }
+            // The user, or the service rooms their preferences bind, changed.
+            self.refresh_flags();
         }
     }
 

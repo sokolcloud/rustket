@@ -117,6 +117,11 @@ fn newest_server_ts(
     m
 }
 
+/// `d - margin`, or `d` itself where that leaves chrono's range.
+fn minus(d: RcDate, margin: chrono::Duration) -> RcDate {
+    d.0.checked_sub_signed(margin).map_or(d, RcDate)
+}
+
 fn next_since(
     previous: Option<RcDate>,
     subs: &UpdatedSince<Subscription>,
@@ -125,7 +130,7 @@ fn next_since(
 ) -> RcDate {
     match (newest_server_ts(subs, rooms), previous) {
         (Some(n), prev) => {
-            let candidate = RcDate(n.0 - SAFETY_MARGIN);
+            let candidate = minus(n, SAFETY_MARGIN);
             // Never move backwards past a previous since.
             match prev {
                 Some(p) if p > candidate => p,
@@ -133,7 +138,7 @@ fn next_since(
             }
         }
         (None, Some(p)) => p,
-        (None, None) => RcDate(local_start.0 - CLOCK_SKEW_MARGIN),
+        (None, None) => minus(local_start, CLOCK_SKEW_MARGIN),
     }
 }
 
@@ -334,7 +339,7 @@ pub async fn sync_room(
     last_update: RcDate,
 ) -> rocketchat::Result<RoomSync> {
     let r = rest
-        .chat_sync_messages(rid, RcDate(last_update.0 - SAFETY_MARGIN))
+        .chat_sync_messages(rid, minus(last_update, SAFETY_MARGIN))
         .await?;
     if r.dropped > 0 {
         tracing::warn!(
@@ -422,6 +427,18 @@ mod tests {
             next_since(Some(ts(100)), &subs, &rooms, local),
             ts(8_000_000 - margin)
         );
+    }
+
+    #[test]
+    fn margins_do_not_overflow_at_chrono_limits() {
+        let min = RcDate(chrono::DateTime::<chrono::Utc>::MIN_UTC);
+        assert_eq!(minus(min, SAFETY_MARGIN), min);
+        assert_eq!(minus(min, CLOCK_SKEW_MARGIN), min);
+        let early = chrono::DateTime::from_timestamp_millis(-8_334_601_228_800_000).unwrap();
+        assert_eq!(minus(RcDate(early), SAFETY_MARGIN), RcDate(early));
+        let empty = UpdatedSince::default();
+        assert_eq!(next_since(None, &empty, &UpdatedSince::default(), min), min);
+        assert_eq!(minus(ts(60_000), SAFETY_MARGIN), ts(30_000));
     }
 
     #[test]

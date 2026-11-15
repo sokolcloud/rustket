@@ -64,7 +64,13 @@ impl App {
             let uid = self.config.server(&sid).and_then(|e| e.user_id.clone());
             let token = tokens.get(&sid).cloned().flatten();
             match (uid, token) {
-                (Some(uid), Some(token)) => {
+                // A token of a signed-out account (its delete did not reach
+                // this store) is not a login.
+                (Some(uid), Some(token))
+                    if !self
+                        .config
+                        .is_secret_deletion_pending(&secret_key(&sid, &uid)) =>
+                {
                     if let Some(st) = self.servers.get_mut(&sid) {
                         st.restoring = false;
                         st.credentials = Some(Credentials::new(uid, token));
@@ -80,6 +86,7 @@ impl App {
             Screen::Server
         };
         self.booted = true;
+        tasks.push(self.purge_pending_secrets());
         #[cfg(feature = "self-update")]
         tasks.push(crate::updater::app::boot(self));
         let links = std::mem::take(&mut self.queued_links);

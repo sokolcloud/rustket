@@ -10,7 +10,8 @@ use rocketchat::{Credentials, RestClient};
 use rust_i18n::t;
 use rustket_core::ServerId;
 use rustket_core::config::{PinnedCertificate, ServerEntry, TokenKind};
-use rustket_core::secrets::secret_key;
+use rustket_core::e2e::private_key_secret;
+use rustket_core::secrets::{SecretBackend, SecretStore, secret_key};
 use rustket_core::workspace::ConnectionState;
 use rustket_ui::widget::BannerKind;
 
@@ -21,6 +22,49 @@ use crate::message::Message;
 use crate::screens::add_server::{self, AddServer};
 use crate::screens::login::{self, Login};
 use crate::workspace::{ServerState, rail};
+
+/// Failed deletes after which a purge stops (a blocked keyring makes every
+/// further call wait for its timeout).
+const MAX_PURGE_FAILURES: usize = 3;
+
+/// The secrets a sign-out of `user_id` on `sid` deletes: the auth token and
+/// the E2E private key.
+fn account_secret_keys(sid: &ServerId, user_id: &str) -> [String; 2] {
+    [secret_key(sid, user_id), private_key_secret(sid, user_id)]
+}
+
+/// Outcome of [`purge_secrets`].
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SecretPurge {
+    /// Keys that need no further delete.
+    cleared: Vec<String>,
+    /// The first failure.
+    error: Option<String>,
+}
+
+/// Deletes `keys` from `store` (blocking). `durable`: the store is the
+/// keyring, so a deleted key is gone for good; with a fallback store the
+/// keyring may still hold a copy that is unreachable now, and the key stays
+/// pending.
+fn purge_secrets(store: &dyn SecretStore, keys: &[String], durable: bool) -> SecretPurge {
+    let mut out = SecretPurge::default();
+    let mut failures = 0;
+    for key in keys {
+        match store.delete(key) {
+            Ok(()) if durable => out.cleared.push(key.clone()),
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot delete a secret of a signed-out account");
+                out.error.get_or_insert_with(|| e.to_string());
+                failures += 1;
+                if failures >= MAX_PURGE_FAILURES {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
 
 impl App {
     pub(super) fn show_login(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
@@ -229,6 +273,7 @@ impl App {
         let out_task = match out {
             login::Out::None => Task::none(),
             login::Out::LoggedIn(r, kind) => self.logged_in(&sid, *r, kind),
+            login::Out::Unconfirmed(r) => self.on_link_login(sid, *r),
             login::Out::OpenUrl(url) => self.open_url(url),
             login::Out::DeepLink(link) => self.handle_link(&link),
             login::Out::RegisterHandler => self.open_register_handler(),
@@ -251,6 +296,14 @@ impl App {
             entry.username = username;
             entry.token_kind = Some(kind);
         }
+        // The secrets of this account are in use again; the token of the
+        // account it replaces is not.
+        self.config
+            .clear_secret_deletions(&account_secret_keys(sid, &r.user_id));
+        if let Some(old) = old_uid.as_deref().filter(|u| *u != r.user_id) {
+            self.config.mark_secret_deletion(&secret_key(sid, old));
+        }
+        let purge = self.purge_pending_secrets();
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
@@ -264,20 +317,12 @@ impl App {
             s.workspace.apply_me(me);
         }
         let key = secret_key(sid, &r.user_id);
-        let old_key = old_uid
-            .filter(|u| u != &r.user_id)
-            .map(|u| secret_key(sid, &u));
         let token = r.auth_token.clone();
         let sid2 = sid.clone();
         let store = self
-            .secret_task(move |st| {
-                if let Some(old) = old_key {
-                    let _ = st.delete(&old);
-                }
-                st.set(&key, &token).map_err(|e| e.to_string())
-            })
+            .secret_task(move |st| st.set(&key, &token).map_err(|e| e.to_string()))
             .map(move |r| Message::TokenStored(sid2.clone(), r));
-        Task::batch([store, self.save_config()])
+        Task::batch([purge, store, self.save_config()])
     }
 
     fn purge_images(&mut self, sid: &ServerId) -> Task<Message> {
@@ -302,13 +347,58 @@ impl App {
         Task::batch([images, media])
     }
 
+    /// Signs the account of `sid` out of the secret store. Its keys are first
+    /// recorded in the config, so the sign-out holds when the store cannot
+    /// delete them now: a recorded key is never restored as a login, and its
+    /// delete is retried on every start and sign-out.
     fn delete_token(&mut self, sid: &ServerId) -> Task<Message> {
         let Some(uid) = self.config.server(sid).and_then(|e| e.user_id.clone()) else {
             return Task::none();
         };
-        let key = secret_key(sid, &uid);
-        self.secret_task(move |st| st.delete(&key).map_err(|e| e.to_string()))
-            .map(|_| Message::Noop)
+        for key in account_secret_keys(sid, &uid) {
+            self.config.mark_secret_deletion(&key);
+        }
+        Task::batch([self.save_config(), self.purge_pending_secrets()])
+    }
+
+    /// Deletes the secrets of signed-out accounts
+    /// (`AppConfig::pending_secret_deletions`) from the secret store.
+    pub(super) fn purge_pending_secrets(&self) -> Task<Message> {
+        let keys = self.config.pending_secret_deletions.clone();
+        let Some(store) = self.secrets.clone() else {
+            return Task::none();
+        };
+        if keys.is_empty() {
+            return Task::none();
+        }
+        let durable = self.secret_backend == Some(SecretBackend::Keyring);
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || purge_secrets(store.as_ref(), &keys, durable))
+                    .await
+                    .unwrap_or_else(|e| SecretPurge {
+                        cleared: Vec::new(),
+                        error: Some(e.to_string()),
+                    })
+            },
+            |p| Message::SecretsPurged(p.cleared, p.error),
+        )
+    }
+
+    /// [`Self::purge_pending_secrets`] finished.
+    pub(super) fn on_secrets_purged(
+        &mut self,
+        cleared: &[String],
+        error: Option<String>,
+    ) -> Task<Message> {
+        let mut tasks = Vec::new();
+        if self.config.clear_secret_deletions(cleared) {
+            tasks.push(self.save_config());
+        }
+        if let Some(e) = error {
+            tasks.push(self.toast(BannerKind::Warning, t!("app.secrets_not_deleted"), e));
+        }
+        Task::batch(tasks)
     }
 
     /// The server rejected the token: drop it and show the login screen.
@@ -491,9 +581,54 @@ impl App {
         Task::batch([a, t])
     }
 
+    /// A login with a link-supplied SAML token succeeded (directly, or after
+    /// its 2FA round): the account is confirmed like the one of a Token link,
+    /// while the pending login that accepted the link is still live.
+    fn on_link_login(&mut self, sid: ServerId, res: LoginResult) -> Task<Message> {
+        let now = Instant::now();
+        let Some(l) = self.servers.get_mut(&sid).and_then(|s| s.login.as_mut()) else {
+            return Task::none();
+        };
+        let live = l
+            .pending_login()
+            .is_some_and(|p| !p.is_expired(now) && p.saml_claim.is_some());
+        if !live {
+            tracing::info!("SAML login finished without a matching pending login");
+            return Task::none();
+        }
+        let creds = Credentials::new(res.user_id.clone(), res.auth_token.clone());
+        l.claim_token(&creds);
+        match res.me {
+            Some(me) => self.on_token_user(sid, creds, Ok(me)),
+            None => self.apply_decision(
+                Decision::ConfirmToken {
+                    server_id: sid,
+                    user_id: creds.user_id.clone(),
+                    token: creds.auth_token.clone(),
+                },
+                "",
+            ),
+        }
+    }
+
+    /// Runs the login with a link-supplied SAML token again for its 2FA
+    /// round; the result comes back through [`Self::on_link_login`].
+    fn complete_link_login(&mut self, sid: &ServerId, req: LoginRequest) -> Task<Message> {
+        let a = self.activate_for_login(sid);
+        let Some(l) = self.servers.get_mut(sid).and_then(|s| s.login.as_mut()) else {
+            return a;
+        };
+        let sid = sid.clone();
+        let t = l
+            .complete_unconfirmed(req)
+            .map(move |m| Message::Login(sid.clone(), m));
+        Task::batch([a, t])
+    }
+
     /// The login with a server-generated SAML token finished: confirm the
-    /// account like a Token link. A 2FA challenge goes through the regular
-    /// login flow (only the account owner can answer it).
+    /// account like a Token link. A 2FA challenge is answered in the regular
+    /// dialog, but its result needs the same confirmation: the link is
+    /// unauthenticated and the dialog names no account.
     pub(super) fn on_saml_link_login(
         &mut self,
         sid: ServerId,
@@ -510,25 +645,9 @@ impl App {
             return Task::none();
         }
         match r {
-            Ok(res) => {
-                let creds = Credentials::new(res.user_id.clone(), res.auth_token.clone());
-                if let Some(l) = self.servers.get_mut(&sid).and_then(|s| s.login.as_mut()) {
-                    l.claim_token(&creds);
-                }
-                match res.me {
-                    Some(me) => self.on_token_user(sid, creds, Ok(me)),
-                    None => self.apply_decision(
-                        Decision::ConfirmToken {
-                            server_id: sid,
-                            user_id: creds.user_id.clone(),
-                            token: creds.auth_token.clone(),
-                        },
-                        "",
-                    ),
-                }
-            }
+            Ok(res) => self.on_link_login(sid, res),
             Err(e) if matches!(e.error(), rocketchat::Error::TwoFactorRequired(_)) => {
-                self.complete_login(&sid, LoginRequest::Saml { credential_token })
+                self.complete_link_login(&sid, LoginRequest::Saml { credential_token })
             }
             Err(e) => self.toast(
                 BannerKind::Error,
@@ -592,5 +711,271 @@ impl App {
             warnings: Vec::new(),
         });
         query_handler_task()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use rocketchat::models::LoginServiceConfig;
+    use rustket_core::config::AppConfig;
+    use rustket_core::secrets::{MemoryStore, SecretError, SwitchableStore};
+
+    use super::*;
+    use crate::app::{Flags, SecretsMode};
+    use crate::error::Failure;
+    use crate::message::{ModalMessage, SecretsReady};
+    use crate::screens::login::LoginMeta;
+
+    const SERVER: &str = "http://localhost:3000";
+
+    /// One configured server, started with a store reported as `backend`.
+    /// With `uid` the store holds that account's secrets; `signed_out`
+    /// records them as pending deletions first.
+    fn started(
+        dir: &std::path::Path,
+        uid: Option<&str>,
+        signed_out: bool,
+        backend: SecretBackend,
+    ) -> (App, ServerId, Arc<MemoryStore>) {
+        let mut cfg = AppConfig::default();
+        let mut entry = ServerEntry::new(SERVER, "Local");
+        entry.user_id = uid.map(str::to_owned);
+        let sid = cfg.add_server(entry);
+        let store = Arc::new(MemoryStore::new());
+        let mut tokens = Vec::new();
+        if let Some(uid) = uid {
+            for key in account_secret_keys(&sid, uid) {
+                store.set(&key, "stale").unwrap();
+                if signed_out {
+                    cfg.mark_secret_deletion(&key);
+                }
+            }
+            tokens.push((sid.clone(), Some("stale".to_owned())));
+        }
+        cfg.save(dir).unwrap();
+        let (mut app, _task) = App::new(Flags {
+            config_dir: Some(dir.to_owned()),
+            cache_dir: Some(dir.join("cache")),
+            secrets: SecretsMode::Memory,
+            ..Flags::default()
+        });
+        let _ = app.update(Message::SecretsReady(SecretsReady {
+            store: Arc::new(SwitchableStore::new(Box::new(store.clone()), backend, None)),
+            tokens,
+            notices: vec![],
+        }));
+        (app, sid, store)
+    }
+
+    fn signed_in(app: &App, sid: &ServerId) -> Option<String> {
+        app.servers[sid]
+            .credentials
+            .as_ref()
+            .map(|c| c.user_id.clone())
+    }
+
+    fn login_result(uid: &str, token: &str) -> LoginResult {
+        LoginResult {
+            user_id: uid.into(),
+            auth_token: token.into(),
+            me: Some(User {
+                id: uid.into(),
+                username: Some(uid.to_lowercase()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    // --- F13 ---------------------------------------------------------------------
+
+    fn totp_required() -> Failure {
+        let challenge = rocketchat::TwoFactorChallenge::from_details(Some(
+            &serde_json::json!({"method": "totp"}),
+        ));
+        Failure::from(rocketchat::Error::TwoFactorRequired(challenge))
+    }
+
+    fn saml_link(token: &str) -> String {
+        format!("rocketchat://auth?host={SERVER}&type=saml&credentialToken={token}")
+    }
+
+    /// A pending SAML login that received a link with the attacker's token,
+    /// for which the server asked for 2FA; the code was submitted.
+    fn saml_link_two_factor(dir: &std::path::Path) -> (App, ServerId) {
+        let (mut app, sid, _) = started(dir, None, false, SecretBackend::Memory);
+        let l = app
+            .servers
+            .get_mut(&sid)
+            .and_then(|s| s.login.as_mut())
+            .unwrap();
+        l.meta = Some(LoginMeta {
+            site_name: "x".into(),
+            show_form: true,
+            services: vec![LoginServiceConfig {
+                service: Some("saml".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let _ = app.update(Message::Login(sid.clone(), login::Message::Service(0)));
+        let _ = app.update(Message::DeepLinks(vec![saml_link("ATTACKER")]));
+        let _ = app.update(Message::SamlLinkLogin(
+            sid.clone(),
+            "ATTACKER".into(),
+            Err(totp_required()),
+        ));
+        // The login runs again through the login screen, for its 2FA dialog.
+        let _ = app.update(Message::Login(
+            sid.clone(),
+            login::Message::LinkLoginDone(Err(totp_required())),
+        ));
+        let l = app.servers[&sid].login.as_ref().unwrap();
+        assert!(l.two_factor.as_ref().is_some_and(|tf| tf.unconfirmed));
+        assert!(l.pending.is_some());
+        let _ = app.update(Message::Login(
+            sid.clone(),
+            login::Message::Code("123456".into()),
+        ));
+        let _ = app.update(Message::Login(sid.clone(), login::Message::SubmitCode));
+        (app, sid)
+    }
+
+    fn link_login_done(app: &mut App, sid: &ServerId) {
+        let _ = app.update(Message::Login(
+            sid.clone(),
+            login::Message::LinkLoginDone(Ok(login_result("EVE", "T"))),
+        ));
+    }
+
+    /// F13: the 2FA round of a link-supplied SAML token ends in the account
+    /// confirmation, not in a session.
+    #[tokio::test]
+    async fn saml_link_login_needs_confirmation_after_two_factor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, sid) = saml_link_two_factor(dir.path());
+        link_login_done(&mut app, &sid);
+        assert!(signed_in(&app, &sid).is_none(), "2FA alone never signs in");
+        let Some(Modal::ConfirmToken {
+            credentials, stamp, ..
+        }) = app.modals.last()
+        else {
+            panic!("the account confirmation is shown");
+        };
+        assert_eq!(credentials.user_id, "EVE");
+        let stamp = *stamp;
+        // Not armed yet: clicking does nothing.
+        let _ = app.update(Message::Modal(ModalMessage::ConfirmToken));
+        assert!(signed_in(&app, &sid).is_none());
+        let _ = app.update(Message::ArmConfirm(stamp));
+        let _ = app.update(Message::Modal(ModalMessage::ConfirmToken));
+        assert_eq!(signed_in(&app, &sid).as_deref(), Some("EVE"));
+    }
+
+    /// F13: without the pending login that accepted the link (a second link
+    /// cancelled it), the 2FA result is dropped.
+    #[tokio::test]
+    async fn saml_link_login_is_dropped_without_its_pending_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, sid) = saml_link_two_factor(dir.path());
+        let _ = app.update(Message::DeepLinks(vec![saml_link("ATTACKER2")]));
+        assert!(app.servers[&sid].login.as_ref().unwrap().pending.is_none());
+        link_login_done(&mut app, &sid);
+        assert!(signed_in(&app, &sid).is_none());
+        assert!(
+            !app.modals
+                .iter()
+                .any(|m| matches!(m, Modal::ConfirmToken { .. }))
+        );
+    }
+
+    // --- F17 ---------------------------------------------------------------------
+
+    struct FailingStore {
+        deletes: AtomicUsize,
+    }
+
+    impl SecretStore for FailingStore {
+        fn get(&self, _: &str) -> Result<Option<String>, SecretError> {
+            Ok(None)
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
+            Ok(())
+        }
+        fn delete(&self, _: &str) -> Result<(), SecretError> {
+            self.deletes.fetch_add(1, Ordering::SeqCst);
+            Err(SecretError::Keyring("locked".into()))
+        }
+    }
+
+    #[test]
+    fn failed_deletes_are_reported_and_clear_nothing() {
+        let store = FailingStore {
+            deletes: AtomicUsize::new(0),
+        };
+        let keys: Vec<String> = (0..10).map(|i| format!("k{i}")).collect();
+        let p = purge_secrets(&store, &keys, true);
+        assert!(p.cleared.is_empty());
+        assert!(p.error.is_some());
+        assert_eq!(store.deletes.load(Ordering::SeqCst), MAX_PURGE_FAILURES);
+    }
+
+    /// F17: a token still in the store for an account that signed out (the
+    /// store was unreachable then, or the delete failed) is not a login.
+    #[tokio::test]
+    async fn signed_out_account_is_not_restored_from_a_stale_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, sid, _) = started(dir.path(), Some("U1"), true, SecretBackend::Keyring);
+        assert!(signed_in(&app, &sid).is_none());
+        assert!(app.servers[&sid].login.is_some());
+        // Without the record the same start restores the session.
+        let dir = tempfile::tempdir().unwrap();
+        let (app, sid, _) = started(dir.path(), Some("U1"), false, SecretBackend::Keyring);
+        assert_eq!(signed_in(&app, &sid).as_deref(), Some("U1"));
+    }
+
+    /// F17: a sign-out stays recorded until the keyring deleted the secrets.
+    #[tokio::test]
+    async fn sign_out_is_recorded_until_the_keyring_deleted_the_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, sid, store) = started(dir.path(), Some("U1"), false, SecretBackend::File);
+        let keys = account_secret_keys(&sid, "U1").to_vec();
+        let _ = app.logout(&sid, false);
+        assert_eq!(app.config.pending_secret_deletions, keys);
+        // A failed delete keeps the record.
+        let _ = app.on_secrets_purged(&[], Some("locked".into()));
+        assert_eq!(app.config.pending_secret_deletions, keys);
+        // A fallback store deletes its copy; the keyring may hold another.
+        let p = purge_secrets(&*store, &keys, false);
+        assert_eq!(p, SecretPurge::default());
+        assert!(store.get(&keys[0]).unwrap().is_none());
+        let _ = app.on_secrets_purged(&p.cleared, p.error);
+        assert_eq!(app.config.pending_secret_deletions, keys);
+        let p = purge_secrets(&*store, &keys, true);
+        assert_eq!(p.cleared, keys);
+        let _ = app.on_secrets_purged(&p.cleared, p.error);
+        assert!(app.config.pending_secret_deletions.is_empty());
+    }
+
+    /// F17: a new login takes its own secrets off the record and puts the
+    /// token of the account it replaces on it.
+    #[tokio::test]
+    async fn login_updates_the_pending_deletions() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, sid, _) = started(dir.path(), Some("U1"), false, SecretBackend::Memory);
+        let _ = app.logout(&sid, false);
+        let _ = app.logged_in(&sid, login_result("U2", "T2"), TokenKind::Login);
+        assert_eq!(
+            app.config.pending_secret_deletions,
+            account_secret_keys(&sid, "U1")
+        );
+        let _ = app.logged_in(&sid, login_result("U1", "T1"), TokenKind::Login);
+        assert_eq!(
+            app.config.pending_secret_deletions,
+            [secret_key(&sid, "U2")]
+        );
     }
 }

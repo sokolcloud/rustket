@@ -789,6 +789,9 @@ async fn flag_store_in_the_service_room() {
             room.name.as_deref(),
             Some(service_room_name(&uid, 0).as_str())
         );
+        // Bound in the account's own preferences: what makes it trusted.
+        let binding = rest.read_service_binding().await.unwrap();
+        assert!(binding.contains(&rid) && binding.trusts(&room));
         let sub = rest.subscriptions_get_one(&rid).await.unwrap();
         assert!(!sub.open, "created hidden");
         assert!(sub.is_service_room_of(&uid));

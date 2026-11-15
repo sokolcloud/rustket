@@ -194,6 +194,9 @@ pub enum Message {
     /// Servers whose stored E2E password has not been confirmed as saved
     /// (for the memory-only confirmation).
     SecretsPendingFound(Vec<ServerId>),
+    /// Secrets of signed-out accounts were deleted from the store: the keys
+    /// that are gone for good, what failed.
+    SecretsPurged(Vec<String>, Option<String>),
     /// The file manager could not open the themes folder (its path).
     ThemesFolderNotOpened(String),
     /// The file manager could not open the locales folder (its path).

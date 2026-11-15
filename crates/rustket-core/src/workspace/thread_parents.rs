@@ -62,15 +62,17 @@ impl Workspace {
         self.rooms.get(rid).is_some_and(RoomEntry::is_service_room)
     }
 
-    /// Reads the flags blob from the user's service rooms.
+    /// Reads the flags blob from the user's service rooms: those the account
+    /// bound in its preferences (`rocketchat::models::ServiceBinding`).
     pub(super) fn refresh_flags(&mut self) {
-        let (rids, blob) = match self.me.as_ref().map(|m| m.id.as_str()) {
-            Some(uid) => {
-                let subs = rocketchat::models::service_subscriptions(
+        let (rids, blob) = match self.me.as_ref() {
+            Some(me) => {
+                let subs = rocketchat::models::trusted_service_subscriptions(
                     self.rooms
                         .values()
                         .filter_map(|e| e.sub.as_ref().zip(e.room.as_ref())),
-                    uid,
+                    &me.id,
+                    &rocketchat::models::ServiceBinding::of(me),
                 );
                 let mut blob = FlagBlob::default();
                 for s in &subs {

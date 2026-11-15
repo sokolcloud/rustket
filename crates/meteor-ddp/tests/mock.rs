@@ -486,6 +486,58 @@ async fn hook_failure_on_first_connect_is_returned() {
 }
 
 #[tokio::test]
+async fn first_connect_errors_do_not_carry_control_characters() {
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    // A close frame during the first connection.
+    let mut server = MockServer::start().await;
+    let config = server.config();
+    let (result, _conn) = tokio::join!(DdpClient::connect(config), async {
+        let mut conn = server.accept().await;
+        conn.send_raw(Message::Close(Some(CloseFrame {
+            code: CloseCode::Normal,
+            reason: "bye\r\nINFO forged\u{1b}]52;c;AAAA\u{7}".into(),
+        })))
+        .await;
+        conn
+    });
+    let Err(error) = result else {
+        panic!("connect must fail");
+    };
+    assert!(matches!(error, ConnectError::Lost(_)), "{error:?}");
+    let text = error.to_string();
+    assert!(!text.chars().any(char::is_control), "{text:?}");
+    assert!(text.contains("bye\\r\\nINFO forged\\u{1b}]52"), "{text:?}");
+
+    // A login error during the first connection, fatal and retryable.
+    for code in [403, 500] {
+        let mut server = MockServer::start().await;
+        let config = server.config().on_connected(|ddp| async move {
+            ddp.call("login", vec![json!({"resume": "tok"})]).await?;
+            Ok(())
+        });
+        let (result, _conn) = tokio::join!(DdpClient::connect(config), async {
+            let mut conn = server.accept_handshake("s1").await;
+            let login = conn.recv_msg("method").await;
+            conn.send(json!({
+                "msg": "result", "id": login["id"],
+                "error": {"error": code, "message": "nope\r\nINFO forged\u{1b}[2J"}
+            }))
+            .await;
+            conn
+        });
+        let Err(error) = result else {
+            panic!("connect must fail");
+        };
+        assert!(matches!(error, ConnectError::Hook(_)), "{error:?}");
+        let text = error.to_string();
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(text.contains("nope\\r\\nINFO forged\\u{1b}[2J"), "{text:?}");
+    }
+}
+
+#[tokio::test]
 async fn retryable_hook_failure_reconnects() {
     let mut server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));

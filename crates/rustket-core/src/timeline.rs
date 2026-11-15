@@ -786,8 +786,9 @@ impl Timeline {
 
 // --- grouping helpers ----------------------------------------------------------
 
-fn local_day<Tz: TimeZone>(d: DateTime<Utc>, tz: &Tz) -> chrono::NaiveDate {
-    d.with_timezone(tz).date_naive()
+/// `None` when the local time is outside chrono's range (`date_naive()` panics there).
+fn local_day<Tz: TimeZone>(d: DateTime<Utc>, tz: &Tz) -> Option<chrono::NaiveDate> {
+    rocketchat::date::local_date(&d.with_timezone(tz))
 }
 
 /// Whether `cur` starts a new local day relative to `prev` (or is the first message).
@@ -831,7 +832,7 @@ pub fn is_sequential<Tz: TimeZone>(
     let (Some(p), Some(c)) = (prev.ts, cur.ts) else {
         return false;
     };
-    let diff = c.timestamp_millis() - p.timestamp_millis();
+    let diff = c.timestamp_millis().saturating_sub(p.timestamp_millis());
     if diff < 0 || diff >= grouping_period_secs.saturating_mul(1000) {
         return false;
     }
@@ -1165,5 +1166,32 @@ mod tests {
         assert!(is_new_day(None, &a, &utc));
         assert!(!is_sequential(&a, &b, 3600, &utc, None));
         assert!(is_sequential(&a, &b, 3600, &moscow, None));
+    }
+
+    /// Dates the parser now rejects, built directly: the local date is out
+    /// of chrono's range and `date_naive()` would panic.
+    #[test]
+    fn day_grouping_survives_dates_at_chrono_limits() {
+        let east = FixedOffset::east_opt(3 * 3600).unwrap();
+        let west = FixedOffset::west_opt(5 * 3600).unwrap();
+        let normal = msg("n", "r", 1_794_067_677_488, "u");
+        for (ms, tz) in [
+            (8_210_266_876_799_000_i64, east),
+            (-8_334_601_228_800_000, west),
+        ] {
+            let at = RcDate(DateTime::from_timestamp_millis(ms).unwrap());
+            assert_eq!(local_day(at.0, &tz), None);
+            let mut a = msg("a", "r", 0, "u");
+            a.ts = Some(at);
+            let mut b = a.clone();
+            b.id = "b".into();
+            assert!(is_new_day(Some(&normal), &a, &tz));
+            assert!(is_new_day(Some(&a), &normal, &tz));
+            assert!(!is_new_day(Some(&a), &b, &tz));
+            assert!(is_new_day(None, &a, &tz));
+            assert!(is_sequential(&a, &b, 300, &tz, None));
+            assert!(!is_sequential(&normal, &a, 300, &tz, None));
+            assert!(!is_sequential(&a, &normal, 300, &tz, None));
+        }
     }
 }

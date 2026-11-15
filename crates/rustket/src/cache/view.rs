@@ -16,7 +16,7 @@ use crate::workspace::ServerState;
 fn saved_label(saved_at: Option<i64>, clock_24h: bool) -> Option<String> {
     let ms = saved_at?;
     let at = Local.timestamp_millis_opt(ms).single()?;
-    let today = at.date_naive() == Local::now().date_naive();
+    let today = rocketchat::date::local_date(&at) == Some(Local::now().date_naive());
     let v = TimestampValue {
         timestamp: (ms / 1000).to_string(),
         format: Some(if today { "t" } else { "f" }.into()),
@@ -134,5 +134,12 @@ mod tests {
             .unwrap_or_default();
         assert!(old.contains(&year) && old.contains(':'), "{old}");
         assert_eq!(saved_label(None, true), None);
+    }
+
+    #[test]
+    fn saved_label_survives_dates_at_chrono_limits() {
+        for ms in [8_210_266_876_799_000_i64, -8_334_601_228_800_000] {
+            let _ = saved_label(Some(ms), true);
+        }
     }
 }

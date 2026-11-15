@@ -28,7 +28,7 @@ pub use scratch::{ActionRequest, Scratch, Suggestion, SurfaceKey};
 pub use trigger::{Origin, OriginKind, Trigger, TriggerRegistry, ViewTarget};
 pub use trust::{
     Permit, actions_allowed, element_permit, is_local_videoconf_action, is_openable_url,
-    openable_url,
+    openable_url, view_action_app,
 };
 pub use view_state::ViewState;
 
@@ -53,15 +53,20 @@ pub struct OpenView<V> {
 }
 
 impl<V: ViewKind> OpenView<V> {
-    /// `None` when neither the view, the interaction nor the trigger names an app.
+    /// The view belongs to the first app named in `owners` (the app the
+    /// trigger was issued for, then the interaction's), and only then to its
+    /// own `appId`: that one is written by the app that built the view and
+    /// must not redirect `blockAction` / `viewSubmit` / `viewClosed` to
+    /// another app. `None` when none of them names an app.
     fn new(
-        fallback_apps: [&str; 2],
+        owners: [&str; 2],
         view: RawView<V>,
         rid: Option<String>,
         generation: u64,
     ) -> Option<Self> {
-        let app_id = std::iter::once(view.view.app_id())
-            .chain(fallback_apps)
+        let app_id = owners
+            .into_iter()
+            .chain(std::iter::once(view.view.app_id()))
             .find(|a| !a.is_empty())?
             .to_owned();
         Some(Self {
@@ -389,8 +394,10 @@ impl UiKitStore {
         ))
     }
 
-    /// A block action inside the open modal or bar `view_id`. The element's
-    /// `app_id` falls back to the view's; `None` when the view is not open.
+    /// A block action inside the open modal or bar `view_id`, sent to the
+    /// view's app whatever the element's `app_id` says. `None` when the view
+    /// is not open or the element names another core app
+    /// ([`view_action_app`]).
     #[allow(clippy::too_many_arguments)]
     pub fn view_block_action(
         &mut self,
@@ -412,9 +419,7 @@ impl UiKitStore {
                 (b.app_id.clone(), b.rid.clone())
             }
         };
-        let app = app_id
-            .filter(|a| !a.is_empty())
-            .map_or(view_app, str::to_owned);
+        let app = view_action_app(&view_app, app_id)?.to_owned();
         let origin = Origin::new(OriginKind::ViewBlock)
             .rid(rid.as_deref())
             .view_in(target, view_id)
@@ -569,7 +574,8 @@ impl UiKitStore {
         )
     }
 
-    /// A block action on a banner; the banner closes right after (web).
+    /// A block action on a banner, sent to the banner's app
+    /// ([`view_action_app`]); the banner closes right after (web).
     pub fn banner_block_action(
         &mut self,
         view_id: &str,
@@ -580,10 +586,8 @@ impl UiKitStore {
         now: Instant,
     ) -> Option<(String, UserInteraction, UiKitChange)> {
         let i = self.banners.iter().position(|b| b.view_id() == view_id)?;
-        let b = self.banners.remove(i);
-        let app = app_id
-            .filter(|a| !a.is_empty())
-            .map_or(b.app_id, str::to_owned);
+        let app = view_action_app(&self.banners[i].app_id, app_id)?.to_owned();
+        self.banners.remove(i);
         let origin = Origin::new(OriginKind::ViewBlock)
             .view(view_id)
             .action(action_id);
@@ -738,7 +742,7 @@ impl UiKitStore {
             ServerInteraction::ModalOpen { view, .. } => {
                 let id = view.id().to_owned();
                 let g = self.next_generation();
-                match OpenView::new([&app_id, &trigger_app], *view, None, g) {
+                match OpenView::new([&trigger_app, &app_id], *view, None, g) {
                     Some(m) => {
                         self.modal = Some(m);
                         out.push(UiKitChange::ModalOpened(id));
@@ -766,7 +770,7 @@ impl UiKitStore {
                 let rid = origin.rid.clone();
                 let id = view.id().to_owned();
                 let g = self.next_generation();
-                let Some(bar) = OpenView::new([&app_id, &trigger_app], *view, rid.clone(), g)
+                let Some(bar) = OpenView::new([&trigger_app, &app_id], *view, rid.clone(), g)
                 else {
                     tracing::debug!("ignoring contextual_bar.open without an app id");
                     return out;
@@ -834,9 +838,12 @@ impl UiKitStore {
             ServerInteraction::BannerOpen { view, .. } => {
                 let id = view.id().to_owned();
                 self.banners.retain(|b| b.view_id() != id);
-                let app = Some(view.view.app_id.clone())
-                    .filter(|a| !a.is_empty())
-                    .unwrap_or(app_id);
+                // Same order as `OpenView::new`.
+                let app = [&trigger_app, &app_id, &view.view.app_id]
+                    .into_iter()
+                    .find(|a| !a.is_empty())
+                    .cloned()
+                    .unwrap_or_default();
                 self.banners.push(BannerEntry {
                     banner_id: None,
                     app_id: app,

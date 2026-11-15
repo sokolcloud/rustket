@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::driver::sanitize_reason;
 use crate::message::MeteorError;
 
 /// Error of a method call.
@@ -81,6 +82,11 @@ pub enum HookErrorKind {
 }
 
 /// Error returned by the `on_connected` hook.
+///
+/// The message usually quotes the server (a login error), and it ends up in
+/// logs and in [`ConnectionState`](crate::ConnectionState), so the constructors
+/// escape control characters in it and cap its length. The attached
+/// [`server_error`](Self::server_error) is kept as received.
 #[derive(Debug, Clone)]
 pub struct HookError {
     kind: HookErrorKind,
@@ -93,7 +99,7 @@ impl HookError {
     pub fn fatal(message: impl Into<String>) -> Self {
         Self {
             kind: HookErrorKind::Fatal,
-            message: message.into(),
+            message: sanitize_reason(&message.into()),
             server: None,
         }
     }
@@ -102,7 +108,7 @@ impl HookError {
     pub fn retry(message: impl Into<String>) -> Self {
         Self {
             kind: HookErrorKind::Retry,
-            message: message.into(),
+            message: sanitize_reason(&message.into()),
             server: None,
         }
     }
@@ -184,6 +190,39 @@ mod tests {
             error_type: None,
             details: None,
         }))
+    }
+
+    #[test]
+    fn hook_error_message_is_log_safe() {
+        let hostile = "logged out\r\n2026-01-01T00:00:00Z  INFO forged\u{1b}]52;c;AAAA\u{7} [403]";
+        let escaped =
+            "logged out\\r\\n2026-01-01T00:00:00Z  INFO forged\\u{1b}]52;c;AAAA\\u{7} [403]";
+        for code in [json!(403), json!(500)] {
+            let e = HookError::from(CallError::Server(Box::new(MeteorError {
+                error: code,
+                reason: None,
+                message: Some(hostile.to_owned()),
+                error_type: None,
+                details: None,
+            })));
+            assert_eq!(e.to_string(), escaped);
+            assert_eq!(e.message(), escaped);
+            assert_eq!(
+                ConnectError::Hook(e.clone()).to_string(),
+                format!("on_connected hook failed: {escaped}")
+            );
+            // The structured server error is untouched.
+            assert_eq!(
+                e.server_error().and_then(|s| s.message.as_deref()),
+                Some(hostile)
+            );
+        }
+        assert_eq!(HookError::fatal("a\nb").message(), "a\\nb");
+        assert_eq!(HookError::retry("a\u{9b}b").message(), "a\\u{9b}b");
+        assert_eq!(
+            HookError::fatal("bad credentials").message(),
+            "bad credentials"
+        );
     }
 
     #[test]

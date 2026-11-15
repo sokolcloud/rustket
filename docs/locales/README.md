@@ -69,9 +69,10 @@ plural = "one-other"      # one-other | east-slavic | none (default one-other)
 - Keys are the bundled English keys (quote them: they contain dots;
   unquoted dotted keys also work).
 - `%{name}` placeholders must be the same as in the English text (order may
-  change). A string whose placeholders differ is skipped with a warning.
+  change). A string whose placeholders differ is skipped with a warning, and
+  so is one with a `%` anywhere else.
 - Keys ending in `_fmt` are [chrono format strings](https://docs.rs/chrono/latest/chrono/format/strftime/index.html)
-  for dates (`"app.date_short_fmt" = "%d. %b"`).
+  for dates (`"app.date_short_fmt" = "%d. %b"`); they cannot contain `{`.
 - An empty or missing string shows in English.
 
 ## Plural rules

@@ -175,6 +175,50 @@ async fn same_origin_non_asset_download_is_anonymous() {
 }
 
 #[tokio::test]
+async fn encoded_separator_paths_are_anonymous() {
+    let (pa, log) = serve(|_| Some(http_response("200 OK", &[], "x"))).await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    for path in [
+        "/file-upload/..%2Fapi/v1/users.requestDataDownload",
+        "/avatar/..%5Capi/v1/logout",
+        "/file-upload/%2E%2E%2fapi/v1/logout",
+        "/file-upload/..%252Fapi/v1/logout",
+    ] {
+        c.download(path).await.unwrap();
+    }
+    let sent = joined(&log);
+    assert_eq!(log.lock().unwrap().len(), 4, "{sent}");
+    for h in ["x-auth-token", "x-user-id", "cookie"] {
+        assert!(
+            !sent.contains(h),
+            "{h} sent to a non-canonical path:\n{sent}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn asset_redirect_to_api_path_drops_credentials() {
+    let (pa, log) = serve(|req| {
+        Some(if req.starts_with("GET /file-upload/") {
+            http_response("302 Found", &[("Location", "/api/v1/logout")], "")
+        } else {
+            http_response("200 OK", &[], "x")
+        })
+    })
+    .await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    c.download("/file-upload/abc/x.png").await.unwrap();
+    let requests = log.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(requests[0].to_ascii_lowercase().contains("x-auth-token"));
+    let second = requests[1].to_ascii_lowercase();
+    assert!(second.starts_with("get /api/v1/logout"), "{second}");
+    for h in ["x-auth-token", "x-user-id", "cookie"] {
+        assert!(!second.contains(h), "{h} followed a redirect:\n{second}");
+    }
+}
+
+#[tokio::test]
 async fn hung_server_times_out() {
     let (pa, _) = serve(|_| None).await;
     let c = client_with(

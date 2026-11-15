@@ -843,3 +843,61 @@ fn connection_clears_typing() {
     ws.apply_logged_out();
     assert_eq!(ws.connection(), &ConnectionState::LoggedOut);
 }
+
+/// A room someone else got created in the user's name (`teams.create` with
+/// `owner` whose team insert failed) has the shape of a service room. Its
+/// flags count only once the account's own preferences bind it.
+#[test]
+fn unbound_service_rooms_hold_no_flags() {
+    use crate::flags::FlagColor;
+    use rocketchat::models::{FLAGS_KEY, ServiceFields, UNBOUND_CUTOFF_MS};
+    use serde_json::json;
+
+    let mut fields = ServiceFields::new("u1");
+    fields.set(
+        FLAGS_KEY,
+        json!({ "rooms": { "A": { "c": "red", "t": 5 } } }),
+    );
+    let mut svc = sub("SVC", "rustket-sync-u1", RoomType::Private);
+    svc.u.id = "u1".into();
+    svc.open = false;
+    svc.roles = Some(vec!["owner".into()]);
+    svc.custom_fields = Some(fields.to_custom_fields());
+    let mut svc_room = crate::test_util::service_room(&svc, "u1", 1);
+    svc_room.ts = Some(ts(UNBOUND_CUTOFF_MS + 1));
+    let bound = |rid: &str| {
+        let mut u = me("u1", "alice");
+        u.settings = serde_json::from_value(json!({
+            "preferences": { "dontAskAgainList": [
+                { "action": "hideRoom", "label": "Hide room" },
+                { "action": format!("rustket-service-room:{rid}"), "label": "Rustket sync" },
+            ] },
+        }))
+        .unwrap();
+        u
+    };
+
+    let mut ws = Workspace::new();
+    ws.apply_me(me("u1", "alice"));
+    ws.apply_subscription(Change::Inserted, sub("A", "a", RoomType::Channel));
+    ws.apply_subscription(Change::Inserted, svc);
+    ws.apply_room(Change::Inserted, svc_room);
+    assert!(ws.is_service_room("SVC"), "its shape keeps it out of lists");
+    assert!(ws.service_rooms().is_empty());
+    assert_eq!(ws.room_flag("A"), None);
+
+    // Another room is bound: still not this one.
+    ws.apply_me(bound("OTHER"));
+    assert!(ws.service_rooms().is_empty());
+    assert_eq!(ws.room_flag("A"), None);
+
+    // The account binds it (a `/me` re-read after the preference change).
+    ws.apply_me(bound("SVC"));
+    assert_eq!(ws.service_rooms(), ["SVC"]);
+    assert_eq!(ws.room_flag("A"), Some(FlagColor::Red));
+
+    // The binding is removed again.
+    ws.apply_me(me("u1", "alice"));
+    assert!(ws.service_rooms().is_empty());
+    assert_eq!(ws.room_flag("A"), None);
+}

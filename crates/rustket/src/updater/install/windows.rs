@@ -39,15 +39,35 @@ pub fn inno_args(scope: InnoScope, log: &Path) -> (Vec<OsString>, OsString) {
     (args, format!("/LOG=\"{}\"", log.display()).into())
 }
 
-/// Starts the installer detached; it waits for this process to exit
-/// (`rustket.iss` `PrepareToInstall`) and restarts the app. A setup that
-/// does not finish writes `result` next to itself and starts the old copy,
-/// which reports it (`relaunch::cleanup_stale`); a declined UAC prompt
-/// leaves no trace.
+/// Opens the package so that nobody can write, rename or delete it while the
+/// handle is open, and checks its digest through that handle.
 #[cfg(windows)]
-pub fn install_inno(scope: InnoScope, file: &Path) -> Result<super::Outcome, UpdateError> {
+fn open_verified(file: &Path, sha: &[u8; 32]) -> Result<std::fs::File, UpdateError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x1;
+    let mut held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(file)
+        .map_err(|e| UpdateError::io("read the package", &e))?;
+    super::verify_digest(&mut held, sha)?;
+    Ok(held)
+}
+
+/// Starts the installer (digest `sha`, checked again here) detached; it
+/// waits for this process to exit (`rustket.iss` `PrepareToInstall`) and
+/// restarts the app. A setup that does not finish writes `result` next to
+/// itself and starts the old copy, which reports it
+/// (`relaunch::cleanup_stale`); a declined UAC prompt leaves no trace.
+#[cfg(windows)]
+pub fn install_inno(
+    scope: InnoScope,
+    file: &Path,
+    sha: [u8; 32],
+) -> Result<super::Outcome, UpdateError> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
+    let held = open_verified(file, &sha)?;
     let log = file.with_file_name("setup.log");
     let _ = std::fs::remove_file(file.with_file_name(crate::updater::relaunch::RESULT_FILE));
     let (args, raw) = inno_args(scope, &log);
@@ -60,14 +80,20 @@ pub fn install_inno(scope: InnoScope, file: &Path) -> Result<super::Outcome, Upd
     crate::updater::relaunch::detach(&mut cmd);
     cmd.spawn()
         .map_err(|e| UpdateError::io("start the installer", &e))?;
+    // The installer keeps reading its file; it stays locked until this
+    // process exits.
+    std::mem::forget(held);
     tracing::info!("updater: started the installer, log {}", log.display());
     Ok(super::Outcome::Quit)
 }
 
-/// Extracts the zip next to the running copy and swaps the files in.
+/// Extracts the zip (digest `sha`, checked again here) next to the running
+/// copy and swaps the files in.
 #[cfg(windows)]
-pub fn install_zip(dir: &Path, file: &Path) -> Result<super::Outcome, UpdateError> {
+pub fn install_zip(dir: &Path, file: &Path, sha: [u8; 32]) -> Result<super::Outcome, UpdateError> {
     super::probe_writable(dir)?;
+    // Held until the archive is extracted.
+    let held = open_verified(file, &sha)?;
     let stage = dir.join(STAGE_DIR);
     match std::fs::remove_dir_all(&stage) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -78,6 +104,7 @@ pub fn install_zip(dir: &Path, file: &Path) -> Result<super::Outcome, UpdateErro
     std::fs::create_dir(&stage).map_err(|e| not_writable(dir, &e, "create the staging dir"))?;
     let result =
         expand_archive(file, &stage).and_then(|()| swap_files(&stage.join(ZIP_ROOT), dir, EXE));
+    drop(held);
     if let Err(e) = std::fs::remove_dir_all(&stage) {
         tracing::debug!("updater: cannot remove {}: {e}", stage.display());
     }

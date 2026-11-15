@@ -352,9 +352,14 @@ impl RestClient {
     /// image routes ([`ServerUrl::is_credentialed_asset`]): message content can
     /// point at any same-origin path, and a header-authenticated GET to `/api/…`
     /// (e.g. the legacy `GET /api/v1/logout`) must not be triggerable by
-    /// rendering a message. A redirect to another origin (e.g. S3/GCS file
+    /// rendering a message. A redirect off those routes (e.g. to S3/GCS file
     /// storage) is followed without credentials, cookies or `Referer`, and never
     /// from https to http.
+    ///
+    /// Anonymous requests, including every redirect hop, go only to destinations
+    /// that are no more local than the workspace (no loopback, private or
+    /// link-local addresses from a public workspace), never over plain http when
+    /// the workspace is https, and without URL userinfo.
     ///
     /// The credentials also go as the `rc_uid` / `rc_token` cookies the web client
     /// sets: `/avatar/…` ignores the auth headers and, with
@@ -372,9 +377,15 @@ impl RestClient {
             }
             rb.send().await?
         } else {
-            self.foreign_http().get(&url).send().await?
+            let target = url::Url::parse(&url).map_err(|e| Error::Url(e.to_string()))?;
+            self.foreign_get(target).await?
         };
-        if response.status().is_redirection() {
+        let mut hops = 0;
+        while response.status().is_redirection() {
+            if hops >= self.config().max_foreign_redirects {
+                return Err(super::redirect_error(&response));
+            }
+            hops += 1;
             let location = response
                 .headers()
                 .get(reqwest::header::LOCATION)
@@ -393,10 +404,7 @@ impl RestClient {
                 });
             }
             tracing::debug!(host = ?target.host_str(), "following download redirect without credentials");
-            response = self.foreign_http().get(target).send().await?;
-            if response.status().is_redirection() {
-                return Err(super::redirect_error(&response));
-            }
+            response = self.foreign_get(target).await?;
         }
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
@@ -414,5 +422,15 @@ impl RestClient {
             content_length,
             response,
         })
+    }
+
+    /// One anonymous GET that follows no redirect, to a destination accepted by
+    /// the [`super::destination::DestinationGuard`].
+    async fn foreign_get(&self, url: url::Url) -> Result<reqwest::Response> {
+        let guard = self.foreign_guard();
+        let allowed = guard.allowed_reach().await;
+        let url = guard.check(url, allowed).map_err(Error::Url)?;
+        let _watch = guard.watch(&url);
+        Ok(self.foreign_http().get(url).send().await?)
     }
 }

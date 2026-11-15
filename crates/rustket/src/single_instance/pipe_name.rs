@@ -1,22 +1,24 @@
-//! The Windows pipe name, derived from a per-user secret.
+//! The Windows pipe name: new and random for every primary instance.
 //!
-//! Named pipes live in one machine-wide namespace. So that another local user
-//! can neither squat the name nor receive the forwarded URLs (they can carry
-//! OAuth credential secrets), the name contains 128 random bits created once
-//! and stored in the user's local data directory, whose ACL keeps other users
-//! out. Platform-neutral so it is tested everywhere.
+//! Named pipes live in one machine-wide namespace that every local user can
+//! list, so the name is not a secret and the peers authenticate each other
+//! ([`super::pipe_auth`]). It is still unpredictable: the primary picks 128
+//! random bits per run and publishes the name in the user's local data
+//! directory (whose ACL keeps other users out) before it creates the pipe, so
+//! nobody can occupy the name in advance. Platform-neutral so it is tested
+//! everywhere.
 
 use std::io;
 use std::path::Path;
 
-/// File in the local data directory holding the secret.
-pub const SECRET_FILE: &str = "instance-secret";
+/// File in the local data directory holding the current name's random part.
+pub const NAME_FILE: &str = "instance-pipe";
 const PREFIX: &str = r"\\.\pipe\rustket-";
-/// Hex digits of the secret (128 bits).
+/// Hex digits of the random part (128 bits).
 const SECRET_HEX_LEN: usize = 32;
 
-/// The pipe name for a secret read from [`SECRET_FILE`]; `None` when the text
-/// is not a well-formed secret.
+/// The pipe name for the text of [`NAME_FILE`]; `None` when the text is not a
+/// well-formed random part.
 pub fn from_secret(text: &str) -> Option<String> {
     let secret = text.trim();
     let valid = secret.len() == SECRET_HEX_LEN
@@ -26,7 +28,7 @@ pub fn from_secret(text: &str) -> Option<String> {
     valid.then(|| format!("{PREFIX}{secret}"))
 }
 
-/// A new random secret (hex).
+/// A new random part (hex).
 pub fn new_secret() -> String {
     use rand::Rng;
     let mut bytes = [0u8; SECRET_HEX_LEN / 2];
@@ -34,21 +36,20 @@ pub fn new_secret() -> String {
     hex::encode(bytes)
 }
 
-/// The pipe name from `<dir>/instance-secret`, creating the file (and `dir`)
-/// when it is missing or malformed.
-pub fn load_or_create(dir: &Path) -> io::Result<String> {
-    let file = dir.join(SECRET_FILE);
-    if let Some(name) = std::fs::read_to_string(&file)
-        .ok()
-        .as_deref()
-        .and_then(from_secret)
-    {
-        return Ok(name);
-    }
+/// The name the primary instance published in `<dir>/instance-pipe`; `None`
+/// when the file is missing or malformed (also while it is being written).
+pub fn current(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join(NAME_FILE)).ok()?;
+    from_secret(&text)
+}
+
+/// Publishes a new random name in `<dir>/instance-pipe` (creating `dir`) and
+/// returns it. Only the holder of the instance lock may call this.
+pub fn rotate(dir: &Path) -> io::Result<String> {
     crate::images::private_dir(dir)?;
     let secret = new_secret();
-    std::fs::write(&file, &secret)?;
-    from_secret(&secret).ok_or_else(|| io::Error::other("generated secret is malformed"))
+    std::fs::write(dir.join(NAME_FILE), &secret)?;
+    from_secret(&secret).ok_or_else(|| io::Error::other("generated pipe name is malformed"))
 }
 
 #[cfg(test)]
@@ -75,16 +76,21 @@ mod tests {
     }
 
     #[test]
-    fn secret_file_is_created_once() {
+    fn name_changes_with_every_rotation() {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
-        let first = load_or_create(&data).unwrap();
+        assert_eq!(current(&data), None);
+        let first = rotate(&data).unwrap();
         assert!(first.starts_with(PREFIX));
-        assert_eq!(load_or_create(&data).unwrap(), first);
-        // A damaged file is replaced.
-        std::fs::write(data.join(SECRET_FILE), "garbage").unwrap();
-        let second = load_or_create(&data).unwrap();
+        assert_eq!(current(&data), Some(first.clone()));
+        // F1: a name seen during an earlier run is never served again.
+        let second = rotate(&data).unwrap();
         assert_ne!(second, first);
-        assert_eq!(load_or_create(&data).unwrap(), second);
+        assert_eq!(current(&data), Some(second));
+        // A damaged file names no pipe.
+        std::fs::write(data.join(NAME_FILE), "garbage").unwrap();
+        assert_eq!(current(&data), None);
+        std::fs::write(data.join(NAME_FILE), r"..\\..\\pipe\\other").unwrap();
+        assert_eq!(current(&data), None);
     }
 }

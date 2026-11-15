@@ -6,6 +6,7 @@
 pub mod admin;
 mod apps;
 mod auth;
+mod destination;
 mod e2e;
 mod files;
 mod livechat;
@@ -82,13 +83,17 @@ pub struct RestClient {
 struct Inner {
     /// API calls: same-origin redirects only, total timeout per request.
     http: reqwest::Client,
-    /// Downloads from the server: same-origin redirects only, read timeout.
+    /// Credentialed downloads from the server's asset routes: redirects only to
+    /// those routes, read timeout.
     download_http: reqwest::Client,
     /// Uploads: same-origin redirects only, no read timeout (the response only
     /// starts after the whole body is sent).
     upload_http: reqwest::Client,
-    /// Downloads redirected to foreign storage: never sees credentials.
+    /// Anonymous downloads (foreign storage, URLs from message content): never
+    /// sees credentials, follows no redirects itself, resolves host names through
+    /// `foreign_guard`.
     foreign_http: reqwest::Client,
+    foreign_guard: Arc<destination::DestinationGuard>,
     server: ServerUrl,
     config: RestConfig,
     credentials: RwLock<Option<Credentials>>,
@@ -144,12 +149,12 @@ fn same_origin_policy() -> reqwest::redirect::Policy {
     })
 }
 
-/// Follows redirects between foreign hosts but never from https to http.
-fn no_downgrade_policy(max: usize) -> reqwest::redirect::Policy {
+/// Follows redirects only to the server's credentialed asset routes
+/// ([`ServerUrl::is_credentialed_asset`]): the request carries the user's
+/// credentials, which must not reach any other path.
+fn asset_redirect_policy(server: ServerUrl) -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(move |attempt| {
-        let downgrade = attempt.url().scheme() != "https"
-            && attempt.previous().iter().any(|u| u.scheme() == "https");
-        if attempt.previous().len() > max || downgrade {
+        if attempt.previous().len() > 10 || !server.is_credentialed_asset(attempt.url().as_str()) {
             attempt.stop()
         } else {
             attempt.follow()
@@ -216,16 +221,19 @@ impl RestClient {
             .build()?;
         let download_http = tls
             .reqwest_builder()
-            .redirect(same_origin_policy())
+            .redirect(asset_redirect_policy(server.clone()))
             .read_timeout(config.read_timeout)
             .build()?;
         let upload_http = tls
             .reqwest_builder()
             .redirect(same_origin_policy())
             .build()?;
+        // Redirects are followed by `download`, which checks every hop.
+        let foreign_guard = Arc::new(destination::DestinationGuard::new(&server));
         let foreign_http = tls
             .reqwest_builder()
-            .redirect(no_downgrade_policy(config.max_foreign_redirects))
+            .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(destination::FilteringResolver(Arc::clone(&foreign_guard)))
             .read_timeout(config.read_timeout)
             .build()?;
         Ok(Self {
@@ -234,6 +242,7 @@ impl RestClient {
                 upload_http,
                 download_http,
                 foreign_http,
+                foreign_guard,
                 server,
                 config,
                 credentials: RwLock::new(None),
@@ -255,6 +264,10 @@ impl RestClient {
 
     pub(crate) fn foreign_http(&self) -> &reqwest::Client {
         &self.inner.foreign_http
+    }
+
+    pub(crate) fn foreign_guard(&self) -> &destination::DestinationGuard {
+        &self.inner.foreign_guard
     }
 
     pub fn server(&self) -> &ServerUrl {

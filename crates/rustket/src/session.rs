@@ -161,7 +161,9 @@ fn run(spec: &SessionSpec) -> impl Stream<Item = Tagged> + use<> {
                 Err(e) if is_retryable(&e) => {
                     attempt += 1;
                     let delay = backoff(attempt);
-                    tracing::info!(server = %spec.url.as_str(), attempt, error = %e, "session start failed; retrying");
+                    // The error may quote the server (close reason, login error).
+                    let reason = rocketchat::session::log_safe(&e);
+                    tracing::info!(server = %spec.url.as_str(), attempt, error = %reason, "session start failed; retrying");
                     let _ = out
                         .send((
                             id.clone(),
@@ -169,7 +171,7 @@ fn run(spec: &SessionSpec) -> impl Stream<Item = Tagged> + use<> {
                                 RcConn::Reconnecting {
                                     attempt,
                                     retry_in: delay,
-                                    reason: e.to_string(),
+                                    reason,
                                 },
                             ))),
                         ))
@@ -440,8 +442,12 @@ pub fn apply_event_for(
             ws.apply_permission(change(*kind), (**permission).clone());
             Followup::None
         }
-        E::SettingChanged { kind, setting, .. } => {
-            ws.apply_setting(change(*kind), (**setting).clone());
+        E::SettingChanged {
+            kind,
+            setting,
+            public,
+        } => {
+            ws.apply_setting_event(change(*kind), (**setting).clone(), *public);
             Followup::None
         }
         E::Notification(n) => Followup::Notification(n.clone()),
@@ -1045,6 +1051,45 @@ mod tests {
                 room_participant: true,
             },
         );
+    }
+
+    #[test]
+    fn private_setting_events_stay_out_of_the_workspace() {
+        use rocketchat::models::Setting;
+        let setting = |kind, id: &str, value: &str, public| SessionEvent::SettingChanged {
+            kind,
+            setting: Box::new(Setting {
+                id: id.into(),
+                value: value.into(),
+                ..Default::default()
+            }),
+            public,
+        };
+        let mut ws = ready();
+        apply_event(
+            &mut ws,
+            &setting(ChangeKind::Updated, "Site_Name", "Public", true),
+        );
+        let _ = ws.take_changes();
+        let rev = ws.revision(Dirty::SETTINGS);
+        // `private-settings-changed` carries server secrets in clear.
+        for kind in [ChangeKind::Inserted, ChangeKind::Updated] {
+            apply_event(&mut ws, &setting(kind, "SMTP_Password", "hunter2", false));
+        }
+        // The private copy of a public change is not applied either.
+        apply_event(
+            &mut ws,
+            &setting(ChangeKind::Updated, "Site_Name", "Private copy", false),
+        );
+        apply_event(
+            &mut ws,
+            &setting(ChangeKind::Removed, "Site_Name", "", false),
+        );
+        assert_eq!(ws.settings().get("SMTP_Password"), None);
+        assert_eq!(ws.settings().str("Site_Name"), Some("Public"));
+        assert_eq!(ws.settings().len(), 1);
+        assert_eq!(ws.revision(Dirty::SETTINGS), rev);
+        assert!(!ws.pending_changes().areas.contains(Dirty::SETTINGS));
     }
 
     #[test]

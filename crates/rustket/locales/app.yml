@@ -77,6 +77,12 @@ app.token_not_saved:
   es: "No se pudo guardar el inicio de sesión"
   th: "บันทึกการเข้าสู่ระบบไม่ได้"
   zh: "无法保存登录信息"
+app.secrets_not_deleted:
+  en: "The saved login could not be deleted; the next start tries again"
+  ru: "Не удалось удалить сохранённый вход; попытка повторится при следующем запуске"
+  es: "No se pudo eliminar el inicio de sesión guardado; se reintentará en el próximo inicio"
+  th: "ลบการเข้าสู่ระบบที่บันทึกไว้ไม่ได้ จะลองอีกครั้งเมื่อเริ่มโปรแกรมครั้งถัดไป"
+  zh: "无法删除已保存的登录信息，下次启动时将重试"
 app.secrets_file_title:
   en: "Secrets stored in an unencrypted file"
   ru: "Секреты хранятся в незашифрованном файле"

@@ -57,6 +57,7 @@ pub use client::{
 pub use config::{
     BackoffConfig, DEFAULT_REDACTED_METHODS, DdpConfig, HeartbeatConfig, OnConnected,
 };
+pub use driver::log_safe;
 pub use error::{
     CallError, ConnectError, FATAL_HOOK_ERROR_CODES, HookError, HookErrorKind, SubscribeError,
 };
