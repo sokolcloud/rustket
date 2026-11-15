@@ -1,0 +1,108 @@
+{
+  "rid": "6af9a627d5de71deb45c3c7e",
+  "msg": "[ ](http://localhost:3000/group/cf-src-1794745893771-tpsb?msg=xQ7C6dbT6C7P88rBk)\n[ ](http://localhost:3000/group/cf-src-1794745893771-tpsb?msg=ZYmmBnwk8P9bgr9sS)",
+  "ts": "2026-11-15T12:31:35.198Z",
+  "u": {
+    "_id": "Er3h8XYKahaopbSA7",
+    "username": "alice",
+    "name": "Alice"
+  },
+  "_id": "N68DjJLydfPjtt3Je",
+  "_updatedAt": "2026-11-15T12:31:35.207Z",
+  "md": [
+    {
+      "type": "PARAGRAPH",
+      "value": [
+        {
+          "type": "LINK",
+          "value": {
+            "src": {
+              "type": "PLAIN_TEXT",
+              "value": "http://localhost:3000/group/cf-src-1794745893771-tpsb?msg=xQ7C6dbT6C7P88rBk"
+            },
+            "label": [
+              {
+                "type": "PLAIN_TEXT",
+                "value": " "
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "PARAGRAPH",
+      "value": [
+        {
+          "type": "LINK",
+          "value": {
+            "src": {
+              "type": "PLAIN_TEXT",
+              "value": "http://localhost:3000/group/cf-src-1794745893771-tpsb?msg=ZYmmBnwk8P9bgr9sS"
+            },
+            "label": [
+              {
+                "type": "PLAIN_TEXT",
+                "value": " "
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "mentions": [],
+  "channels": [],
+  "urls": [
+    {
+      "url": "http://localhost:3000/group/cf-src-1794745893771-tpsb?msg=xQ7C6dbT6C7P88rBk",
+      "meta": {},
+      "ignoreParse": true
+    },
+    {
+      "url": "http://localhost:3000/group/cf-src-1794745893771-tpsb?msg=ZYmmBnwk8P9bgr9sS",
+      "meta": {},
+      "ignoreParse": true
+    }
+  ],
+  "attachments": [
+    {
+      "text": "first forwarded",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "first forwarded"
+            }
+          ]
+        }
+      ],
+      "message_link": "http://localhost:3000/group/cf-src-1794745893771-tpsb?msg=xQ7C6dbT6C7P88rBk",
+      "author_name": "alice",
+      "author_icon": "/avatar/alice",
+      "attachments": [],
+      "ts": "2026-11-15T12:31:35.149Z"
+    },
+    {
+      "text": "second forwarded",
+      "md": [
+        {
+          "type": "PARAGRAPH",
+          "value": [
+            {
+              "type": "PLAIN_TEXT",
+              "value": "second forwarded"
+            }
+          ]
+        }
+      ],
+      "message_link": "http://localhost:3000/group/cf-src-1794745893771-tpsb?msg=ZYmmBnwk8P9bgr9sS",
+      "author_name": "alice",
+      "author_icon": "/avatar/alice",
+      "attachments": [],
+      "ts": "2026-11-15T12:31:35.172Z"
+    }
+  ]
+}

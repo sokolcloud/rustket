@@ -1,5 +1,5 @@
-//! General tab: language, window and startup, keyboard, `rocketchat://`
-//! links.
+//! General tab: language, window and startup, keyboard, messages,
+//! `rocketchat://` links.
 
 use iced::widget::{column, text};
 use iced::{Element, Length};
@@ -123,6 +123,22 @@ pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a,
         ],
     );
 
+    let messages = section(
+        t!("settings.messages").into_owned(),
+        vec![switch(
+            t!("settings.confirm_broad_mentions").into_owned(),
+            Some(
+                t!(
+                    "settings.confirm_broad_mentions_help",
+                    count = crate::room::composer::broad::MIN_MEMBERS
+                )
+                .into_owned(),
+            ),
+            ui.confirm_broad_mentions,
+            Some(Message::SetConfirmBroadMentions),
+        )],
+    );
+
     vec![
         section(
             t!("settings.language").into_owned(),
@@ -130,6 +146,7 @@ pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a,
         ),
         behaviour,
         keyboard,
+        messages,
         section(t!("settings.integration").into_owned(), vec![links]),
     ]
 }

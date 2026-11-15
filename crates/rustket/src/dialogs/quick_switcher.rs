@@ -1,6 +1,8 @@
 //! Quick switcher (Ctrl+K): local rooms (fuzzy on name/fname, unread first)
 //! plus `spotlight` (users and rooms the user has not joined), with debounced
-//! queries and stale responses dropped. Up/Down select, Enter opens.
+//! queries and stale responses dropped. Up/Down select, Enter opens. In
+//! forward mode ([`QuickSwitcher::for_forward`]) it picks the room messages
+//! are forwarded to instead.
 //! Owner: account agent. Strings: `locales/quick_switcher.yml`
 //! (`quick_switcher.*`).
 
@@ -95,6 +97,8 @@ pub struct QuickSwitcher {
     /// The rows for (`generation`, room count), so `view` and the arrow keys
     /// don't rescore every room.
     cache: RefCell<Option<(CacheKey, Vec<Item>)>>,
+    /// Forward mode: the messages to forward to the picked room.
+    forward: Option<Vec<crate::room::ForwardRef>>,
 }
 
 /// Fuzzy score of `candidate` for `query` (lowercase); 0 = no match.
@@ -151,6 +155,28 @@ pub fn results(
     query: &str,
     remote: Option<&SpotlightResult>,
 ) -> Vec<Item> {
+    results_for(ws, opts, query, remote, false)
+}
+
+/// Whether messages can be forwarded to joined room `e`: the user may post
+/// there, it is not end-to-end encrypted (the server must read the quote
+/// links) and not an omnichannel room.
+fn forward_target(ws: &Workspace, e: &RoomEntry) -> bool {
+    use crate::e2e::outgoing::{Mode, mode};
+    rustket_core::permissions::post_block(ws, e.rid()).is_none()
+        && !matches!(e.room_type(), RoomType::Livechat | RoomType::Voip)
+        && !matches!(mode(ws, e.rid()), Mode::Encrypt(_) | Mode::Blocked)
+}
+
+/// [`results`]; `forward`: only rooms messages can be forwarded to and
+/// people (no rooms the user has not joined).
+pub fn results_for(
+    ws: &Workspace,
+    opts: &RoomListOptions,
+    query: &str,
+    remote: Option<&SpotlightResult>,
+    forward: bool,
+) -> Vec<Item> {
     let query = query.trim();
     let scope = if query.starts_with('@') {
         Scope::People
@@ -164,6 +190,7 @@ pub fn results(
         .rooms()
         .values()
         .filter(|e| e.sub.is_some() && !e.is_service_room())
+        .filter(|e| !forward || forward_target(ws, e))
         .filter(|e| {
             let direct = e.room_type() == RoomType::Direct;
             match scope {
@@ -218,9 +245,12 @@ pub fn results(
                 let Some(username) = u.username.as_deref() else {
                     continue;
                 };
-                // Skip people whose DM is in the sidebar or in the results.
+                // Skip people whose DM is in the sidebar or in the results,
+                // and in forward mode those whose (hidden) DM is no target.
                 let has_dm = open::local_dm(ws, username).is_some_and(|rid| {
-                    listed(&rid) || ws.subscription(&rid).is_some_and(|s| s.open)
+                    listed(&rid)
+                        || ws.subscription(&rid).is_some_and(|s| s.open)
+                        || (forward && !ws.room(&rid).is_some_and(|e| forward_target(ws, e)))
                 });
                 if username == me || has_dm {
                     continue;
@@ -231,7 +261,7 @@ pub fn results(
                 });
             }
         }
-        if scope != Scope::People {
+        if scope != Scope::People && !forward {
             for room in &r.rooms {
                 if room.t == RoomType::Direct
                     || (ws.subscription(&room.id).is_some() && listed(&room.id))
@@ -267,6 +297,40 @@ impl QuickSwitcher {
         Self::default()
     }
 
+    /// The switcher in forward mode for `refs`.
+    pub fn for_forward(refs: Vec<crate::room::ForwardRef>) -> Self {
+        Self {
+            forward: Some(refs),
+            ..Self::default()
+        }
+    }
+
+    /// In forward mode, opening a room becomes forwarding to it. The opened
+    /// room is checked again: a DM that was hidden or just created may be
+    /// encrypted or read-only; then the switcher stays open with an error.
+    fn retarget(&mut self, ws: &Workspace, mut a: Action<Message>) -> Action<Message> {
+        let Some(refs) = &self.forward else {
+            return a;
+        };
+        let refused = a.effects.iter().any(|e| {
+            matches!(e, Effect::OpenRoom(rid)
+                if !ws.room(rid).is_some_and(|e| forward_target(ws, e)))
+        });
+        if refused {
+            self.error = Some(t!("quick_switcher.forward_refused").into_owned());
+            return Action::none();
+        }
+        for e in &mut a.effects {
+            if let Effect::OpenRoom(rid) = e {
+                *e = Effect::ForwardTo {
+                    rid: std::mem::take(rid),
+                    refs: refs.clone(),
+                };
+            }
+        }
+        a
+    }
+
     /// Focuses the search field (run when the dialog opens).
     pub fn focus() -> Task<Message> {
         iced::widget::operation::focus(INPUT_ID)
@@ -284,7 +348,13 @@ impl QuickSwitcher {
             .as_ref()
             .filter(|(q, _)| *q == self.query.trim())
             .map(|(_, r)| r);
-        let items = results(ws, &options(ws, prefs), &self.query, remote);
+        let items = results_for(
+            ws,
+            &options(ws, prefs),
+            &self.query,
+            remote,
+            self.forward.is_some(),
+        );
         *self.cache.borrow_mut() = Some((key, items.clone()));
         items
     }
@@ -351,7 +421,14 @@ impl QuickSwitcher {
                 let r = *r;
                 self.busy = false;
                 match open::finish(ctx.workspace, r) {
-                    Ok(a) => a.with(Effect::Close),
+                    Ok(a) => {
+                        let a = self.retarget(ctx.workspace, a);
+                        if a.effects.is_empty() {
+                            a
+                        } else {
+                            a.with(Effect::Close)
+                        }
+                    }
                     Err(e) => {
                         self.error = Some(e);
                         Action::none()
@@ -370,12 +447,18 @@ impl QuickSwitcher {
             return Action::none();
         };
         self.selected = i;
+        self.error = None;
         let a = open::open(ctx, item.target(), |r| Message::Opened(Box::new(r)));
         if a.effects.is_empty() {
             self.busy = true;
             a
         } else {
-            a.with(Effect::Close)
+            let a = self.retarget(ctx.workspace, a);
+            if a.effects.is_empty() {
+                a
+            } else {
+                a.with(Effect::Close)
+            }
         }
     }
 
@@ -427,14 +510,21 @@ impl QuickSwitcher {
         }
         let mut input_row = row![
             icon::sized(Icon::Search, 16.0).style(style::text_secondary),
-            text_input(&t!("quick_switcher.placeholder"), &self.query)
-                .id(INPUT_ID)
-                .on_input(Message::Query)
-                .on_submit(Message::Submit)
-                .style(style::text_input)
-                .size(TEXT_BODY)
-                .padding([8, 10])
-                .width(Length::Fill)
+            text_input(
+                &if self.forward.is_some() {
+                    t!("quick_switcher.forward_placeholder")
+                } else {
+                    t!("quick_switcher.placeholder")
+                },
+                &self.query
+            )
+            .id(INPUT_ID)
+            .on_input(Message::Query)
+            .on_submit(Message::Submit)
+            .style(style::text_input)
+            .size(TEXT_BODY)
+            .padding([8, 10])
+            .width(Length::Fill)
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
@@ -464,12 +554,20 @@ impl QuickSwitcher {
             .spacing(SPACE_1)
             .align_y(Alignment::Center),
         );
-        dialog(
-            t!("quick_switcher.title"),
-            body,
-            Vec::new(),
-            Some(Message::Close),
-        )
+        let title = match &self.forward {
+            Some(refs) => {
+                let n = refs.len() as u64;
+                t!(
+                    format!(
+                        "quick_switcher.forward_title_{}",
+                        crate::room::render::plural(n)
+                    ),
+                    count = n
+                )
+            }
+            None => t!("quick_switcher.title"),
+        };
+        dialog(title, body, Vec::new(), Some(Message::Close))
     }
 
     fn row<'a>(&'a self, i: usize, item: &Item, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
@@ -849,6 +947,115 @@ mod tests {
             let n = qs.items(ctx.workspace, &ctx.config.ui).len();
             let a = qs.update(Message::Open(n - 1), ctx);
             assert!(a.effects.is_empty() && qs.busy);
+        });
+    }
+
+    fn forward_refs() -> Vec<crate::room::ForwardRef> {
+        vec![crate::room::ForwardRef {
+            rid: "r2".into(),
+            mid: "m1".into(),
+            author: "bob".into(),
+            excerpt: "hi".into(),
+        }]
+    }
+
+    /// Forward mode offers rooms the user can post to (not read-only, not
+    /// encrypted) and people, but no rooms the user has not joined.
+    #[test]
+    fn forward_mode_offers_only_targets() {
+        let mut ws = ws();
+        let mut ro = ws.room("r1").unwrap().room.clone().unwrap();
+        ro.ro = Some(true);
+        ws.apply_room(Change::Updated, ro);
+        let mut enc = ws.room("r3").unwrap().room.clone().unwrap();
+        enc.encrypted = Some(true);
+        ws.apply_room(Change::Updated, enc);
+        let remote = SpotlightResult {
+            users: spotlight_with("devon").users,
+            rooms: vec![RoomSummary {
+                id: "r9".into(),
+                t: RoomType::Channel,
+                name: Some("dev-other".into()),
+                ..Default::default()
+            }],
+        };
+        let opts = RoomListOptions::default();
+        let normal = results_for(&ws, &opts, "", Some(&remote), false);
+        assert!(rids(&normal).contains(&"r1".to_owned()));
+        let fwd = rids(&results_for(&ws, &opts, "", Some(&remote), true));
+        assert_eq!(fwd, vec!["d1", "r2", "@devon"]);
+        // A person behind a hidden encrypted DM is no target either.
+        add(&mut ws, "d2", "devon", RoomType::Direct, 0);
+        let mut s = ws.subscription("d2").unwrap().clone();
+        s.open = false;
+        ws.apply_subscription(Change::Updated, s);
+        let mut enc = ws.room("d2").unwrap().room.clone().unwrap();
+        enc.encrypted = Some(true);
+        ws.apply_room(Change::Updated, enc);
+        assert!(
+            rids(&results_for(&ws, &opts, "", Some(&remote), false)).contains(&"d2".to_owned())
+        );
+        let fwd = rids(&results_for(&ws, &opts, "", Some(&remote), true));
+        assert_eq!(fwd, vec!["d1", "r2"]);
+    }
+
+    #[tokio::test]
+    async fn forward_mode_forwards_instead_of_opening() {
+        let mut ws = ws();
+        let mut qs = QuickSwitcher::for_forward(forward_refs());
+        with_ctx(&mut ws, |ctx| {
+            let _ = qs.update(Message::Query("rand".into()), ctx);
+            let a = qs.update(Message::Submit, ctx);
+            assert!(matches!(
+                &a.effects[..],
+                [Effect::ForwardTo { rid, refs }, Effect::Close]
+                    if rid == "r2" && refs[..] == forward_refs()[..]
+            ));
+            // A fetched room (a new DM) is forwarded to as well.
+            let room = Room {
+                id: "d9".into(),
+                t: RoomType::Direct,
+                ..Default::default()
+            };
+            let sub = Subscription {
+                id: "s-d9".into(),
+                rid: "d9".into(),
+                name: "devon".into(),
+                t: RoomType::Direct,
+                open: true,
+                ..Default::default()
+            };
+            let a = qs.update(
+                Message::Opened(Box::new(Ok(open::Opened {
+                    room,
+                    sub: Some(sub),
+                }))),
+                ctx,
+            );
+            assert!(matches!(
+                &a.effects[..],
+                [Effect::ForwardTo { rid, .. }, Effect::Close] if rid == "d9"
+            ));
+            // A DM that turns out encrypted is refused; the switcher stays.
+            let room = Room {
+                id: "d8".into(),
+                t: RoomType::Direct,
+                encrypted: Some(true),
+                ..Default::default()
+            };
+            let a = qs.update(
+                Message::Opened(Box::new(Ok(open::Opened { room, sub: None }))),
+                ctx,
+            );
+            assert!(a.effects.is_empty());
+            assert!(qs.error.is_some() && !qs.busy);
+        });
+        // Ctrl+K's switcher still opens.
+        let mut qs = QuickSwitcher::new();
+        with_ctx(&mut ws, |ctx| {
+            let _ = qs.update(Message::Query("rand".into()), ctx);
+            let a = qs.update(Message::Submit, ctx);
+            assert!(matches!(&a.effects[..], [Effect::OpenRoom(r), Effect::Close] if r == "r2"));
         });
     }
 }

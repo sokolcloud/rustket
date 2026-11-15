@@ -123,6 +123,8 @@ pub enum Nav {
     CreateDiscussion { rid: String, pmid: Option<String> },
     /// Ctrl+K (`dialogs/quick_switcher.rs`).
     QuickSwitcher,
+    /// The quick switcher in forward mode: pick where these messages go.
+    Forward(Vec<crate::room::ForwardRef>),
     /// The keyboard shortcuts cheat sheet (`dialogs/shortcuts.rs`).
     Shortcuts,
     /// Back to the workspace of the active server.
@@ -139,6 +141,12 @@ pub enum Effect {
     Navigate(Nav),
     /// Open a room of the component's server.
     OpenRoom(String),
+    /// Open room `rid` of the component's server with these messages
+    /// quoted as forwarded in its composer.
+    ForwardTo {
+        rid: String,
+        refs: Vec<crate::room::ForwardRef>,
+    },
     /// Open a URL in the browser (absolute http/https/mailto only).
     OpenUrl(String),
     /// Close this screen/dialog.

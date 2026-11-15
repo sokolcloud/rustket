@@ -237,6 +237,9 @@ pub enum Effect {
     UiKit(Box<crate::uikit::UiKitMsg>),
     /// The account end-to-end encryption flow (enter/save the password).
     E2e(crate::e2e::RoomRequest),
+    /// Pick a target room and forward these messages there (the app's quick
+    /// switcher in forward mode).
+    Forward(Vec<ForwardRef>),
 }
 
 /// Requests other room components make to the composer.
@@ -258,6 +261,45 @@ pub enum ComposeIntent {
     Retry(String),
     /// Drop failed message `mid` (room or thread).
     Discard(String),
+    /// Quote these messages (of any room) as forwarded: they may be sent
+    /// without a comment.
+    Forward(Vec<ForwardRef>),
+}
+
+/// A message to forward: where it is and what the composer's quote bar
+/// shows (in memory only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardRef {
+    pub rid: String,
+    pub mid: String,
+    pub author: String,
+    pub excerpt: String,
+}
+
+impl ForwardRef {
+    /// The author (username, else name) and the first line (80 characters)
+    /// of `m`, as quote bars show them.
+    pub fn of(m: &rocketchat::models::Message) -> Self {
+        let author =
+            m.u.username
+                .clone()
+                .or_else(|| m.u.name.clone())
+                .unwrap_or_default();
+        let excerpt: String = m
+            .msg
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(80)
+            .collect();
+        Self {
+            rid: m.rid.clone(),
+            mid: m.id.clone(),
+            author,
+            excerpt,
+        }
+    }
 }
 
 /// Result of a component `update`: a task producing the component's messages
@@ -572,6 +614,17 @@ impl RoomView {
                 .jump_to(&m.id, m.ts, ctx)
                 .map(Message::Timeline),
         }
+    }
+
+    /// Asks the composer to do something (forwarded quotes, reveal …), as
+    /// a room component would with `Effect::Compose`.
+    pub fn compose(&mut self, intent: ComposeIntent, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        self.handle_effects(Action::effect(Effect::Compose(intent)), ctx)
+    }
+
+    /// The room timeline is selecting messages (Esc clears the selection).
+    pub fn picking(&self) -> bool {
+        self.timeline.picking()
     }
 
     /// Marks the open thread read when it is at the bottom (the app calls it
@@ -1137,6 +1190,65 @@ mod tests {
                 .error
                 .is_some()
         );
+    }
+
+    /// Select mode in the room timeline: Select starts it with that message,
+    /// clicks toggle (up to the cap), Forward hands the selection over in
+    /// timeline order and ends the mode; `compose` routes to the composer.
+    #[test]
+    fn selection_forwards_in_order_and_compose_reaches_the_composer() {
+        use timeline::{Act, ItemMsg, Message as Tm};
+        let mut ws = workspace();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        for (id, ms) in [("a", 1_000), ("b", 2_000), ("c", 3_000)] {
+            let mut m = message(id, ms);
+            m.msg = format!("text {id}");
+            m.u = UserRef {
+                id: "bob".into(),
+                username: Some("bob".into()),
+                name: None,
+            };
+            ctx.workspace.apply_message(m);
+        }
+        let tl = |m| Message::Timeline(m);
+        let _ = rv.update(
+            tl(Tm::Item(ItemMsg::Act("c".into(), Act::Select))),
+            &mut ctx,
+        );
+        assert!(rv.picking());
+        let _ = rv.update(tl(Tm::Item(ItemMsg::Pick("a".into()))), &mut ctx);
+        let _ = rv.update(tl(Tm::Item(ItemMsg::Pick("b".into()))), &mut ctx);
+        let _ = rv.update(tl(Tm::Item(ItemMsg::Pick("b".into()))), &mut ctx);
+        let a = rv.update(tl(Tm::ForwardPicked), &mut ctx);
+        let [Effect::Forward(refs)] = a.effects.as_slice() else {
+            panic!("{:?}", a.effects);
+        };
+        let ids: Vec<&str> = refs.iter().map(|r| r.mid.as_str()).collect();
+        assert_eq!(ids, ["a", "c"]);
+        assert!(!rv.picking());
+        // Cancel leaves the mode without forwarding.
+        let _ = rv.update(
+            tl(Tm::Item(ItemMsg::Act("a".into(), Act::Select))),
+            &mut ctx,
+        );
+        let a = rv.update(tl(Tm::ClearPicks), &mut ctx);
+        assert!(a.effects.is_empty() && !rv.picking());
+        // Forwarded quotes land in the room composer.
+        let _ = rv.compose(ComposeIntent::Forward(refs.clone()), &mut ctx);
+        assert_eq!(rv.composer.quoted(), ["a", "c"]);
     }
 
     fn unread_sub(ws: &mut Workspace, unread: u64, tunread: Option<Vec<String>>) {

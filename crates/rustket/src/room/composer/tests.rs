@@ -1240,3 +1240,252 @@ fn shift_escape_asks_the_app_for_mark_all_read() {
         assert!(matches!(a.effects.as_slice(), [Effect::AskReadAll]));
     }
 }
+
+/// `R1` with `users` members (the sender included) and the mention
+/// permissions given to the `user` role.
+fn broad_env(name: &str, users: Option<u64>, perms: &[&str]) -> Env {
+    use rocketchat::models::Permission;
+    let mut env = Env::new(name);
+    let mut r = room("R1", "general", RoomType::Channel);
+    r.users_count = users;
+    env.ws.apply_room(rustket_core::Change::Updated, r);
+    for p in perms {
+        env.ws.apply_permission(
+            rustket_core::Change::Updated,
+            Permission {
+                id: (*p).into(),
+                roles: vec!["user".into()],
+                updated_at: None,
+            },
+        );
+    }
+    env
+}
+
+#[test]
+fn broad_mentions_ask_before_sending() {
+    let mut env = broad_env("t-broad", Some(11), &["mention-all", "mention-here"]);
+    let mut c = Composer::new("R1");
+    type_text(&mut c, &mut env, "release is out @all");
+    let a = c.update(Message::Send, &mut env.ctx());
+    assert!(a.effects.is_empty());
+    assert!(
+        env.ws.pending_messages("R1").is_empty(),
+        "waits for the answer"
+    );
+    let ask = c.confirm_broad.clone().unwrap();
+    assert!(ask.all && !ask.here);
+    assert_eq!(ask.members, Some(10));
+    assert_eq!(ask.room, "#general");
+    assert!(c.is_confirm_open());
+    // Cancel keeps the text; Escape does the same.
+    let _ = c.update(Message::BroadCancelled, &mut env.ctx());
+    assert!(c.confirm_broad.is_none());
+    assert_eq!(c.text(), "release is out @all");
+    let _ = c.update(Message::Send, &mut env.ctx());
+    let _ = c.update(Message::Cancel, &mut env.ctx());
+    assert!(c.confirm_broad.is_none());
+    assert_eq!(c.text(), "release is out @all");
+    // Confirmed: sent once, and the next one asks again.
+    let _ = c.update(Message::Send, &mut env.ctx());
+    let _ = c.update(Message::BroadConfirmed, &mut env.ctx());
+    let p = env.ws.pending_messages("R1");
+    assert_eq!(p.len(), 1);
+    assert_eq!(p[0].message.msg, "release is out @all");
+    assert!(!c.broad_ok);
+    type_text(&mut c, &mut env, "@here standup");
+    let a = c.update(Message::Send, &mut env.ctx());
+    let ask = c.confirm_broad.clone().unwrap();
+    assert!(ask.here && !ask.all);
+    // The online count comes in for this dialog only (the sender excluded).
+    assert!(names(&outputs(a.task)).contains(&"OnlineCount".to_owned()));
+    let _ = c.update(Message::OnlineCount(ask.seq + 1, Ok(9)), &mut env.ctx());
+    assert_eq!(c.confirm_broad.as_ref().unwrap().online, None);
+    let _ = c.update(Message::OnlineCount(ask.seq, Ok(4)), &mut env.ctx());
+    assert_eq!(c.confirm_broad.as_ref().unwrap().online, Some(3));
+}
+
+#[test]
+fn broad_mentions_send_directly_when_not_needed() {
+    let sends = |env: &mut Env, text: &str| {
+        let mut c = Composer::new("R1");
+        type_text(&mut c, env, text);
+        let _ = c.update(Message::Send, &mut env.ctx());
+        c.confirm_broad.is_none() && c.text().is_empty()
+    };
+    // Fewer than five other members.
+    let mut env = broad_env("t-broad-small", Some(5), &["mention-all"]);
+    assert!(sends(&mut env, "@all hi"));
+    // No permission: the server would refuse the mention anyway.
+    let mut env = broad_env("t-broad-perm", Some(50), &[]);
+    assert!(sends(&mut env, "@all hi"));
+    // Inside code, or another word.
+    let mut env = broad_env("t-broad-code", Some(50), &["mention-all"]);
+    assert!(sends(&mut env, "`@all` and @allison"));
+    // Switched off in the settings.
+    let mut env = broad_env("t-broad-off", Some(50), &["mention-all"]);
+    env.prefs.confirm_broad_mentions = false;
+    assert!(sends(&mut env, "@all hi"));
+    // An unknown member count asks.
+    let mut env = broad_env("t-broad-unknown", None, &["mention-all"]);
+    assert!(!sends(&mut env, "@all hi"));
+    // Edits never ask (the server notifies new messages only).
+    let mut env = broad_env("t-broad-edit", Some(50), &["mention-all"]);
+    env.ws.apply_message(msg("M1", "me", "hello"));
+    let mut c = Composer::new("R1");
+    let _ = c.update(Message::EditLast, &mut env.ctx());
+    type_text(&mut c, &mut env, " @all");
+    let _ = c.update(Message::Send, &mut env.ctx());
+    assert!(c.confirm_broad.is_none() && !c.is_editing());
+}
+
+#[test]
+fn direct_messages_never_ask_about_broad_mentions() {
+    let mut env = broad_env("t-broad-dm", Some(50), &["mention-all"]);
+    let mut r = room("R1", "bob", RoomType::Direct);
+    r.users_count = Some(50);
+    env.ws.apply_room(rustket_core::Change::Updated, r);
+    env.ws.apply_subscription(
+        rustket_core::Change::Updated,
+        sub("R1", "bob", RoomType::Direct),
+    );
+    assert!(broad::broad_check(&env.ws, "R1", "@all").is_none());
+}
+
+#[test]
+fn upload_message_with_broad_mentions_asks_first() {
+    let mut env = broad_env("t-broad-upload", Some(20), &["mention-all"]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(&path, b"hello").unwrap();
+    let mut c = Composer::new("R1");
+    let a = c.update(Message::FilesDropped(vec![path]), &mut env.ctx());
+    for m in outputs(a.task) {
+        let _ = c.update(m, &mut env.ctx());
+    }
+    let _ = c.update(
+        Message::Upload(upload::Message::Text("@all minutes".into())),
+        &mut env.ctx(),
+    );
+    let a = c.update(Message::Upload(upload::Message::Send), &mut env.ctx());
+    assert!(a.effects.is_empty(), "asks before the connection check");
+    let d = c.uploads.dialog.as_ref().unwrap();
+    assert!(d.confirm.as_ref().is_some_and(|c| c.all));
+    assert!(matches!(
+        c.uploads.dismiss(),
+        upload::Message::BroadCancelled
+    ));
+    let _ = c.update(
+        Message::Upload(upload::Message::BroadCancelled),
+        &mut env.ctx(),
+    );
+    let d = c.uploads.dialog.as_ref().unwrap();
+    assert!(d.confirm.is_none() && d.message == "@all minutes");
+    // Confirmed: goes on to the upload (refused here: not connected).
+    let _ = c.update(Message::Upload(upload::Message::Send), &mut env.ctx());
+    let a = c.update(
+        Message::Upload(upload::Message::BroadConfirmed),
+        &mut env.ctx(),
+    );
+    assert_eq!(a.effects.len(), 1, "the not-connected toast");
+    assert!(c.uploads.dialog.as_ref().unwrap().confirm.is_none());
+}
+
+#[test]
+fn forwarded_quotes_link_their_room_and_need_no_comment() {
+    let mut env = Env::new("t-forward");
+    let refs = vec![
+        crate::room::ForwardRef {
+            rid: "R2".into(),
+            mid: "M1".into(),
+            author: "bob".into(),
+            excerpt: "first".into(),
+        },
+        crate::room::ForwardRef {
+            rid: "R2".into(),
+            mid: "M2".into(),
+            author: "bob".into(),
+            excerpt: "second".into(),
+        },
+    ];
+    let mut c = Composer::new("R1");
+    assert!(!c.can_send());
+    let _ = c.intent(ComposeIntent::Forward(refs.clone()), &mut env.ctx());
+    let _ = c.intent(ComposeIntent::Forward(refs), &mut env.ctx());
+    assert!(c.can_send(), "the Send button works without a comment");
+    assert_eq!(c.quoted(), ["M1", "M2"], "deduplicated");
+    assert!(c.quotes.iter().all(|q| q.forwarded && q.rid == "R2"));
+    let _ = c.update(Message::Send, &mut env.ctx());
+    let p = env.ws.pending_messages("R1");
+    assert_eq!(
+        p[0].message.msg,
+        "[ ](http://chat.test/channel/random?msg=M1)\n[ ](http://chat.test/channel/random?msg=M2)"
+    );
+    assert!(c.quoted().is_empty());
+    // A plain quote still needs a comment.
+    env.ws.apply_message(msg("M9", "other", "quoted"));
+    let _ = c.intent(ComposeIntent::Quote("M9".into()), &mut env.ctx());
+    assert!(!c.can_send());
+    let _ = c.update(Message::Send, &mut env.ctx());
+    assert_eq!(env.ws.pending_messages("R1").len(), 1);
+    assert_eq!(c.quotes[0].rid, "R1");
+    assert!(!c.quotes[0].forwarded);
+}
+
+#[test]
+fn dm_partner_local_time_is_cached_per_server() {
+    let mut env = Env::new("t-peer");
+    let mut r = room("D1", "bob", RoomType::Direct);
+    r.usernames = Some(vec!["me".into(), "bob".into()]);
+    env.ws.apply_room(rustket_core::Change::Updated, r);
+    env.ws.apply_subscription(
+        rustket_core::Change::Updated,
+        sub("D1", "bob", RoomType::Direct),
+    );
+    let mut c = Composer::new("D1");
+    let a = {
+        let mut ctx = env.ctx();
+        ctx.rid = "D1";
+        c.on_open(&mut ctx)
+    };
+    assert_eq!(
+        c.peer.as_ref().map(|(u, i)| (u.as_str(), i.is_none())),
+        Some(("bob", true))
+    );
+    assert!(names(&outputs(a.task)).contains(&"PeerLoaded".to_owned()));
+    // Twelve hours away from here always differs by more than 30 minutes.
+    let mine = f64::from(chrono::Local::now().offset().local_minus_utc()) / 3600.0;
+    let far = if mine > 0.0 { mine - 12.0 } else { mine + 12.0 };
+    let user = User {
+        id: "u-bob".into(),
+        username: Some("bob".into()),
+        name: Some("Bob B".into()),
+        utc_offset: Some(far),
+        ..Default::default()
+    };
+    let _ = c.update(
+        Message::PeerLoaded("bob".into(), Ok(Box::new(user))),
+        &mut env.ctx(),
+    );
+    let (u, info, clock) = c.peer_clock().unwrap();
+    assert_eq!((u, info.name.as_deref()), ("bob", Some("Bob B")));
+    assert_eq!(clock.offset_secs, (far * 3600.0).round() as i32);
+    // Another composer of the same server uses the cache.
+    let mut c2 = Composer::new("D1");
+    let a = {
+        let mut ctx = env.ctx();
+        ctx.rid = "D1";
+        c2.on_open(&mut ctx)
+    };
+    assert!(c2.peer_clock().is_some());
+    assert!(!names(&outputs(a.task)).contains(&"PeerLoaded".to_owned()));
+    // Thread composers and channels have no hint.
+    let mut t = Composer::for_thread("D1", "T1");
+    let mut ctx = env.ctx();
+    ctx.rid = "D1";
+    let _ = t.on_open(&mut ctx);
+    assert!(t.peer.is_none());
+    let mut ch = Composer::new("R1");
+    let _ = ch.on_open(&mut env.ctx());
+    assert!(ch.peer.is_none());
+}

@@ -176,6 +176,10 @@ pub enum Message {
     SetStartMinimized(bool),
     /// `UiPrefs::escape_marks_read`.
     SetEscapeMarksRead(bool),
+    /// `UiPrefs::confirm_broad_mentions`.
+    SetConfirmBroadMentions(bool),
+    /// `UiPrefs::share_utc_offset`.
+    SetShareUtcOffset(bool),
     /// Open the keyboard shortcuts cheat sheet.
     ShowShortcuts,
     SetHardwareAcceleration(bool),
@@ -368,6 +372,10 @@ impl Settings {
             Message::SetMinimizeToTray(v) => Self::pref(ctx, |p| p.minimize_to_tray = v),
             Message::SetStartMinimized(v) => Self::pref(ctx, |p| p.start_minimized = v),
             Message::SetEscapeMarksRead(v) => Self::pref(ctx, |p| p.escape_marks_read = v),
+            Message::SetConfirmBroadMentions(v) => {
+                Self::pref(ctx, |p| p.confirm_broad_mentions = v)
+            }
+            Message::SetShareUtcOffset(v) => Self::pref(ctx, |p| p.share_utc_offset = v),
             Message::ShowShortcuts => {
                 Action::effect(Effect::Navigate(crate::component::Nav::Shortcuts))
             }
@@ -532,6 +540,10 @@ mod tests {
             (Message::SetStartMinimized(true), |c| c.start_minimized),
             (Message::SetEscapeMarksRead(false), |c| !c.escape_marks_read),
             (Message::SetEscapeMarksRead(true), |c| c.escape_marks_read),
+            (Message::SetConfirmBroadMentions(false), |c| {
+                !c.confirm_broad_mentions
+            }),
+            (Message::SetShareUtcOffset(false), |c| !c.share_utc_offset),
             (Message::SetHardwareAcceleration(false), |c| {
                 !c.hardware_acceleration
             }),

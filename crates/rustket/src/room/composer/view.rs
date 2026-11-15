@@ -37,6 +37,9 @@ impl Composer {
         // Bars above the editor, in one slot so the editor keeps its tree
         // position (and focus) when they come and go.
         let mut bars: Vec<Element<'a, Message>> = Vec::new();
+        if let Some(h) = self.peer_bar(ctx) {
+            bars.push(h);
+        }
         if let Some(h) = crate::e2e::room::composer_hint(ctx.workspace, &self.rid) {
             bars.push(h);
         }
@@ -73,9 +76,20 @@ impl Composer {
             ));
         }
         for q in &self.quotes {
+            let (glyph, title) = if q.forwarded {
+                (
+                    Icon::Forward,
+                    t!("room_composer.forwarding", user = q.author.as_str()),
+                )
+            } else {
+                (
+                    Icon::Quote,
+                    t!("room_composer.quoting", user = q.author.as_str()),
+                )
+            };
             bars.push(bar(
-                Icon::Quote,
-                t!("room_composer.quoting", user = q.author.as_str()).into_owned(),
+                glyph,
+                title.into_owned(),
                 q.excerpt.clone(),
                 Message::RemoveQuote(q.mid.clone()),
             ));
@@ -107,8 +121,19 @@ impl Composer {
                 Some(Message::DeleteCancelled),
             );
         }
+        if let Some(c) = &self.confirm_broad {
+            return modal(
+                body,
+                Some(super::broad::dialog(
+                    c,
+                    Message::BroadCancelled,
+                    Message::BroadConfirmed,
+                )),
+                Some(Message::BroadCancelled),
+            );
+        }
         let dialog = self.uploads.dialog_view().map(|d| d.map(Message::Upload));
-        modal(body, dialog, Some(Message::Upload(upload::Message::Close)))
+        modal(body, dialog, Some(Message::Upload(self.uploads.dismiss())))
     }
 
     /// `base` with the emoji picker popover above it (while open).
@@ -134,6 +159,46 @@ impl Composer {
             self.picker.is_some(),
             Placement::AboveStart,
             Message::Picker(emoji_picker::Message::Close),
+        )
+    }
+
+    /// "It's 03:12 for Bob (UTC+3)" above a 1:1 DM composer when the partner's
+    /// clock differs from ours.
+    fn peer_bar<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, Message>> {
+        let (username, info, clock) = self.peer_clock()?;
+        let time = crate::room::panel::user_info::local_time(
+            f64::from(clock.offset_secs) / 3600.0,
+            ctx.prefs.clock_24h,
+        )?;
+        let real = ctx.workspace.use_real_names(ctx.prefs.use_real_names);
+        let user = rustket_ui::widget::sanitize_bidi(&crate::room::panel::common::user_display(
+            ctx.workspace,
+            real,
+            username,
+            info.name.as_deref(),
+        ))
+        .into_owned();
+        let (glyph, line) = if clock.night {
+            (
+                Icon::Moon,
+                t!("room_composer.peer_time_night", time = time, user = user),
+            )
+        } else {
+            (
+                Icon::Clock,
+                t!("room_composer.peer_time", time = time, user = user),
+            )
+        };
+        Some(
+            row![
+                icon::sized(glyph, 12.0).style(style::text_secondary),
+                label(line.into_owned())
+                    .size(TEXT_CAPTION)
+                    .style(style::text_secondary),
+            ]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center)
+            .into(),
         )
     }
 
@@ -264,7 +329,7 @@ impl Composer {
                 30.0,
             ));
         }
-        let can_send = !self.content.is_empty() || self.editing.is_some();
+        let can_send = self.can_send();
         let send_tip = if self.editing.is_some() {
             t!("room_composer.save")
         } else {

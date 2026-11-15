@@ -53,8 +53,9 @@ impl Composer {
                 self.focus(),
             ]));
         }
-        // Quotes need some text, as in the web client.
-        if text.is_empty() {
+        // Quotes need some text, as in the web client; forwarded messages
+        // may go without a comment.
+        if text.is_empty() && !self.quotes.iter().any(|q| q.forwarded) {
             return Action::none();
         }
         // An encrypted room without its key: nothing goes out (§7.6).
@@ -99,10 +100,13 @@ impl Composer {
             self.commands_loading = true;
             return Action::task(load_commands(ctx, Some(text)));
         }
+        if !is_command && let Some(ask) = self.ask_broad(&text, ctx) {
+            return ask;
+        }
         let permalinks: Vec<String> = self
             .quotes
             .iter()
-            .map(|q| self.permalink(ctx.workspace, ctx.server.as_str(), &q.mid))
+            .map(|q| permalink(ctx.workspace, ctx.server.as_str(), &q.rid, &q.mid))
             .collect();
         let full = if permalinks.is_empty() {
             text.clone()
@@ -204,19 +208,20 @@ impl Composer {
         }
         Action::none()
     }
+}
 
-    fn permalink(&self, ws: &Workspace, server: &str, mid: &str) -> String {
-        let site = ws
-            .settings()
-            .str("Site_Url")
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(server);
-        let (t, name) = ws
-            .room(&self.rid)
-            .map(|e| (e.room_type(), e.name().to_owned()))
-            .unwrap_or((RoomType::Channel, String::new()));
-        text::permalink(site, t, &name, &self.rid, mid)
-    }
+/// Permalink of message `mid` of room `rid` (quote links).
+fn permalink(ws: &Workspace, server: &str, rid: &str, mid: &str) -> String {
+    let site = ws
+        .settings()
+        .str("Site_Url")
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(server);
+    let (t, name) = ws
+        .room(rid)
+        .map(|e| (e.room_type(), e.name().to_owned()))
+        .unwrap_or((RoomType::Channel, String::new()));
+    text::permalink(site, t, &name, rid, mid)
 }
 
 pub(super) fn error_toast(body: String) -> Effect {

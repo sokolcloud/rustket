@@ -1,19 +1,26 @@
-//! Modal dialogs of message lists: delete confirmation, report, image lightbox.
+//! Modal dialogs of message lists: delete confirmation, report, who reacted,
+//! image lightbox.
 
-use iced::widget::{column, container, image, row, text, text_input};
+use iced::widget::{button, column, container, image, row, scrollable, text, text_input};
 use iced::{Alignment, ContentFit, Element, Length};
 use rust_i18n::t;
+use rustket_core::reactions::{self, ReactionGroup};
 use rustket_ui::icon::Icon;
 use rustket_ui::style;
-use rustket_ui::theme::{SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_semibold};
+use rustket_ui::theme::{
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_semibold,
+};
 use rustket_ui::widget::{
-    danger_button, dialog, ellipsis, icon_button_with, loading_placeholder, secondary_button,
+    danger_button, dialog, ellipsis, icon_button_with, loading_placeholder, reaction_pill,
+    sanitize_bidi, secondary_button,
 };
 
 use super::interact::Msg as Message;
 use super::viewer::ViewerMsg;
 use crate::images::Loaded;
-use crate::room::render::ImageRef;
+use crate::room::ViewCtx;
+use crate::room::panel::common;
+use crate::room::render::{ImageRef, RenderCtx, RenderState, emoji_element, emoji_piece};
 
 /// The open dialog.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +33,11 @@ pub enum Dialog {
         mid: String,
         description: String,
         busy: bool,
+    },
+    /// Who reacted to `mid`; `tab` is one emoji, `None` all of them.
+    Reactions {
+        mid: String,
+        tab: Option<String>,
     },
 }
 
@@ -83,6 +95,121 @@ pub fn report(description: &str, busy: bool) -> Element<'static, Message> {
         Some(Message::CloseDialog),
     )
 }
+
+/// Who reacted: one tab for all reactions and one per emoji, then the users
+/// (a click opens their profile).
+pub fn reactions<'a>(
+    groups: &[ReactionGroup],
+    tab: Option<&str>,
+    ctx: &ViewCtx<'a>,
+) -> Element<'a, Message> {
+    let real = common::use_real_names(ctx);
+    let rc = RenderCtx {
+        interactive: false,
+        ..RenderCtx::from_view(ctx, &EMPTY)
+    };
+    // A tab whose emoji is gone falls back to all.
+    let tab = tab.filter(|t| groups.iter().any(|g| g.emoji == *t));
+    let close = Message::CloseDialog;
+    if groups.is_empty() {
+        return dialog(
+            t!("room_timeline.reactions_title").into_owned(),
+            text(t!("room_timeline.reactions_empty").into_owned())
+                .size(TEXT_BODY)
+                .style(style::text_hint),
+            Vec::new(),
+            Some(close),
+        );
+    }
+    let mut tabs: Vec<Element<'a, Message>> = vec![
+        button(
+            text(
+                t!(
+                    "room_timeline.reactions_all",
+                    count = reactions::total(groups)
+                )
+                .into_owned(),
+            )
+            .size(TEXT_CAPTION)
+            .font(font_semibold()),
+        )
+        .padding([3, 10])
+        .style(style::button_reaction(tab.is_none()))
+        .on_press(Message::ReactionsTab(None))
+        .into(),
+    ];
+    for g in groups {
+        tabs.push(reaction_pill(
+            emoji_element::<Message>(emoji_piece(&g.emoji, &rc), 16.0),
+            u32::try_from(g.users.len()).unwrap_or(u32::MAX),
+            tab == Some(g.emoji.as_str()),
+            Some(Message::ReactionsTab(Some(g.emoji.clone()))),
+        ));
+    }
+    let rows: Vec<(reactions::Reactor, Vec<String>)> = match tab {
+        None => reactions::by_user(groups),
+        Some(t) => groups
+            .iter()
+            .filter(|g| g.emoji == t)
+            .flat_map(|g| g.users.iter().map(|u| (u.clone(), Vec::new())))
+            .collect(),
+    };
+    let mut list = column![].spacing(2).width(Length::Fill);
+    for (u, emojis) in rows {
+        let shown = sanitize_bidi(&common::user_display(
+            ctx.workspace,
+            real,
+            &u.username,
+            u.name.as_deref(),
+        ))
+        .into_owned();
+        let secondary = if real && u.name.as_deref().is_some_and(|n| !n.trim().is_empty()) {
+            format!("@{}", u.username)
+        } else {
+            u.name.clone().unwrap_or_default()
+        };
+        let mut line = row![
+            common::user_avatar(ctx, &u.username, &shown, 28.0),
+            column![
+                ellipsis(shown).size(TEXT_BODY).font(font_semibold()),
+                ellipsis(sanitize_bidi(&secondary).into_owned())
+                    .size(TEXT_SMALL)
+                    .style(|theme: &iced::Theme| style::text_secondary(theme).color),
+            ]
+            .width(Length::Fill),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+        if !emojis.is_empty() {
+            let mut used = row![].spacing(SPACE_1).align_y(Alignment::Center);
+            for e in &emojis {
+                used = used.push(emoji_element::<Message>(emoji_piece(e, &rc), 16.0));
+            }
+            line = line.push(used);
+        }
+        list = list.push(
+            button(line)
+                .padding([SPACE_1, SPACE_2])
+                .width(Length::Fill)
+                .style(style::button_list_item(false))
+                .on_press(Message::OpenUser(u.username.clone())),
+        );
+    }
+    dialog(
+        t!("room_timeline.reactions_title").into_owned(),
+        column![
+            row(tabs).spacing(SPACE_1).wrap().vertical_spacing(SPACE_1),
+            container(scrollable(list).height(Length::Shrink))
+                .max_height(360)
+                .width(Length::Fill),
+        ]
+        .spacing(SPACE_3),
+        Vec::new(),
+        Some(close),
+    )
+}
+
+static EMPTY: RenderState = RenderState::new();
 
 /// Full-window image viewer: fit or 1:1 with zoom, open in browser, save.
 pub fn lightbox(

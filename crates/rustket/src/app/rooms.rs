@@ -384,6 +384,7 @@ impl App {
                 | room::Effect::Omni(_) => Task::none(),
                 room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
                 room::Effect::AskReadAll => self.ask_read_all(),
+                room::Effect::Forward(refs) => self.navigate(component::Nav::Forward(refs)),
                 room::Effect::Call(a) => {
                     self.on_calls(crate::videoconf::Message::Action(sid.clone(), a))
                 }

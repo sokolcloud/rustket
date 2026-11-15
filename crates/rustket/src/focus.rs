@@ -14,7 +14,8 @@
 //!   fields select words with it.
 //! - Escape closes the innermost thing: popovers and menus, then dialogs, an
 //!   input's focus (an empty thread composer closes the thread), then a
-//!   view in place of the room area, the right panel, or the
+//!   view in place of the room area, the timeline's message selection, the
+//!   right panel, or the
 //!   settings/account/directory/administration page; with nothing left it
 //!   marks the open room read (`App::on_escape`, `UiPrefs::escape_marks_read`).
 //! - Alt(+Shift)+Up/Down open the previous/next (unread) room; the sidebar

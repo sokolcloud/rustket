@@ -231,9 +231,10 @@ ICED_BACKEND=tiny-skia rustket
   composer and the right panel (the thread composer when a thread is open).
   The title bar is not one of them.
 - Escape closes the innermost thing: a menu or dialog, then a field's focus,
-  then the right panel or the open settings/account/directory/administration
-  page. With nothing left to close it marks the open room as read, threads
-  included, like Slack (**Settings → General → Keyboard** turns that off).
+  then a message selection, then the right panel or the open
+  settings/account/directory/administration page. With nothing left to close
+  it marks the open room as read, threads included, like Slack (**Settings →
+  General → Keyboard** turns that off).
 - Shift+Escape marks every room of the current server as read, threads
   included, after a confirmation.
 - Alt+Up / Alt+Down open the previous / next room; Alt+Shift+Up /

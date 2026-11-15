@@ -481,6 +481,12 @@ pub struct UiPrefs {
     /// Escape with nothing else to close marks the open room as read (with
     /// its threads), like Slack.
     pub escape_marks_read: bool,
+    /// Ask before sending `@all` / `@here` to a room with several members
+    /// (also an upload's message).
+    pub confirm_broad_mentions: bool,
+    /// Publish the local UTC offset to the server after sign-in (as the web
+    /// client does), so others see the user's local time.
+    pub share_utc_offset: bool,
 }
 
 impl Default for UiPrefs {
@@ -516,6 +522,8 @@ impl Default for UiPrefs {
             update_prereleases: false,
             secrets_memory_only: false,
             escape_marks_read: true,
+            confirm_broad_mentions: true,
+            share_utc_offset: true,
         }
     }
 }
@@ -635,6 +643,8 @@ const UI_KEYS: &[&str] = &[
     "update_prereleases",
     "secrets_memory_only",
     "escape_marks_read",
+    "confirm_broad_mentions",
+    "share_utc_offset",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -1665,6 +1675,15 @@ mod tests {
         assert!(c.ui.escape_marks_read);
         let c = AppConfig::parse("[ui]\nescape_marks_read = false").unwrap();
         assert!(!c.ui.escape_marks_read);
+    }
+
+    #[test]
+    fn broad_confirm_and_utc_offset_default_on() {
+        let c = AppConfig::parse("[ui]\nzoom = 1.0").unwrap();
+        assert!(c.ui.confirm_broad_mentions && c.ui.share_utc_offset);
+        let c = AppConfig::parse("[ui]\nconfirm_broad_mentions = false\nshare_utc_offset = false")
+            .unwrap();
+        assert!(!c.ui.confirm_broad_mentions && !c.ui.share_utc_offset);
     }
 
     #[test]

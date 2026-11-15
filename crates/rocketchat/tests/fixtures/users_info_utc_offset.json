@@ -1,0 +1,13 @@
+{
+  "user": {
+    "_id": "Mu7mC2SLedqvLma3C",
+    "username": "cf-fixture-1794745893771-tpsb",
+    "name": "Fixture User",
+    "type": "user",
+    "status": "offline",
+    "active": true,
+    "utcOffset": 3,
+    "canViewAllInfo": false
+  },
+  "success": true
+}

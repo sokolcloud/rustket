@@ -218,6 +218,18 @@ impl App {
                 quick_switcher::QuickSwitcher::focus()
                     .map(move |m| Message::QuickSwitcher(sid.clone(), m))
             }
+            // Replaces an open quick switcher (Ctrl+K or another forward).
+            (Nav::Forward(refs), Some(sid)) => {
+                self.modals
+                    .retain(|m| !matches!(m, Modal::QuickSwitcher(..)));
+                self.dialog_instances.1 += 1;
+                self.modals.push(Modal::QuickSwitcher(
+                    sid.clone(),
+                    Box::new(quick_switcher::QuickSwitcher::for_forward(refs)),
+                ));
+                quick_switcher::QuickSwitcher::focus()
+                    .map(move |m| Message::QuickSwitcher(sid.clone(), m))
+            }
             // Over whatever is shown (pages and other dialogs included).
             (Nav::Shortcuts, _) => {
                 if !self.modals.iter().any(|m| matches!(m, Modal::Shortcuts)) {
@@ -246,6 +258,19 @@ impl App {
                         rid,
                         tmid: None,
                     }),
+                    None => Task::none(),
+                },
+                Effect::ForwardTo { rid, refs } => match sid {
+                    Some(sid) => {
+                        let open = self.go(Go::Room {
+                            sid: sid.clone(),
+                            rid: rid.clone(),
+                            tmid: None,
+                        });
+                        let compose =
+                            self.room_compose(sid, &rid, crate::room::ComposeIntent::Forward(refs));
+                        Task::batch([open, compose])
+                    }
                     None => Task::none(),
                 },
                 Effect::OpenUrl(url) => self.open_url(url),

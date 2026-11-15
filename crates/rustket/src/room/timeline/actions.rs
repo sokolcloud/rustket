@@ -16,8 +16,14 @@ pub enum Act {
     React,
     ReplyInThread,
     Quote,
+    /// Who reacted (dialog).
+    Reactions,
     CopyText,
     CopyLink,
+    /// Forward to another room (quick switcher in forward mode).
+    Forward,
+    /// Start selecting messages (room timeline only); the timeline handles it.
+    Select,
     Edit,
     Pin,
     Unpin,
@@ -45,8 +51,11 @@ impl Act {
             Act::React => Icon::SmilePlus,
             Act::ReplyInThread => Icon::MessageCircle,
             Act::Quote => Icon::Quote,
+            Act::Reactions => Icon::Users,
             Act::CopyText => Icon::Copy,
             Act::CopyLink => Icon::Link,
+            Act::Forward => Icon::Forward,
+            Act::Select => Icon::SquareCheck,
             Act::Edit => Icon::Pencil,
             Act::Pin => Icon::Pin,
             Act::Unpin => Icon::PinOff,
@@ -68,8 +77,11 @@ impl Act {
             Act::React => "room_timeline.act_react",
             Act::ReplyInThread => "room_timeline.act_reply_thread",
             Act::Quote => "room_timeline.act_quote",
+            Act::Reactions => "room_timeline.act_reactions",
             Act::CopyText => "room_timeline.act_copy_text",
             Act::CopyLink => "room_timeline.act_copy_link",
+            Act::Forward => "room_timeline.act_forward",
+            Act::Select => "room_timeline.act_select",
             Act::Edit => "room_timeline.act_edit",
             Act::Pin => "room_timeline.act_pin",
             Act::Unpin => "room_timeline.act_unpin",
@@ -92,6 +104,17 @@ impl Act {
     /// Shown directly in the hover toolbar (the rest is in the "more" menu).
     pub fn in_toolbar(self) -> bool {
         matches!(self, Act::React | Act::ReplyInThread | Act::Quote)
+    }
+
+    /// Menu group; menus put a separator between groups. Respond, share,
+    /// organise (later: Remind me…, Mark as done after the star), destructive.
+    pub fn group(self) -> u8 {
+        match self {
+            Act::React | Act::ReplyInThread | Act::Quote | Act::Reactions => 0,
+            Act::CopyText | Act::CopyLink | Act::Forward | Act::Select => 1,
+            Act::Report | Act::Delete => 3,
+            _ => 2,
+        }
     }
 }
 
@@ -116,10 +139,23 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
     if perm::can_post(ws, rid) {
         v.push(Act::Quote);
     }
+    if m.reactions
+        .as_ref()
+        .is_some_and(|r| r.values().any(|x| !x.usernames.is_empty()))
+    {
+        v.push(Act::Reactions);
+    }
     if !super::super::render::plain_text(m).trim().is_empty() {
         v.push(Act::CopyText);
     }
     v.push(Act::CopyLink);
+    let omnichannel = ws
+        .room(rid)
+        .is_some_and(|e| e.room_type() == RoomType::Livechat);
+    if !omnichannel {
+        v.push(Act::Forward);
+        v.push(Act::Select);
+    }
     if perm::can_edit_message(ws, m, now) {
         v.push(Act::Edit);
     }
@@ -140,9 +176,6 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
         let starred = me.is_some_and(|id| m.is_starred_by(id));
         v.push(if starred { Act::Unstar } else { Act::Star });
     }
-    let omnichannel = ws
-        .room(rid)
-        .is_some_and(|e| e.room_type() == RoomType::Livechat);
     if subscribed && !own && !omnichannel {
         v.push(Act::MarkUnread);
     }
@@ -234,17 +267,15 @@ pub fn kept_thread_of(m: &Message) -> Option<&str> {
     }
 }
 
-/// Menu entries for `acts`, with a separator before the destructive group.
+/// Menu entries for `acts`, with a separator between groups ([`Act::group`]).
 pub fn menu_entries<M: Clone>(acts: &[Act], msg: impl Fn(Act) -> M) -> Vec<MenuEntry<M>> {
     let mut out = Vec::new();
+    let mut last: Option<u8> = None;
     for a in acts {
-        let destructive = |x: &Act| matches!(x, Act::Report | Act::Delete);
-        if destructive(a)
-            && !out.is_empty()
-            && !acts.iter().take_while(|x| *x != a).any(destructive)
-        {
+        if last.is_some_and(|g| g != a.group()) {
             out.push(MenuEntry::Separator);
         }
+        last = Some(a.group());
         out.push(MenuEntry::Item(
             MenuItem::new(a.label(), msg(*a))
                 .icon(a.icon())
@@ -644,5 +675,50 @@ mod tests {
         let entries = menu_entries(&[Act::CopyLink, Act::Report, Act::Delete], |a| a);
         assert_eq!(entries.len(), 4);
         assert!(matches!(entries[1], MenuEntry::Separator));
+    }
+
+    /// Respond, share, organise, destructive: one separator between groups.
+    #[test]
+    fn menu_groups_are_separated() {
+        let acts = [
+            Act::Quote,
+            Act::Reactions,
+            Act::CopyLink,
+            Act::Forward,
+            Act::Select,
+            Act::Edit,
+            Act::Star,
+            Act::Delete,
+        ];
+        let entries = menu_entries(&acts, |a| a);
+        let seps: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, MenuEntry::Separator))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(seps, [2, 6, 9]);
+    }
+
+    #[test]
+    fn forward_select_and_who_reacted() {
+        let w = ws(&[], &[], RoomType::Channel);
+        let mut m = msg("a", "bob");
+        let acts = available(&w, &m, now());
+        // Share group, right after Copy link, in this order.
+        let at = acts.iter().position(|a| *a == Act::CopyLink).unwrap();
+        assert_eq!(acts[at + 1..at + 3], [Act::Forward, Act::Select]);
+        assert!(!acts.contains(&Act::Reactions));
+        m.reactions =
+            Some(serde_json::from_value(serde_json::json!({":x:": {"usernames": []}})).unwrap());
+        assert!(!available(&w, &m, now()).contains(&Act::Reactions));
+        m.reactions = Some(
+            serde_json::from_value(serde_json::json!({":x:": {"usernames": ["me"]}})).unwrap(),
+        );
+        assert!(available(&w, &m, now()).contains(&Act::Reactions));
+        // Not in omnichannel rooms.
+        let live = ws(&[], &[], RoomType::Livechat);
+        let acts = available(&live, &msg("a", "bob"), now());
+        assert!(!acts.contains(&Act::Forward) && !acts.contains(&Act::Select));
     }
 }

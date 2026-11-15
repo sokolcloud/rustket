@@ -20,6 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Marking many rooms read goes through one paced queue over the realtime
   connection (much faster than the per-request web route on servers with the
   default rate limits), falling back to the web API when needed.
+- Long messages and code blocks longer than 15 lines are folded with
+  "Show more"; Copy still copies the whole block.
+- Who reacted: a button after the reactions and a "Who reacted" menu entry
+  open a list of everyone per emoji; a click opens the person's profile.
+- Sending `@all` or `@here` to a room with 5 or more other members (also as
+  an upload's message) asks for a confirmation first, with the number of
+  people it notifies (can be turned off in Settings → General).
+- 1:1 direct messages show the other person's local time above the message
+  field when it differs from yours ("It's 03:12 for Bob").
+- Forward a message, or select up to 20 messages and forward them or copy
+  their links: pick a room or person, add an optional comment and send. The
+  old "forward" entry of 0.1 meant copying a link.
+
+### Changed
+
+- Like the web client, Rustket now stores your UTC offset on the server
+  after sign-in so others see your local time; Settings → Privacy & storage
+  can turn this off.
+- Message menus are grouped with separators (respond, share, organise,
+  delete).
 
 ## [0.2.6] - 2026-11-15
 

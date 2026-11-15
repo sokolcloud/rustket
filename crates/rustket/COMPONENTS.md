@@ -274,7 +274,9 @@ something; `RoomView` routes it to `Composer::intent(intent, ctx)`:
 `React(mid)` (emoji picker for a reaction), `ReplyInThread(tmid)` (also opens
 `Kind::Thread(tmid)`), `Retry(mid)` / `Discard(mid)` (failed sends: the
 single outbox path; the rows' `interact` actions only emit these, the composer
-has no failed list of its own). The thread view routes its rows' intents to
+has no failed list of its own), `Forward(refs)` (quotes of messages of any
+room, sent as `[ ](permalink)` lines, a comment optional). The app reaches a
+room's composer with `RoomView::compose(intent, ctx)` (`App::room_compose`). The thread view routes its rows' intents to
 its own composer, which only takes replies of its thread; the room composer
 takes any pending message of the room (a thread reply shown in the room while
 its thread is closed included).
@@ -365,9 +367,18 @@ Message lists share more than the body renderer (`room/timeline/`):
   the "more" menu, retry/discard of failed sends (`ComposeIntent::Retry` /
   `Discard`), mark unread (`Effect::MarkUnread`), start a discussion
   (`Effect::StartDiscussion`, not in the thread view, as in the web's
-  `threads` context), delete/report dialogs; for `Source::Room` or
-  `Source::Thread(tmid)`. `Effect::Compose` requests are routed by the owner
-  to its composer.
+  `threads` context), forward (`Effect::Forward(refs)`: the app opens the
+  quick switcher in forward mode, `Nav::Forward`, and the pick becomes
+  `component::Effect::ForwardTo`), delete/report/who-reacted dialogs
+  (overlay keys 1, 2 and 5; 3 is the lightbox, 4 is reserved for the
+  reminder dialog); for `Source::Room` or `Source::Thread(tmid)`.
+  `Effect::Compose` requests are routed by the owner to its composer. Menu
+  entries are grouped (respond, share, organise, destructive: `Act::group`)
+  with separators between the groups.
+- `select`: selection mode of the room timeline (`Act::Select`,
+  `ItemMsg::Pick`, at most 20): checkboxes instead of the hover toolbar, a
+  bar with Copy links / Forward / Cancel; Escape clears it (step 2 of the
+  server view's Escape chain, `app/keys.rs`).
 - `list::{plan, row, Common}`, `row::{Env, RowFlags}`: grouping, day and
   unread separators and the `lazy` rows, used by the timeline and the thread.
 - `list::Follow`: built window, bottom following and the frozen view while

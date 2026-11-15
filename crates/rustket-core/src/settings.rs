@@ -134,6 +134,12 @@ impl Settings {
     pub fn max_message_size(&self) -> usize {
         usize::try_from(self.i64_or("Message_MaxAllowedSize", 5000)).unwrap_or(5000)
     }
+    /// `Notifications_Max_Room_Members`: above this many members, members
+    /// with default preferences get no push/desktop notification for
+    /// `@all`/`@here` (0 = no limit).
+    pub fn notifications_max_room_members(&self) -> u64 {
+        u64::try_from(self.i64_or("Notifications_Max_Room_Members", 100)).unwrap_or(0)
+    }
     pub fn read_receipts_enabled(&self) -> bool {
         self.bool_or("Message_Read_Receipt_Enabled", false)
     }

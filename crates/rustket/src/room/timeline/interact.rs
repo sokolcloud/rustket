@@ -55,6 +55,11 @@ pub enum Msg {
     Deleted(String, Res<()>),
     ReportText(String),
     SubmitReport,
+    /// Tab of the who-reacted dialog: one emoji or all (`None`).
+    ReactionsTab(Option<String>),
+    /// Toggle message `mid` in the room timeline's selection (intercepted by
+    /// the timeline, like `Act::Select`).
+    Pick(String),
     Reported(String, Res<()>),
     /// An app action button of the message menu (`crate::uikit::buttons`).
     UiKit(Box<crate::uikit::UiKitMsg>),
@@ -131,6 +136,17 @@ impl Interactions {
             Some(Dialog::Report {
                 description, busy, ..
             }) => Some((2, dialogs::report(description, *busy), Msg::CloseDialog)),
+            // Key 4 is reserved for the reminder dialog.
+            Some(Dialog::Reactions { mid, tab }) => {
+                let groups = find_item(ctx.workspace, ctx.rid, &self.source, mid)
+                    .map(|i| rustket_core::reactions::groups(&i.message, ctx.workspace.presence()))
+                    .unwrap_or_default();
+                Some((
+                    5,
+                    dialogs::reactions(&groups, tab.as_deref(), ctx),
+                    Msg::CloseDialog,
+                ))
+            }
             None => self
                 .viewer
                 .overlay(ctx)
@@ -140,7 +156,9 @@ impl Interactions {
 
     /// Forgets state of messages that are gone (`contains` tells which exist).
     pub fn prune(&mut self, contains: impl Fn(&str) -> bool) {
-        if let Some(Dialog::Delete { mid, .. } | Dialog::Report { mid, .. }) = &self.dialog
+        if let Some(
+            Dialog::Delete { mid, .. } | Dialog::Report { mid, .. } | Dialog::Reactions { mid, .. },
+        ) = &self.dialog
             && !contains(mid)
         {
             self.dialog = None;
@@ -197,7 +215,20 @@ impl Interactions {
                     e.user_text(),
                 )),
             },
-            Msg::OpenUser(u) => Action::effect(Effect::OpenPanel(Kind::UserInfo(u))),
+            Msg::OpenUser(u) => {
+                if matches!(self.dialog, Some(Dialog::Reactions { .. })) {
+                    self.dialog = None;
+                }
+                Action::effect(Effect::OpenPanel(Kind::UserInfo(u)))
+            }
+            Msg::ReactionsTab(tab) => {
+                if let Some(Dialog::Reactions { tab: t, .. }) = &mut self.dialog {
+                    *t = tab;
+                }
+                Action::none()
+            }
+            // The room timeline handles selection; nothing to do elsewhere.
+            Msg::Pick(_) => Action::none(),
             Msg::Retry(mid) => Action::effect(Effect::Compose(ComposeIntent::Retry(mid))),
             Msg::Discard(mid) => Action::effect(Effect::Compose(ComposeIntent::Discard(mid))),
             Msg::ActionDone(act, r) => match r {
@@ -354,6 +385,13 @@ impl Interactions {
                 self.dialog = Some(Dialog::Delete { mid, busy: false });
                 Action::none()
             }
+            Act::Reactions => {
+                self.dialog = Some(Dialog::Reactions { mid, tab: None });
+                Action::none()
+            }
+            Act::Forward => Action::effect(Effect::Forward(vec![crate::room::ForwardRef::of(&m)])),
+            // The room timeline intercepts it before it gets here.
+            Act::Select => Action::none(),
             Act::Report => {
                 self.dialog = Some(Dialog::Report {
                     mid,
@@ -381,7 +419,7 @@ pub fn available(
     let mut acts = actions::available(ws, m, now);
     crate::e2e::room::filter_actions(ws, m, &mut acts);
     if matches!(source, Source::Thread(_)) {
-        acts.retain(|a| !matches!(a, Act::ReplyInThread | Act::StartDiscussion));
+        acts.retain(|a| !matches!(a, Act::ReplyInThread | Act::StartDiscussion | Act::Select));
     }
     acts
 }
@@ -577,5 +615,114 @@ mod tests {
             a.effects.as_slice(),
             [Effect::StarThread { rid, tmid, on: true }] if rid == "r" && tmid == "p"
         ));
+    }
+
+    /// A workspace with room `r` (joined) and its timeline open.
+    fn joined() -> Workspace {
+        use rocketchat::models::{Room, RoomType, Subscription, User};
+        let ts = RcDate::from_millis(1_800_000_000_000);
+        let mut ws = Workspace::new();
+        ws.apply_initial(rustket_core::sync::InitialData {
+            me: User {
+                id: "me".into(),
+                username: Some("me".into()),
+                ..Default::default()
+            },
+            subscriptions: vec![Subscription {
+                id: "s1".into(),
+                rid: "r".into(),
+                name: "dev".into(),
+                t: RoomType::Channel,
+                open: true,
+                updated_at: ts,
+                ..Default::default()
+            }],
+            rooms: vec![Room {
+                id: "r".into(),
+                t: RoomType::Channel,
+                name: Some("dev".into()),
+                updated_at: ts,
+                ..Default::default()
+            }],
+            next_since: ts,
+            ..Default::default()
+        });
+        ws.open_room("r");
+        ws
+    }
+
+    #[test]
+    fn who_reacted_and_forward() {
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs::default();
+        let sid = rustket_core::ServerId("s".into());
+        let url = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let mut ws = joined();
+        let mut m = reply("m1", "x");
+        m.tmid = None;
+        m.u.id = "bob".into();
+        m.u.username = Some("bob".into());
+        m.msg = "first line\nsecond".into();
+        m.reactions =
+            Some(serde_json::from_value(json!({":tada:": {"usernames": ["alice"]}})).unwrap());
+        ws.apply_message(m);
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "r",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let mut i = Interactions::new(Source::Room);
+        let _ = i.update(Msg::Act("m1".into(), Act::Reactions), &mut ctx);
+        assert!(i.has_overlay());
+        let _ = i.update(Msg::ReactionsTab(Some(":tada:".into())), &mut ctx);
+        assert_eq!(
+            i.dialog,
+            Some(Dialog::Reactions {
+                mid: "m1".into(),
+                tab: Some(":tada:".into())
+            })
+        );
+        // A user's profile replaces the dialog.
+        let a = i.update(Msg::OpenUser("alice".into()), &mut ctx);
+        assert!(!i.has_overlay());
+        assert!(
+            matches!(a.effects.as_slice(), [Effect::OpenPanel(Kind::UserInfo(u))] if u == "alice")
+        );
+        // A deleted message closes it.
+        let _ = i.update(Msg::Act("m1".into(), Act::Reactions), &mut ctx);
+        i.prune(|_| false);
+        assert!(!i.has_overlay());
+        // Forward asks the app for a target with the message's reference.
+        let a = i.update(Msg::Act("m1".into(), Act::Forward), &mut ctx);
+        let [Effect::Forward(refs)] = a.effects.as_slice() else {
+            panic!("{:?}", a.effects);
+        };
+        assert_eq!(
+            refs[..],
+            [crate::room::ForwardRef {
+                rid: "r".into(),
+                mid: "m1".into(),
+                author: "bob".into(),
+                excerpt: "first line".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn threads_offer_forward_but_not_select() {
+        let ws = joined();
+        let mut m = reply("a", "p");
+        m.u.id = "bob".into();
+        let now = chrono::DateTime::from_timestamp_millis(1_800_000_000_000).unwrap();
+        let room = available(&ws, &Source::Room, &m, now);
+        assert!(room.contains(&Act::Forward) && room.contains(&Act::Select));
+        let thread = available(&ws, &Source::Thread("p".into()), &m, now);
+        assert!(thread.contains(&Act::Forward) && !thread.contains(&Act::Select));
+        // No reactions, no "Who reacted".
+        assert!(!room.contains(&Act::Reactions));
     }
 }

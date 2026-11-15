@@ -3296,6 +3296,101 @@ fn escape_chain_on_the_server_view() {
     assert!(!outs.iter().any(|m| matches!(m, Message::Room(..))));
 }
 
+/// Esc with a message selection and a panel open: the selection is
+/// cleared first (it is what the user just did), then the panel closes.
+#[test]
+fn escape_clears_the_selection_before_the_panel() {
+    use rustket::room::Message as Rm;
+    use rustket::room::panel::{Kind, Message as Pm};
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Act("p1".into(), Act::Select))),
+    ));
+    assert!(app.servers[&sid].rooms["r1"].picking());
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Panel(Pm::Open(Kind::Thread("p1".into()))),
+    ));
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert!(
+        outs.iter()
+            .any(|m| matches!(m, Message::Room(_, _, _, Rm::Timeline(Tm::ClearPicks))))
+    );
+    assert!(
+        !outs
+            .iter()
+            .any(|m| matches!(m, Message::Room(_, _, _, Rm::Panel(Pm::Close))))
+    );
+    let _ = app.update(room_msg(&app, &sid, "r1", Rm::Timeline(Tm::ClearPicks)));
+    assert!(!app.servers[&sid].rooms["r1"].picking());
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert!(
+        outs.iter()
+            .any(|m| matches!(m, Message::Room(_, _, _, Rm::Panel(Pm::Close))))
+    );
+}
+
+/// Forward from a room: the quick switcher opens in forward mode; picking a
+/// room opens it with the message quoted as forwarded in its composer.
+#[test]
+fn forward_opens_the_target_with_the_quote() {
+    use rustket::room::Message as Rm;
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Act("p1".into(), Act::Forward))),
+    ));
+    assert!(matches!(
+        app.modals.last(),
+        Some(rustket::app::Modal::QuickSwitcher(..))
+    ));
+    let target = "r2".to_owned();
+    let _ = app.update(Message::QuickSwitcher(
+        sid.clone(),
+        rustket::dialogs::quick_switcher::Message::Query(String::new()),
+    ));
+    let items = rustket::dialogs::quick_switcher::results_for(
+        &app.servers[&sid].workspace,
+        &rustket_core::room_list::RoomListOptions::default(),
+        "",
+        None,
+        true,
+    );
+    let i = items
+        .iter()
+        .position(|it| matches!(it, rustket::dialogs::quick_switcher::Item::Local { rid, .. } if *rid == target))
+        .expect("the target is offered");
+    let _ = app.update(Message::QuickSwitcher(
+        sid.clone(),
+        rustket::dialogs::quick_switcher::Message::Select(i),
+    ));
+    let _ = app.update(Message::QuickSwitcher(
+        sid.clone(),
+        rustket::dialogs::quick_switcher::Message::Submit,
+    ));
+    assert!(app.modals.is_empty(), "the switcher closed");
+    let s = &app.servers[&sid];
+    assert_eq!(s.active_room.as_deref(), Some(target.as_str()));
+    assert_eq!(s.rooms[&target].composer.quoted(), ["p1"]);
+}
+
 /// Ctrl+/ toggles the cheat sheet (also from the status menu and over the
 /// preferences), Ctrl+, opens the preferences, Ctrl+Shift+\ goes to the open
 /// room's composer, Shift+Esc needs a connection.

@@ -320,11 +320,73 @@ pub fn selection_around(text: &str, selected: &str, cursor: usize) -> Option<Ran
         .min_by_key(|r| r.start.abs_diff(cursor).min(r.end.abs_diff(cursor)))
 }
 
+/// Group mentions in a message text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Broad {
+    pub all: bool,
+    pub here: bool,
+}
+
+/// `@all` / `@here` outside code (fenced blocks and backtick spans), as
+/// whole tokens: not inside a word or an address (`a@all.com`,
+/// `@allison`); a trailing `.` or `-` ends the token.
+pub fn broad_mentions(text: &str) -> Broad {
+    let mut b = Broad::default();
+    let mut fenced = false;
+    for line in text.split('\n') {
+        let fences = line.matches("```").count();
+        if fenced || fences > 0 {
+            if fences % 2 == 1 {
+                fenced = !fenced;
+            }
+            continue;
+        }
+        scan_broad(line.as_bytes(), &mut b);
+    }
+    b
+}
+
+fn scan_broad(line: &[u8], b: &mut Broad) {
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let joiner = |c: u8| matches!(c, b'.' | b'-');
+    let mut code = false;
+    for (i, &c) in line.iter().enumerate() {
+        if c == b'`' {
+            code = !code;
+            continue;
+        }
+        if code || c != b'@' || (i > 0 && (word(line[i - 1]) || joiner(line[i - 1]))) {
+            continue;
+        }
+        let rest = &line[i + 1..];
+        for (tok, all) in [(&b"all"[..], true), (&b"here"[..], false)] {
+            if !rest.starts_with(tok) {
+                continue;
+            }
+            let ends = match (rest.get(tok.len()), rest.get(tok.len() + 1)) {
+                (None, _) => true,
+                (Some(&n), _) if word(n) => false,
+                (Some(&n), Some(&m)) if joiner(n) => !(word(m) || joiner(m)),
+                _ => true,
+            };
+            if ends {
+                if all {
+                    b.all = true;
+                } else {
+                    b.here = true;
+                }
+            }
+        }
+    }
+}
+
 /// The message text with quote links before it (`prependReplies`): one
 /// `[ ](permalink)` line per quoted message, then the text.
 pub fn with_quotes(text: &str, permalinks: &[String]) -> String {
     let mut parts: Vec<String> = permalinks.iter().map(|l| format!("[ ]({l})")).collect();
-    parts.push(text.to_owned());
+    if !text.is_empty() {
+        parts.push(text.to_owned());
+    }
     parts.join("\n")
 }
 
@@ -517,5 +579,33 @@ mod tests {
             "[ ](L1)\n[ ](L2)\nhello"
         );
         assert_eq!(with_quotes("hello", &[]), "hello");
+        // Forwarded quotes without a comment: no trailing line break.
+        assert_eq!(
+            with_quotes("", &["L1".into(), "L2".into()]),
+            "[ ](L1)\n[ ](L2)"
+        );
+    }
+
+    #[test]
+    fn broad_mention_tokens() {
+        let b = |t: &str| {
+            let r = broad_mentions(t);
+            (r.all, r.here)
+        };
+        assert_eq!(b("@all"), (true, false));
+        assert_eq!(b("hi @here!"), (false, true));
+        assert_eq!(b("(@all)"), (true, false));
+        assert_eq!(b("Hello @all."), (true, false));
+        assert_eq!(b("@all, @here"), (true, true));
+        assert_eq!(b("@allison"), (false, false));
+        assert_eq!(b("@all.team"), (false, false));
+        assert_eq!(b("a@all.com"), (false, false));
+        assert_eq!(b("x.@all"), (false, false));
+        assert_eq!(b("`@all`"), (false, false));
+        assert_eq!(b("see `code` and @here"), (false, true));
+        assert_eq!(b("```\n@all\n```\nok"), (false, false));
+        assert_eq!(b("```\n@all\n```\n@here"), (false, true));
+        assert_eq!(b("@ALL"), (false, false));
+        assert_eq!(b("café @here"), (false, true));
     }
 }

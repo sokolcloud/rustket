@@ -865,6 +865,7 @@ impl Thread {
             menu_open: menu == Some(m.id.as_str()),
             thread_unread: false,
             selected: selected == Some(m.id.as_str()),
+            ..trow::RowFlags::default()
         };
         let mut col = keyed_list::<u64, Msg, _, _>()
             .width(Length::Fill)

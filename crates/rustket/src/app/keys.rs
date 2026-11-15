@@ -90,7 +90,7 @@ impl App {
 
     /// Escape no widget took, on the server view. In order:
     /// 1. a view in place of the room area closes (the contact center);
-    /// 2. (a timeline selection is cleared: comes with multi-select);
+    /// 2. the room timeline's message selection is cleared;
     /// 3. the right panel closes;
     /// 4. an unread room is marked read with its threads (Slack;
     ///    `UiPrefs::escape_marks_read`), unless the composer's emoji picker
@@ -115,6 +115,14 @@ impl App {
         let Some(rv) = s.rooms.get(&rid) else {
             return Task::none();
         };
+        if rv.picking() {
+            return Task::done(Message::Room(
+                sid,
+                epoch,
+                rid,
+                room::Message::Timeline(room::timeline::Message::ClearPicks),
+            ));
+        }
         if rv.panel.kind().is_some() {
             return Task::done(Message::Room(
                 sid,
@@ -127,7 +135,9 @@ impl App {
             .workspace
             .room(&rid)
             .is_some_and(room_list::room_is_unread);
-        let busy = rv.composer.is_picker_open() || rv.composer.is_upload_dialog_open();
+        let busy = rv.composer.is_picker_open()
+            || rv.composer.is_upload_dialog_open()
+            || rv.composer.is_confirm_open();
         if !self.config.ui.escape_marks_read || !unread || busy || s.room_area_taken() {
             return Task::none();
         }

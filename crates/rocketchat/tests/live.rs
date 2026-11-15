@@ -1395,3 +1395,96 @@ async fn service_room_custom_fields() {
         std::panic::resume_unwind(e.into_panic());
     }
 }
+
+/// Forwarding is a message of `[ ](permalink)` lines (Rustket's forward and
+/// the web's): the server turns each link into a quote attachment.
+#[tokio::test]
+async fn forward_links_become_quotes() {
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let src = a
+        .groups_create(&CreateRoom::new(unique("fwd-src")))
+        .await
+        .unwrap();
+    let dst = a
+        .groups_create(&CreateRoom::new(unique("fwd-dst")))
+        .await
+        .unwrap();
+    let m1 = a
+        .send_message(&OutgoingMessage::new(&src.id, "forward one"))
+        .await
+        .unwrap();
+    let m2 = a
+        .send_message(&OutgoingMessage::new(&src.id, "forward two"))
+        .await
+        .unwrap();
+    let site: Value = client(&s)
+        .get(
+            "settings.public",
+            &rocketchat::rest::Query::new().push("_id", "Site_Url"),
+        )
+        .await
+        .unwrap();
+    let site = site["settings"][0]["value"]
+        .as_str()
+        .unwrap()
+        .trim_end_matches('/')
+        .to_owned();
+    let name = src.name.clone().unwrap();
+    let text = format!(
+        "[ ]({site}/group/{name}?msg={})\n[ ]({site}/group/{name}?msg={})",
+        m1.id, m2.id
+    );
+    let fwd = a
+        .send_message(&OutgoingMessage::new(&dst.id, &text))
+        .await
+        .unwrap();
+    let quotes = fwd.attachments.clone().unwrap_or_default();
+    assert_eq!(quotes.len(), 2, "{fwd:?}");
+    assert!(quotes.iter().all(|q| q.is_quote()));
+    let texts: Vec<&str> = quotes.iter().filter_map(|q| q.text.as_deref()).collect();
+    assert_eq!(texts, ["forward one", "forward two"]);
+    a.rooms_delete(&dst.id).await.unwrap();
+    a.rooms_delete(&src.id).await.unwrap();
+}
+
+/// Members online (`status[]=online`) and all members of a room.
+#[tokio::test]
+async fn online_member_total() {
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let room = a
+        .groups_create(&CreateRoom {
+            members: vec!["bob".into()],
+            ..CreateRoom::new(unique("online-total"))
+        })
+        .await
+        .unwrap();
+    assert_eq!(a.room_member_total(&room.id, &[]).await.unwrap(), 2);
+    assert!(a.room_member_total(&room.id, &["online"]).await.unwrap() <= 2);
+    a.rooms_delete(&room.id).await.unwrap();
+}
+
+/// The UTC offset a client publishes is what `users.info` returns (on a
+/// throwaway user, so no shared account changes).
+#[tokio::test]
+async fn utc_offset_roundtrip() {
+    let Some(s) = server() else { return };
+    let temp = TempUser::create(&s, "utc").await;
+    let c = temp.login(&s).await;
+    let before = c
+        .users_info(UserLookup::Username(&temp.username))
+        .await
+        .unwrap();
+    assert_eq!(before.utc_offset, None, "never set");
+    c.set_utc_offset(-3.5).await.unwrap();
+    let a = login(&s, "alice").await;
+    let after = a
+        .users_info(UserLookup::Username(&temp.username))
+        .await
+        .unwrap();
+    assert_eq!(after.utc_offset, Some(-3.5));
+    let me = c.me().await.unwrap();
+    assert_eq!(me.utc_offset, Some(-3.5), "the sign-in data carries it");
+    temp.delete().await;
+}

@@ -10,6 +10,7 @@
 //! rows in `iced::widget::lazy`.
 
 mod attachments;
+pub(crate) mod fold;
 mod linkify;
 mod md;
 mod preview;
@@ -49,6 +50,9 @@ pub enum RenderMsg {
     Copy(String),
     /// Collapse/expand an attachment or link preview: message id and index.
     ToggleCollapsed(String, usize),
+    /// Unfold/fold a long body ([`fold::EXPAND_BODY`]) or a big code block
+    /// (its index): message id and index.
+    ToggleExpanded(String, usize),
     /// Show an image attachment in the lightbox.
     OpenImage(ImageRef),
     /// Save a file attachment (asks where).
@@ -96,11 +100,13 @@ pub enum Transfer {
 }
 
 /// Per-view interaction state of rendered bodies: revealed spoilers, toggled
-/// attachments and downloads. Keep one per list of messages (timeline, panel).
+/// attachments, unfolded bodies/code blocks and downloads. Keep one per list
+/// of messages (timeline, panel).
 #[derive(Debug, Clone, Default)]
 pub struct RenderState {
     revealed: BTreeSet<(String, usize)>,
     toggled: BTreeSet<(String, usize)>,
+    expanded: BTreeSet<(String, usize)>,
     downloads: BTreeMap<(String, String), Transfer>,
 }
 
@@ -111,6 +117,7 @@ impl RenderState {
         Self {
             revealed: BTreeSet::new(),
             toggled: BTreeSet::new(),
+            expanded: BTreeSet::new(),
             downloads: BTreeMap::new(),
         }
     }
@@ -120,6 +127,7 @@ impl RenderState {
         let (set, key) = match msg {
             RenderMsg::ToggleSpoiler(mid, i) => (&mut self.revealed, (mid.clone(), *i)),
             RenderMsg::ToggleCollapsed(mid, i) => (&mut self.toggled, (mid.clone(), *i)),
+            RenderMsg::ToggleExpanded(mid, i) => (&mut self.expanded, (mid.clone(), *i)),
             _ => return false,
         };
         if !set.remove(&key) {
@@ -134,6 +142,10 @@ impl RenderState {
 
     pub fn is_toggled(&self, mid: &str, i: usize) -> bool {
         self.toggled.contains(&(mid.to_owned(), i))
+    }
+
+    pub fn is_expanded(&self, mid: &str, i: usize) -> bool {
+        self.expanded.contains(&(mid.to_owned(), i))
     }
 
     pub fn set_transfer(&mut self, mid: &str, url: &str, t: Transfer) {
@@ -152,6 +164,7 @@ impl RenderState {
     pub fn forget(&mut self, mid: &str) {
         self.revealed.retain(|(m, _)| m != mid);
         self.toggled.retain(|(m, _)| m != mid);
+        self.expanded.retain(|(m, _)| m != mid);
         self.downloads.retain(|(m, _), _| m != mid);
     }
 
@@ -164,10 +177,14 @@ impl RenderState {
             k.1.hash(&mut h);
         }
         0xffu8.hash(&mut h);
-        for k in self.toggled.range(lo..=hi) {
+        for k in self.toggled.range(lo.clone()..=hi.clone()) {
             k.1.hash(&mut h);
         }
         0xfeu8.hash(&mut h);
+        for k in self.expanded.range(lo..=hi) {
+            k.1.hash(&mut h);
+        }
+        0xfdu8.hash(&mut h);
         for ((m, url), t) in &self.downloads {
             if m == mid {
                 url.hash(&mut h);
@@ -252,7 +269,7 @@ pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, 
     if blocks.is_none()
         && let Some(text) = text_part(msg, rc)
     {
-        col = col.push(text);
+        col = col.push(folded_text(text, msg, rc));
     }
     for a in attachments::attachments(msg, rc) {
         col = col.push(a);
@@ -270,6 +287,42 @@ pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, 
     rustket_ui::widget::selectable::scope(col)
         .copy_label(rust_i18n::t!("room_render.copy"))
         .into()
+}
+
+/// `text` clipped with a "Show more" link when `msg` is long (interactive
+/// renders only).
+fn folded_text(
+    text: Element<'static, RenderMsg>,
+    msg: &Message,
+    rc: &RenderCtx<'_>,
+) -> Element<'static, RenderMsg> {
+    use iced::widget::{button, container};
+    if !rc.interactive || !fold::body_folds(msg) {
+        return text;
+    }
+    let expanded = rc.state.is_expanded(&msg.id, fold::EXPAND_BODY);
+    let label = if expanded {
+        rust_i18n::t!("room_render.show_less")
+    } else {
+        rust_i18n::t!("room_render.show_more")
+    };
+    let toggle = button(
+        iced::widget::text(label.into_owned())
+            .size(rustket_ui::theme::TEXT_SMALL)
+            .font(rustket_ui::theme::font_semibold()),
+    )
+    .padding(0)
+    .style(rustket_ui::style::button_link)
+    .on_press(RenderMsg::ToggleExpanded(msg.id.clone(), fold::EXPAND_BODY));
+    let text = if expanded {
+        text
+    } else {
+        container(text)
+            .max_height(fold::BODY_FOLD_HEIGHT)
+            .clip(true)
+            .into()
+    };
+    column![text, toggle].spacing(SPACE_1).into()
 }
 
 /// The `video_conf` block of a `videoconf` message (`crate::videoconf`).
@@ -391,3 +444,25 @@ pub fn message_key(msg: &Message) -> u64 {
 
 #[cfg(test)]
 mod selection_tests;
+
+#[cfg(test)]
+mod state_tests {
+    use super::{RenderMsg, RenderState, fold};
+
+    #[test]
+    fn expanded_toggles_change_the_key_and_are_forgotten() {
+        let mut st = RenderState::new();
+        let k0 = st.key("m");
+        assert!(st.handle(&RenderMsg::ToggleExpanded("m".into(), 0)));
+        assert!(st.is_expanded("m", 0));
+        let k1 = st.key("m");
+        assert_ne!(k0, k1);
+        assert!(st.handle(&RenderMsg::ToggleExpanded("m".into(), fold::EXPAND_BODY)));
+        assert_ne!(st.key("m"), k1);
+        // Another message's key is unaffected.
+        assert_eq!(st.key("n"), RenderState::new().key("n"));
+        st.forget("m");
+        assert!(!st.is_expanded("m", 0));
+        assert_eq!(st.key("m"), k0);
+    }
+}

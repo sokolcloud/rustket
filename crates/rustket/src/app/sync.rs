@@ -269,7 +269,7 @@ impl App {
         {
             entry.username = Some(username);
         }
-        let mut tasks = vec![self.sync_done(&sid, None)];
+        let mut tasks = vec![self.sync_done(&sid, None), self.publish_utc_offset(&sid)];
         let Some(s) = self.servers.get_mut(&sid) else {
             return Task::batch(tasks);
         };
@@ -287,6 +287,34 @@ impl App {
             tasks.push(self.for_rooms(&sid, None, |rv, ctx| rv.on_reconnect(ctx)));
         }
         Task::batch(tasks)
+    }
+
+    /// Like the web client on every start: stores the local UTC offset on
+    /// the user when the server's differs (`UiPrefs::share_utc_offset`).
+    /// Fire and forget; the outcome is only logged.
+    fn publish_utc_offset(&self, sid: &ServerId) -> Task<Message> {
+        if !self.config.ui.share_utc_offset {
+            return Task::none();
+        }
+        let Some(s) = self.servers.get(sid) else {
+            return Task::none();
+        };
+        let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
+            return Task::none();
+        };
+        let local = chrono::Local::now().offset().local_minus_utc();
+        let stored = s.workspace.me().and_then(|m| m.utc_offset);
+        let Some(hours) = rustket_core::clock::offset_to_publish(stored, local) else {
+            return Task::none();
+        };
+        let server = sid.clone();
+        Task::future(async move {
+            match rest.set_utc_offset(hours).await {
+                Ok(()) => tracing::debug!(%server, hours, "utcOffset published"),
+                Err(e) => tracing::debug!(%server, error = %e, "utcOffset not published"),
+            }
+        })
+        .discard()
     }
 
     pub(super) fn on_resynced(

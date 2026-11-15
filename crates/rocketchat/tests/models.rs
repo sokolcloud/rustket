@@ -774,3 +774,42 @@ fn service_room_fields() {
     room.id = "other".into();
     assert!(service_subscriptions([(&sub, &room)], uid).is_empty());
 }
+
+/// `users.info` of a user who published a UTC offset (`users.setPreferences`).
+#[test]
+fn users_info_utc_offset() {
+    let u: User = get("users_info_utc_offset", "user");
+    assert_eq!(u.utc_offset, Some(3.0));
+    // Fractional and negative offsets (India, Newfoundland) parse as well.
+    let u: User =
+        serde_json::from_value(serde_json::json!({"_id": "x", "utcOffset": -3.5})).unwrap();
+    assert_eq!(u.utc_offset, Some(-3.5));
+}
+
+/// Online members of a room (`rooms.membersOrderedByRole` with `status[]`).
+#[test]
+fn room_members_online() {
+    let v = raw("room_members_online");
+    assert_eq!(v["total"], 1);
+    let members: Vec<UserSummary> = get("room_members_online", "members");
+    assert_eq!(members[0].status, Some(UserStatus::Online));
+}
+
+/// A message of only `[ ](permalink)` lines (a forward without a comment):
+/// the server turns each link into a quote attachment.
+#[test]
+fn forwarded_message_has_quote_attachments() {
+    let m: Message = get("message_forwarded", "");
+    let quotes = m.attachments.as_deref().unwrap_or_default();
+    assert_eq!(quotes.len(), 2);
+    assert!(quotes.iter().all(MessageAttachment::is_quote));
+    let texts: Vec<&str> = quotes.iter().filter_map(|a| a.text.as_deref()).collect();
+    assert_eq!(texts, ["first forwarded", "second forwarded"]);
+    assert!(quotes[0].message_link.as_deref().unwrap().contains("?msg="));
+    assert!(
+        m.urls
+            .iter()
+            .flatten()
+            .all(|u| u.ignore_parse == Some(true))
+    );
+}
