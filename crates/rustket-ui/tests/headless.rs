@@ -256,18 +256,19 @@ fn timeline<'a>(input: &Id) -> Element<'a, M> {
         .into()
 }
 
-fn toast_list(n: u64) -> Vec<w::Toast> {
+fn toast_list(n: u64) -> Vec<w::Toast<M>> {
     (0..n)
         .map(|id| w::Toast {
             id,
             kind: w::BannerKind::Info,
             title: "Message sent".into(),
             body: "delivered".into(),
+            action: None,
         })
         .collect()
 }
 
-fn app<'a>(input: &Id, modal_open: bool, list: &'a [w::Toast]) -> Element<'a, M> {
+fn app<'a>(input: &Id, modal_open: bool, list: &'a [w::Toast<M>]) -> Element<'a, M> {
     let base = w::modal(
         timeline(input),
         modal_open.then(|| container(text("dialog")).width(200).height(100).into()),
@@ -376,7 +377,7 @@ fn single_escape_dismisses_modal_with_focused_input() {
 fn toast_cards_capture_clicks() {
     let mut r = renderer();
     let list = toast_list(1);
-    fn view(list: &[w::Toast]) -> Element<'_, M> {
+    fn view(list: &[w::Toast<M>]) -> Element<'_, M> {
         w::toasts(
             button(space().width(Length::Fill).height(Length::Fill)).on_press(M::Base),
             list,
@@ -406,7 +407,7 @@ fn toast_cards_capture_clicks() {
 #[test]
 fn pinned_card_click_survives_toast_changes() {
     let mut r = renderer();
-    fn view(list: &[w::Toast]) -> Element<'_, M> {
+    fn view(list: &[w::Toast<M>]) -> Element<'_, M> {
         let card = button(space().width(Length::Fill).height(60))
             .on_press(M::Trig)
             .into();
@@ -1044,7 +1045,7 @@ fn drag_split_releasing_over(overlay_at: Point, view: impl Fn() -> Element<'stat
 
 #[test]
 fn drag_released_over_toast_ends() {
-    static LIST: std::sync::LazyLock<Vec<w::Toast>> = std::sync::LazyLock::new(|| toast_list(1));
+    static LIST: std::sync::LazyLock<Vec<w::Toast<M>>> = std::sync::LazyLock::new(|| toast_list(1));
     let on_card = Point::new(SIZE.width - 20.0 - 250.0, SIZE.height - 20.0 - 20.0);
     drag_split_releasing_over(on_card, || {
         w::toasts(

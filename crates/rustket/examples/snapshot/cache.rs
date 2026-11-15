@@ -16,7 +16,7 @@ use rustket::message::{Message, SecretsReady};
 use rustket::workspace::rail;
 use rustket_core::ServerId;
 use rustket_core::config::{AppConfig, ServerEntry, Theme};
-use rustket_core::secrets::{MemoryStore, SecretBackend};
+use rustket_core::secrets::{MemoryStore, SecretBackend, SwitchableStore};
 use tokio::sync::mpsc;
 
 use super::{Driver, rest};
@@ -33,8 +33,11 @@ fn driver(flags: Flags, sid: &ServerId, token: &str) -> Driver {
         subs: Default::default(),
     };
     d.send(Message::SecretsReady(SecretsReady {
-        store: Arc::new(MemoryStore::new()),
-        backend: SecretBackend::Memory,
+        store: Arc::new(SwitchableStore::new(
+            Box::new(MemoryStore::new()),
+            SecretBackend::Memory,
+            None,
+        )),
         tokens: vec![(sid.clone(), Some(token.to_owned()))],
         notices: vec![],
     }));

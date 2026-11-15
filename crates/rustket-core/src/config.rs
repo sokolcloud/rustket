@@ -472,6 +472,10 @@ pub struct UiPrefs {
     pub check_updates: bool,
     /// Offer pre-releases as updates.
     pub update_prereleases: bool,
+    /// Never write secrets (tokens, E2E keys) to a file: without a usable
+    /// keyring they are kept in memory for the session only
+    /// (`crate::secrets::FilePolicy::Never`).
+    pub secrets_memory_only: bool,
 }
 
 impl Default for UiPrefs {
@@ -505,6 +509,7 @@ impl Default for UiPrefs {
             sidebar_starred_threads: true,
             check_updates: true,
             update_prereleases: false,
+            secrets_memory_only: false,
         }
     }
 }
@@ -614,6 +619,7 @@ const UI_KEYS: &[&str] = &[
     "sidebar_starred_threads",
     "check_updates",
     "update_prereleases",
+    "secrets_memory_only",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -966,7 +972,7 @@ impl AppConfig {
 
 /// Where a write to `path` must land: the target of a symlink (so the link
 /// survives), else `path` itself.
-fn write_target(path: &Path) -> PathBuf {
+pub(crate) fn write_target(path: &Path) -> PathBuf {
     match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() => fs::canonicalize(path).unwrap_or_else(|_| {
             // Dangling link: follow it by hand.

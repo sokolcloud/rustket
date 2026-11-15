@@ -127,6 +127,12 @@ pub fn reveal_flag<M: Send + 'static>(
     ])
 }
 
+/// Scrolls the open settings page to the secret store card (the Privacy &
+/// storage tab must be open).
+pub fn reveal_secret_store<M: Send + 'static>() -> Task<M> {
+    reveal_container(iced::widget::Id::new(SECRET_STORE_CARD))
+}
+
 /// Scrolls the open settings page to the Storage card (the Privacy &
 /// storage tab must be open).
 pub fn reveal_storage<M: Send + 'static>() -> Task<M> {
@@ -179,6 +185,8 @@ pub enum Message {
     /// Disk cache cap in MiB (`UiPrefs::image_cache_mb`).
     SetImageCacheMb(u32),
     ClearOfflineCache,
+    /// `UiPrefs::secrets_memory_only` (the app asks before turning it on).
+    SetSecretsMemoryOnly(bool),
     // Sidebar tab (`settings/sidebar.rs`).
     SetGroupByType(bool),
     SetSidebarSort(SidebarSort),
@@ -215,8 +223,11 @@ pub struct SettingsView<'a> {
     pub locales: &'a crate::locales::Locales,
     pub handler_registered: bool,
     pub secret_backend: Option<SecretBackend>,
-    /// Secrets are kept in memory because nothing else is usable (not in tests).
-    pub secrets_in_memory: bool,
+    /// The secret store is the system one (keyring / file / memory fallback),
+    /// not a test's memory store.
+    pub secrets_system: bool,
+    /// The secret store is switching backends (the memory-only switch waits).
+    pub secrets_switching: bool,
     /// Whether a tray exists and the window can be hidden to it.
     pub tray: TraySupport,
     /// Offline cache (`crate::cache`): `Some((bytes on disk, clearing))`
@@ -403,6 +414,8 @@ impl Settings {
             Message::SetImageCacheMb(mb) => Self::pref(ctx, |p| p.image_cache_mb = mb),
             // The result is toasted by `crate::cache` once it is done.
             Message::ClearOfflineCache => Action::effect(Effect::ClearOfflineCache),
+            // The app stores the preference once the store follows it.
+            Message::SetSecretsMemoryOnly(on) => Action::effect(Effect::SetSecretsMemoryOnly(on)),
             Message::OpenUrl(url) => Action::effect(Effect::OpenUrl(url)),
             Message::Close => Action::effect(Effect::Close),
             Message::SetGroupByType(v) => Self::pref(ctx, |p| p.group_by_type = v),

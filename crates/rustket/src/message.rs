@@ -7,7 +7,7 @@ use rocketchat::Credentials;
 use rocketchat::models::User;
 use rocketchat::rest::LoginResult;
 use rustket_core::ServerId;
-use rustket_core::secrets::{SecretBackend, SecretStore};
+use rustket_core::secrets::{SecretBackend, SwitchableStore};
 use rustket_core::sync::{DeltaData, InitialData, RoomSync};
 
 use crate::error::Res;
@@ -20,8 +20,8 @@ use crate::workspace::{rail, sidebar, titlebar};
 /// The secret store opened at startup plus the tokens read from it.
 #[derive(Clone)]
 pub struct SecretsReady {
-    pub store: Arc<dyn SecretStore>,
-    pub backend: SecretBackend,
+    /// The one store instance everyone gets (its backend can change at runtime).
+    pub store: Arc<SwitchableStore>,
     /// `(server, token)` for every server with a stored user id.
     pub tokens: Vec<(ServerId, Option<String>)>,
     /// Localised notices from opening the store (fallbacks, migrations).
@@ -31,7 +31,7 @@ pub struct SecretsReady {
 impl std::fmt::Debug for SecretsReady {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecretsReady")
-            .field("backend", &self.backend)
+            .field("backend", &self.store.backend())
             .field("tokens", &self.tokens.len())
             .finish()
     }
@@ -71,6 +71,8 @@ pub enum ModalMessage {
     RegisterHandler,
     ConfirmRemove(ServerId),
     OpenRegisterHandler,
+    /// Keep secrets in memory only (`UiPrefs::secrets_memory_only`): confirmed.
+    ConfirmSecretsMemoryOnly,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +186,14 @@ pub enum Message {
     Modal(ModalMessage),
     CloseModal,
     CloseToast(u64),
+    /// The action button of toast `id`: closes it, then runs the message.
+    ToastAction(u64, Box<Message>),
+    /// `SwitchableStore::apply_policy` finished: the memory-only preference
+    /// it applied, the backend afterwards, what failed.
+    SecretsPolicyApplied(bool, SecretBackend, Option<String>),
+    /// Servers whose stored E2E password has not been confirmed as saved
+    /// (for the memory-only confirmation).
+    SecretsPendingFound(Vec<ServerId>),
     /// The file manager could not open the themes folder (its path).
     ThemesFolderNotOpened(String),
     /// The file manager could not open the locales folder (its path).

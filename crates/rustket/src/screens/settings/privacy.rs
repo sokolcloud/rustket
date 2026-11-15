@@ -1,5 +1,5 @@
-//! Privacy & storage tab: where login tokens are kept, the offline cache
-//! and the image cache.
+//! Privacy & storage tab: where login tokens and E2E keys are kept (and
+//! whether they may go to a file), the offline cache and the image cache.
 
 use iced::widget::{container, text};
 use iced::{Element, Length};
@@ -8,37 +8,50 @@ use rustket_core::secrets::SecretBackend;
 use rustket_ui::theme::TEXT_BODY;
 use rustket_ui::widget::{BannerKind, banner};
 
-use super::widgets::{action_row, caption, field, section, segmented};
+use super::widgets::{action_row, caption, field, section, segmented, switch};
 use super::{IMAGE_CACHE_CHOICES, Message, SECRET_STORE_CARD, STORAGE_CARD, SettingsView};
 
 pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
     vec![secret_store_card(v), storage_card(v)]
 }
 
-/// The secret store in use; the file and memory-only fallbacks warn.
+/// The secret store in use (the file and the no-directory fallbacks warn)
+/// and the "never store secrets in a file" switch.
 fn secret_store_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
-    let status: Element<'a, Message> = match v.secret_backend {
-        Some(SecretBackend::Keyring) => text(t!("settings.secret_store_keyring"))
+    let line = |s: std::borrow::Cow<'_, str>| -> Element<'a, Message> {
+        text(s.into_owned())
             .size(TEXT_BODY)
             .width(Length::Fill)
-            .into(),
+            .into()
+    };
+    let status: Element<'a, Message> = match v.secret_backend {
+        Some(SecretBackend::Keyring) => line(t!("settings.secret_store_keyring")),
         Some(SecretBackend::File) => banner(BannerKind::Warning, t!("app.keyring_file"), None),
-        Some(SecretBackend::Memory) if v.secrets_in_memory => {
+        Some(SecretBackend::MemoryByPolicy) => banner(
+            BannerKind::Info,
+            t!("settings.secret_store_memory_policy"),
+            None,
+        ),
+        Some(SecretBackend::Memory) if v.secrets_system => {
             banner(BannerKind::Warning, t!("settings.secrets_memory"), None)
         }
-        Some(SecretBackend::Memory) => text(t!("settings.secret_store_session"))
-            .size(TEXT_BODY)
-            .width(Length::Fill)
-            .into(),
+        Some(SecretBackend::Memory) => line(t!("settings.secret_store_session")),
         None => text(t!("settings.secret_store_loading"))
             .size(TEXT_BODY)
             .style(rustket_ui::style::text_secondary)
             .width(Length::Fill)
             .into(),
     };
+    let ready = v.secret_backend.is_some() && !v.secrets_switching;
+    let toggle = switch(
+        t!("settings.secrets_memory_only").into_owned(),
+        Some(t!("settings.secrets_memory_only_help").into_owned()),
+        v.config.ui.secrets_memory_only,
+        ready.then_some(Message::SetSecretsMemoryOnly as fn(bool) -> Message),
+    );
     container(section(
         t!("settings.secret_store").into_owned(),
-        vec![status],
+        vec![status, toggle],
     ))
     .id(SECRET_STORE_CARD)
     .into()

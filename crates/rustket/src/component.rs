@@ -109,6 +109,9 @@ pub enum Nav {
         ungroup: Option<String>,
         flag: Option<rustket_core::flags::FlagColor>,
     },
+    /// App preferences on the Privacy & storage tab, scrolled to the secret
+    /// store card.
+    SecretStoreSettings,
     /// Account of the active server (`screens/account.rs`).
     Account,
     /// Directory of the active server (`screens/directory.rs`).
@@ -174,6 +177,9 @@ pub enum Effect {
     SetFlag(rustket_core::ServerId, rustket_core::flags::FlagEdit),
     /// Star the parents of the signed-in accounts' kept threads (Settings).
     StarKeptThreads,
+    /// The "never store secrets in a file" switch (Settings): turning it on
+    /// asks for confirmation first.
+    SetSecretsMemoryOnly(bool),
     /// In-app updates (Settings "Updates" card).
     #[cfg(feature = "self-update")]
     Updater(crate::updater::app::Msg),

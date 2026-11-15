@@ -248,12 +248,17 @@ ICED_BACKEND=tiny-skia rustket
 | Downloaded images | `~/.cache/rustket/images/` (`$XDG_CACHE_HOME`); the oldest files are removed past the limit in **Settings → Storage** (500 MB by default); safe to delete while the app is closed |
 | Media opened in another app (video, audio, files) | `~/.cache/rustket/media/`, removed after 24 hours |
 | Decrypted E2E attachments opened in another app | `~/.cache/rustket/media/e2e/`, private to the user, removed after 24 hours |
-| Auth tokens | the desktop keyring (Secret Service: GNOME Keyring, KWallet, KeePassXC) |
-| Token fallback | `~/.local/share/rustket/secrets.json` (mode 0600), only when no keyring is available; the app warns about it |
+| Auth tokens and E2E keys | the desktop keyring (Secret Service: GNOME Keyring, KWallet, KeePassXC) |
+| Fallback without a keyring | `~/.local/share/rustket/secrets.json`: **not encrypted** (mode 0600 on Linux/macOS); the app warns about it at startup. With **Settings → Privacy & storage → Never store secrets in a file** on, nothing is written: tokens and E2E keys stay in memory until you quit, so you sign in and enter your E2E password after every restart |
 | Start on login | `~/.config/autostart/rustket.desktop` |
 | Link handler (source builds) | `~/.local/share/applications/rustket-url-handler.desktop` |
 
-End-to-end encryption keys go through the same secret store as the tokens.
+End-to-end encryption keys (the decrypted private key, and a generated E2E
+password until you confirm you saved it) go through the same secret store as
+the tokens. Turning "Never store secrets in a file" on deletes an existing
+`secrets.json` (and any `secrets.json.broken-*` copies) right away; you stay
+signed in for the current session. When the keyring works again, secrets left
+in the file are moved into it and the file is deleted.
 
 Do not delete `cache.sqlite` by hand while it may hold messages written offline
 that were not sent yet: they are sent from there once the connection is back.

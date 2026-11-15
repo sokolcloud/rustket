@@ -17,7 +17,7 @@ work where the API is compatible, but they are not a goal.
 | HTTP | `reqwest` 0.13 + rustls (aws-lc-rs) | Shared rustls `ClientConfig` with the WebSocket |
 | Realtime | `tokio-tungstenite` + rustls | Meteor DDP over `wss://host/websocket` |
 | TLS trust | `rustls-platform-verifier` + per-server pinned certificates | Self-signed servers need explicit user confirmation |
-| Secrets | `keyring` 4 (Secret Service over zbus) | Fallback: 0600 file in the config dir, with a warning |
+| Secrets | `keyring` 4 (Secret Service over zbus) | Tokens and E2E keys. Fallback: unencrypted file in the data dir (0600 on Unix), with a warning; opt-in "never store secrets in a file" keeps them in memory per session instead |
 | Notifications | `notify-rust` (zbus) | Freedesktop notifications with actions |
 | Tray | `ksni` (StatusNotifierItem) | KDE/GNOME (with extension)/XFCE |
 | File dialogs | `rfd` (xdg-desktop-portal) | |

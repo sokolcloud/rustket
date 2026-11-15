@@ -96,8 +96,11 @@ fn app_with(names: &[&str]) -> (App, Vec<ServerId>) {
         ..Flags::default()
     });
     let _ = app.update(Message::SecretsReady(rustket::message::SecretsReady {
-        store: std::sync::Arc::new(rustket_core::secrets::MemoryStore::new()),
-        backend: rustket_core::secrets::SecretBackend::Memory,
+        store: std::sync::Arc::new(rustket_core::secrets::SwitchableStore::new(
+            Box::new(rustket_core::secrets::MemoryStore::new()),
+            rustket_core::secrets::SecretBackend::Memory,
+            None,
+        )),
         tokens: vec![],
         notices: vec![],
     }));

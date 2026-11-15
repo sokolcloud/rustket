@@ -332,6 +332,7 @@ pub async fn teams_shots(
         kind: rustket_ui::widget::BannerKind::Info,
         title: "Message sent".into(),
         body: "A toast next to the call card".into(),
+        action: None,
     });
     d.send(Message::Sidebar(
         sid.clone(),

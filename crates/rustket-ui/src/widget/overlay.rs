@@ -115,13 +115,38 @@ pub fn dialog<'a, Message: Clone + 'a>(
     .into()
 }
 
-/// A transient notification.
+/// A transient notification; `action` adds a button (label, message) under
+/// the text.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Toast {
+pub struct Toast<Message = ()> {
     pub id: u64,
     pub kind: BannerKind,
     pub title: String,
     pub body: String,
+    pub action: Option<(String, Message)>,
+}
+
+impl<Message> Toast<Message> {
+    /// A toast without an action.
+    pub fn new(
+        id: u64,
+        kind: BannerKind,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            kind,
+            title: title.into(),
+            body: body.into(),
+            action: None,
+        }
+    }
+
+    pub fn with_action(mut self, label: impl Into<String>, message: Message) -> Self {
+        self.action = Some((label.into(), message));
+        self
+    }
 }
 
 /// Stacks `list` (oldest first) in the bottom-right corner over `base`. Expiry is up
@@ -131,7 +156,7 @@ pub struct Toast {
 /// so the base keeps its widget state when toasts come and go.
 pub fn toasts<'a, Message: Clone + 'a>(
     base: impl Into<Element<'a, Message>>,
-    list: &'a [Toast],
+    list: &'a [Toast<Message>],
     on_close: impl Fn(u64) -> Message + 'a,
 ) -> Element<'a, Message> {
     toasts_with(base, Vec::new(), list, on_close)
@@ -144,7 +169,7 @@ pub fn toasts<'a, Message: Clone + 'a>(
 pub fn toasts_with<'a, Message: Clone + 'a>(
     base: impl Into<Element<'a, Message>>,
     pinned: Vec<Element<'a, Message>>,
-    list: &'a [Toast],
+    list: &'a [Toast<Message>],
     on_close: impl Fn(u64) -> Message + 'a,
 ) -> Element<'a, Message> {
     // Toasts and pinned cards are two always-present groups, so the pinned cards
@@ -172,7 +197,7 @@ pub fn toasts_with<'a, Message: Clone + 'a>(
 pub const TOAST_WIDTH: f32 = 340.0;
 
 fn toast_card<'a, Message: Clone + 'a>(
-    toast: &'a Toast,
+    toast: &'a Toast<Message>,
     on_close: Message,
 ) -> Element<'a, Message> {
     let kind = toast.kind;
@@ -183,6 +208,15 @@ fn toast_card<'a, Message: Clone + 'a>(
             text(&toast.body)
                 .size(TEXT_BODY - 1.0)
                 .style(style::text_secondary),
+        );
+    }
+    if let Some((label, message)) = &toast.action {
+        texts = texts.push(
+            container(
+                super::button::secondary_button(label.as_str(), Some(message.clone()))
+                    .size(super::button::ButtonSize::Small),
+            )
+            .padding(iced::Padding::ZERO.top(SPACE_1)),
         );
     }
     let accent = icon::sized(kind.icon(), 18.0).style(move |theme: &Theme| {

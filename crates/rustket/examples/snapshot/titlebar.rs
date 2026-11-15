@@ -231,7 +231,7 @@ pub async fn settings_tab_shots(out: &Path) -> bool {
         ..Flags::default()
     });
     let sid = add(&mut d, "Acme", 3901, &[("R1", "general", 0, 0)], true);
-    d.app.active = Some(sid);
+    d.app.active = Some(sid.clone());
     d.app.screen = Screen::Server;
     d.app.secret_backend = Some(rustket_core::secrets::SecretBackend::Keyring);
     rust_i18n::set_locale("en");
@@ -256,5 +256,70 @@ pub async fn settings_tab_shots(out: &Path) -> bool {
     upd(&mut d, Message::Settings(Sm::Tab(Tab::Sidebar)));
     d.app.config.ui.theme = Theme::Light;
     d.shoot_at(&out, "4-sidebar-full-light", Size::new(1100.0, 2200.0));
+    secret_store_shots(&mut d, &out, &sid);
     true
+}
+
+/// The secret store card in every backend state, the memory-only
+/// confirmation and the file-fallback toast.
+fn secret_store_shots(d: &mut Driver, out: &Path, sid: &ServerId) {
+    use rustket::screens::settings::{Message as Sm, Tab};
+    use rustket_core::secrets::SecretBackend as B;
+    upd(d, Message::Settings(Sm::Tab(Tab::Privacy)));
+    d.app.config.ui.theme = Theme::Light;
+    let size = Size::new(1100.0, 800.0);
+    let states = [
+        ("keyring", Some(B::Keyring), SecretsMode::System, false),
+        (
+            "keyring-memory-only",
+            Some(B::Keyring),
+            SecretsMode::System,
+            true,
+        ),
+        ("file", Some(B::File), SecretsMode::System, false),
+        (
+            "memory-policy",
+            Some(B::MemoryByPolicy),
+            SecretsMode::System,
+            true,
+        ),
+        ("memory-no-dir", Some(B::Memory), SecretsMode::System, false),
+        ("memory-test", Some(B::Memory), SecretsMode::Memory, false),
+        ("loading", None, SecretsMode::System, false),
+    ];
+    for (name, backend, mode, memory_only) in states {
+        d.app.secret_backend = backend;
+        d.app.secrets_mode = mode;
+        d.app.config.ui.secrets_memory_only = memory_only;
+        d.shoot_at(out, &format!("5-privacy-{name}"), size);
+    }
+    d.app.secrets_mode = SecretsMode::System;
+    d.app.secret_backend = Some(B::File);
+    d.app.config.ui.secrets_memory_only = false;
+    d.app.modals.push(Modal::SecretsMemoryOnly {
+        pending: vec![sid.clone()],
+    });
+    d.shoot_at(out, "5-privacy-confirm-pending", size);
+    rust_i18n::set_locale("ru");
+    d.shoot_at(out, "5-privacy-confirm-pending-ru", size);
+    rust_i18n::set_locale("en");
+    d.app.modals.clear();
+    d.app.secret_backend = Some(B::Keyring);
+    d.app
+        .modals
+        .push(Modal::SecretsMemoryOnly { pending: vec![] });
+    d.shoot_at(out, "5-privacy-confirm-keyring", size);
+    d.app.modals.clear();
+    d.app.secret_backend = Some(B::File);
+    let en = rustket::i18n::english();
+    let _ = d.app.toast_with_action(
+        rustket_ui::widget::BannerKind::Warning,
+        en["app.secrets_file_title"],
+        en["app.keyring_file"],
+        en["app.keyring_file_action"],
+        Message::Noop,
+    );
+    upd(d, Message::Settings(Sm::Tab(Tab::General)));
+    d.shoot_at(out, "5-file-toast", size);
+    d.app.toasts.clear();
 }

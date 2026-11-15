@@ -17,7 +17,7 @@ use rustket::session::ServerEvent;
 use rustket::workspace::sidebar;
 use rustket_core::ServerId;
 use rustket_core::config::{AppConfig, ServerEntry, TokenKind};
-use rustket_core::secrets::{MemoryStore, SecretBackend, SecretStore};
+use rustket_core::secrets::{MemoryStore, SecretBackend, SecretStore, SwitchableStore};
 use rustket_core::sync::InitialData;
 
 const SERVER: &str = "http://localhost:3000";
@@ -77,8 +77,11 @@ fn initial(me: User, rids: &[(&str, u64)]) -> InitialData {
 
 fn boot(app: &mut App, tokens: Vec<(ServerId, Option<String>)>, store: Arc<MemoryStore>) {
     let _ = app.update(Message::SecretsReady(SecretsReady {
-        store,
-        backend: SecretBackend::Memory,
+        store: Arc::new(SwitchableStore::new(
+            Box::new(store),
+            SecretBackend::Memory,
+            None,
+        )),
         tokens,
         notices: vec![],
     }));
@@ -3082,4 +3085,141 @@ async fn sidebar_flags_and_rename_through_settings() {
     assert!(!matches!(app.screen, rustket::app::Screen::Settings(_)));
     let ws = &app.servers[&sid].workspace;
     assert_eq!(ws.flags().name(FlagColor::Blue), Some("Later"));
+}
+
+/// Runs `task` and feeds back the outputs `keep` accepts.
+async fn feed(app: &mut App, task: iced::Task<Message>, keep: fn(&Message) -> bool) {
+    use iced::futures::StreamExt;
+    let Some(stream) = iced_runtime::task::into_stream(task) else {
+        return;
+    };
+    let outputs: Vec<Message> = stream
+        .filter_map(|a| async move {
+            match a {
+                iced_runtime::Action::Output(m) if keep(&m) => Some(m),
+                _ => None,
+            }
+        })
+        .collect()
+        .await;
+    for m in outputs {
+        let _ = app.update(m);
+    }
+}
+
+/// One signed-in server whose secrets are in a plain file in `dir/data`.
+fn app_on_file(dir: &std::path::Path) -> (App, ServerId) {
+    use rustket_core::secrets::FileStore;
+    let mut cfg = AppConfig::default();
+    let mut entry = ServerEntry::new(SERVER, "Local");
+    entry.user_id = Some("A".into());
+    let sid = cfg.add_server(entry);
+    cfg.save(dir).unwrap();
+    let (mut app, _t) = App::new(Flags {
+        config_dir: Some(dir.to_owned()),
+        cache_dir: Some(dir.join("cache")),
+        secrets: SecretsMode::Memory,
+        ..Flags::default()
+    });
+    let data = dir.join("data");
+    let file = FileStore::new(&data);
+    file.set(&rustket_core::secrets::secret_key(&sid, "A"), "tokA")
+        .unwrap();
+    file.set(
+        &rustket_core::e2e::pending_passphrase_secret(&sid, "A"),
+        "generated",
+    )
+    .unwrap();
+    let _ = app.update(Message::SecretsReady(SecretsReady {
+        store: Arc::new(SwitchableStore::new(
+            Box::new(file),
+            SecretBackend::File,
+            Some(data),
+        )),
+        tokens: vec![(sid.clone(), Some("tokA".into()))],
+        notices: vec![],
+    }));
+    (app, sid)
+}
+
+/// Turning "never store secrets in a file" on asks first (warning about the
+/// unsaved E2E password), then moves the secrets into memory and deletes the
+/// file; turning it off writes them back without asking.
+#[tokio::test]
+async fn memory_only_switch_confirms_then_moves_the_secrets() {
+    use rustket::screens::settings::Message as Sm;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = app_on_file(dir.path());
+    let file = dir.path().join("data").join("secrets.json");
+    assert!(file.exists());
+    let _ = app.update(Message::Rail(rustket::workspace::rail::Message::Settings));
+    let task = app.update(Message::Settings(Sm::SetSecretsMemoryOnly(true)));
+    assert!(matches!(
+        app.modals.last(),
+        Some(Modal::SecretsMemoryOnly { .. })
+    ));
+    assert!(!app.config.ui.secrets_memory_only, "not before confirming");
+    // The stored, unconfirmed E2E password is found.
+    feed(&mut app, task, |m| {
+        matches!(m, Message::SecretsPendingFound(_))
+    })
+    .await;
+    let Some(Modal::SecretsMemoryOnly { pending }) = app.modals.last() else {
+        panic!("modal closed");
+    };
+    assert_eq!(pending, std::slice::from_ref(&sid));
+    // Cancel keeps everything.
+    let _ = app.update(Message::CloseModal);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.secret_backend, Some(SecretBackend::File));
+    // Confirm.
+    let _ = app.update(Message::Settings(Sm::SetSecretsMemoryOnly(true)));
+    let task = app.update(Message::Modal(ModalMessage::ConfirmSecretsMemoryOnly));
+    assert!(app.modals.is_empty());
+    assert!(app.config.ui.secrets_memory_only);
+    feed(&mut app, task, |m| {
+        matches!(m, Message::SecretsPolicyApplied(..))
+    })
+    .await;
+    assert_eq!(app.secret_backend, Some(SecretBackend::MemoryByPolicy));
+    assert!(!file.exists(), "the plaintext file is gone");
+    let store = app.secrets.clone().unwrap();
+    let key = rustket_core::secrets::secret_key(&sid, "A");
+    assert_eq!(store.get(&key).unwrap().as_deref(), Some("tokA"));
+    // Off: no question, back into the file.
+    let task = app.update(Message::Settings(Sm::SetSecretsMemoryOnly(false)));
+    assert!(app.modals.is_empty());
+    assert!(!app.config.ui.secrets_memory_only);
+    // While that runs, turning it on again opens no modal (its confirmation
+    // would be dropped).
+    let _ = app.update(Message::Settings(Sm::SetSecretsMemoryOnly(true)));
+    assert!(app.modals.is_empty());
+    feed(&mut app, task, |m| {
+        matches!(m, Message::SecretsPolicyApplied(..))
+    })
+    .await;
+    assert_eq!(app.secret_backend, Some(SecretBackend::File));
+    assert!(std::fs::read_to_string(&file).unwrap().contains("tokA"));
+}
+
+/// The startup warning about the plain file links to the secret store card.
+#[tokio::test]
+async fn file_fallback_toast_opens_the_privacy_tab() {
+    use rustket::screens::settings::Tab;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _sid) = app_on_file(dir.path());
+    let toast = app
+        .toasts
+        .iter()
+        .find(|t| t.action.is_some())
+        .expect("a toast with an action")
+        .clone();
+    assert!(toast.body.contains("E2E"), "{}", toast.body);
+    let (_, action) = toast.action.unwrap();
+    let _ = app.update(action);
+    let rustket::app::Screen::Settings(s) = &app.screen else {
+        panic!("settings not open");
+    };
+    assert_eq!(s.tab, Tab::Privacy);
+    assert!(app.toasts.iter().all(|t| t.id != toast.id), "toast closed");
 }

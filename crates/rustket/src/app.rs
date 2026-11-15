@@ -27,7 +27,7 @@ use rust_i18n::t;
 use rustket_core::ServerId;
 use rustket_core::config::{AppConfig, Theme as ThemePref, TokenKind};
 use rustket_core::room_list;
-use rustket_core::secrets::{MemoryStore, SecretBackend, SecretStore};
+use rustket_core::secrets::{MemoryStore, SecretBackend, SecretStore, SwitchableStore};
 use rustket_ui::Mode;
 use rustket_ui::widget::{BannerKind, Toast};
 
@@ -48,6 +48,8 @@ use subscription::{query_handler_task, query_maximized};
 
 /// How long a toast stays.
 const TOAST_TTL: Duration = Duration::from_secs(6);
+/// How long a toast with an action button stays (it may need a decision).
+const TOAST_ACTION_TTL: Duration = Duration::from_secs(20);
 /// How long a room deep link waits for its server to load.
 pub const ROOM_LINK_TTL: Duration = Duration::from_secs(120);
 /// Delay before the confirm button of a token confirmation is enabled.
@@ -125,6 +127,11 @@ pub enum Modal {
         warnings: Vec<String>,
     },
     ConfirmRemove(ServerId),
+    /// Turning on `UiPrefs::secrets_memory_only`: the consequences, and the
+    /// servers whose generated E2E password is not saved yet.
+    SecretsMemoryOnly {
+        pending: Vec<ServerId>,
+    },
     CreateRoom(ServerId, Box<crate::dialogs::create_room::CreateRoom>),
     QuickSwitcher(ServerId, Box<crate::dialogs::quick_switcher::QuickSwitcher>),
 }
@@ -134,14 +141,19 @@ pub struct App {
     pub config_dir: Option<PathBuf>,
     pub ui_state: UiState,
     writer: Option<ConfigWriter>,
+    /// The secret store: `secret_switch` as handed to sessions and E2E.
     pub secrets: Option<Arc<dyn SecretStore>>,
+    /// The same instance, for switching its backend at runtime.
+    pub secret_switch: Option<Arc<SwitchableStore>>,
     pub secret_backend: Option<SecretBackend>,
+    /// `SwitchableStore::apply_policy` is running.
+    pub secrets_switching: bool,
     /// The settings tab shown last this session (not saved).
     pub settings_tab: crate::screens::settings::Tab,
     pub servers: BTreeMap<ServerId, ServerState>,
     pub active: Option<ServerId>,
     pub screen: Screen,
-    pub toasts: Vec<Toast>,
+    pub toasts: Vec<Toast<Message>>,
     next_toast: u64,
     pub modals: Vec<Modal>,
     pub images: Images,
@@ -156,7 +168,7 @@ pub struct App {
     queued_links: Vec<String>,
     booted: bool,
     open_urls: bool,
-    secrets_mode: SecretsMode,
+    pub secrets_mode: SecretsMode,
     stamp: u64,
     /// Token confirmations waiting for the single confirmation slot.
     confirm_queue: VecDeque<(ServerId, Credentials, Box<User>)>,
@@ -243,7 +255,9 @@ impl App {
             ui_state,
             writer,
             secrets: None,
+            secret_switch: None,
             secret_backend: None,
+            secrets_switching: false,
             settings_tab: Default::default(),
             servers,
             active,
@@ -283,15 +297,20 @@ impl App {
             .filter_map(|s| Some((s.id.clone(), s.user_id.clone()?)))
             .collect();
         let mode = flags.secrets;
+        let policy =
+            rustket_core::secrets::FilePolicy::memory_only(app.config.ui.secrets_memory_only);
         let open = Task::perform(
-            async move { tokio::task::spawn_blocking(move || open_secrets(mode, wanted)).await },
+            async move { tokio::task::spawn_blocking(move || open_secrets(mode, policy, wanted)).await },
             |r| match r {
                 Ok(s) => Message::SecretsReady(s),
                 Err(e) => {
                     tracing::error!(error = %e, "secret store task failed");
                     Message::SecretsReady(SecretsReady {
-                        store: Arc::new(MemoryStore::new()),
-                        backend: SecretBackend::Memory,
+                        store: Arc::new(SwitchableStore::new(
+                            Box::new(MemoryStore::new()),
+                            SecretBackend::Memory,
+                            None,
+                        )),
                         tokens: Vec::new(),
                         notices: Vec::new(),
                     })
@@ -366,18 +385,38 @@ impl App {
     ) -> Task<Message> {
         self.next_toast += 1;
         let id = self.next_toast;
-        self.toasts.push(Toast {
-            id,
-            kind,
-            title: title.into(),
-            body: body.into(),
-        });
+        self.push_toast(Toast::new(id, kind, title, body))
+    }
+
+    /// [`Self::toast`] with an action button (`label`, then `action` runs
+    /// and the toast closes).
+    pub fn toast_with_action(
+        &mut self,
+        kind: BannerKind,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        label: impl Into<String>,
+        action: Message,
+    ) -> Task<Message> {
+        self.next_toast += 1;
+        let id = self.next_toast;
+        let toast = Toast::new(id, kind, title, body)
+            .with_action(label, Message::ToastAction(id, Box::new(action)));
+        self.push_toast(toast)
+    }
+
+    fn push_toast(&mut self, toast: Toast<Message>) -> Task<Message> {
+        let id = toast.id;
+        let ttl = if toast.action.is_some() {
+            TOAST_ACTION_TTL
+        } else {
+            TOAST_TTL
+        };
+        self.toasts.push(toast);
         while self.toasts.len() > 4 {
             self.toasts.remove(0);
         }
-        Task::perform(tokio::time::sleep(TOAST_TTL), move |_| {
-            Message::CloseToast(id)
-        })
+        Task::perform(tokio::time::sleep(ttl), move |_| Message::CloseToast(id))
     }
 
     /// Queues the current config + UI state for the single writer thread.
@@ -515,6 +554,23 @@ impl App {
             }
             Message::CloseToast(id) => {
                 self.toasts.retain(|t| t.id != id);
+                Task::none()
+            }
+            Message::ToastAction(id, action) => {
+                self.toasts.retain(|t| t.id != id);
+                self.update(*action)
+            }
+            Message::SecretsPolicyApplied(on, backend, error) => {
+                self.on_secrets_policy_applied(on, backend, error)
+            }
+            Message::SecretsPendingFound(found) => {
+                if let Some(Modal::SecretsMemoryOnly { pending }) = self.modals.last_mut() {
+                    for sid in found {
+                        if !pending.contains(&sid) {
+                            pending.push(sid);
+                        }
+                    }
+                }
                 Task::none()
             }
             Message::ThemesFolderNotOpened(path) => self.toast(
@@ -1013,6 +1069,11 @@ impl App {
             ModalMessage::ConfirmRemove(sid) => {
                 self.modals.pop();
                 self.sign_out(&sid, crate::e2e::SignOut::RemoveServer)
+            }
+            ModalMessage::ConfirmSecretsMemoryOnly => {
+                self.modals
+                    .retain(|m| !matches!(m, Modal::SecretsMemoryOnly { .. }));
+                self.set_secrets_memory_only(true)
             }
         }
     }

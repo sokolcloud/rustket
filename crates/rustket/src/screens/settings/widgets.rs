@@ -67,7 +67,13 @@ pub(super) fn switch<'a>(
     value: bool,
     on_toggle: Option<fn(bool) -> Message>,
 ) -> Element<'a, Message> {
-    let mut col = column![text(label).size(TEXT_BODY)].spacing(SPACE_1);
+    // Disabled: the label is dimmed (the track alone barely shows it).
+    let label_style = if on_toggle.is_some() {
+        style::text_primary
+    } else {
+        style::text_hint
+    };
+    let mut col = column![text(label).size(TEXT_BODY).style(label_style)].spacing(SPACE_1);
     if let Some(h) = help {
         col = col.push(text(h).size(TEXT_CAPTION).style(style::text_secondary));
     }

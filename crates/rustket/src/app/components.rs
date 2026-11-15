@@ -80,6 +80,7 @@ impl App {
             nav,
             Nav::Settings
                 | Nav::SidebarSettings { .. }
+                | Nav::SecretStoreSettings
                 | Nav::Workspace
                 | Nav::Account
                 | Nav::Directory
@@ -122,7 +123,7 @@ impl App {
 
     fn navigate_to(&mut self, nav: Nav, sid: Option<ServerId>) -> Task<Message> {
         match (nav, sid) {
-            (nav @ (Nav::Settings | Nav::SidebarSettings { .. }), _) => {
+            (nav @ (Nav::Settings | Nav::SidebarSettings { .. } | Nav::SecretStoreSettings), _) => {
                 // The real autostart location only with real desktop integration.
                 let at = self
                     .desktop
@@ -133,6 +134,7 @@ impl App {
                 // card exists when the reveal runs; otherwise the last tab.
                 let tab = match nav {
                     Nav::SidebarSettings { .. } => settings::Tab::Sidebar,
+                    Nav::SecretStoreSettings => settings::Tab::Privacy,
                     _ => self.settings_tab,
                 };
                 self.settings_tab = tab;
@@ -155,6 +157,7 @@ impl App {
                         screen.confirm_delete = ungroup;
                         task
                     }
+                    Nav::SecretStoreSettings => settings::reveal_secret_store(),
                     _ => Task::none(),
                 };
                 self.screen = Screen::Settings(Box::new(screen));
@@ -292,6 +295,7 @@ impl App {
                 }
                 Effect::SetFlag(sid, edit) => self.set_flag(&sid, edit),
                 Effect::StarKeptThreads => self.star_kept_threads(),
+                Effect::SetSecretsMemoryOnly(on) => self.on_secrets_memory_only(on),
                 Effect::UiKit(m) => match sid {
                     Some(sid) => {
                         self.on_uikit(sid.clone(), crate::uikit::Msg::Ui { rid: None, msg: *m })
@@ -819,7 +823,8 @@ impl App {
             locales: &self.locales,
             handler_registered: self.handler_registered,
             secret_backend: self.secret_backend,
-            secrets_in_memory: self.secrets_mode == SecretsMode::System,
+            secrets_system: self.secrets_mode == SecretsMode::System,
+            secrets_switching: self.secrets_switching,
             tray: self.desktop.tray_support(),
             offline_cache: self
                 .offline

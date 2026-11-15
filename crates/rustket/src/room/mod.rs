@@ -1371,7 +1371,7 @@ mod tests {
     fn in_app<'a>(
         rv: &'a RoomView,
         ctx: &ViewCtx<'a>,
-        toasts: &'a [rustket_ui::widget::Toast],
+        toasts: &'a [rustket_ui::widget::Toast<Message>],
         strip: bool,
         dialog: bool,
     ) -> Element<'a, Message> {
@@ -1427,6 +1427,7 @@ mod tests {
             kind: BannerKind::Info,
             title: "toast".into(),
             body: String::new(),
+            action: None,
         }];
         let (s, ed) = (scrollable_tag(), text_editor_tag());
         let mut tree = {
@@ -1464,7 +1465,7 @@ mod tests {
                 });
             }
             let ctx = view_ctx(&ws, &sid, &url, &images, &prefs);
-            let list: &[Toast] = if toasts { &toast } else { &[] };
+            let list: &[Toast<Message>] = if toasts { &toast } else { &[] };
             let view = in_app(&rv, &ctx, list, strip, dialog);
             // The room's timeline and composer come first; another panel
             // replaces the previous panel's widgets.

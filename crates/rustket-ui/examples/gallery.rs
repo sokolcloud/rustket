@@ -357,7 +357,7 @@ struct Gallery {
     show_modal: bool,
     modal_name: String,
     modal_password: String,
-    toasts: Vec<Toast>,
+    toasts: Vec<Toast<Message>>,
     toast_born: Vec<(u64, Instant)>,
     next_toast: u64,
     composer: String,
@@ -514,6 +514,7 @@ impl Gallery {
                     kind,
                     title: title.into(),
                     body: body.into(),
+                    action: None,
                 });
                 self.toast_born.push((id, Instant::now()));
             }
@@ -555,6 +556,7 @@ impl Gallery {
                     kind: BannerKind::Info,
                     title: format!("Menu action: {action}"),
                     body: String::new(),
+                    action: None,
                 });
                 self.toast_born.push((id, Instant::now()));
             }

@@ -40,7 +40,7 @@ pub(crate) fn layered<'a, M: Clone + 'a>(
     dismiss: Option<M>,
     calls: impl FnOnce(Element<'a, M>) -> Element<'a, M>,
     call_cards: Vec<Element<'a, M>>,
-    list: &'a [Toast],
+    list: &'a [Toast<M>],
     on_close: impl Fn(u64) -> M + 'a,
 ) -> Element<'a, M> {
     toasts_with(
@@ -544,6 +544,41 @@ impl App {
                         rustket_ui::widget::danger_button(
                             t!("app.remove_confirm"),
                             Some(Message::Modal(ModalMessage::ConfirmRemove(sid.clone()))),
+                        )
+                        .into(),
+                    ],
+                    Some(Message::CloseModal),
+                )
+            }
+            Modal::SecretsMemoryOnly { pending } => {
+                let mut body = column![].spacing(SPACE_3);
+                if !pending.is_empty() {
+                    let names: Vec<String> = pending
+                        .iter()
+                        .map(|sid| {
+                            self.servers
+                                .get(sid)
+                                .map_or_else(|| sid.to_string(), |s| s.name.clone())
+                        })
+                        .collect();
+                    body = body.push(banner(
+                        BannerKind::Error,
+                        t!("app.secrets_memory_pending", accounts = names.join(", ")),
+                        None,
+                    ));
+                }
+                body = body.push(text(t!("app.secrets_memory_body")).size(TEXT_BODY));
+                if self.secret_backend == Some(rustket_core::secrets::SecretBackend::File) {
+                    body = body.push(text(t!("app.secrets_memory_file_note")).size(TEXT_BODY));
+                }
+                dialog(
+                    t!("app.secrets_memory_title"),
+                    body,
+                    vec![
+                        secondary_button(t!("app.cancel"), Some(Message::CloseModal)).into(),
+                        primary_button(
+                            t!("app.secrets_memory_confirm"),
+                            Some(Message::Modal(ModalMessage::ConfirmSecretsMemoryOnly)),
                         )
                         .into(),
                     ],

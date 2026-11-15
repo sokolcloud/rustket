@@ -17,7 +17,7 @@ use rustket::message::{Message, SecretsReady};
 use rustket_core::ServerId;
 use rustket_core::cache::{CacheHandle, TimelineKey, server_dir};
 use rustket_core::config::{AppConfig, ServerEntry};
-use rustket_core::secrets::{MemoryStore, SecretBackend};
+use rustket_core::secrets::{MemoryStore, SecretBackend, SwitchableStore};
 use rustket_core::sync::InitialData;
 use rustket_core::timeline::DeliveryState;
 
@@ -90,8 +90,11 @@ fn start(dir: &Path) -> (App, ServerId) {
         ..Flags::default()
     });
     let _ = app.update(Message::SecretsReady(SecretsReady {
-        store: Arc::new(MemoryStore::new()),
-        backend: SecretBackend::Memory,
+        store: Arc::new(SwitchableStore::new(
+            Box::new(MemoryStore::new()),
+            SecretBackend::Memory,
+            None,
+        )),
         tokens: vec![(sid.clone(), Some("tok".into()))],
         notices: vec![],
     }));

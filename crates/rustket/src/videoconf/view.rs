@@ -388,7 +388,7 @@ mod tests {
     /// The app's layer stack (`app::layered`) with a full-window button under
     /// it, an optional app modal, one call card (a 120 px tall card whose
     /// Accept button is inset by 30 px of padding) and the toasts.
-    fn view(dialog: bool, toasts: &[Toast]) -> Element<'_, Msg> {
+    fn view(dialog: bool, toasts: &[Toast<Msg>]) -> Element<'_, Msg> {
         let base = button(text("under"))
             .on_press(Msg::Under)
             .width(Length::Fill)
@@ -454,6 +454,7 @@ mod tests {
             kind: BannerKind::Info,
             title: "t".into(),
             body: String::new(),
+            action: None,
         }];
         for dialog in [false, true] {
             for list in [&[][..], &toast[..]] {
