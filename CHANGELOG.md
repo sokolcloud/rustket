@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-15
+
+### Security
+
+Fixes from a full security review of the code base.
+
+- A message with an extreme date could crash the client whenever its room
+  was shown; such dates are now rejected.
+- A message with a crafted type, or an external translation file with a
+  malformed placeholder, could corrupt text in memory and crash the app.
+- End-to-end encryption: a server could set a username pattern that made
+  the client send the text of encrypted messages in clear as "mentions";
+  mentions are now found by the client itself and only short `@name` /
+  `#channel` tokens can leave. Encrypted file uploads no longer reveal a
+  hash of the real file name.
+- For administrators, private server settings (passwords, secrets) that
+  changed during a session were written to the offline cache; they no
+  longer are, and settings cached by earlier versions are dropped once.
+- Images from messages are no longer fetched from your own machine or
+  local network addresses, nor over plain http when the server uses https;
+  a crafted image path can no longer make the client send authenticated
+  requests to other server endpoints behind a normalising proxy.
+- Windows: sign-in links forwarded to the running instance are now
+  authenticated, so another local user cannot intercept them.
+- Synced flags only use the flag room bound to your own account; a room
+  another user creates in your name is ignored.
+- Opening a browser sign-in link with someone else's SAML token now always
+  asks to confirm the account, also when two-factor authentication is on.
+- Signing out reliably forgets the session even when the system keyring was
+  unavailable at some start.
+- App buttons in modals, side panels and banners can only reach the app
+  that showed them; blocks and admin translations from one server can no
+  longer appear in another server's views.
+- Linux updates: the downloaded package is verified again by the privileged
+  installer step itself, so it cannot be swapped while the password prompt
+  is open.
+- The untrusted-certificate dialog shows certificate names on one line,
+  without control characters, so they cannot imitate the fingerprint.
+- Server-supplied text is escaped in logs.
+
 ## [0.2.5] - 2026-11-13
 
 ### Added
@@ -198,7 +238,8 @@ First public release.
 - Auth tokens and end-to-end encryption keys are kept in the desktop keyring,
   with a warned-about private file fallback when no keyring is available.
 
-[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/sokolcloud/rustket/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/sokolcloud/rustket/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/sokolcloud/rustket/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sokolcloud/rustket/compare/v0.2.2...v0.2.3
