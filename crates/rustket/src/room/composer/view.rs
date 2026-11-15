@@ -21,6 +21,7 @@ use super::autocomplete;
 use super::send::{can_join, needs_join_code};
 use super::text::Format;
 use super::{Composer, MAX_EDITOR_HEIGHT, Message, PickTarget};
+use crate::keymap;
 use crate::room::{ViewCtx, emoji_picker, upload};
 
 impl Composer {
@@ -382,7 +383,10 @@ fn format_icon(f: Format) -> (Icon, String) {
         Format::Link => (Icon::Link, t!("room_composer.format.link")),
         Format::Quote => (Icon::TextQuote, t!("room_composer.format.quote")),
     };
-    (ic, key.into_owned())
+    match crate::keymap::format_chord(f) {
+        Some(chord) => (ic, format!("{key} · {chord}")),
+        None => (ic, key.into_owned()),
+    }
 }
 
 fn editor_style(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
@@ -416,6 +420,20 @@ pub(super) fn key_binding(kp: KeyPress, k: Keys) -> Option<Binding<Message>> {
         return None;
     }
     let m = kp.modifiers;
+    // App-wide chords first (Shift+Esc must not also cancel): swallowed here
+    // so they neither type nor copy, and handled by the app listener, which
+    // skips the two it only takes uncaptured (`keymap::from_event`).
+    if let Some(s) = keymap::global(&kp.key, kp.physical_key, m) {
+        return Some(match s {
+            keymap::Shortcut::ReactLast => Binding::Custom(Message::ReactLast),
+            keymap::Shortcut::MarkAllRead => Binding::Custom(Message::AskReadAll),
+            _ => Binding::Sequence(Vec::new()),
+        });
+    }
+    // Before the editor's own Ctrl+Shift+C / X (copy, cut ignore Shift).
+    if let Some(f) = keymap::format(&kp.key, kp.physical_key, m, kp.text.as_deref()) {
+        return Some(Binding::Custom(Message::Format(f)));
+    }
     if let keyboard::Key::Named(named) = kp.key.as_ref() {
         match named {
             key::Named::Enter if !m.shift() && !m.alt() => {
@@ -450,8 +468,6 @@ pub(super) fn key_binding(kp: KeyPress, k: Keys) -> Option<Binding<Message>> {
                 // Files/images are uploaded; text is pasted only without them.
                 return Some(Binding::Custom(Message::PasteCheck));
             }
-            Some('b') => return Some(Binding::Custom(Message::Format(Format::Bold))),
-            Some('i') => return Some(Binding::Custom(Message::Format(Format::Italic))),
             _ => {}
         }
     }

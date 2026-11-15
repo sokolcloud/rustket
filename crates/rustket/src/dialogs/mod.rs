@@ -3,3 +3,4 @@
 
 pub mod create_room;
 pub mod quick_switcher;
+pub mod shortcuts;

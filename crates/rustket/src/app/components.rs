@@ -218,6 +218,13 @@ impl App {
                 quick_switcher::QuickSwitcher::focus()
                     .map(move |m| Message::QuickSwitcher(sid.clone(), m))
             }
+            // Over whatever is shown (pages and other dialogs included).
+            (Nav::Shortcuts, _) => {
+                if !self.modals.iter().any(|m| matches!(m, Modal::Shortcuts)) {
+                    self.modals.push(Modal::Shortcuts);
+                }
+                Task::none()
+            }
             (_, None) => Task::none(),
         }
     }

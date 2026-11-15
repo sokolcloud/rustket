@@ -73,6 +73,8 @@ pub enum ModalMessage {
     OpenRegisterHandler,
     /// Keep secrets in memory only (`UiPrefs::secrets_memory_only`): confirmed.
     ConfirmSecretsMemoryOnly,
+    /// "Mark all as read" (Shift+Esc): confirmed.
+    ConfirmReadAll,
 }
 
 #[derive(Debug, Clone)]
@@ -108,15 +110,19 @@ pub enum Message {
     Flags(ServerId, u64, crate::workspace::flags::Msg),
     /// A flag edit of the user (sidebar, room header, thread panel).
     SetFlag(ServerId, rustket_core::flags::FlagEdit),
-    /// Ctrl+K.
-    OpenQuickSwitcher,
+    /// An app-wide keyboard shortcut (`crate::keymap`).
+    Shortcut(crate::keymap::Shortcut),
+    /// Read queue of a server (`crate::reads`): server, session epoch, message.
+    Reads(ServerId, u64, crate::reads::Msg),
     /// Tab / Shift+Tab that no widget handled (modal dialogs cycle their own
     /// focus): move focus to the next (`true`) or previous input.
     FocusNext(bool),
     /// F6 / Shift+F6: focus the next (`true`) or previous region
     /// (`crate::focus`).
     FocusRegion(bool),
-    /// Escape that no widget handled: close the right panel / settings page.
+    /// Escape that no widget handled: close the main view or the right
+    /// panel, mark the room read, or close the settings page
+    /// (`App::on_escape`).
     Escape,
     SidebarResized(f32),
     /// Room component message: server, session epoch, room id.

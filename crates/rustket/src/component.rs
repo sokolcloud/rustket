@@ -123,6 +123,8 @@ pub enum Nav {
     CreateDiscussion { rid: String, pmid: Option<String> },
     /// Ctrl+K (`dialogs/quick_switcher.rs`).
     QuickSwitcher,
+    /// The keyboard shortcuts cheat sheet (`dialogs/shortcuts.rs`).
+    Shortcuts,
     /// Back to the workspace of the active server.
     Workspace,
     /// Administration of the active server (`screens/admin/`).

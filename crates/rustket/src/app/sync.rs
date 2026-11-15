@@ -55,11 +55,8 @@ impl App {
                     let name = s.name.clone();
                     let server_active =
                         self.active.as_ref() == Some(&sid) && matches!(self.screen, Screen::Server);
-                    // The contact center replaces the room area: no room is shown.
-                    let focused_rid = s
-                        .active_room
-                        .as_deref()
-                        .filter(|_| s.omni.contact_center.is_none());
+                    // A view in place of the room area: no room is shown.
+                    let focused_rid = s.active_room.as_deref().filter(|_| !s.room_area_taken());
                     let focused_tmid =
                         focused_rid.and_then(|rid| s.rooms.get(rid)).and_then(|rv| {
                             match rv.panel.kind() {

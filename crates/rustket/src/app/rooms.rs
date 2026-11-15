@@ -18,15 +18,15 @@ use crate::workspace::sidebar;
 impl App {
     /// Tells every room view whether it is on screen: the window is
     /// focused, its server is active and the server view is shown (not a
-    /// page such as Settings or Administration, the contact center or a
-    /// dialog over it) and it is the server's active room. A room that
+    /// page such as Settings or Administration, a view in place of the room
+    /// area (`ServerState::room_area_taken`) or a dialog over it) and it is
+    /// the server's active room. A room that
     /// becomes readable catches up on its read mark (`RoomView::set_visible`).
     pub(super) fn sync_room_visibility(&mut self) -> Task<Message> {
         let shown = self.focused && matches!(self.screen, Screen::Server) && self.modals.is_empty();
         let mut tasks = Vec::new();
         for (sid, s) in self.servers.iter_mut() {
-            let server_shown =
-                shown && self.active.as_ref() == Some(sid) && s.omni.contact_center.is_none();
+            let server_shown = shown && self.active.as_ref() == Some(sid) && !s.room_area_taken();
             let epoch = s.generation;
             for (rid, rv) in s.rooms.iter_mut() {
                 let visible = server_shown && s.active_room.as_deref() == Some(rid.as_str());
@@ -383,6 +383,7 @@ impl App {
                 | room::Effect::Compose(_)
                 | room::Effect::Omni(_) => Task::none(),
                 room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
+                room::Effect::AskReadAll => self.ask_read_all(),
                 room::Effect::Call(a) => {
                     self.on_calls(crate::videoconf::Message::Action(sid.clone(), a))
                 }
@@ -519,7 +520,7 @@ impl App {
 
     /// Hands a dropped file to the shown room (its open thread, else the
     /// room composer). Nothing happens while no room is shown (another
-    /// page, the contact center or a dialog is on screen).
+    /// page, a view in place of the room area or a dialog is on screen).
     pub(super) fn route_file_drop(&mut self, path: std::path::PathBuf) -> Task<Message> {
         if !matches!(self.screen, Screen::Server) || !self.modals.is_empty() {
             return Task::none();
@@ -530,7 +531,7 @@ impl App {
         let Some(s) = self.servers.get(&sid) else {
             return Task::none();
         };
-        if s.omni.contact_center.is_some() {
+        if s.room_area_taken() {
             return Task::none();
         }
         let Some(rid) = s.active_room.clone().filter(|r| s.rooms.contains_key(r)) else {

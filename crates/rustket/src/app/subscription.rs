@@ -138,16 +138,14 @@ impl App {
                 _ => None,
             },
         ));
-        // Ctrl+K: quick switcher. Tab: focus traversal (modal dialogs keep Tab).
+        // App-wide chords, also while a widget captured the key (a focused
+        // composer swallows them): `crate::keymap`.
+        subs.push(iced::event::listen_with(|event, status, _id| {
+            crate::keymap::from_event(&event, status).map(Message::Shortcut)
+        }));
+        // Tab: focus traversal (modal dialogs keep Tab). F6: regions.
+        // Escape: `App::on_escape`. Only keys no widget took.
         subs.push(iced::keyboard::listen().filter_map(|ev| match ev {
-            iced::keyboard::Event::KeyPressed {
-                key,
-                modifiers,
-                physical_key,
-                ..
-            } if modifiers.command() && key.to_latin(physical_key) == Some('k') => {
-                Some(Message::OpenQuickSwitcher)
-            }
             iced::keyboard::Event::KeyPressed {
                 key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
                 modifiers,

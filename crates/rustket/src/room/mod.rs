@@ -183,6 +183,9 @@ pub enum Effect {
     MarkRead,
     /// The explicit "Mark as read" action: the room and its unread threads.
     MarkAllRead,
+    /// Shift+Esc in a composer: ask to mark every room of the server read
+    /// (the app's dialog).
+    AskReadAll,
     OpenPanel(panel::Kind),
     ClosePanel,
     /// Open a URL in the external browser (absolute http, https or mailto only;
@@ -333,6 +336,9 @@ pub enum Message {
         Result<Vec<rocketchat::models::Message>, String>,
     ),
     MarkedRead(Res<()>),
+    /// Escape with nothing else to close: the explicit "Mark as read" (the
+    /// room and its threads).
+    MarkAllRead,
     /// Files dropped onto the window while this room is shown: to the open
     /// thread's composer, else the room composer.
     FilesDropped(Vec<std::path::PathBuf>),
@@ -763,6 +769,7 @@ impl RoomView {
                 }
                 Action::none()
             }
+            Message::MarkAllRead => Action::task(self.mark_all_read(ctx)),
             Message::FilesDropped(paths) => match self.panel.thread_files_dropped(&paths, ctx) {
                 Some(a) => a.map(Message::Panel),
                 None => self

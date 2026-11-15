@@ -617,6 +617,25 @@ fn misc_lists() {
     let inner: Value = serde_json::from_str(err["message"].as_str().unwrap()).unwrap();
     let me: rocketchat::MethodError = serde_json::from_value(inner["error"].clone()).unwrap();
     assert_eq!(me.code().as_deref(), Some("404"));
+    assert!(Error::from_method_error(me).is_method_not_found());
+}
+
+/// DDP `readMessages` / `readThreads` answer with a result frame without a
+/// `result`; a bad room id is a method error, not a missing method.
+#[test]
+fn read_messages_method_frames() {
+    let frame = |name: &str| -> Value {
+        let v = raw(name);
+        serde_json::from_str(v["message"].as_str().unwrap()).unwrap()
+    };
+    let ok = frame("method_call_read_messages");
+    assert_eq!(ok["msg"], "result");
+    assert!(ok.get("result").is_none() && ok.get("error").is_none());
+    let bad = frame("method_call_read_messages_invalid");
+    let me: rocketchat::MethodError = serde_json::from_value(bad["error"].clone()).unwrap();
+    assert_eq!(me.code().as_deref(), Some("error-room-does-not-exist"));
+    let e = Error::from_method_error(me);
+    assert!(!e.is_method_not_found(), "{e:?}");
 }
 
 #[test]

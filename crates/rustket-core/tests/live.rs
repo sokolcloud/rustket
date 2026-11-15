@@ -928,3 +928,103 @@ async fn sidebar_threads_follow_the_server() {
     })
     .await;
 }
+
+/// "Mark all as read" (Shift+Esc): the targets come from the synced
+/// workspace, the read queue sends DDP `readMessages(rid, true)` paced, and
+/// afterwards nothing is left, threads included.
+#[tokio::test(flavor = "multi_thread")]
+async fn read_all_through_the_read_queue() {
+    use rustket_core::reads::{Next, Outcome, ReadQueue, ReadReq, Transport};
+    use rustket_core::room_list::read_all_targets;
+    use std::time::Instant;
+    with_fixture(|s, fx| async move {
+        let a = fx.user(&s, "core-rda").await;
+        let b = fx.user(&s, "core-rdb").await;
+        let mut rids = Vec::new();
+        for _ in 0..2 {
+            let mut req = CreateRoom::new(unique("core-rd"));
+            req.members = vec![a.username.clone()];
+            let room = b.rest.channels_create(&req).await.unwrap();
+            fx.room(&room.id);
+            let mention = format!("@{} ping", a.username);
+            let parent = b
+                .rest
+                .send_message(&OutgoingMessage::new(&room.id, &mention))
+                .await
+                .unwrap()
+                .id;
+            b.rest
+                .send_message(&OutgoingMessage::new(&room.id, &mention).in_thread(&parent, false))
+                .await
+                .unwrap();
+            rids.push((room.id, parent));
+        }
+        let mut ws = Workspace::new();
+        for (rid, parent) in &rids {
+            sync_sub(&mut ws, &a.rest, rid, has_tunread(parent)).await;
+        }
+        ws.apply_initial(sync::initial_load(&a.rest).await.unwrap());
+        let targets = read_all_targets(&ws);
+        for (rid, _) in &rids {
+            assert!(targets.contains(rid), "{rid} not in {targets:?}");
+        }
+
+        let creds = a.rest.credentials().unwrap();
+        let tls = TlsConfig::new().build().unwrap();
+        let (session, _events) = rocketchat::Session::start(
+            s.clone(),
+            &tls,
+            creds,
+            rocketchat::SessionOptions::default(),
+        )
+        .await
+        .unwrap();
+        let mut q: ReadQueue<u64> = ReadQueue::default();
+        for (rid, _) in &rids {
+            q.push(
+                ReadReq::Room {
+                    rid: rid.clone(),
+                    threads: true,
+                },
+                7,
+            );
+        }
+        let mut done = 0;
+        while !q.is_idle() {
+            let up = session.connection_state().is_connected();
+            match q.next(Instant::now(), up) {
+                Next::Idle => tokio::time::sleep(Duration::from_millis(50)).await,
+                Next::Wait(d) => {
+                    tokio::time::sleep(d).await;
+                    q.wake();
+                }
+                Next::Send { req, via, ticket } => {
+                    let ReadReq::Room { rid, threads } = req else {
+                        unreachable!()
+                    };
+                    assert_eq!(via, Transport::Ddp);
+                    let r = session.read_messages(&rid, threads).await;
+                    let outcome = Outcome::of(&r);
+                    if let Some(d) = q.finish(ticket, outcome, Instant::now()) {
+                        assert!(d.ok, "{r:?}");
+                        assert_eq!(d.origins, [7]);
+                        done += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(done, 2);
+        for (rid, parent) in &rids {
+            sync_sub(&mut ws, &a.rest, rid, |s| {
+                !s.alert && s.user_mentions == 0 && !has_tunread(parent)(s)
+            })
+            .await;
+        }
+        let left = read_all_targets(&ws);
+        for (rid, _) in &rids {
+            assert!(!left.contains(rid), "{rid} still in {left:?}");
+        }
+        session.close().await;
+    })
+    .await;
+}

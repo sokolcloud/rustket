@@ -63,6 +63,8 @@ pub struct ServerState {
     pub e2e: crate::e2e::ServerE2e,
     /// Offline cache of this account (`crate::cache`).
     pub cache: crate::cache::ServerCache,
+    /// Read marks waiting to be sent (`crate::reads`).
+    pub reads: crate::reads::Queue,
 }
 
 impl ServerState {
@@ -112,6 +114,7 @@ impl ServerState {
             uikit: crate::uikit::Local::default(),
             e2e: Default::default(),
             cache: Default::default(),
+            reads: Default::default(),
         })
     }
 
@@ -153,6 +156,7 @@ impl ServerState {
         self.omni.reset(&self.id);
         self.threads.reset();
         self.flags.reset();
+        self.reads.clear();
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;
@@ -167,5 +171,13 @@ impl ServerState {
 
     pub fn is_logged_in(&self) -> bool {
         self.credentials.is_some()
+    }
+
+    /// Another view replaces the room area (today the omnichannel contact
+    /// center): the active room is not on screen, so it is not marked read,
+    /// takes no dropped files and its notifications still show. Main-area
+    /// views added later (All unreads, Activity, Later) belong here too.
+    pub fn room_area_taken(&self) -> bool {
+        self.omni.contact_center.is_some()
     }
 }

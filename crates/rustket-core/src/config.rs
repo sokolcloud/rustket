@@ -478,6 +478,9 @@ pub struct UiPrefs {
     /// keyring they are kept in memory for the session only
     /// (`crate::secrets::FilePolicy::Never`).
     pub secrets_memory_only: bool,
+    /// Escape with nothing else to close marks the open room as read (with
+    /// its threads), like Slack.
+    pub escape_marks_read: bool,
 }
 
 impl Default for UiPrefs {
@@ -512,6 +515,7 @@ impl Default for UiPrefs {
             check_updates: true,
             update_prereleases: false,
             secrets_memory_only: false,
+            escape_marks_read: true,
         }
     }
 }
@@ -630,6 +634,7 @@ const UI_KEYS: &[&str] = &[
     "check_updates",
     "update_prereleases",
     "secrets_memory_only",
+    "escape_marks_read",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -1652,6 +1657,14 @@ mod tests {
         assert_eq!(AppConfig::parse(&text).unwrap().ui, c.ui);
         let c = AppConfig::parse("[ui]\ncheck_updates = \"no\"").unwrap();
         assert!(c.ui.check_updates, "invalid value falls back");
+    }
+
+    #[test]
+    fn escape_marks_read_defaults_on() {
+        let c = AppConfig::parse("[ui]\nzoom = 1.0").unwrap();
+        assert!(c.ui.escape_marks_read);
+        let c = AppConfig::parse("[ui]\nescape_marks_read = false").unwrap();
+        assert!(!c.ui.escape_marks_read);
     }
 
     #[test]

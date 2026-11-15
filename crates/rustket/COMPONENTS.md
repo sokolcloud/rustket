@@ -102,7 +102,13 @@ secret_backend, … }` in `view`.
 Wiring (already done in `app/components.rs`, `app/view.rs`): rail gear →
 settings; sidebar header avatar → status menu (`workspace/status_menu.rs`,
 which renders the trigger and its popover; its "My account" entry → account);
-sidebar header buttons → directory and create room; Ctrl+K → quick switcher.
+sidebar header buttons → directory and create room. App-wide chords (Ctrl+K
+quick switcher, Ctrl+/ cheat sheet, Ctrl+, settings, Shift+Esc mark all read,
+Ctrl+Shift+\ react to the last message) live in one table, `src/keymap.rs`,
+handled in `app/keys.rs`; the composer swallows them and keeps its
+formatting chords from the same table. Ctrl+K and Ctrl+, do nothing while a
+dialog or overlay is shown; Shift+Esc and Ctrl+Shift+\ only count when no
+widget took the key (a focused composer passes them on itself).
 
 ### Desktop (`src/desktop/`)
 

@@ -1101,3 +1101,142 @@ fn editor_keeps_its_tree_when_the_e2e_hint_comes_and_goes() {
     assert!(crate::e2e::room::composer_hint::<()>(&env.ws, "R1").is_none());
     assert_kept(&mut tree, &c.view(&view_ctx(&env)), ed, "hint goes");
 }
+
+fn press_with(
+    key: Key,
+    physical: keyboard::key::Physical,
+    modifiers: Modifiers,
+    k: Keys,
+) -> Option<Binding<Message>> {
+    key_binding(
+        KeyPress {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: physical,
+            modifiers,
+            text: None,
+            status: Status::Focused { is_hovered: false },
+        },
+        k,
+    )
+}
+
+#[test]
+fn slack_formatting_chords_beat_copy_and_cut() {
+    let cs = Modifiers::COMMAND | Modifiers::SHIFT;
+    let k = Keys::default();
+    for (c, want) in [
+        ("x", "Format(Strike)"),
+        ("c", "Format(Code)"),
+        ("u", "Format(Link)"),
+        ("9", "Format(Quote)"),
+    ] {
+        assert_eq!(
+            custom(press(Key::Character(c.into()), cs, k)).as_deref(),
+            Some(want),
+            "{c}"
+        );
+    }
+    assert_eq!(
+        custom(press(Key::Character("c".into()), cs | Modifiers::ALT, k)).as_deref(),
+        Some("Format(CodeBlock)")
+    );
+    // Plain Ctrl+C still copies.
+    assert!(matches!(
+        press(Key::Character("c".into()), Modifiers::COMMAND, k),
+        Some(Binding::Copy)
+    ));
+    // Russian layout: Cyrillic `с` on the C key.
+    let on_c = keyboard::key::Physical::Code(keyboard::key::Code::KeyC);
+    assert_eq!(
+        custom(press_with(Key::Character("с".into()), on_c, cs, k)).as_deref(),
+        Some("Format(Code)")
+    );
+}
+
+#[test]
+fn app_wide_chords_are_swallowed_by_the_composer() {
+    let popup = Keys {
+        popup: true,
+        cancellable: true,
+        ..Keys::default()
+    };
+    let swallowed =
+        |b: Option<Binding<Message>>| matches!(b, Some(Binding::Sequence(v)) if v.is_empty());
+    // Shift+Esc asks for "Mark all as read" instead of closing the popup
+    // (the app listener skips captured Shift+Esc).
+    assert_eq!(
+        custom(press(
+            Key::Named(key::Named::Escape),
+            Modifiers::SHIFT,
+            popup
+        ))
+        .as_deref(),
+        Some("AskReadAll")
+    );
+    assert!(swallowed(press(
+        Key::Character("/".into()),
+        Modifiers::COMMAND,
+        Keys::default()
+    )));
+    assert!(swallowed(press(
+        Key::Character("k".into()),
+        Modifiers::COMMAND,
+        Keys::default()
+    )));
+    assert!(swallowed(press(
+        Key::Character(",".into()),
+        Modifiers::COMMAND,
+        Keys::default()
+    )));
+    // The composer reacts to its own timeline.
+    assert_eq!(
+        custom(press(
+            Key::Character("\\".into()),
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Keys::default()
+        ))
+        .as_deref(),
+        Some("ReactLast")
+    );
+    // Reserved chords still reach the editor (Ctrl+Shift+A selects all).
+    assert!(matches!(
+        press(
+            Key::Character("a".into()),
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Keys::default()
+        ),
+        Some(Binding::SelectAll)
+    ));
+}
+
+#[test]
+fn react_last_targets_the_newest_message_of_room_or_thread() {
+    let mut env = Env::new("t-react-last");
+    let mut c = Composer::new("R1");
+    let _ = c.update(Message::ReactLast, &mut env.ctx());
+    assert!(!c.is_picker_open(), "nothing to react to");
+    env.ws.apply_message(msg("M1", "other", "first"));
+    env.ws.apply_message(msg("M2", "me", "second"));
+    let mut reply = msg("M3", "other", "reply shown in the channel");
+    reply.tmid = Some("M1".into());
+    reply.tshow = Some(true);
+    env.ws.apply_message(reply.clone());
+    let _ = c.update(Message::ReactLast, &mut env.ctx());
+    assert_eq!(c.react_target(), Some("M2"), "thread replies are skipped");
+
+    env.ws.open_thread("R1", "M1");
+    env.ws.apply_message(reply);
+    let mut t = Composer::for_thread("R1", "M1");
+    let _ = t.update(Message::ReactLast, &mut env.ctx());
+    assert_eq!(t.react_target(), Some("M3"));
+}
+
+#[test]
+fn shift_escape_asks_the_app_for_mark_all_read() {
+    let mut env = Env::new("t-ask-read-all");
+    for mut c in [Composer::new("R1"), Composer::for_thread("R1", "M1")] {
+        let a = c.update(Message::AskReadAll, &mut env.ctx());
+        assert!(matches!(a.effects.as_slice(), [Effect::AskReadAll]));
+    }
+}

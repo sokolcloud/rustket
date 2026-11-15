@@ -17,6 +17,7 @@ pub mod notify;
 pub mod omnichannel;
 pub mod permissions;
 pub mod presence;
+pub mod reads;
 pub mod room_list;
 pub mod secrets;
 pub mod settings;

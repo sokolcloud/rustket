@@ -999,8 +999,9 @@ async fn confirmations_of_two_servers_do_not_stack() {
     assert!(signed_in(&app, &s2).is_none(), "not armed yet");
     // Covered by another dialog: disarmed, re-armed when uncovered.
     let _ = app.update(Message::ArmConfirm(stamp2));
-    let _ = app.update(Message::OpenQuickSwitcher);
-    assert!(top_stamp(&app).is_none(), "covered by the quick switcher");
+    // (The cheat sheet opens over dialogs; Ctrl+K no longer does.)
+    let _ = app.update(Message::Shortcut(rustket::keymap::Shortcut::CheatSheet));
+    assert!(top_stamp(&app).is_none(), "covered by the cheat sheet");
     let _ = app.update(Message::CloseModal);
     let (_, stamp3, armed3) = top_stamp(&app).unwrap();
     assert!(!armed3);
@@ -1163,8 +1164,8 @@ async fn component_navigation() {
         rustket::dialogs::create_room::Message::Close,
     ));
     assert!(app.modals.is_empty());
-    let _ = app.update(Message::OpenQuickSwitcher);
-    let _ = app.update(Message::OpenQuickSwitcher);
+    let _ = app.update(Message::Shortcut(rustket::keymap::Shortcut::QuickSwitcher));
+    let _ = app.update(Message::Shortcut(rustket::keymap::Shortcut::QuickSwitcher));
     assert_eq!(app.modals.len(), 1);
     let _ = app.update(Message::QuickSwitcher(
         sid.clone(),
@@ -3223,4 +3224,196 @@ async fn file_fallback_toast_opens_the_privacy_tab() {
     };
     assert_eq!(s.tab, Tab::Privacy);
     assert!(app.toasts.iter().all(|t| t.id != toast.id), "toast closed");
+}
+
+// --- keyboard shortcuts --------------------------------------------------------------
+
+/// Esc on the server view: the right panel closes first; then an unread
+/// room is marked read with its threads (unless the setting is off); a view
+/// in place of the room area (the contact center) closes instead, and the
+/// room it covers is not marked read.
+#[test]
+fn escape_chain_on_the_server_view() {
+    use rustket::room::panel::{Kind, Message as Pm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let esc = |app: &mut App| outputs_within(app.update(Message::Escape), 300);
+    let marks_all = |outs: &[Message]| {
+        outs.iter().any(|m| {
+            matches!(m, Message::Room(_, _, r, rustket::room::Message::MarkAllRead) if r == "r1")
+        })
+    };
+    assert!(!marks_all(&esc(&mut app)), "nothing unread");
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 2, T0 + 11);
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Thread("p1".into()))),
+    ));
+    let outs = esc(&mut app);
+    assert!(!marks_all(&outs));
+    assert!(outs.iter().any(|m| matches!(
+        m,
+        Message::Room(_, _, _, rustket::room::Message::Panel(Pm::Close))
+    )));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Close),
+    ));
+    assert!(marks_all(&esc(&mut app)));
+    app.config.ui.escape_marks_read = false;
+    assert!(!marks_all(&esc(&mut app)), "switched off in Settings");
+    app.config.ui.escape_marks_read = true;
+    app.servers
+        .get_mut(&sid)
+        .unwrap()
+        .omni
+        .open_contact_center();
+    assert!(app.servers[&sid].room_area_taken());
+    let outs = esc(&mut app);
+    assert!(!marks_all(&outs), "the covered room was marked read");
+    assert!(outs.iter().any(|m| matches!(
+        m,
+        Message::Omni(
+            _,
+            _,
+            rustket::omnichannel::Message::ContactCenter(
+                rustket::omnichannel::contact_center::Msg::Close
+            )
+        )
+    )));
+    // Ctrl+Shift+\ does not reach the covered room either.
+    let outs = outputs_within(
+        app.update(Message::Shortcut(rustket::keymap::Shortcut::ReactLast)),
+        300,
+    );
+    assert!(!outs.iter().any(|m| matches!(m, Message::Room(..))));
+}
+
+/// Ctrl+/ toggles the cheat sheet (also from the status menu and over the
+/// preferences), Ctrl+, opens the preferences, Ctrl+Shift+\ goes to the open
+/// room's composer, Shift+Esc needs a connection.
+#[tokio::test]
+async fn app_wide_shortcuts() {
+    use rustket::app::Screen;
+    use rustket::keymap::Shortcut;
+    use rustket::workspace::status_menu;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(Message::Shortcut(Shortcut::CheatSheet));
+    assert!(matches!(app.modals.last(), Some(Modal::Shortcuts)));
+    let _ = app.view();
+    let _ = app.update(Message::Shortcut(Shortcut::CheatSheet));
+    assert!(app.modals.is_empty());
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Status(status_menu::Message::Shortcuts),
+    ));
+    assert!(matches!(app.modals.last(), Some(Modal::Shortcuts)));
+    let _ = app.update(Message::CloseModal);
+    assert!(app.modals.is_empty());
+
+    let _ = app.update(Message::Shortcut(Shortcut::Settings));
+    assert!(matches!(app.screen, Screen::Settings(_)));
+    let _ = app.update(Message::Settings(
+        rustket::screens::settings::Message::ShowShortcuts,
+    ));
+    assert!(matches!(app.modals.last(), Some(Modal::Shortcuts)));
+    let _ = app.view();
+    let _ = app.update(Message::CloseModal);
+    let _ = app.update(Message::Settings(
+        rustket::screens::settings::Message::Close,
+    ));
+    assert!(matches!(app.screen, Screen::Server));
+
+    set_unread(&mut app, &sid, "r2", 1, T0 + 5);
+    let toasts = app.toasts.len();
+    let _ = app.update(Message::Shortcut(Shortcut::MarkAllRead));
+    assert!(app.modals.is_empty(), "no dialog without a connection");
+    assert_eq!(app.toasts.len(), toasts + 1);
+}
+
+/// Chords the listener hears while a dialog has the keyboard leave it
+/// alone: Ctrl+K and Ctrl+, do nothing over it. Shift+Esc in the focused
+/// composer (the listener skips captured Shift+Esc) still asks.
+#[tokio::test]
+async fn shortcuts_behind_a_dialog() {
+    use rustket::app::Screen;
+    use rustket::keymap::Shortcut;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Create));
+    assert!(matches!(app.modals.last(), Some(Modal::CreateRoom(..))));
+    let _ = app.update(Message::Shortcut(Shortcut::QuickSwitcher));
+    assert_eq!(app.modals.len(), 1, "no quick switcher over the dialog");
+    let _ = app.update(Message::Shortcut(Shortcut::Settings));
+    assert!(matches!(app.screen, Screen::Server));
+    let toasts = app.toasts.len();
+    let _ = app.update(Message::Shortcut(Shortcut::MarkAllRead));
+    assert_eq!(app.modals.len(), 1);
+    assert_eq!(app.toasts.len(), toasts);
+    let _ = app.update(Message::CloseModal);
+    assert!(app.modals.is_empty());
+
+    // From the composer: the same path as the listener (offline here).
+    set_unread(&mut app, &sid, "r2", 1, T0 + 5);
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Composer(rustket::room::composer::Message::AskReadAll),
+    ));
+    assert_eq!(app.toasts.len(), toasts + 1, "not connected");
+}
+
+/// "Mark all as read": a running dialog cannot be dismissed, a failed run
+/// closes it with an error, and it closes when its server's queue is gone.
+#[tokio::test]
+async fn mark_all_read_dialog() {
+    use rustket::reads::Origin;
+    use rustket_core::reads::ReadReq;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let dialog = |stamp, busy| Modal::ReadAll {
+        server_id: sid.clone(),
+        rids: vec!["r1".into(), "r2".into()],
+        busy,
+        done: 0,
+        failed: 0,
+        stamp,
+    };
+    // Confirmed without a session: both rooms fail at once.
+    app.modals.push(dialog(7, false));
+    let _ = app.view();
+    let toasts = app.toasts.len();
+    let _ = app.update(Message::Modal(ModalMessage::ConfirmReadAll));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.len(), toasts + 1);
+    assert!(matches!(
+        app.toasts.last().unwrap().kind,
+        rustket_ui::widget::BannerKind::Error
+    ));
+
+    // Running: Esc / Cancel do nothing.
+    app.servers.get_mut(&sid).unwrap().reads.push(
+        ReadReq::Room {
+            rid: "r1".into(),
+            threads: true,
+        },
+        Origin::ReadAll(8),
+    );
+    app.modals.push(dialog(8, true));
+    let _ = app.view();
+    let _ = app.update(Message::CloseModal);
+    assert!(matches!(app.modals.last(), Some(Modal::ReadAll { .. })));
+    // Signed out meanwhile (queue cleared): the dialog goes.
+    app.servers.get_mut(&sid).unwrap().reads.clear();
+    let _ = app.update(Message::Noop);
+    assert!(app.modals.is_empty());
 }

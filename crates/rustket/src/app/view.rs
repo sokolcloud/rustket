@@ -333,7 +333,7 @@ impl App {
         }
     }
 
-    fn overlay(&self) -> (Option<Element<'_, Message>>, Option<Message>) {
+    pub(super) fn overlay(&self) -> (Option<Element<'_, Message>>, Option<Message>) {
         if let Some(m) = self.modals.last() {
             return (Some(self.modal_view(m)), Some(Message::CloseModal));
         }
@@ -548,6 +548,60 @@ impl App {
                         .into(),
                     ],
                     Some(Message::CloseModal),
+                )
+            }
+            Modal::Shortcuts => crate::dialogs::shortcuts::view(self.config.ui.escape_marks_read),
+            Modal::ReadAll {
+                server_id,
+                rids,
+                busy,
+                done,
+                failed,
+                ..
+            } => {
+                let server = self
+                    .servers
+                    .get(server_id)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                let count = rids.len();
+                let key = format!(
+                    "shortcuts.read_all_body_{}",
+                    crate::room::render::plural(count as u64)
+                );
+                let mut body =
+                    column![text(t!(key, count = count, server = server)).size(TEXT_BODY)]
+                        .spacing(SPACE_3);
+                if *busy {
+                    body = body.push(
+                        row![
+                            spinner(14.0),
+                            text(t!(
+                                "shortcuts.read_all_progress",
+                                done = done + failed,
+                                count = count
+                            ))
+                            .size(TEXT_CAPTION)
+                            .style(style::text_secondary),
+                        ]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                    );
+                }
+                dialog(
+                    t!("shortcuts.read_all_title"),
+                    body,
+                    vec![
+                        secondary_button(t!("app.cancel"), (!*busy).then_some(Message::CloseModal))
+                            .into(),
+                        primary_button(
+                            t!("shortcuts.read_all_confirm"),
+                            (!*busy).then_some(Message::Modal(ModalMessage::ConfirmReadAll)),
+                        )
+                        .loading(*busy)
+                        .into(),
+                    ],
+                    (!*busy).then_some(Message::CloseModal),
                 )
             }
             Modal::SecretsMemoryOnly { pending } => {

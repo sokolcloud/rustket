@@ -497,6 +497,36 @@ settings.autostart_failed:
   es: "No se cambió el inicio automático"
   th: "ไม่ได้เปลี่ยนการเปิดเมื่อเข้าสู่ระบบ"
   zh: "未能更改登录时启动设置"
+settings.keyboard:
+  en: "Keyboard"
+  ru: "Клавиатура"
+  es: "Teclado"
+  th: "แป้นพิมพ์"
+  zh: "键盘"
+settings.escape_marks_read:
+  en: "Esc marks the open room as read"
+  ru: "Esc отмечает открытую комнату прочитанной"
+  es: "Esc marca la sala abierta como leída"
+  th: "Esc ทำเครื่องหมายห้องที่เปิดอยู่ว่าอ่านแล้ว"
+  zh: "Esc 将打开的聊天室标记为已读"
+settings.escape_marks_read_help:
+  en: "When there is no menu, dialog or panel to close. Its threads are marked read too."
+  ru: "Когда нечего закрыть: меню, диалога или панели. Треды комнаты тоже отмечаются прочитанными."
+  es: "Cuando no hay ningún menú, diálogo o panel que cerrar. Sus hilos también se marcan como leídos."
+  th: "เมื่อไม่มีเมนู กล่องโต้ตอบ หรือแผงให้ปิด เธรดของห้องจะถูกทำเครื่องหมายว่าอ่านแล้วด้วย"
+  zh: "在没有可关闭的菜单、对话框或面板时生效。其讨论串也会标记为已读。"
+settings.shortcuts_help:
+  en: "Also opens with %{keys} anywhere."
+  ru: "Также открывается сочетанием %{keys} из любого места."
+  es: "También se abre con %{keys} desde cualquier lugar."
+  th: "เปิดได้ด้วย %{keys} จากทุกที่"
+  zh: "也可以随时按 %{keys} 打开。"
+settings.shortcuts_show:
+  en: "Show"
+  ru: "Показать"
+  es: "Mostrar"
+  th: "แสดง"
+  zh: "显示"
 settings.integration:
   en: "Integration"
   ru: "Интеграция"

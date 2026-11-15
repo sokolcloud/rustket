@@ -101,6 +101,12 @@ pub enum Message {
     TypingTick,
     DraftTick(u64),
     TogglePicker,
+    /// Ctrl/Cmd+Shift+\: the emoji picker for the newest message here (the
+    /// room timeline without thread replies, or this thread).
+    ReactLast,
+    /// Shift+Esc in the focused composer: the app's "Mark all as read?"
+    /// (the app listener skips keys a widget took).
+    AskReadAll,
     Picker(emoji_picker::Message),
     Reacted(Res<()>),
     Upload(upload::Message),
@@ -243,6 +249,15 @@ impl Composer {
 
     pub fn is_picker_open(&self) -> bool {
         self.picker.is_some()
+    }
+
+    /// The message the open emoji picker reacts to.
+    #[cfg(test)]
+    fn react_target(&self) -> Option<&str> {
+        match &self.picker {
+            Some((_, PickTarget::React(mid))) => Some(mid),
+            _ => None,
+        }
     }
 
     pub fn is_upload_dialog_open(&self) -> bool {
@@ -604,6 +619,13 @@ impl Composer {
                 }
                 self.open_picker(PickTarget::Insert, ctx)
             }
+            Message::ReactLast => {
+                match last_reactable(ctx.workspace, &self.rid, self.tmid.as_deref()) {
+                    Some(mid) => self.intent(ComposeIntent::React(mid), ctx),
+                    None => Action::none(),
+                }
+            }
+            Message::AskReadAll => Action::effect(Effect::AskReadAll),
             Message::Picker(m) => {
                 let Some((picker, target)) = &mut self.picker else {
                     return Action::none();
@@ -960,6 +982,18 @@ fn find_message<'a>(
         .or_else(|| ws.timeline(rid).and_then(|t| t.get(mid)))
         .map(|i| &i.message)
         .or_else(|| thread.and_then(|t| t.parent()).filter(|p| p.id == mid))
+}
+
+/// The newest message to react to (Ctrl/Cmd+Shift+\): of the thread, or of
+/// the room without the thread replies shown there.
+fn last_reactable(ws: &Workspace, rid: &str, tmid: Option<&str>) -> Option<String> {
+    let timeline = match tmid {
+        Some(t) => ws.thread(t)?,
+        None => ws.timeline(rid)?,
+    };
+    timeline
+        .last_reactable(tmid.is_some())
+        .map(|m| m.id.clone())
 }
 
 /// The newest own message the user may edit (Up in an empty composer).

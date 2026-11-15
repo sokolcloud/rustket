@@ -265,6 +265,14 @@ test cannot trigger without changing global server state).
   from the cached one is sent as `SessionEvent::MeChanged`. `stream-notify-logged`
   (`Users:NameChanged`) is server-only (`allowWrite('none')`). `roles-change` `u.name` is the acting user's name, not the target's.
 - `{rid}/messagesRead` was not sent by `subscriptions.read` on the dev server (read receipts off).
+- **Read marks**: DDP `readMessages` `[rid, readThreads]` and `readThreads` `[tmid]` do what REST
+  `subscriptions.read` / `chat.readThread` do, answer `{"msg":"result","id":…}` without `result`,
+  and fall under the DDP method limits (10 / 10 s per connection, 20 / 10 s per user) instead of
+  the REST default (10 / 60 s per IP and route). A bad room id is `error-room-does-not-exist`; a
+  server without the method answers error `404`. `readMessages(rid, false)` clears the room's
+  unread and mentions but leaves `alert: true` while an unread thread remains (verified live).
+  Rustket sends every bulk read mark through one paced queue (`rustket_core::reads`,
+  `crates/rustket/src/reads.rs`), REST only as the fallback.
 - **Typing**: the web client calls the DDP method `stream-notify-room` with params
   `["{rid}/user-activity", username, ["user-typing"], {}]` (extras `{tmid}` in a thread). The
   server (`notifications.module.ts` `canType`) relays it only if the identity equals the user's

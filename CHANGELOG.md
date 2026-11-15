@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Slack-style keyboard shortcuts: Escape marks the open room as read when
+  there is nothing left to close (can be turned off in Settings → General),
+  Shift+Escape marks every room of the server as read after a confirmation,
+  Ctrl+Shift+\ reacts to the last message, Ctrl+, opens the preferences, and
+  the message field gets Ctrl+Shift+X / C / U / 9 and Ctrl+Alt+Shift+C for
+  strikethrough, inline code, link, quote and code block (Cmd on macOS).
+- A keyboard shortcuts overview: Ctrl+/ (Cmd+/ on macOS), the user menu or
+  Settings → General. The formatting buttons show their shortcut.
+- Marking many rooms read goes through one paced queue over the realtime
+  connection (much faster than the per-request web route on servers with the
+  default rate limits), falling back to the web API when needed.
+
 ## [0.2.6] - 2026-11-15
 
 ### Security

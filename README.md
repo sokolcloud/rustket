@@ -232,8 +232,19 @@ ICED_BACKEND=tiny-skia rustket
   The title bar is not one of them.
 - Escape closes the innermost thing: a menu or dialog, then a field's focus,
   then the right panel or the open settings/account/directory/administration
-  page.
-- Alt+Up / Alt+Down open the previous / next room.
+  page. With nothing left to close it marks the open room as read, threads
+  included, like Slack (**Settings → General → Keyboard** turns that off).
+- Shift+Escape marks every room of the current server as read, threads
+  included, after a confirmation.
+- Alt+Up / Alt+Down open the previous / next room; Alt+Shift+Up /
+  Alt+Shift+Down the previous / next unread room.
+- Ctrl+K jumps to a room or person, Ctrl+, opens the preferences and Ctrl+/
+  shows every shortcut.
+- Ctrl+Shift+\ reacts to the last message (in a thread: its last reply).
+- In the message field: Ctrl+B bold, Ctrl+I italic, Ctrl+Shift+X
+  strikethrough, Ctrl+Shift+C inline code, Ctrl+Alt+Shift+C code block,
+  Ctrl+Shift+U link, Ctrl+Shift+9 quote.
+- On macOS Cmd takes the place of Ctrl and Option the place of Alt.
 - Message text can be selected with the mouse (double-click: word,
   triple-click: paragraph); Ctrl+A selects the whole message last clicked and
   Ctrl+C copies the selection. While a text field has the focus, these keys

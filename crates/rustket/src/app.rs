@@ -2,6 +2,7 @@
 
 mod after_update;
 mod components;
+mod keys;
 mod links;
 mod rooms;
 mod secrets;
@@ -134,6 +135,20 @@ pub enum Modal {
     },
     CreateRoom(ServerId, Box<crate::dialogs::create_room::CreateRoom>),
     QuickSwitcher(ServerId, Box<crate::dialogs::quick_switcher::QuickSwitcher>),
+    /// The keyboard shortcuts cheat sheet (Ctrl/Cmd+/).
+    Shortcuts,
+    /// "Mark all as read" (Shift+Esc) of a server: the rooms fixed when it
+    /// opened, and the progress once confirmed.
+    ReadAll {
+        server_id: ServerId,
+        rids: Vec<String>,
+        /// Confirmed and running: the dialog cannot be dismissed.
+        busy: bool,
+        done: usize,
+        failed: usize,
+        /// Identifies this run in the read queue (`reads::Origin::ReadAll`).
+        stamp: u64,
+    },
 }
 
 pub struct App {
@@ -514,6 +529,7 @@ impl App {
         let confirm = self.show_next_confirmation();
         let unread = self.unread_hook();
         let unread = Task::batch([unread, self.omni_after_update()]);
+        self.drop_orphaned_read_all();
         Task::batch([task, after, confirm, unread])
     }
 
@@ -612,7 +628,8 @@ impl App {
             Message::UiKit(sid, epoch, m) => self.on_uikit_in(sid, epoch, m),
             Message::Desktop(m) => self.on_desktop(m),
             Message::Calls(m) => self.on_calls(m),
-            Message::OpenQuickSwitcher => self.navigate(component::Nav::QuickSwitcher),
+            Message::Shortcut(s) => self.on_shortcut(s),
+            Message::Reads(sid, epoch, m) => self.on_reads(sid, epoch, m),
             Message::FocusNext(forward) => rustket_ui::widget::focus_cycle(forward),
             Message::FocusRegion(forward) => self.focus_region(forward),
             Message::Escape => self.on_escape(),
@@ -891,6 +908,12 @@ impl App {
                 }
             },
             Message::Modal(m) => self.on_modal(m),
+            // A running "Mark all as read" finishes first.
+            Message::CloseModal
+                if matches!(self.modals.last(), Some(Modal::ReadAll { busy: true, .. })) =>
+            {
+                Task::none()
+            }
             Message::CloseModal => {
                 if let Some(Modal::ConfirmToken { server_id, .. }) = self.modals.pop() {
                     // Rejecting the account also ends the browser login.
@@ -961,8 +984,9 @@ impl App {
     }
 
     /// Escape no widget took (popovers, dialogs and focused inputs handle
-    /// their own): close the active room's right panel, or the settings,
-    /// account, directory or administration page.
+    /// their own): on the server view the chain of `escape_on_server`
+    /// (`app/keys.rs`); else close the settings, account, directory or
+    /// administration page.
     fn on_escape(&mut self) -> Task<Message> {
         if !self.modals.is_empty() {
             return Task::none();
@@ -982,23 +1006,7 @@ impl App {
                 sid.clone(),
                 crate::screens::admin::Message::Close,
             )),
-            Screen::Server => {
-                let Some(s) = self.active.as_ref().and_then(|sid| self.servers.get(sid)) else {
-                    return Task::none();
-                };
-                let Some(rid) = s.active_room.clone() else {
-                    return Task::none();
-                };
-                if s.rooms.get(&rid).is_none_or(|rv| rv.panel.kind().is_none()) {
-                    return Task::none();
-                }
-                Task::done(Message::Room(
-                    s.id.clone(),
-                    s.generation,
-                    rid,
-                    room::Message::Panel(room::panel::Message::Close),
-                ))
-            }
+            Screen::Server => self.escape_on_server(),
             Screen::Loading | Screen::AddServer(_) => Task::none(),
         }
     }
@@ -1076,6 +1084,7 @@ impl App {
                     .retain(|m| !matches!(m, Modal::SecretsMemoryOnly { .. }));
                 self.set_secrets_memory_only(true)
             }
+            ModalMessage::ConfirmReadAll => self.confirm_read_all(),
         }
     }
 }

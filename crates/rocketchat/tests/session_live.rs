@@ -781,3 +781,91 @@ async fn service_room_fields_arrive_live() {
     })
     .await;
 }
+
+/// Polls `subscriptions.getOne` of `rid` until `pred` holds.
+async fn wait_sub(
+    user: &TempUser,
+    rid: &str,
+    what: &str,
+    pred: impl Fn(&rocketchat::models::Subscription) -> bool,
+) -> rocketchat::models::Subscription {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let s = user.rest.subscriptions_get_one(rid).await.unwrap();
+        if pred(&s) {
+            return s;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}: {s:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// DDP `readMessages(rid, false)` clears the room's mentions and keeps
+/// unread threads;
+/// `readThreads(tmid)` clears the thread; `readMessages(rid, true)` clears
+/// both.
+#[tokio::test(flavor = "multi_thread")]
+async fn read_methods_clear_rooms_and_threads() {
+    with_fixture(|server, fx| async move {
+        let owner = fx.user("rd-own").await;
+        let reader = fx.user("rd-rdr").await;
+        let rid = shared_channel(&fx, &owner, &reader).await;
+        let (session, _events) = start(&server, &reader).await;
+        let mention = format!("@{} hi", reader.username);
+        let parent = post(&owner, &rid, &mention).await;
+        let reply = OutgoingMessage {
+            rid: rid.clone(),
+            msg: format!("@{} in thread", reader.username),
+            tmid: Some(parent.clone()),
+            ..Default::default()
+        };
+        owner.rest.send_message(&reply).await.unwrap();
+        let has_thread = |s: &rocketchat::models::Subscription| {
+            s.tunread.as_ref().is_some_and(|t| t.contains(&parent))
+        };
+        wait_sub(&reader, &rid, "unread room and thread", |s| {
+            s.alert && s.user_mentions > 0 && has_thread(s)
+        })
+        .await;
+
+        session.read_messages(&rid, false).await.unwrap();
+        // `alert` stays while an unread thread is left.
+        wait_sub(&reader, &rid, "room read, thread kept", |s| {
+            s.user_mentions == 0 && has_thread(s)
+        })
+        .await;
+        session.read_thread_method(&parent).await.unwrap();
+        wait_sub(&reader, &rid, "thread read", |s| !has_thread(s)).await;
+
+        // Both at once.
+        let parent2 = post(&owner, &rid, &mention).await;
+        owner
+            .rest
+            .send_message(&OutgoingMessage {
+                tmid: Some(parent2.clone()),
+                ..reply.clone()
+            })
+            .await
+            .unwrap();
+        wait_sub(&reader, &rid, "unread again", |s| {
+            s.alert && s.tunread.as_ref().is_some_and(|t| t.contains(&parent2))
+        })
+        .await;
+        session.read_messages(&rid, true).await.unwrap();
+        wait_sub(&reader, &rid, "everything read", |s| {
+            !s.alert && s.user_mentions == 0 && s.tunread.as_ref().is_none_or(|t| t.is_empty())
+        })
+        .await;
+
+        let e = session
+            .read_messages("no-such-room-rustket", true)
+            .await
+            .unwrap_err();
+        assert!(!e.is_method_not_found(), "{e:?}");
+        session.close().await;
+    })
+    .await;
+}

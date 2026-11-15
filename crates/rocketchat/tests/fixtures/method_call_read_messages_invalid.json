@@ -1,0 +1,4 @@
+{
+  "message": "{\"msg\":\"result\",\"id\":\"3\",\"error\":{\"isClientSafe\":true,\"error\":\"error-room-does-not-exist\",\"reason\":\"This room does not exist\",\"details\":{\"method\":\"readMessages\"},\"message\":\"This room does not exist [error-room-does-not-exist]\",\"errorType\":\"Meteor.Error\"}}",
+  "success": false
+}

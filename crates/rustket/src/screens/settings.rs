@@ -174,6 +174,10 @@ pub enum Message {
     SetCloseToTray(bool),
     SetMinimizeToTray(bool),
     SetStartMinimized(bool),
+    /// `UiPrefs::escape_marks_read`.
+    SetEscapeMarksRead(bool),
+    /// Open the keyboard shortcuts cheat sheet.
+    ShowShortcuts,
     SetHardwareAcceleration(bool),
     SetSystemTitleBar(bool),
     SetAutostart(bool),
@@ -363,6 +367,10 @@ impl Settings {
             Message::SetCloseToTray(v) => Self::pref(ctx, |p| p.close_to_tray = v),
             Message::SetMinimizeToTray(v) => Self::pref(ctx, |p| p.minimize_to_tray = v),
             Message::SetStartMinimized(v) => Self::pref(ctx, |p| p.start_minimized = v),
+            Message::SetEscapeMarksRead(v) => Self::pref(ctx, |p| p.escape_marks_read = v),
+            Message::ShowShortcuts => {
+                Action::effect(Effect::Navigate(crate::component::Nav::Shortcuts))
+            }
             Message::SetHardwareAcceleration(v) => Self::pref(ctx, |p| p.hardware_acceleration = v),
             Message::SetSystemTitleBar(v) => Self::pref(ctx, |p| p.system_title_bar = v),
             Message::SetAutostart(on) => {
@@ -522,6 +530,8 @@ mod tests {
             (Message::SetCloseToTray(false), |c| !c.close_to_tray),
             (Message::SetMinimizeToTray(true), |c| c.minimize_to_tray),
             (Message::SetStartMinimized(true), |c| c.start_minimized),
+            (Message::SetEscapeMarksRead(false), |c| !c.escape_marks_read),
+            (Message::SetEscapeMarksRead(true), |c| c.escape_marks_read),
             (Message::SetHardwareAcceleration(false), |c| {
                 !c.hardware_acceleration
             }),

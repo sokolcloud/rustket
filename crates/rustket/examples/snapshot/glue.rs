@@ -60,7 +60,7 @@ async fn foreign_channel(server: &ServerUrl, ledger: &Ledger, name: &str, text: 
 /// Opens `name` through the quick switcher (spotlight finds unjoined rooms).
 async fn open_via_switcher(d: &mut Driver, sid: &ServerId, name: &str, rid: &str) {
     use rustket::dialogs::quick_switcher::Message as Qs;
-    d.send(Message::OpenQuickSwitcher);
+    d.send(Message::Shortcut(rustket::keymap::Shortcut::QuickSwitcher));
     d.send(Message::QuickSwitcher(
         sid.clone(),
         Qs::Query(name.to_owned()),
