@@ -8,7 +8,8 @@
 //! `NSApplicationWillFinishLaunchingNotification`, which comes after that and
 //! before the event that launched the app is dispatched.
 //!
-//! The only place in the project with `unsafe` code.
+//! With `desktop/notifications/macos.rs` the only place in the project with
+//! `unsafe` code.
 #![allow(unsafe_code)]
 
 use objc2::rc::Retained;

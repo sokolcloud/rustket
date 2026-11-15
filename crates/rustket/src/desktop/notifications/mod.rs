@@ -3,11 +3,17 @@
 //!
 //! One notification per room: a new message replaces the room's previous
 //! notification instead of stacking up, and the notification is closed once
-//! the room was read. Activating it raises the window and opens the room (or
-//! thread). Clicks, actions and dismissals come back from one app-wide
-//! subscription and are routed by id. The backend is a [`Notifier`] so tests
-//! use a mock: freedesktop (`org.freedesktop.Notifications` over D-Bus) on
-//! Linux and the BSDs, toasts on Windows, `NSUserNotification` on macOS.
+//! the room was read: it was seen unread after the notification and no
+//! longer is, or its last-seen (`ls`) reached the notified message (read on
+//! another device before a state pass saw it unread). Activating it raises
+//! the window and opens the room (or thread). Clicks, actions and dismissals
+//! come back from one app-wide subscription and are routed by id. The
+//! backend is a [`Notifier`] so tests use a mock: freedesktop
+//! (`org.freedesktop.Notifications` over D-Bus) on Linux and the BSDs, toasts
+//! on Windows, `NSUserNotificationCenter` on macOS. Every backend replaces a
+//! room's notification in place and withdraws closed ones; the Windows and
+//! macOS ones also clear what earlier launches left behind, whose ids would
+//! collide with this launch's.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -15,8 +21,8 @@ use std::sync::{Arc, Mutex};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use iced::{Subscription, Task};
-use rocketchat::ServerUrl;
 use rocketchat::session::DesktopNotification;
+use rocketchat::{RcDate, ServerUrl};
 use rust_i18n::t;
 use rustket_core::config::UiPrefs;
 use rustket_core::notify::{
@@ -42,6 +48,8 @@ mod toast;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 pub use freedesktop::{ZbusNotifier, escape_markup};
+#[cfg(target_os = "macos")]
+pub use macos::install;
 
 /// Key of the default action (clicking the notification).
 pub const ACTION_DEFAULT: &str = "default";
@@ -220,6 +228,12 @@ struct Entry {
     tmid: Option<String>,
     /// The room was seen unread after the notification (so "read" means read).
     seen_unread: bool,
+    /// Id of the notified message.
+    mid: String,
+    /// Server timestamp of the notified message, once the workspace knows
+    /// it (looked up again on every read sync while unknown): a last-seen
+    /// at or after it means read. Never compared with the local clock.
+    about: Option<RcDate>,
     /// Call of a conference notification (its "Join" joins the call).
     conference_id: Option<String>,
 }
@@ -330,6 +344,29 @@ fn avatar_rgba(
     }
 }
 
+/// Timestamp of message `mid` of room `rid`, if the workspace has it.
+fn message_ts(ws: &Workspace, rid: &str, mid: &str) -> Option<RcDate> {
+    if let Some(ts) = ws
+        .timeline(rid)
+        .and_then(|t| t.get(mid))
+        .and_then(|i| i.message.ts)
+    {
+        return Some(ts);
+    }
+    ws.room(rid)
+        .and_then(|e| e.room.as_ref())
+        .and_then(|r| r.last_message.as_deref())
+        .filter(|m| m.id == mid)
+        .and_then(|m| m.ts)
+}
+
+/// The room's last-seen is at or after `about`.
+fn seen_since(ws: &Workspace, rid: &str, about: RcDate) -> bool {
+    ws.subscription(rid)
+        .and_then(|s| s.ls)
+        .is_some_and(|ls| ls >= about)
+}
+
 fn room_unread(ws: &Workspace, rid: &str) -> bool {
     ws.subscription(rid).is_some_and(|s| {
         s.unread > 0 || s.alert || s.tunread.as_ref().is_some_and(|t| !t.is_empty())
@@ -417,16 +454,22 @@ impl Notifications {
         };
         self.seq += 1;
         let seq = self.seq;
+        let mid = notification.payload.id.clone();
+        let about = message_ts(workspace, &spec.rid, &mid);
         let entry = self.shown.entry(target.clone()).or_insert(Entry {
             id: None,
             seq,
             tmid: None,
             seen_unread: false,
+            mid: String::new(),
+            about: None,
             conference_id: None,
         });
         entry.seq = seq;
         entry.tmid = spec.tmid.clone();
         entry.seen_unread = false;
+        entry.mid = mid;
+        entry.about = about;
         entry.conference_id = notification.payload.conference_id.clone();
         let out = Outgoing {
             replaces: entry.id,
@@ -587,7 +630,12 @@ impl Notifications {
         }
     }
 
-    /// Closes the notifications of `sid`'s rooms that were read since.
+    /// Closes the notifications of `sid`'s rooms that were read since: the
+    /// room is not unread and either was seen unread after the notification
+    /// or its last-seen is at or after the notified message's server
+    /// timestamp (read elsewhere before a state pass saw it unread). While
+    /// the workspace does not know that timestamp, only the first rule
+    /// applies.
     pub fn sync_read(&mut self, sid: &ServerId, ws: &Workspace) -> Task<super::Message> {
         let mut close = Vec::new();
         self.shown.retain(|t, e| {
@@ -598,7 +646,10 @@ impl Notifications {
                 e.seen_unread = true;
                 return true;
             }
-            if e.seen_unread {
+            if e.about.is_none() {
+                e.about = message_ts(ws, &t.rid, &e.mid);
+            }
+            if e.seen_unread || e.about.is_some_and(|about| seen_since(ws, &t.rid, about)) {
                 close.extend(e.id);
                 return false;
             }
@@ -823,6 +874,8 @@ mod tests {
                 seq: 3,
                 tmid: Some("t1".into()),
                 seen_unread: false,
+                mid: String::new(),
+                about: None,
                 conference_id: None,
             },
         );
@@ -850,6 +903,8 @@ mod tests {
                 seq: 4,
                 tmid: None,
                 seen_unread: false,
+                mid: String::new(),
+                about: None,
                 conference_id: None,
             },
         );
@@ -863,6 +918,8 @@ mod tests {
                 seq: 5,
                 tmid: None,
                 seen_unread: false,
+                mid: String::new(),
+                about: None,
                 conference_id: None,
             },
         );
@@ -879,6 +936,8 @@ mod tests {
                 seq: 6,
                 tmid: None,
                 seen_unread: false,
+                mid: String::new(),
+                about: None,
                 conference_id: Some("c1".into()),
             },
         );
@@ -918,6 +977,8 @@ mod tests {
                 seq: 2,
                 tmid: None,
                 seen_unread: false,
+                mid: String::new(),
+                about: None,
                 conference_id: None,
             },
         );
@@ -1063,6 +1124,100 @@ mod tests {
         assert_eq!(*mock.closed.lock().unwrap(), vec![1]);
     }
 
+    fn sub_seen(rid: &str, ls: &str) -> rocketchat::models::Subscription {
+        let mut s = sub(rid, 0);
+        s.ls = RcDate::parse_iso(ls);
+        s
+    }
+
+    #[test]
+    fn closes_when_read_elsewhere_before_seen_unread() {
+        use rustket_core::workspace::Change;
+        let mock = MockNotifier::default();
+        let mut n = Notifications::with_backend(Arc::new(mock.clone()));
+        let fx = Fixture::new();
+        let mut ws = workspace();
+        let sid = ServerId("s1".into());
+        // The workspace knows the message: its timestamp is what counts.
+        ws.apply_room(
+            Change::Inserted,
+            serde_json::from_value(json!({
+                "_id": "r1", "t": "d",
+                "lastMessage": {"_id": "m1", "rid": "r1", "msg": "hello there",
+                    "ts": "2026-01-01T10:00:00.000Z", "u": {"_id": "bobid", "username": "bob"}}
+            }))
+            .unwrap(),
+        );
+        ws.apply_subscription(Change::Inserted, sub_seen("r1", "2026-01-01T09:00:00.000Z"));
+        let t = n.notify(
+            &sid,
+            "Dev",
+            &notification("r1", "m1", None),
+            &ws,
+            &UiPrefs::default(),
+            &fx.env(false, None),
+        );
+        drain(&mut n, t);
+        // Last seen before the message (the unread update is still on its way).
+        let t = n.sync_read(&sid, &ws);
+        drain(&mut n, t);
+        assert_eq!(n.len(), 1);
+        ws.apply_subscription(Change::Updated, sub_seen("r1", "2026-01-01T09:59:59.999Z"));
+        let t = n.sync_read(&sid, &ws);
+        drain(&mut n, t);
+        assert_eq!(n.len(), 1);
+        // Read on another device: never seen unread here, still closed.
+        ws.apply_subscription(Change::Updated, sub_seen("r1", "2026-01-01T10:00:00.000Z"));
+        let t = n.sync_read(&sid, &ws);
+        drain(&mut n, t);
+        assert!(n.is_empty());
+        assert_eq!(*mock.closed.lock().unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn unknown_timestamp_never_closes_on_last_seen() {
+        use rustket_core::workspace::Change;
+        let mock = MockNotifier::default();
+        let mut n = Notifications::with_backend(Arc::new(mock.clone()));
+        let fx = Fixture::new();
+        let mut ws = workspace();
+        let sid = ServerId("s1".into());
+        ws.apply_subscription(Change::Inserted, sub_seen("r1", "2026-01-01T09:00:00.000Z"));
+        let t = n.notify(
+            &sid,
+            "Dev",
+            &notification("r1", "m1", None),
+            &ws,
+            &UiPrefs::default(),
+            &fx.env(false, None),
+        );
+        drain(&mut n, t);
+        // The message is unknown: no last-seen closes it, however late.
+        ws.apply_subscription(Change::Updated, sub_seen("r1", "2099-01-01T00:00:00.000Z"));
+        let t = n.sync_read(&sid, &ws);
+        drain(&mut n, t);
+        assert_eq!(n.len(), 1, "an unknown timestamp keeps it");
+        // The lastMessage update arrives later: now its timestamp counts.
+        ws.apply_subscription(Change::Updated, sub_seen("r1", "2026-01-01T09:00:00.000Z"));
+        ws.apply_room(
+            Change::Inserted,
+            serde_json::from_value(json!({
+                "_id": "r1", "t": "d",
+                "lastMessage": {"_id": "m1", "rid": "r1", "msg": "hello there",
+                    "ts": "2026-01-01T10:00:00.000Z", "u": {"_id": "bobid", "username": "bob"}}
+            }))
+            .unwrap(),
+        );
+        let t = n.sync_read(&sid, &ws);
+        drain(&mut n, t);
+        assert_eq!(n.len(), 1, "last seen before the message");
+        ws.apply_subscription(Change::Updated, sub_seen("r1", "2026-01-01T10:00:00.000Z"));
+        let t = n.sync_read(&sid, &ws);
+        drain(&mut n, t);
+        assert!(n.is_empty());
+        assert_eq!(*mock.closed.lock().unwrap(), vec![1]);
+    }
+
     #[test]
     fn logged_out_servers_lose_their_notifications() {
         let mock = MockNotifier::default();
@@ -1077,6 +1232,8 @@ mod tests {
                 seq: 1,
                 tmid: None,
                 seen_unread: false,
+                mid: String::new(),
+                about: None,
                 conference_id: None,
             },
         );

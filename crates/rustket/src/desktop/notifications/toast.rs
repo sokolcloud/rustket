@@ -7,7 +7,9 @@
 //! the tag and so replaces the room's previous toast, and closing removes it
 //! from the Action Center. Activation and dismissal handlers run on WinRT
 //! worker threads and report through [`super::native`]. The toast objects
-//! are kept alive while shown, as their handlers live on them.
+//! are kept alive while shown, as their handlers live on them. Toasts of
+//! earlier sessions are removed before the first toast of this one: their
+//! handlers are gone and their tags would collide with the restarted ids.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -28,14 +30,27 @@ use super::{ACTION_DEFAULT, Event, Notifier, Outgoing, Signal, native, text};
 
 const GROUP: &str = "rustket";
 
-/// Registers the AppUserModelID once (display name and icon of the toasts).
+/// Registers the AppUserModelID and clears earlier sessions' toasts, once
+/// and before the first toast is shown.
 fn ensure_registered() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         if let Err(e) = register_aumid() {
             tracing::warn!(error = %e, "cannot register the AppUserModelID");
         }
+        clear_stale();
     });
+}
+
+/// Removes the toasts earlier sessions left in the Action Center: their
+/// handlers died with that process, so clicking them would do nothing, and
+/// ids (tags) restart at 1, so a new toast would replace an unrelated one.
+fn clear_stale() {
+    let removed = ToastNotificationManager::History()
+        .and_then(|h| h.RemoveGroupWithId(&HSTRING::from(GROUP), &HSTRING::from(crate::BUNDLE_ID)));
+    if let Err(e) = removed {
+        tracing::debug!(error = %e, "cannot clear earlier toasts");
+    }
 }
 
 fn register_aumid() -> Result<(), String> {
@@ -186,7 +201,8 @@ pub struct ToastNotifier {
 }
 
 impl ToastNotifier {
-    /// Registers the AppUserModelID in the background.
+    /// Registers the AppUserModelID and clears stale toasts in the
+    /// background (the first toast waits for it).
     pub fn new() -> Self {
         let spawned = std::thread::Builder::new()
             .name("toast-register".into())

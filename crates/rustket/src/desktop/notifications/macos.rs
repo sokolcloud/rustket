@@ -1,190 +1,358 @@
-//! macOS backend: `NSUserNotification` through `mac-notification-sys`.
+//! macOS backend: `NSUserNotificationCenter` through objc2.
 //!
-//! Posted as [`crate::BUNDLE_ID`] when running from the app bundle, as
-//! Terminal otherwise (development builds). The library waits for the
-//! click or dismissal on the calling thread, so every notification gets a
-//! short-lived thread of its own that reports the response through
-//! [`super::native`]; at most [`MAX_WAITING`] wait at a time, later ones are
-//! posted without waiting (not clickable).
+//! Every notification's identifier is `rustket-<launch nonce>-<id>`
+//! ([`text::mac_identifier`]). A room keeps one notification: the shared
+//! [`Outgoing::replaces`] logic reuses the room's id, and posting removes
+//! the delivered notification with that identifier before delivering the
+//! new one (a replacement in place by identifier updates Notification
+//! Center silently, without a banner or sound). `close` removes the
+//! delivered notification (read rooms, logout). Notifications of earlier
+//! launches are removed at startup, and clicks on any with a foreign nonce
+//! are ignored; so a click on a leftover notification that relaunches the
+//! app only opens the app.
 //!
-//! Limits: delivered notifications can be neither replaced nor removed. A
-//! notification replacing another reuses its id (a click on any of a room's
-//! notifications opens the room) and `close` only forgets the id, so a later
-//! dismissal is not reported.
+//! One app-wide delegate ([`install`], on the main thread) receives the
+//! clicks and alert dismissals and reports them through [`super::native`]:
+//! clicking the notification is [`ACTION_DEFAULT`], the action button and
+//! the additional actions (`NSUserNotificationAction`) report their key, and
+//! closing an alert reports [`Signal::Closed`]. It also asks for
+//! notifications to be presented while the app is frontmost.
+//!
+//! Threading: the notification (a plain data object) and its image are
+//! built on a blocking worker; every call on the notification center
+//! (deliver, enumerate, remove) runs on the main thread, where its delegate
+//! callbacks arrive too: workers hand the work to the delegate object with
+//! `performSelectorOnMainThread:`. Apple documents no thread safety for the
+//! center, and the main run loop (winit's) is always running. A `close`
+//! runs after its post: [`super`] only learns the id from the post's
+//! [`Event::Shown`], which happens after the post was queued, and the main
+//! run loop's perform queue is lock-protected. That is happens-before plus
+//! the queue's implementation, not an ordering Apple documents across
+//! threads.
+//!
+//! The center exists only for an app bundle with a bundle id: unbundled
+//! development builds log once and show no notifications.
+//!
+//! Parity with the native API: the timeout and urgency of [`Outgoing`] have
+//! no `NSUserNotification` counterpart (banner or alert is the user's choice
+//! in System Settings), and whether buttons show depends on that style.
+//!
+//! With `macos_events.rs` the only place in the project with `unsafe` code.
+#![allow(unsafe_code)]
+// The whole `NSUserNotification` API is deprecated (since macOS 11) but works.
+#![allow(deprecated)]
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{LazyLock, OnceLock};
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use mac_notification_sys::{MainButton, Notification, NotificationResponse};
+use objc2::rc::{Retained, autoreleasepool};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
+use objc2::{AnyThread, ClassType, MainThreadMarker, define_class, msg_send, sel};
+use objc2_app_kit::NSImage;
+use objc2_foundation::{
+    NSArray, NSDictionary, NSObjectNSThreadPerformAdditions, NSString, NSUserNotification,
+    NSUserNotificationAction, NSUserNotificationActivationType, NSUserNotificationCenter,
+    NSUserNotificationCenterDelegate, NSUserNotificationDefaultSoundName, ns_string,
+};
 
-use super::{ACTION_DEFAULT, Event, Notifier, Outgoing, Signal, native, text};
+use super::{Event, Notifier, Outgoing, Signal, native, text};
 
-/// Notifications waiting for a response at the same time.
-const MAX_WAITING: usize = 16;
+/// `userInfo` key of the action button's action key.
+const MAIN_KEY: &str = "rustket.action";
 
-fn ensure_application() {
-    static SET: Once = Once::new();
-    SET.call_once(|| {
-        let app = std::env::current_exe()
-            .map(|exe| text::mac_application(&exe))
-            .unwrap_or("com.apple.Terminal");
-        if let Err(e) = mac_notification_sys::set_application(app) {
-            tracing::debug!(error = %e, "cannot set the notification application");
+/// Nonce of this launch in the identifiers.
+static NONCE: LazyLock<String> = LazyLock::new(|| {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    text::launch_nonce(std::process::id(), millis)
+});
+
+/// The delegate, once installed (`None`: no notification center).
+static DELEGATE: OnceLock<Option<Retained<Delegate>>> = OnceLock::new();
+
+/// The notification center; `nil` outside an app bundle.
+fn center() -> Option<Retained<NSUserNotificationCenter>> {
+    // SAFETY: `+defaultUserNotificationCenter` takes no arguments and returns
+    // the shared center or nil; nil is why the result is read as an Option
+    // (the generated binding assumes non-null).
+    unsafe {
+        msg_send![
+            NSUserNotificationCenter::class(),
+            defaultUserNotificationCenter
+        ]
+    }
+}
+
+/// Removes the delivered notifications with `identifier`.
+fn remove_delivered(center: &NSUserNotificationCenter, identifier: &NSString) {
+    for note in center.deliveredNotifications().to_vec() {
+        if note
+            .identifier()
+            .is_some_and(|i| i.isEqualToString(identifier))
+        {
+            center.removeDeliveredNotification(&note);
         }
+    }
+}
+
+fn our_id(note: &NSUserNotification) -> Option<u32> {
+    let identifier = note.identifier()?.to_string();
+    text::parse_mac_identifier(&NONCE, &identifier)
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements, and `Delegate` does
+    // not implement `Drop`. `Delegate` is `Send + Sync` through NSObject
+    // (needed by `DELEGATE` and the workers' `&'static Delegate`); that is
+    // sound because other threads only call `performSelectorOnMainThread:`
+    // on it and every method body runs on the main thread. Any future ivar
+    // must itself be `Send + Sync`.
+    #[unsafe(super = NSObject)]
+    #[name = "RustketNotificationDelegate"]
+    struct Delegate;
+
+    impl Delegate {
+        // SAFETY: called through `performSelectorOnMainThread:` with an
+        // `NSUserNotification` (see `post`).
+        #[unsafe(method(post:))]
+        fn post(&self, note: &NSUserNotification) {
+            let Some(center) = center() else {
+                return;
+            };
+            // Remove, then deliver: a fresh banner and sound for every message.
+            if let Some(identifier) = note.identifier() {
+                remove_delivered(&center, &identifier);
+            }
+            center.deliverNotification(note);
+        }
+
+        // SAFETY: called through `performSelectorOnMainThread:` with an
+        // `NSString` (see `MacNotifier::close`).
+        #[unsafe(method(withdraw:))]
+        fn withdraw(&self, identifier: &NSString) {
+            if let Some(center) = center() {
+                remove_delivered(&center, identifier);
+            }
+        }
+
+        // SAFETY: the signature of the undocumented delegate callback for a
+        // closed alert (`- (void)userNotificationCenter:(NSUserNotificationCenter *)c
+        // didDismissAlert:(NSUserNotification *)n`); never called if absent.
+        #[unsafe(method(userNotificationCenter:didDismissAlert:))]
+        fn did_dismiss_alert(&self, center: &NSUserNotificationCenter, note: &NSUserNotification) {
+            if let Some(id) = our_id(note) {
+                native::emit(id, Signal::Closed);
+            }
+            center.removeDeliveredNotification(note);
+        }
+    }
+
+    unsafe impl NSObjectProtocol for Delegate {}
+
+    // SAFETY: the methods have the protocol's signatures.
+    unsafe impl NSUserNotificationCenterDelegate for Delegate {
+        #[unsafe(method(userNotificationCenter:didActivateNotification:))]
+        fn did_activate(
+            &self,
+            center: &NSUserNotificationCenter,
+            note: &NSUserNotification,
+        ) {
+            let Some(id) = our_id(note) else {
+                return;
+            };
+            let additional = note
+                .additionalActivationAction()
+                .and_then(|a| a.identifier())
+                .map(|i| i.to_string());
+            let main_key = note
+                .userInfo()
+                .and_then(|info| info.objectForKey(ns_string!(MAIN_KEY)))
+                .and_then(|v| v.downcast::<NSString>().ok())
+                .map(|s| s.to_string());
+            let activation = match note.activationType() {
+                NSUserNotificationActivationType::ContentsClicked => {
+                    text::MacActivation::Contents
+                }
+                NSUserNotificationActivationType::ActionButtonClicked => {
+                    text::MacActivation::ActionButton
+                }
+                NSUserNotificationActivationType::AdditionalActionClicked => {
+                    text::MacActivation::Additional(additional.as_deref())
+                }
+                NSUserNotificationActivationType::Replied => text::MacActivation::Replied,
+                _ => text::MacActivation::None,
+            };
+            if let Some(signal) = text::mac_signal(activation, main_key.as_deref()) {
+                center.removeDeliveredNotification(note);
+                native::emit(id, signal);
+            }
+        }
+
+        #[unsafe(method(userNotificationCenter:shouldPresentNotification:))]
+        fn should_present(
+            &self,
+            _center: &NSUserNotificationCenter,
+            _note: &NSUserNotification,
+        ) -> bool {
+            true
+        }
+    }
+);
+
+impl Delegate {
+    fn new() -> Retained<Self> {
+        // SAFETY: NSObject's `init` takes no arguments and returns the object.
+        unsafe { msg_send![Self::alloc(), init] }
+    }
+
+    /// Runs `selector` (one of ours, taking one object) with `arg` on the
+    /// main thread.
+    fn on_main(&self, selector: Sel, arg: &AnyObject) {
+        // SAFETY: only called with `post:` (an `NSUserNotification`) and
+        // `withdraw:` (an `NSString`), which `Delegate` implements; the call
+        // retains `self` and `arg` until it ran.
+        unsafe {
+            self.performSelectorOnMainThread_withObject_waitUntilDone(selector, Some(arg), false)
+        }
+    }
+}
+
+/// Sets up the notification center: removes earlier launches'
+/// notifications and installs the delegate. Call on the main thread before
+/// the iced application starts.
+pub fn install() {
+    if MainThreadMarker::new().is_none() {
+        tracing::warn!("the notification delegate must be installed on the main thread");
+        return;
+    }
+    // No NSApplication (and so no autorelease pool) exists yet.
+    DELEGATE.get_or_init(|| {
+        autoreleasepool(|_| {
+            let Some(center) = center() else {
+                tracing::info!(
+                    "no notification center (not running from the app bundle): notifications are off"
+                );
+                return None;
+            };
+            center.removeAllDeliveredNotifications();
+            let delegate = Delegate::new();
+            // SAFETY: `delegate` stays alive for the rest of the process (held
+            // by `DELEGATE`), as the center does not retain its delegate.
+            unsafe { center.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+            Some(delegate)
+        })
     });
 }
 
-#[derive(Default)]
-struct Inner {
-    next_id: AtomicU32,
-    generation: AtomicU64,
-    /// Latest showing of every id that is not closed.
-    current: Mutex<HashMap<u32, u64>>,
-    waiting: AtomicUsize,
+fn delegate() -> Option<&'static Delegate> {
+    DELEGATE.get().and_then(|d| d.as_deref())
 }
 
-impl Inner {
-    fn is_current(&self, id: u32, generation: u64) -> bool {
-        self.current
-            .lock()
-            .is_ok_and(|c| c.get(&id) == Some(&generation))
-    }
-
-    fn forget(&self, id: u32) {
-        if let Ok(mut c) = self.current.lock() {
-            c.remove(&id);
-        }
-    }
-
-    /// Posts `n` and reports the response (runs on its own thread).
-    fn post(&self, id: u32, generation: u64, n: &Outgoing, wait: bool) {
-        ensure_application();
-        let image = n
-            .image
-            .as_ref()
-            .and_then(|(w, h, px)| native::image_file(*w, *h, px))
-            .map(|p| p.to_string_lossy().into_owned());
-        let buttons: Vec<&str> = n
-            .actions
-            .iter()
-            .filter(|(k, _)| k != ACTION_DEFAULT)
-            .map(|(_, l)| l.as_str())
-            .collect();
-        let mut note = Notification::new();
-        note.title(&n.title).message(&n.body);
+/// Builds `n` as notification `id` and hands it to the main thread.
+fn post(delegate: &Delegate, id: u32, n: &Outgoing) {
+    let image = n
+        .image
+        .as_ref()
+        .and_then(|(w, h, px)| native::image_file(*w, *h, px));
+    autoreleasepool(|_| {
+        let note = NSUserNotification::new();
+        note.setIdentifier(Some(&NSString::from_str(&text::mac_identifier(&NONCE, id))));
+        note.setTitle(Some(&NSString::from_str(&n.title)));
+        note.setInformativeText(Some(&NSString::from_str(&n.body)));
         if n.sound {
-            note.default_sound();
+            // SAFETY: an immutable `NSString` constant of Foundation.
+            let sound = unsafe { NSUserNotificationDefaultSoundName };
+            note.setSoundName(Some(sound));
         }
-        if let Some(img) = &image {
-            note.content_image(img);
+        if let Some(path) = image
+            && let Some(img) = NSImage::initWithContentsOfFile(
+                NSImage::alloc(),
+                &NSString::from_str(&path.to_string_lossy()),
+            )
+        {
+            // SAFETY: `contentImage` is an `NSImage` property of
+            // `NSUserNotification` (not in the generated bindings).
+            let () = unsafe { msg_send![&*note, setContentImage: &*img] };
         }
-        match buttons.as_slice() {
-            [] => {}
-            [one] => {
-                note.main_button(MainButton::SingleAction(one));
-            }
-            [first, ..] => {
-                note.main_button(MainButton::DropdownActions(first, &buttons));
-            }
-        }
-        if wait {
-            note.wait_for_click(true);
-        } else {
-            note.asynchronous(true);
-        }
-        let response = note.send();
-        let signal = match response {
-            Ok(NotificationResponse::Click | NotificationResponse::Reply(_)) => {
-                Some(Signal::Action(ACTION_DEFAULT.to_owned()))
-            }
-            Ok(NotificationResponse::ActionButton(label)) => {
-                let key = n
-                    .actions
-                    .iter()
-                    .find(|(_, l)| *l == label)
-                    .map_or(ACTION_DEFAULT, |(k, _)| k.as_str());
-                Some(Signal::Action(key.to_owned()))
-            }
-            Ok(NotificationResponse::CloseButton(_)) => Some(Signal::Closed),
-            Ok(NotificationResponse::None) => wait.then_some(Signal::Closed),
-            Err(e) => {
-                tracing::debug!(error = %e, "notification not shown");
-                Some(Signal::Closed)
-            }
-        };
-        match signal {
-            Some(Signal::Closed) => {
-                if self.is_current(id, generation) {
-                    self.forget(id);
-                    native::emit(id, Signal::Closed);
+        match text::mac_buttons(&n.actions) {
+            Some(buttons) => {
+                note.setHasActionButton(true);
+                note.setActionButtonTitle(&NSString::from_str(buttons.main.1));
+                let key = NSString::from_str(buttons.main.0);
+                let info = NSDictionary::<NSString, AnyObject>::from_slices(
+                    &[ns_string!(MAIN_KEY)],
+                    &[key.as_ref()],
+                );
+                // SAFETY: the dictionary maps an `NSString` to an `NSString`,
+                // a property-list type as `userInfo` requires.
+                unsafe { note.setUserInfo(Some(&info)) };
+                if !buttons.more.is_empty() {
+                    let actions: Vec<_> = buttons
+                        .more
+                        .iter()
+                        .map(|(k, l)| {
+                            NSUserNotificationAction::actionWithIdentifier_title(
+                                Some(&NSString::from_str(k)),
+                                Some(&NSString::from_str(l)),
+                            )
+                        })
+                        .collect();
+                    note.setAdditionalActions(Some(&NSArray::from_retained_slice(&actions)));
                 }
             }
-            Some(action) => {
-                if self.is_current(id, generation) {
-                    self.forget(id);
-                }
-                native::emit(id, action);
-            }
-            None => {}
+            None => note.setHasActionButton(false),
         }
-    }
+        delegate.on_main(sel!(post:), note.as_ref());
+    });
 }
 
 /// `NSUserNotification`s.
 pub struct MacNotifier {
-    inner: Arc<Inner>,
+    next_id: AtomicU32,
 }
 
 impl MacNotifier {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(Inner::default()),
+            next_id: AtomicU32::new(0),
         }
     }
 }
 
 impl Notifier for MacNotifier {
     fn show(&self, n: Outgoing) -> BoxFuture<'static, Event> {
-        let inner = Arc::clone(&self.inner);
         let id = n
             .replaces
-            .unwrap_or_else(|| inner.next_id.fetch_add(1, Ordering::Relaxed) + 1);
-        let generation = inner.generation.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut c) = inner.current.lock() {
-            c.insert(id, generation);
-        }
-        let wait = inner.waiting.fetch_add(1, Ordering::Relaxed) < MAX_WAITING;
-        if !wait {
-            inner.waiting.fetch_sub(1, Ordering::Relaxed);
-        }
-        let server_sound = n.sound;
-        let thread_inner = Arc::clone(&inner);
-        let spawned = std::thread::Builder::new()
-            .name("notification".into())
-            .spawn(move || {
-                thread_inner.post(id, generation, &n, wait);
-                if wait {
-                    thread_inner.waiting.fetch_sub(1, Ordering::Relaxed);
-                }
-            });
-        let event = match spawned {
-            Ok(_) => Event::Shown { id, server_sound },
-            Err(e) => {
-                if wait {
-                    inner.waiting.fetch_sub(1, Ordering::Relaxed);
-                }
-                inner.forget(id);
-                Event::Failed(e.to_string())
+            .unwrap_or_else(|| self.next_id.fetch_add(1, Ordering::Relaxed) + 1);
+        async move {
+            if delegate().is_none() {
+                return Event::Failed("no notification center".into());
             }
-        };
-        async move { event }.boxed()
+            let server_sound = n.sound;
+            let posted = tokio::task::spawn_blocking(move || {
+                if let Some(d) = delegate() {
+                    post(d, id, &n);
+                }
+            })
+            .await;
+            match posted {
+                Ok(()) => Event::Shown { id, server_sound },
+                Err(e) => Event::Failed(e.to_string()),
+            }
+        }
+        .boxed()
     }
 
     fn close(&self, id: u32) -> BoxFuture<'static, ()> {
-        self.inner.forget(id);
+        if let Some(d) = delegate() {
+            autoreleasepool(|_| {
+                let identifier = NSString::from_str(&text::mac_identifier(&NONCE, id));
+                d.on_main(sel!(withdraw:), identifier.as_ref());
+            });
+        }
         async {}.boxed()
     }
 

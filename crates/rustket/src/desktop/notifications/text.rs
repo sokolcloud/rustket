@@ -1,6 +1,8 @@
 //! Pure helpers of the Windows and macOS backends (unit-tested everywhere):
-//! toast XML and the application a macOS notification is posted as.
+//! toast XML, and the identifiers, buttons and click routing of macOS
+//! notifications.
 
+#[cfg(any(windows, test))]
 use std::path::Path;
 
 #[cfg(any(windows, test))]
@@ -89,27 +91,84 @@ pub fn toast_xml(n: &Outgoing, image: Option<&Path>) -> String {
 }
 
 #[cfg(any(target_os = "macos", test))]
-/// Bundle id notifications are posted as on macOS: ours when running from
-/// the app bundle (`*.app/Contents/MacOS/<exe>`), otherwise Terminal's so
-/// development builds still show notifications.
-pub fn mac_application(exe: &Path) -> &'static str {
-    let named = |p: Option<&Path>, name: &str| {
-        p.and_then(|p| p.file_name())
-            .is_some_and(|n| n.eq_ignore_ascii_case(name))
-    };
-    let macos = exe.parent();
-    let contents = macos.and_then(Path::parent);
-    let app = contents.and_then(Path::parent);
-    let bundled = named(macos, "MacOS")
-        && named(contents, "Contents")
-        && app
-            .and_then(|a| a.extension())
-            .is_some_and(|e| e.eq_ignore_ascii_case("app"));
-    if bundled {
-        crate::BUNDLE_ID
-    } else {
-        "com.apple.Terminal"
+/// Prefix of the identifiers of our macOS notifications.
+pub const MAC_PREFIX: &str = "rustket-";
+
+#[cfg(any(target_os = "macos", test))]
+/// Nonce of this process launch in macOS notification identifiers (no `-`).
+pub fn launch_nonce(pid: u32, unix_millis: u128) -> String {
+    format!("{pid:x}t{unix_millis:x}")
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// `NSUserNotification.identifier` of notification `id`: posting again with
+/// the same identifier replaces the delivered notification.
+pub fn mac_identifier(nonce: &str, id: u32) -> String {
+    format!("{MAC_PREFIX}{nonce}-{id}")
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// Our id in `identifier`; `None` for other launches' and foreign ones.
+pub fn parse_mac_identifier(nonce: &str, identifier: &str) -> Option<u32> {
+    let digits = identifier
+        .strip_prefix(MAC_PREFIX)?
+        .strip_prefix(nonce)?
+        .strip_prefix('-')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
     }
+    digits.parse().ok()
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// Buttons of a macOS notification: the action button and, with more than
+/// one, the menu of additional actions (all of them, as `(key, label)`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacButtons<'a> {
+    pub main: (&'a str, &'a str),
+    pub more: Vec<(&'a str, &'a str)>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// Every action but the default (clicking the notification) is a button.
+pub fn mac_buttons(actions: &[(String, String)]) -> Option<MacButtons<'_>> {
+    let buttons: Vec<(&str, &str)> = actions
+        .iter()
+        .filter(|(k, _)| k != super::ACTION_DEFAULT)
+        .map(|(k, l)| (k.as_str(), l.as_str()))
+        .collect();
+    let main = *buttons.first()?;
+    let more = if buttons.len() > 1 {
+        buttons
+    } else {
+        Vec::new()
+    };
+    Some(MacButtons { main, more })
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// `NSUserNotificationActivationType`, with what each one carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacActivation<'a> {
+    Contents,
+    ActionButton,
+    /// The identifier of the chosen additional action.
+    Additional(Option<&'a str>),
+    Replied,
+    None,
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// The signal of an activation; `main_key`: the action button's key.
+pub fn mac_signal(activation: MacActivation<'_>, main_key: Option<&str>) -> Option<super::Signal> {
+    use super::{ACTION_DEFAULT, Signal};
+    let key = match activation {
+        MacActivation::Contents | MacActivation::Replied => ACTION_DEFAULT,
+        MacActivation::ActionButton => main_key.unwrap_or(ACTION_DEFAULT),
+        MacActivation::Additional(id) => id.or(main_key).unwrap_or(ACTION_DEFAULT),
+        MacActivation::None => return None,
+    };
+    Some(Signal::Action(key.to_owned()))
 }
 
 #[cfg(test)]
@@ -163,21 +222,73 @@ mod tests {
     }
 
     #[test]
-    fn bundle_detection() {
+    fn mac_identifiers_carry_the_launch_nonce() {
+        let nonce = launch_nonce(0x1f, 0xabc);
+        assert_eq!(nonce, "1ftabc");
+        assert!(!nonce.contains('-'));
+        let ident = mac_identifier(&nonce, 42);
+        assert_eq!(ident, "rustket-1ftabc-42");
+        assert_eq!(parse_mac_identifier(&nonce, &ident), Some(42));
+        // Another launch, foreign or malformed identifiers.
+        assert_eq!(parse_mac_identifier("1ftabd", &ident), None);
+        assert_eq!(parse_mac_identifier(&nonce, "rustket-1ftabc1-42"), None);
+        assert_eq!(parse_mac_identifier(&nonce, "rustket-1ftabc-"), None);
+        assert_eq!(parse_mac_identifier(&nonce, "rustket-1ftabc-+4"), None);
+        assert_eq!(parse_mac_identifier(&nonce, "rustket-1ftabc-4x"), None);
         assert_eq!(
-            mac_application(Path::new(
-                "/Applications/Rustket.app/Contents/MacOS/rustket"
-            )),
-            crate::BUNDLE_ID
+            parse_mac_identifier(&nonce, "rustket-1ftabc-99999999999"),
+            None
         );
         assert_eq!(
-            mac_application(Path::new("/Users/me/src/target/release/rustket")),
-            "com.apple.Terminal"
-        );
-        assert_eq!(
-            mac_application(Path::new("/x/Contents/MacOS/rustket")),
-            "com.apple.Terminal"
+            parse_mac_identifier(&nonce, "5D2E1D3C-1111-2222-3333-444455556666"),
+            None
         );
         assert_eq!(file_uri(Path::new("/tmp/a.png")), "file:///tmp/a.png");
+    }
+
+    #[test]
+    fn mac_buttons_and_activation_routing() {
+        use super::super::Signal;
+        let open = (ACTION_DEFAULT.to_owned(), "Open".to_owned());
+        let join = (ACTION_JOIN.to_owned(), "Join".to_owned());
+        let other = ("other".to_owned(), "Other".to_owned());
+        assert_eq!(mac_buttons(std::slice::from_ref(&open)), None);
+        assert_eq!(
+            mac_buttons(&[open.clone(), join.clone()]),
+            Some(MacButtons {
+                main: ("join", "Join"),
+                more: Vec::new()
+            })
+        );
+        assert_eq!(
+            mac_buttons(&[open, join, other]),
+            Some(MacButtons {
+                main: ("join", "Join"),
+                more: vec![("join", "Join"), ("other", "Other")]
+            })
+        );
+        let act = |k: &str| Some(Signal::Action(k.to_owned()));
+        assert_eq!(
+            mac_signal(MacActivation::Contents, Some("join")),
+            act("default")
+        );
+        assert_eq!(mac_signal(MacActivation::Replied, None), act("default"));
+        assert_eq!(
+            mac_signal(MacActivation::ActionButton, Some("join")),
+            act("join")
+        );
+        assert_eq!(
+            mac_signal(MacActivation::ActionButton, None),
+            act("default")
+        );
+        assert_eq!(
+            mac_signal(MacActivation::Additional(Some("other")), Some("join")),
+            act("other")
+        );
+        assert_eq!(
+            mac_signal(MacActivation::Additional(None), Some("join")),
+            act("join")
+        );
+        assert_eq!(mac_signal(MacActivation::None, Some("join")), None);
     }
 }

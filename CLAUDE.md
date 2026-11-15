@@ -86,9 +86,10 @@ spectacle -b -n -a -o <scratchpad>/shot.png
   (no openssl, gtk, alsa, dbus C libs). TLS is rustls everywhere; reuse the shared
   `ClientConfig` from `rocketchat::tls`.
 - Libraries use `thiserror` error enums; no `unwrap()`/`expect()` outside tests except
-  for documented invariants. No `unsafe`, with one exception: `crates/rustket/src/macos_events.rs`
-  (Apple Event handlers through objc2; `#![allow(unsafe_code)]`, a `// SAFETY:` comment on
-  every unsafe block). Keep it that small.
+  for documented invariants. No `unsafe`, with two exceptions: `crates/rustket/src/macos_events.rs`
+  (Apple Event handlers through objc2) and `crates/rustket/src/desktop/notifications/macos.rs`
+  (`NSUserNotificationCenter` backend through objc2); both `#![allow(unsafe_code)]` at module
+  level, a `// SAFETY:` comment on every unsafe block. Keep them that small.
 - `tracing` for logs. Never log passwords, auth tokens, credential secrets, E2E keys
   or message bodies at info level or above.
 - Secrets (auth tokens) only through the secret store abstraction in `rustket-core`.
