@@ -51,6 +51,7 @@ impl App {
             Shortcut::Activity => self.inbox_shortcut(crate::inbox::InboxKind::Activity),
             // Reserved: `keymap::global` does not produce it yet.
             Shortcut::Later => self.later_shortcut(),
+            Shortcut::Drafts => self.drafts_shortcut(),
         }
     }
 

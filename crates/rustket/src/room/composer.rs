@@ -137,6 +137,13 @@ pub enum Message {
     PeerLoaded(String, Res<Box<rocketchat::models::User>>),
     /// Redraws the DM partner's local time.
     ClockTick,
+    /// Ctrl/Cmd+Shift+Enter or the clock button: pick a time to send the
+    /// message at instead of now.
+    Schedule,
+    SchedulePicker(crate::later::when::Msg),
+    ScheduleCancelled,
+    /// The "N scheduled" hint: open the Drafts & scheduled view.
+    OpenScheduled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +221,11 @@ pub struct Composer {
     peer: Option<(String, Option<cache::PeerInfo>)>,
     /// Thread composer: replies are also sent to the channel (`tshow`).
     tshow: bool,
+    /// The "Schedule message" picker is open.
+    schedule: Option<crate::later::when::WhenPicker>,
+    /// The send running now schedules the message for this time (UTC ms)
+    /// instead (kept through the `@all` confirmation).
+    schedule_at: Option<i64>,
 }
 
 impl Composer {
@@ -252,6 +264,8 @@ impl Composer {
             broad_seq: 0,
             peer: None,
             tshow: false,
+            schedule: None,
+            schedule_at: None,
         }
     }
 
@@ -305,7 +319,20 @@ impl Composer {
     /// A confirmation dialog of the composer is open (delete an emptied
     /// edit, `@all`/`@here`).
     pub fn is_confirm_open(&self) -> bool {
-        self.confirm_delete.is_some() || self.confirm_broad.is_some()
+        self.confirm_delete.is_some() || self.confirm_broad.is_some() || self.schedule.is_some()
+    }
+
+    /// Whether the message may be scheduled: not an edit, the offline cache
+    /// keeps scheduled messages, and a room whose messages go out
+    /// unencrypted (a scheduled text waits on disk, and plaintext of
+    /// encrypted rooms never goes there).
+    pub(crate) fn can_schedule(&self, ws: &Workspace) -> bool {
+        self.editing.is_none()
+            && ws.scheduled_storage()
+            && matches!(
+                crate::e2e::outgoing::mode(ws, &self.rid),
+                crate::e2e::outgoing::Mode::Plain
+            )
     }
 
     /// Widget id of the editor (F6 target).
@@ -532,8 +559,11 @@ impl Composer {
                 ))
             }
             Message::Cancel => {
-                if self.confirm_broad.is_some() {
+                if self.schedule.is_some() {
+                    self.schedule = None;
+                } else if self.confirm_broad.is_some() {
                     self.confirm_broad = None;
+                    self.schedule_at = None;
                 } else if self.confirm_delete.is_some() {
                     self.confirm_delete = None;
                 } else if self.popup_visible() {
@@ -900,12 +930,54 @@ impl Composer {
                 self.broad_ok = true;
                 let a = self.send(ctx);
                 self.broad_ok = false;
+                self.schedule_at = None;
                 a
             }
             Message::BroadCancelled => {
                 self.confirm_broad = None;
+                self.schedule_at = None;
                 Action::task(self.focus())
             }
+            Message::Schedule => {
+                if !self.can_send() || !self.can_schedule(ctx.workspace) {
+                    return Action::none();
+                }
+                self.popup = None;
+                self.schedule = Some(crate::later::when::WhenPicker::new(
+                    crate::later::when::Kind::Schedule,
+                    None,
+                ));
+                Action::none()
+            }
+            Message::SchedulePicker(m) => {
+                let Some(p) = self.schedule.as_mut() else {
+                    return Action::none();
+                };
+                let picked = p.update(m, chrono::Local::now(), ctx.prefs.morning_hour());
+                let Some(crate::later::when::Picked::At(at)) = picked else {
+                    if p.is_custom() {
+                        return Action::task(iced::widget::operation::focus(
+                            crate::later::when::DATE_INPUT_ID,
+                        ));
+                    }
+                    return Action::none();
+                };
+                self.schedule = None;
+                if !self.can_schedule(ctx.workspace) {
+                    return Action::none();
+                }
+                self.schedule_at = Some(at);
+                let a = self.send(ctx);
+                if self.confirm_broad.is_none() {
+                    self.schedule_at = None;
+                }
+                a
+            }
+            Message::ScheduleCancelled => {
+                self.schedule = None;
+                Action::task(self.focus())
+            }
+            Message::OpenScheduled => Action::effect(Effect::OpenDrafts),
             Message::PeerLoaded(u, r) => {
                 match r {
                     Ok(user) => {

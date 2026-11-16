@@ -130,6 +130,13 @@ pub enum Message {
     CatchUpKey(crate::inbox::CatchUpKey),
     /// The Later view (`crate::later`): server, session epoch, message.
     Later(ServerId, u64, crate::later::Msg),
+    /// The Drafts & scheduled view (`crate::drafts`): server, session
+    /// epoch, message.
+    Drafts(ServerId, u64, crate::drafts::Msg),
+    /// The dialog of scheduled messages not sent on time.
+    Missed(crate::drafts::missed::MissedMsg),
+    /// Notification pauses and expiring statuses (`crate::quiet`).
+    Quiet(crate::quiet::Msg),
     /// Up / Down / E that no widget took (the Later view).
     LaterKey(crate::later::LaterKey),
     /// A reminder copy fetched for the Later view (`None`: the pacing

@@ -39,34 +39,50 @@ pub enum MainView {
     Inbox(crate::inbox::InboxScreen),
     /// Starred messages and reminders (`crate::later`).
     Later(crate::later::LaterView),
+    /// Scheduled messages and drafts (`crate::drafts`).
+    Drafts(crate::drafts::DraftsView),
 }
 
 impl MainView {
     pub fn inbox(&self) -> Option<&crate::inbox::InboxScreen> {
         match self {
             MainView::Inbox(i) => Some(i),
-            MainView::Later(_) => None,
+            _ => None,
         }
     }
 
     pub fn inbox_mut(&mut self) -> Option<&mut crate::inbox::InboxScreen> {
         match self {
             MainView::Inbox(i) => Some(i),
-            MainView::Later(_) => None,
+            _ => None,
         }
     }
 
     pub fn later(&self) -> Option<&crate::later::LaterView> {
         match self {
             MainView::Later(l) => Some(l),
-            MainView::Inbox(_) => None,
+            _ => None,
         }
     }
 
     pub fn later_mut(&mut self) -> Option<&mut crate::later::LaterView> {
         match self {
             MainView::Later(l) => Some(l),
-            MainView::Inbox(_) => None,
+            _ => None,
+        }
+    }
+
+    pub fn drafts(&self) -> Option<&crate::drafts::DraftsView> {
+        match self {
+            MainView::Drafts(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    pub fn drafts_mut(&mut self) -> Option<&mut crate::drafts::DraftsView> {
+        match self {
+            MainView::Drafts(d) => Some(d),
+            _ => None,
         }
     }
 }
@@ -343,6 +359,11 @@ impl ServerState {
     /// The open Later view, if any.
     pub fn later_view(&self) -> Option<&crate::later::LaterView> {
         self.main_view.as_ref().and_then(MainView::later)
+    }
+
+    /// The open Drafts & scheduled view, if any.
+    pub fn drafts_view(&self) -> Option<&crate::drafts::DraftsView> {
+        self.main_view.as_ref().and_then(MainView::drafts)
     }
 
     /// Closes the view in place of the room area (a room opens, Esc).

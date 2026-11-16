@@ -903,3 +903,18 @@ fn mentioned_messages_include_thread_replies() {
     assert_eq!(m.username.as_deref(), Some("alice"));
     assert!(list.iter().any(|m| m.tmid.is_none()));
 }
+
+/// `/me` of a user who chose busy while no connection is open (seen on the
+/// dev server: `status` offline, `statusDefault` busy).
+#[test]
+fn me_status_default() {
+    let me: User = serde_json::from_value(serde_json::json!({
+        "_id": "u1", "status": "offline", "statusDefault": "busy", "statusText": "Focus"
+    }))
+    .unwrap();
+    assert_eq!(me.status, Some(UserStatus::Offline));
+    assert_eq!(me.status_default, Some(UserStatus::Busy));
+    let odd: User =
+        serde_json::from_value(serde_json::json!({"_id": "u1", "statusDefault": 5})).unwrap();
+    assert_eq!(odd.status_default, None);
+}

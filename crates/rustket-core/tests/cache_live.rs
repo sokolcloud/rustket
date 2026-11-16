@@ -158,6 +158,7 @@ async fn offline_edits_deletions_and_outbox_reconcile() {
                     queued: true,
                     maybe_sent: true,
                     error: None,
+                    send_at: None,
                 }]),
                 ..Default::default()
             })

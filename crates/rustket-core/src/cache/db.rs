@@ -20,6 +20,19 @@ pub const SCHEMA_VERSION: i64 = 2;
 /// `PRAGMA application_id` of a Rustket cache ("RKTC").
 const APPLICATION_ID: i64 = 0x524B_5443;
 
+/// Scheduled messages (`crate::scheduled`): a table of their own, created
+/// when missing at every open without a schema bump, so that an older
+/// Rustket keeps opening the cache (it does not know the table and never
+/// touches it). Rows carry the account: an older version that switched
+/// the account emptied the other tables only.
+const SCHEDULED_TABLE: &str = "CREATE TABLE IF NOT EXISTS scheduled (
+     id TEXT PRIMARY KEY,
+     uid TEXT NOT NULL,
+     rid TEXT NOT NULL,
+     send_at INTEGER NOT NULL,
+     json TEXT NOT NULL
+ );";
+
 /// Migration `i` brings the schema from version `i` to `i + 1`.
 const MIGRATIONS: &[&str] = &[
     // 1: documents, timelines with their newest messages, outbox.
@@ -264,6 +277,7 @@ impl CacheDb {
             last_access: 0,
         };
         db.migrate(version)?;
+        db.conn.execute_batch(SCHEDULED_TABLE)?;
         let stored: Option<String> = db.meta(META_USER)?;
         let changed = stored.as_deref().is_some_and(|u| u != user_id);
         if changed {
@@ -352,6 +366,7 @@ impl CacheDb {
         )?;
         if outbox {
             tx.execute("DELETE FROM outbox", [])?;
+            tx.execute("DELETE FROM scheduled", [])?;
         }
         tx.commit()?;
         Ok(())
@@ -444,7 +459,7 @@ impl CacheDb {
             write_timeline(&tx, t, stamp)?;
         }
         if let Some(outbox) = &batch.outbox {
-            write_outbox(&tx, outbox)?;
+            write_outbox(&tx, outbox, &self.user_id)?;
         }
         if let Some(names) = &batch.interrupted_uploads {
             if names.is_empty() {
@@ -583,6 +598,25 @@ impl CacheDb {
                     queued: queued != 0,
                     maybe_sent: queued == QUEUED_MAYBE_SENT,
                     error,
+                    send_at: None,
+                });
+            }
+        }
+        let mut st = self
+            .conn
+            .prepare("SELECT json, send_at FROM scheduled WHERE uid = ?1 ORDER BY send_at, id")?;
+        let rows = st.query_map([&self.user_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (json, send_at) = row?;
+            if let Some(message) = from_json::<Message>("scheduled", &json) {
+                out.push(OutboxEntry {
+                    message,
+                    queued: false,
+                    maybe_sent: false,
+                    error: None,
+                    send_at: Some(send_at),
                 });
             }
         }
@@ -882,8 +916,13 @@ fn write_timeline(tx: &Transaction<'_>, t: &CachedTimeline, stamp: i64) -> Resul
 /// `docs/e2e.md`, "Offline cache"); the caller filters them, this is the
 /// last check: encrypted shapes, and messages of a room stored as
 /// encrypted, are skipped.
-fn write_outbox(tx: &Transaction<'_>, outbox: &[OutboxEntry]) -> Result<()> {
+fn write_outbox(tx: &Transaction<'_>, outbox: &[OutboxEntry], uid: &str) -> Result<()> {
     tx.execute("DELETE FROM outbox", [])?;
+    tx.execute("DELETE FROM scheduled", [])?;
+    let mut scheduled = tx.prepare_cached(
+        "INSERT OR REPLACE INTO scheduled (id, uid, rid, send_at, json)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
     let mut st = tx.prepare_cached(
         "INSERT OR REPLACE INTO outbox (id, rid, created, json, queued, error)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -898,6 +937,10 @@ fn write_outbox(tx: &Transaction<'_>, outbox: &[OutboxEntry]) -> Result<()> {
             continue;
         }
         if encrypted_room.exists(params![KIND_ROOM, m.rid])? {
+            continue;
+        }
+        if let Some(at) = e.send_at {
+            scheduled.execute(params![m.id, uid, m.rid, at, to_json(m)?])?;
             continue;
         }
         let queued: i64 = match (e.queued, e.maybe_sent) {

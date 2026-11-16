@@ -72,6 +72,12 @@ impl App {
                         focused_tmid,
                         window_active: self.focused,
                         multi_server: self.config.servers.len() > 1,
+                        paused: rustket_core::quiet::quiet_state(
+                            &self.config.pause,
+                            &self.config.ui.working_hours,
+                            &chrono::Local::now(),
+                        )
+                        .paused,
                     };
                     self.desktop
                         .on_notification(&sid, &name, &n, &s.workspace, &self.config.ui, &env)

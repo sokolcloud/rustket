@@ -314,6 +314,7 @@ fn another_account_starts_empty() {
             queued: true,
             maybe_sent: false,
             error: None,
+            send_at: None,
         }]),
         ..Default::default()
     })
@@ -338,18 +339,21 @@ fn outbox_survives_a_restart() {
             queued: true,
             maybe_sent: false,
             error: None,
+            send_at: None,
         },
         OutboxEntry {
             message: reply,
             queued: false,
             maybe_sent: false,
             error: Some("boom".into()),
+            send_at: None,
         },
         OutboxEntry {
             message: msg("o3", "R1", 9, "u1"),
             queued: true,
             maybe_sent: true,
             error: None,
+            send_at: None,
         },
     ];
     db.write(Batch {
@@ -421,12 +425,14 @@ fn e2e_plaintext_never_reaches_the_file() {
                 queued: true,
                 maybe_sent: false,
                 error: None,
+                send_at: None,
             },
             OutboxEntry {
                 message: shaped_pending,
                 queued: true,
                 maybe_sent: false,
                 error: None,
+                send_at: None,
             },
         ]),
         ..Default::default()
@@ -1341,4 +1347,87 @@ fn later_delta_writes() {
     assert_eq!(ids, ["b"]);
     assert_eq!(l.messages[0].msg, "edited");
     assert_eq!(l.scans.len(), 2);
+}
+
+#[test]
+fn scheduled_entries_keep_their_send_time() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    let entries = vec![
+        OutboxEntry {
+            message: msg("o1", "R1", 5, "u1"),
+            queued: true,
+            maybe_sent: false,
+            error: None,
+            send_at: None,
+        },
+        OutboxEntry {
+            message: msg("s1", "R1", 6, "u1"),
+            queued: false,
+            maybe_sent: false,
+            error: None,
+            send_at: Some(1_900_000_000_000),
+        },
+    ];
+    db.write(Batch {
+        outbox: Some(entries.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    drop(db);
+    let db = open(tmp.path(), "u1");
+    assert_eq!(db.load_outbox().unwrap(), entries);
+}
+
+#[test]
+fn scheduled_table_needs_no_schema_bump() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("srv");
+    let mut db = open(&dir, "u1");
+    db.write(Batch {
+        outbox: Some(vec![
+            OutboxEntry {
+                message: msg("o1", "R1", 5, "u1"),
+                queued: true,
+                maybe_sent: false,
+                error: None,
+                send_at: None,
+            },
+            OutboxEntry {
+                message: msg("s1", "R1", 6, "u1"),
+                queued: false,
+                maybe_sent: false,
+                error: None,
+                send_at: Some(9_000),
+            },
+        ]),
+        ..Default::default()
+    })
+    .unwrap();
+    let v: i64 = db
+        .conn_ref()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 2, "an older Rustket still opens the cache");
+    drop(db);
+    // What v0.2.7 does with the file: rewrite the outbox, switch account.
+    let conn = Connection::open(dir.join(FILE_NAME)).unwrap();
+    conn.execute_batch("DELETE FROM outbox; UPDATE meta SET value = 'u2' WHERE key = 'user_id';")
+        .unwrap();
+    drop(conn);
+    // The scheduled row survived the old outbox rewrite, but belongs to u1.
+    let (db, _) = CacheDb::open(&dir, "u2").unwrap();
+    assert!(db.load_outbox().unwrap().is_empty());
+    drop(db);
+    let (db, report) = CacheDb::open(&dir, "u1").unwrap();
+    assert!(report.user_changed, "the account switch empties everything");
+    assert!(db.load_outbox().unwrap().is_empty());
+    // A database without the table (made by an older version) gets it.
+    let dir2 = tmp.path().join("old");
+    drop(open(&dir2, "u1"));
+    let conn = Connection::open(dir2.join(FILE_NAME)).unwrap();
+    conn.execute_batch("DROP TABLE scheduled;").unwrap();
+    drop(conn);
+    let db = open(&dir2, "u1");
+    assert!(db.load_outbox().unwrap().is_empty());
 }

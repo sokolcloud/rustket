@@ -61,6 +61,10 @@ pub enum Request {
     IdleTime(Duration),
     /// Set this status on every logged-in server (tray menu).
     SetStatus(UserStatus),
+    /// Pause notifications (tray menu).
+    Pause(rustket_core::quiet::PausePreset),
+    /// Resume paused notifications (tray menu).
+    Resume,
     /// Open the previous/next (unread) room in sidebar order.
     RoomStep(shortcuts::RoomStep),
     /// A notification server signal for a notification shown by another

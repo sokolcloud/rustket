@@ -1,14 +1,16 @@
 //! Status menu: the user's avatar in the sidebar header and its popover —
-//! online/away/busy/invisible, the server's custom statuses, a custom status
-//! text (with recently used texts), my account, preferences, logout. Status
-//! changes go through `users.setStatus`. Owner: desktop agent. Strings:
-//! `locales/status_menu.yml` (`status_menu.*`).
+//! online/away/busy/invisible, pausing notifications (`crate::quiet`), the
+//! server's custom statuses, a custom status text (with recently used texts
+//! and "Clear after"), my account, preferences, logout. Status changes go
+//! through `users.setStatus`. Owner: desktop agent. Strings:
+//! `locales/status_menu.yml` (`status_menu.*`), `locales/quiet.yml`.
 
-use iced::widget::{button, column, container, row, scrollable, text};
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use rocketchat::models::UserStatus;
 use rust_i18n::t;
 use rustket_core::Workspace;
+use rustket_core::quiet::{ClearAfter, PausePreset, StatusExpiry};
 use rustket_core::room_list::Avatar;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
@@ -57,6 +59,43 @@ pub enum Message {
     Omni(crate::omnichannel::status::Msg),
     /// An app action button (`crate::uikit::buttons::user_menu`).
     UiKit(Box<crate::uikit::UiKitMsg>),
+    /// Show or hide the pause presets.
+    TogglePause,
+    Pause(PausePreset),
+    PauseCustom,
+    Resume,
+    /// "Clear after" of the next status set here.
+    ClearAfter(ClearChoice),
+    ClearDate(String),
+    ClearTime(String),
+    /// The current status no longer clears itself.
+    CancelExpiry,
+}
+
+/// A "Clear after" option: a preset or a custom date and time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearChoice {
+    Preset(ClearAfter),
+    Custom,
+}
+
+impl std::fmt::Display for ClearChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preset(c) => f.write_str(&crate::quiet::clear_label(*c)),
+            Self::Custom => f.write_str(&t!("later.preset_custom")),
+        }
+    }
+}
+
+impl ClearChoice {
+    fn all() -> Vec<Self> {
+        ClearAfter::ALL
+            .into_iter()
+            .map(Self::Preset)
+            .chain([Self::Custom])
+            .collect()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -70,6 +109,22 @@ pub struct StatusMenu {
     pub recent: Vec<String>,
     /// A `users.setStatus` call is running.
     pub busy: bool,
+    /// The pause presets are shown.
+    pub pause_open: bool,
+    /// "Clear after" of the next status set here.
+    pub clear: ClearChoice,
+    pub clear_date: String,
+    pub clear_time: String,
+    /// The custom clear time is invalid or past.
+    pub clear_error: bool,
+    /// The expiry of the running call (`Some(None)`: none, clears an old one).
+    pending_expiry: Option<Option<StatusExpiry>>,
+}
+
+impl Default for ClearChoice {
+    fn default() -> Self {
+        Self::Preset(ClearAfter::Never)
+    }
 }
 
 /// Whether `Accounts_AllowInvisibleStatusOption` allows "invisible".
@@ -139,6 +194,49 @@ impl StatusMenu {
         Self::default()
     }
 
+    /// When a status set now clears itself ("Clear after"); `Err` for an
+    /// invalid or past custom time.
+    fn clear_at(&mut self) -> Result<Option<i64>, ()> {
+        let now = chrono::Local::now();
+        match self.clear {
+            ClearChoice::Preset(c) => Ok(c.at(&now).map(|t| t.timestamp_millis())),
+            ClearChoice::Custom => {
+                let at = crate::uikit::elements::parse_date(&self.clear_date)
+                    .and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
+                    .zip(crate::uikit::elements::parse_time(&self.clear_time))
+                    .and_then(|(d, (h, m))| {
+                        rustket_core::reminders::custom_at(d, h, m, &chrono::Local)
+                    })
+                    .filter(|at| *at > now);
+                self.clear_error = at.is_none();
+                at.map(|t| Some(t.timestamp_millis())).ok_or(())
+            }
+        }
+    }
+
+    /// The expiry of `status` with `text` set now; `None` when it does not
+    /// clear (or there is nothing to clear: online without a text).
+    fn expiry(
+        &self,
+        at: Option<i64>,
+        status: UserStatus,
+        text: &str,
+        restore: Option<UserStatus>,
+        ws: &Workspace,
+    ) -> Option<StatusExpiry> {
+        let at = at?;
+        if status == UserStatus::Online && text.is_empty() {
+            return None;
+        }
+        Some(StatusExpiry {
+            user_id: ws.user_id()?.to_owned(),
+            at,
+            status,
+            text: text.to_owned(),
+            restore: restore.filter(|r| *r != status),
+        })
+    }
+
     /// Calls `users.setStatus(status, text)`, updating the local state right away.
     fn set(
         &mut self,
@@ -153,7 +251,16 @@ impl StatusMenu {
                 t!("status_menu.not_allowed").into_owned(),
             ));
         }
+        let Ok(at) = self.clear_at() else {
+            return Action::none();
+        };
         let text = text.filter(|_| text_allowed(ctx.workspace));
+        let shown = text.clone().unwrap_or_else(|| my_text(ctx.workspace));
+        let before = ctx
+            .workspace
+            .my_chosen_status()
+            .unwrap_or_else(|| ctx.workspace.my_status());
+        self.pending_expiry = Some(self.expiry(at, status, &shown, Some(before), ctx.workspace));
         self.busy = true;
         self.open = false;
         let t2 = text.clone();
@@ -169,6 +276,11 @@ impl StatusMenu {
         if !text_allowed(ctx.workspace) {
             return Action::none();
         }
+        let Ok(at) = self.clear_at() else {
+            return Action::none();
+        };
+        let status = ctx.workspace.my_status();
+        self.pending_expiry = Some(self.expiry(at, status, &text, None, ctx.workspace));
         self.busy = true;
         self.open = false;
         let t2 = text.clone();
@@ -192,6 +304,9 @@ impl StatusMenu {
             Message::Toggle(open) => {
                 self.open = open;
                 if open {
+                    self.pause_open = false;
+                    self.clear = ClearChoice::default();
+                    self.clear_error = false;
                     self.text = my_text(ctx.workspace);
                     let current = self.text.clone();
                     remember(&mut self.recent, &current);
@@ -236,22 +351,42 @@ impl StatusMenu {
             }
             Message::StatusSet(status, text, r) => {
                 self.busy = false;
+                let expiry = self.pending_expiry.take();
                 match r {
                     Ok(()) => {
+                        // The expiry first: set during a busy pause, it goes
+                        // back to the status before the pause (the hold's).
+                        let mut effects: Vec<Effect> = expiry
+                            .map(|e| Effect::Quiet(crate::quiet::Request::Expiry(e)))
+                            .into_iter()
+                            .collect();
                         let ws = &mut *ctx.workspace;
-                        let status = status.unwrap_or_else(|| ws.my_status());
-                        if let (Some(uid), username) = (
-                            ws.user_id().map(str::to_owned),
-                            ws.username().map(str::to_owned),
-                        ) {
-                            ws.apply_user_status(
-                                &uid,
-                                username.as_deref(),
-                                status,
-                                text.as_deref(),
-                            );
+                        match status {
+                            // A status the user chose: recorded as chosen, and
+                            // a pause no longer restores over it.
+                            Some(st) => {
+                                ws.apply_my_status(st, text.as_deref());
+                                effects.push(Effect::Quiet(crate::quiet::Request::ReleaseHold));
+                            }
+                            None => {
+                                let shown = ws.my_status();
+                                if let (Some(uid), username) = (
+                                    ws.user_id().map(str::to_owned),
+                                    ws.username().map(str::to_owned),
+                                ) {
+                                    ws.apply_user_status(
+                                        &uid,
+                                        username.as_deref(),
+                                        shown,
+                                        text.as_deref(),
+                                    );
+                                }
+                            }
                         }
-                        Action::none()
+                        Action {
+                            task: Task::none(),
+                            effects,
+                        }
                     }
                     Err(f) => Action::effect(Effect::Toast(
                         BannerKind::Error,
@@ -293,6 +428,48 @@ impl StatusMenu {
                 self.open = false;
                 Action::effect(Effect::UiKit(m))
             }
+            Message::TogglePause => {
+                self.pause_open = !self.pause_open;
+                Action::none()
+            }
+            Message::Pause(p) => {
+                self.open = false;
+                let until = p.until(&chrono::Local::now(), ctx.config.ui.morning_hour());
+                Action::effect(Effect::Quiet(crate::quiet::Request::Pause(
+                    until.timestamp_millis(),
+                )))
+            }
+            Message::PauseCustom => {
+                self.open = false;
+                Action::effect(Effect::Quiet(crate::quiet::Request::PauseCustom))
+            }
+            Message::Resume => {
+                self.open = false;
+                Action::effect(Effect::Quiet(crate::quiet::Request::Resume))
+            }
+            Message::ClearAfter(c) => {
+                self.clear = c;
+                self.clear_error = false;
+                if c == ClearChoice::Custom && self.clear_date.is_empty() {
+                    let base = chrono::Local::now() + chrono::Duration::hours(1);
+                    self.clear_date = base.format("%Y-%m-%d").to_string();
+                    self.clear_time = base.format("%H:%M").to_string();
+                }
+                Action::none()
+            }
+            Message::ClearDate(d) => {
+                self.clear_date = d;
+                self.clear_error = false;
+                Action::none()
+            }
+            Message::ClearTime(t) => {
+                self.clear_time = t;
+                self.clear_error = false;
+                Action::none()
+            }
+            Message::CancelExpiry => {
+                Action::effect(Effect::Quiet(crate::quiet::Request::Expiry(None)))
+            }
         }
     }
 
@@ -332,6 +509,22 @@ impl StatusMenu {
         let me_avatar = avatar(src.clone(), 32.0, AvatarShape::Rounded)
             .presence(Some(presence(status)))
             .ring_with(|t| t.surface_sidebar);
+        let local = chrono::Local::now();
+        let quiet = rustket_core::quiet::quiet_state(
+            &ctx.config.pause,
+            &ctx.config.ui.working_hours,
+            &local,
+        );
+        // Paused notifications: a bell-off mark with the end time.
+        let paused: Element<'a, Message> = if quiet.paused {
+            rustket_ui::widget::tooltip(
+                icon::sized(Icon::BellOff, 14.0).style(style::text_secondary),
+                crate::quiet::paused_line(&quiet, local, ctx.config.ui.clock_24h),
+                rustket_ui::widget::TooltipPosition::Bottom,
+            )
+        } else {
+            iced::widget::space().width(0).into()
+        };
         let trigger = button(
             row![
                 me_avatar,
@@ -342,6 +535,7 @@ impl StatusMenu {
                         .style(|theme: &Theme| Some(tokens(theme).text_secondary)),
                 ]
                 .width(Length::Fill),
+                paused,
                 crate::omnichannel::status::indicator(ws),
                 icon::sized(Icon::ChevronDown, 14.0),
             ]
@@ -354,7 +548,7 @@ impl StatusMenu {
         .on_press(Message::Toggle(!self.open));
         // Tab reaches the trigger; Enter/Space opens the menu.
         let trigger = focus_ring(trigger, Some(Message::Toggle(!self.open)));
-        let popup = self.popup(ws, name, username, src, status);
+        let popup = self.popup(ctx, name, username, src, status);
         popover(
             trigger,
             popup,
@@ -366,12 +560,13 @@ impl StatusMenu {
 
     fn popup<'a>(
         &'a self,
-        ws: &'a Workspace,
+        ctx: &ViewCtx<'a>,
         name: String,
         username: String,
         src: rustket_ui::widget::AvatarSource,
         status: UserStatus,
     ) -> Element<'a, Message> {
+        let ws = ctx.workspace;
         let enabled = !self.busy;
         let labelled = |ic: Icon, label: String| -> Element<'a, Message> {
             row![icon::sized(ic, 16.0), ellipsis(label).size(TEXT_BODY)]
@@ -416,6 +611,7 @@ impl StatusMenu {
             }
             rows.item(r, enabled.then_some(Message::SetStatus(s)), false);
         }
+        self.pause_rows(&mut rows, ctx);
         if let Some(e) = crate::omnichannel::status::menu_entry(ws, enabled, Message::Omni) {
             rows.plain(divider());
             rows.plain(e);
@@ -456,6 +652,7 @@ impl StatusMenu {
                 ));
             }
             rows.plain(container(field).padding([SPACE_1, SPACE_2]));
+            rows.plain(self.clear_after_view(ctx));
             let current = my_text(ws);
             for r in self.recent.iter().filter(|r| **r != current) {
                 rows.item(
@@ -529,6 +726,164 @@ impl StatusMenu {
         .max_height(560)
         .style(style::container_popover)
         .into()
+    }
+}
+
+impl StatusMenu {
+    /// "Pause notifications" with its presets in one row of chips, or the
+    /// pause with "Resume" (kept compact: the menu fits 800 px windows).
+    fn pause_rows<'a>(&'a self, rows: &mut Rows<'a>, ctx: &ViewCtx<'a>) {
+        let local = chrono::Local::now();
+        let ui = &ctx.config.ui;
+        let q = rustket_core::quiet::quiet_state(&ctx.config.pause, &ui.working_hours, &local);
+        rows.plain(divider());
+        if q.paused {
+            rows.item(
+                row![
+                    icon::sized(Icon::BellOff, 16.0).style(style::text_secondary),
+                    column![
+                        text(t!("quiet.resume").into_owned()).size(TEXT_BODY),
+                        ellipsis(crate::quiet::paused_line(&q, local, ui.clock_24h))
+                            .size(TEXT_CAPTION)
+                            .style(|theme: &Theme| Some(tokens(theme).text_secondary)),
+                    ]
+                    .width(Length::Fill),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center),
+                Some(Message::Resume),
+                false,
+            );
+            return;
+        }
+        let chevron = if self.pause_open {
+            Icon::ChevronUp
+        } else {
+            Icon::ChevronDown
+        };
+        rows.item(
+            row![
+                icon::sized(Icon::BellOff, 16.0),
+                ellipsis(t!("quiet.pause").into_owned())
+                    .size(TEXT_BODY)
+                    .width(Length::Fill),
+                icon::sized(chevron, 14.0),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+            Some(Message::TogglePause),
+            false,
+        );
+        if !self.pause_open {
+            return;
+        }
+        let chip = |label: String, tip: String, on: Message| -> Element<'a, Message> {
+            rustket_ui::widget::tooltip(
+                button(text(label).size(TEXT_CAPTION))
+                    .padding([3, 8])
+                    .style(style::button_reaction(false))
+                    .on_press(on),
+                tip,
+                rustket_ui::widget::TooltipPosition::Bottom,
+            )
+        };
+        let mut chips = row![].spacing(SPACE_1).align_y(Alignment::Center);
+        for p in PausePreset::ALL {
+            let at = p.until(&local, ui.morning_hour()).timestamp_millis();
+            let tip = format!(
+                "{} · {}",
+                crate::quiet::preset_label(p),
+                crate::format::moment(at, local, ui.clock_24h)
+            );
+            chips = chips.push(chip(crate::quiet::chip_label(p), tip, Message::Pause(p)));
+        }
+        chips = chips.push(chip(
+            "…".into(),
+            t!("later.preset_custom").into_owned(),
+            Message::PauseCustom,
+        ));
+        rows.plain(container(chips).padding(iced::Padding::from([0.0, SPACE_2]).bottom(SPACE_1)));
+    }
+
+    /// "Clear after" of the next status, and the current status's expiry.
+    fn clear_after_view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
+        let enabled = !self.busy;
+        let mut col = column![
+            row![
+                text(t!("quiet.clear_after").into_owned())
+                    .size(TEXT_CAPTION)
+                    .style(style::text_secondary)
+                    .width(Length::Fill),
+                pick_list(ClearChoice::all(), Some(self.clear), Message::ClearAfter)
+                    .text_size(TEXT_CAPTION)
+                    .padding([2, 8])
+                    .style(style::pick_list)
+                    .menu_style(style::menu),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+        ]
+        .spacing(SPACE_1);
+        if self.clear == ClearChoice::Custom {
+            col = col.push(
+                row![
+                    text_input(&t!("later.custom_date"), &self.clear_date)
+                        .on_input(Message::ClearDate)
+                        .size(TEXT_CAPTION)
+                        .padding([2, 6])
+                        .style(style::text_input),
+                    text_input(&t!("later.custom_time"), &self.clear_time)
+                        .on_input(Message::ClearTime)
+                        .size(TEXT_CAPTION)
+                        .padding([2, 6])
+                        .width(Length::Fixed(70.0))
+                        .style(style::text_input),
+                ]
+                .spacing(SPACE_1),
+            );
+            if self.clear_error {
+                col = col.push(
+                    text(t!("later.custom_invalid").into_owned())
+                        .size(TEXT_CAPTION)
+                        .style(style::text_danger),
+                );
+            }
+        }
+        let expiry = ctx
+            .config
+            .server(ctx.server_id)
+            .and_then(|e| e.status_expiry.as_ref())
+            .filter(|e| Some(e.user_id.as_str()) == ctx.workspace.user_id());
+        if let Some(e) = expiry {
+            let local = chrono::Local::now();
+            col = col.push(
+                row![
+                    icon::sized(Icon::Timer, 12.0).style(style::text_secondary),
+                    text(
+                        t!(
+                            "quiet.clears_at",
+                            time = crate::format::moment(e.at, local, ctx.config.ui.clock_24h)
+                        )
+                        .into_owned()
+                    )
+                    .size(TEXT_CAPTION)
+                    .style(style::text_secondary)
+                    .width(Length::Fill),
+                    rustket_ui::widget::icon_button_with(
+                        Icon::X,
+                        enabled.then_some(Message::CancelExpiry),
+                        t!("quiet.keep_status"),
+                        false,
+                        20.0,
+                    ),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+            );
+        }
+        container(col)
+            .padding(iced::Padding::from([0.0, SPACE_2]).bottom(SPACE_2))
+            .into()
     }
 }
 
@@ -743,6 +1098,78 @@ mod tests {
         );
         assert_eq!(fx.ws.my_status(), UserStatus::Away, "status untouched");
         assert_eq!(my_text(&fx.ws), "Back");
+    }
+
+    #[test]
+    fn clear_after_sets_and_clears_the_expiry() {
+        use crate::quiet::Request;
+        let mut fx = Fx::new();
+        let mut m = StatusMenu::new();
+        let expiry = |a: &Action<Message>| {
+            a.effects.iter().find_map(|e| match e {
+                Effect::Quiet(Request::Expiry(x)) => Some(x.clone()),
+                _ => None,
+            })
+        };
+        // A text for an hour: only the text clears.
+        m.update(
+            Message::ClearAfter(ClearChoice::Preset(ClearAfter::Hour1)),
+            &mut fx.ctx(),
+        );
+        m.text = "Focus".into();
+        let before = chrono::Utc::now().timestamp_millis();
+        m.update(Message::SubmitText, &mut fx.ctx());
+        let a = m.update(
+            Message::StatusSet(None, Some("Focus".into()), Ok(())),
+            &mut fx.ctx(),
+        );
+        let e = expiry(&a).flatten().expect("an expiry");
+        assert_eq!((e.text.as_str(), e.restore), ("Focus", None));
+        assert!(e.at >= before + 3_590_000);
+        // Busy for an hour: back to online afterwards.
+        m.update(Message::SetStatus(UserStatus::Busy), &mut fx.ctx());
+        let a = m.update(
+            Message::StatusSet(Some(UserStatus::Busy), Some(String::new()), Ok(())),
+            &mut fx.ctx(),
+        );
+        let e = expiry(&a).flatten().expect("an expiry");
+        assert_eq!(
+            (e.status, e.restore),
+            (UserStatus::Busy, Some(UserStatus::Online))
+        );
+        // "Never" (the default when the menu opens) drops an old expiry.
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        assert_eq!(m.clear, ClearChoice::default());
+        m.update(Message::SetStatus(UserStatus::Away), &mut fx.ctx());
+        let a = m.update(
+            Message::StatusSet(Some(UserStatus::Away), Some(String::new()), Ok(())),
+            &mut fx.ctx(),
+        );
+        assert_eq!(expiry(&a), Some(None));
+        // A failed call leaves the expiry alone.
+        m.update(Message::SetStatus(UserStatus::Away), &mut fx.ctx());
+        let err = crate::error::Failure::from(rocketchat::Error::Unauthorized {
+            message: None,
+            code: None,
+        });
+        let a = m.update(
+            Message::StatusSet(Some(UserStatus::Away), None, Err(err)),
+            &mut fx.ctx(),
+        );
+        assert_eq!(expiry(&a), None);
+        // A custom time in the past is refused before any call.
+        m.update(Message::ClearAfter(ClearChoice::Custom), &mut fx.ctx());
+        m.update(Message::ClearDate("2020-01-01".into()), &mut fx.ctx());
+        m.update(Message::SetStatus(UserStatus::Busy), &mut fx.ctx());
+        assert!(!m.busy && m.clear_error);
+        // Cancel and pause requests go to the app.
+        let a = m.update(Message::CancelExpiry, &mut fx.ctx());
+        assert_eq!(expiry(&a), Some(None));
+        let a = m.update(Message::Resume, &mut fx.ctx());
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::Quiet(Request::Resume)]
+        ));
     }
 
     fn setting(id: &str, value: bool) -> rocketchat::models::Setting {

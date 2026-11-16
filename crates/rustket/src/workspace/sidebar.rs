@@ -85,6 +85,8 @@ pub enum Message {
     Inbox(crate::inbox::InboxKind),
     /// The Later pinned row.
     Later,
+    /// The Drafts & scheduled pinned row.
+    Drafts,
 }
 
 /// Context menu actions of a section header.
@@ -199,6 +201,8 @@ pub enum Out {
     Inbox(crate::inbox::InboxKind),
     /// Open the Later view (its pinned row).
     Later,
+    /// Open the Drafts & scheduled view (its pinned row).
+    Drafts,
 }
 
 #[derive(Clone, Copy)]
@@ -217,6 +221,8 @@ pub struct SidebarCtx<'a> {
     pub inbox_open: Option<crate::inbox::InboxKind>,
     /// The Later view is in place of the room area.
     pub later_open: bool,
+    /// The Drafts & scheduled view is in place of the room area.
+    pub drafts_open: bool,
     pub now: Instant,
 }
 
@@ -430,6 +436,7 @@ impl Sidebar {
             Message::AutoScroll(dy) => Out::ScrollBy(dy),
             Message::Inbox(kind) => Out::Inbox(kind),
             Message::Later => Out::Later,
+            Message::Drafts => Out::Drafts,
             Message::Header(act) => match act {
                 HeaderAct::Layout(e) => Out::Layout(e),
                 HeaderAct::Refresh => Out::RefreshThreads,
@@ -1333,6 +1340,16 @@ pub(crate) fn later_badge(overdue: usize) -> Option<(u64, BadgeKind)> {
     (overdue > 0).then_some((overdue as u64, BadgeKind::Mention))
 }
 
+/// The badge of the Drafts & scheduled row: a red counter of scheduled
+/// messages not sent on time, else a quiet one of the scheduled messages.
+pub(crate) fn drafts_badge(scheduled: usize, missed: usize) -> Option<(u64, BadgeKind)> {
+    if missed > 0 {
+        Some((missed as u64, BadgeKind::Mention))
+    } else {
+        (scheduled > 0).then_some((scheduled as u64, BadgeKind::Muted))
+    }
+}
+
 /// The rows pinned under the search (`UiPrefs::sidebar_pinned_views`).
 fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
     use crate::inbox::InboxKind;
@@ -1366,7 +1383,16 @@ fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
         ctx.later_open,
         Message::Later,
     );
-    column![unreads, activity, later]
+    let queue = ctx.workspace.scheduled();
+    let drafts = pinned_row(
+        Icon::NotebookPen,
+        t!("scheduled.title").into_owned(),
+        chord_of(Shortcut::Drafts),
+        drafts_badge(queue.len(), queue.missed().len()),
+        ctx.drafts_open,
+        Message::Drafts,
+    );
+    column![unreads, activity, later, drafts]
         .spacing(0)
         .padding([0.0, SPACE_2])
         .into()
@@ -2032,6 +2058,7 @@ mod tests {
                     active_thread: None,
                     inbox_open: None,
                     later_open: false,
+                    drafts_open: false,
                     now: Instant::now(),
                 };
                 self.sidebar.view(&ctx, iced::widget::space().into())
@@ -2282,6 +2309,7 @@ mod tests {
                 active_thread: None,
                 inbox_open: None,
                 later_open: false,
+                drafts_open: false,
                 now: Instant::now(),
             });
             assert!(start > 200 && end <= ROOMS + 3, "{start}..{end}");
@@ -2307,6 +2335,7 @@ mod tests {
                 active_thread: None,
                 inbox_open: None,
                 later_open: false,
+                drafts_open: false,
                 now: Instant::now(),
             };
             assert_eq!(fx.sidebar.window(&ctx), (0, 2));
@@ -2621,6 +2650,7 @@ mod tests {
                 active_thread: None,
                 inbox_open: None,
                 later_open: false,
+                drafts_open: false,
                 now: Instant::now(),
             }
         }
@@ -4032,6 +4062,7 @@ mod pinned_tests {
                 active_thread: None,
                 inbox_open: None,
                 later_open: false,
+                drafts_open: false,
                 now: Instant::now(),
             };
             crate::tree_probe::texts(sb.view(&ctx, iced::widget::space().into()))
@@ -4062,6 +4093,7 @@ mod pinned_tests {
             active_thread: None,
             inbox_open: None,
             later_open: false,
+            drafts_open: false,
             now: Instant::now(),
         };
         assert!(crate::tree_probe::key_captured(

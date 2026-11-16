@@ -48,6 +48,13 @@ pub struct User {
     pub status: Option<UserStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_text: Option<String>,
+    /// `me`: the status the user chose (the shown `status` follows the
+    /// connections: "offline" without one).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::lenient::opt"
+    )]
+    pub status_default: Option<UserStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_connection: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

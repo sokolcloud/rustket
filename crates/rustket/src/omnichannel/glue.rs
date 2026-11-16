@@ -89,8 +89,9 @@ impl App {
         let Some(s) = self.servers.get(sid) else {
             return;
         };
-        // Busy users get no new-room sound (`useNotifyUser`).
-        if s.workspace.my_status() == UserStatus::Busy {
+        // Busy users get no new-room sound (`useNotifyUser`), nor do paused
+        // notifications.
+        if s.workspace.my_status() == UserStatus::Busy || self.quiet_now().paused {
             return;
         }
         if let Some(name) = super::new_room_sound(&s.workspace, self.config.ui.sound) {

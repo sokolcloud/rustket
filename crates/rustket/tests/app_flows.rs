@@ -3946,3 +3946,274 @@ fn later_seed_kept_threads_and_menu_stars() {
         app.config.server(&sid).unwrap().pending_blob("A");
     assert!(pending.is_seeded() && pending.status.contains_key("m6"));
 }
+
+/// "Schedule message" keeps the text out of the timeline; the composer's
+/// hint and the Drafts & scheduled view (row, Ctrl+Shift+D) list it with
+/// the drafts; Send now puts it in the outbox; a message whose time passed
+/// while it could not be sent opens the "not sent on time" dialog.
+#[test]
+fn scheduled_messages_and_drafts_view() {
+    use rustket::drafts::Msg as Dm;
+    use rustket::drafts::missed::MissedMsg;
+    use rustket::keymap::Shortcut;
+    use rustket::later::when::Msg as Wm;
+    use rustket::room::Message as Rm;
+    use rustket::room::composer::Message as Cm;
+    use rustket_core::reminders::Preset;
+    use rustket_core::timeline::DeliveryState;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    // Without an offline cache nothing can be scheduled (it would be lost).
+    let _ = app.update(Message::Noop);
+    assert!(!app.servers[&sid].workspace.scheduled_storage());
+    app.offline = rustket::cache::Caches::new(Some(dir.path().join("offline")));
+    let _ = app.update(Message::Noop);
+    assert!(app.servers[&sid].workspace.scheduled_storage());
+    let composer = |app: &App, m: Cm| room_msg(app, &sid, "r1", Rm::Composer(m));
+    for ch in "hello later".chars() {
+        let m = composer(
+            &app,
+            Cm::Editor(iced::widget::text_editor::Action::Edit(
+                iced::widget::text_editor::Edit::Insert(ch),
+            )),
+        );
+        let _ = app.update(m);
+    }
+    let _ = app.update(composer(&app, Cm::Schedule));
+    let _ = app.view();
+    let _ = app.update(composer(
+        &app,
+        Cm::SchedulePicker(Wm::Preset(Preset::In1Hour)),
+    ));
+    let ws = &app.servers[&sid].workspace;
+    assert_eq!(ws.scheduled().len(), 1);
+    assert!(ws.pending_messages("r1").is_empty());
+    let id = ws.scheduled().sorted()[0].id().to_owned();
+    let _ = app.view();
+    // A draft in r2 shows next to it.
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    app.servers
+        .get_mut(&sid)
+        .unwrap()
+        .workspace
+        .set_draft("r1", None, "unsent words");
+    let _ = app.update(Message::Shortcut(Shortcut::Drafts));
+    assert!(app.servers[&sid].drafts_view().is_some());
+    assert!(app.servers[&sid].room_area_taken());
+    let _ = app.view();
+    let drafts = rustket::drafts::drafts(&app.servers[&sid].workspace);
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(drafts[0].2, "unsent words");
+    // The shortcut toggles; the sidebar row opens it again.
+    let _ = app.update(Message::Shortcut(Shortcut::Drafts));
+    assert!(app.servers[&sid].drafts_view().is_none());
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Drafts));
+    assert!(app.servers[&sid].drafts_view().is_some());
+    // Send now: a queued outbox entry (no connection here: it waits).
+    let epoch = app.servers[&sid].generation;
+    let _ = app.update(Message::Drafts(sid.clone(), epoch, Dm::SendNow(id.clone())));
+    let ws = &app.servers[&sid].workspace;
+    assert!(ws.scheduled().is_empty());
+    let pending = ws.pending_messages("r1");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message.msg, "hello later");
+    assert!(matches!(pending[0].state, DeliveryState::Failed { .. }));
+    // Opening a draft's room closes the view.
+    let _ = app.update(Message::Drafts(
+        sid.clone(),
+        epoch,
+        Dm::Open {
+            rid: "r1".into(),
+            tmid: None,
+        },
+    ));
+    assert!(app.servers[&sid].drafts_view().is_none());
+    assert_eq!(app.servers[&sid].active_room.as_deref(), Some("r1"));
+    // Missed while Rustket was off: not sent, the dialog asks.
+    let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+    let past = chrono::Utc::now().timestamp_millis() - 3_600_000;
+    for text in ["one", "two"] {
+        let m = ws.new_local_message("r2", text, None, false);
+        ws.schedule_message(m, past);
+    }
+    let _ = app.update(Message::Noop);
+    assert!(matches!(app.modals.last(), Some(Modal::Missed(_))));
+    let _ = app.view();
+    let missed: Vec<String> = app.servers[&sid]
+        .workspace
+        .scheduled()
+        .missed()
+        .iter()
+        .filter(|e| e.message.msg == "one")
+        .map(|e| e.id().to_owned())
+        .collect();
+    assert_eq!(app.servers[&sid].workspace.scheduled().missed().len(), 2);
+    assert!(
+        app.servers[&sid]
+            .workspace
+            .pending_messages("r2")
+            .is_empty()
+    );
+    let _ = app.update(Message::Missed(MissedMsg::Delete(
+        sid.clone(),
+        missed[0].clone(),
+    )));
+    assert!(matches!(app.modals.last(), Some(Modal::Missed(_))));
+    let _ = app.update(Message::Missed(MissedMsg::SendAll));
+    assert!(app.modals.is_empty(), "nothing left: the dialog closes");
+    let pending = app.servers[&sid].workspace.pending_messages("r2");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message.msg, "two");
+    // Missed ones removed elsewhere: the dialog closes by itself.
+    let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+    let m = ws.new_local_message("r2", "three", None, false);
+    let id3 = m.id.clone();
+    ws.schedule_message(m, past);
+    let _ = app.update(Message::Noop);
+    assert!(matches!(app.modals.last(), Some(Modal::Missed(_))));
+    app.servers
+        .get_mut(&sid)
+        .unwrap()
+        .workspace
+        .remove_scheduled(&id3);
+    let _ = app.update(Message::Noop);
+    assert!(app.modals.is_empty());
+    // An entry being edited does not go out when its time comes; the
+    // saved text goes once the dialog closes.
+    let soon = chrono::Utc::now().timestamp_millis() + 600_000;
+    let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+    let m = ws.new_local_message("r2", "draft text", None, false);
+    let id4 = m.id.clone();
+    ws.schedule_message(m, soon);
+    let _ = app.update(Message::Shortcut(Shortcut::Drafts));
+    let epoch = app.servers[&sid].generation;
+    let _ = app.update(Message::Drafts(sid.clone(), epoch, Dm::Edit(id4.clone())));
+    let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+    assert!(ws.scheduled().get(&id4).unwrap().held);
+    ws.reschedule(&id4, chrono::Utc::now().timestamp_millis() - 1_000);
+    let _ = app.update(Message::Noop);
+    assert!(
+        app.servers[&sid].workspace.scheduled().get(&id4).is_some(),
+        "held while the dialog is open"
+    );
+    for a in [
+        iced::widget::text_editor::Action::SelectAll,
+        iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Paste(
+            std::sync::Arc::new("edited text".into()),
+        )),
+    ] {
+        let _ = app.update(Message::Drafts(sid.clone(), epoch, Dm::EditAction(a)));
+    }
+    let _ = app.update(Message::Drafts(sid.clone(), epoch, Dm::SaveEdit));
+    let _ = app.update(Message::Noop);
+    // Released with the saved text; it goes once the server answers (not
+    // connected here, so it waits within the grace minute).
+    let e = app.servers[&sid].workspace.scheduled().get(&id4).unwrap();
+    assert!(!e.held);
+    assert_eq!(e.message.msg, "edited text");
+}
+
+/// Pausing notifications from the menus is kept in the config (it survives
+/// a restart) until it ends or the user resumes; the custom dialog sets
+/// any later time.
+#[test]
+fn notification_pause_is_persisted() {
+    use rustket::later::when::Msg as Wm;
+    use rustket::quiet::{Msg as Qm, Request};
+    use rustket_core::quiet::PausePreset;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _sid) = loaded_app(dir.path());
+    assert!(!app.quiet_now().paused);
+    let _ = app.update(Message::Quiet(Qm::Preset(PausePreset::Hour1)));
+    let q = app.quiet_now();
+    assert!(q.paused);
+    let until = app.config.pause.paused_until.unwrap();
+    assert!(until > chrono::Utc::now().timestamp_millis() + 3_500_000);
+    assert_eq!(q.until, Some(until));
+    let _ = app.view();
+    let _ = app.update(Message::Quiet(Qm::Request(Request::Resume)));
+    assert!(!app.quiet_now().paused);
+    assert_eq!(app.config.pause.paused_until, None);
+    // Custom: a dialog with the picker.
+    let _ = app.update(Message::Quiet(Qm::Request(Request::PauseCustom)));
+    assert!(matches!(app.modals.last(), Some(Modal::PauseCustom(_))));
+    let _ = app.view();
+    let _ = app.update(Message::Quiet(Qm::Picker(Wm::Pause(PausePreset::Min30))));
+    assert!(app.modals.is_empty());
+    assert!(app.quiet_now().paused);
+    // A pause in the past is ignored.
+    let _ = app.update(Message::Quiet(Qm::Request(Request::Resume)));
+    let _ = app.update(Message::Quiet(Qm::Request(Request::Pause(1))));
+    assert!(!app.quiet_now().paused);
+}
+
+/// A status the user picks releases a pause's busy hold (nothing is
+/// restored over it); signing out forgets the remembered statuses.
+#[test]
+fn explicit_status_releases_the_hold_and_sign_out_forgets() {
+    use rocketchat::models::UserStatus;
+    use rustket::workspace::status_menu::Message as Sm;
+    use rustket_core::quiet::{StatusExpiry, StatusHold};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let entry = app.config.server_mut(&sid).unwrap();
+    entry.status_hold = Some(StatusHold {
+        user_id: "A".into(),
+        status: UserStatus::Online,
+        text: String::new(),
+        released: false,
+    });
+    // A text change keeps the hold.
+    let _ = app.update(Message::StatusMenu(
+        sid.clone(),
+        Sm::StatusSet(None, Some("Lunch".into()), Ok(())),
+    ));
+    assert!(
+        !app.config
+            .server(&sid)
+            .unwrap()
+            .status_hold
+            .as_ref()
+            .unwrap()
+            .released
+    );
+    // A chosen status (also busy) releases it.
+    let _ = app.update(Message::StatusMenu(
+        sid.clone(),
+        Sm::StatusSet(Some(UserStatus::Busy), Some(String::new()), Ok(())),
+    ));
+    assert!(
+        app.config
+            .server(&sid)
+            .unwrap()
+            .status_hold
+            .as_ref()
+            .unwrap()
+            .released
+    );
+    assert_eq!(
+        app.servers[&sid].workspace.my_chosen_status(),
+        Some(UserStatus::Busy)
+    );
+    // Signed out: forgotten.
+    app.config.server_mut(&sid).unwrap().status_expiry = Some(StatusExpiry {
+        user_id: "A".into(),
+        at: 1,
+        status: UserStatus::Busy,
+        text: String::new(),
+        restore: None,
+    });
+    app.servers.get_mut(&sid).unwrap().credentials = None;
+    let _ = app.update(Message::Noop);
+    let e = app.config.server(&sid).unwrap();
+    assert!(e.status_hold.is_none() && e.status_expiry.is_none());
+}

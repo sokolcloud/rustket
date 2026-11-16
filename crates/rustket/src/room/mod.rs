@@ -248,6 +248,8 @@ pub enum Effect {
     Later(rustket_core::later::LaterEdit),
     /// A reminder edit (the app's reminder sync stores it).
     Reminder(rustket_core::reminders::ReminderEdit),
+    /// Open the Drafts & scheduled view (the composer's "N scheduled").
+    OpenDrafts,
 }
 
 /// Requests other room components make to the composer.
@@ -497,6 +499,13 @@ impl RoomView {
         // A previewed room (never joined) leaves no trace in the workspace.
         ws.forget_preview(&self.rid);
         Task::batch([typing, panel])
+    }
+
+    /// Stores the composers' texts as drafts now (the Drafts view lists
+    /// them).
+    pub fn store_drafts(&self, ws: &mut Workspace) {
+        self.composer.on_close(ws);
+        self.panel.store_draft(ws);
     }
 
     /// The room stays open but is no longer shown (another server became

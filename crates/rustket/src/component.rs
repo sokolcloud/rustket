@@ -204,6 +204,9 @@ pub enum Effect {
     /// Users matching a term (`users.autocomplete`) for the mention group
     /// editor, tagged with its sequence number.
     SuggestMentionMembers(rustket_core::ServerId, u64, String),
+    /// Pause or resume notifications, or set the expiry of the status just
+    /// set on the component's server (`crate::quiet`).
+    Quiet(crate::quiet::Request),
     /// The "never store secrets in a file" switch (Settings): turning it on
     /// asks for confirmation first.
     SetSecretsMemoryOnly(bool),

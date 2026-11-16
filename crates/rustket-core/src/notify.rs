@@ -104,6 +104,9 @@ pub struct NotifyContext<'a> {
     /// The notification's server is the one shown.
     pub server_active: bool,
     pub prefs: NotificationPrefs,
+    /// Notifications are paused (by hand or outside working hours,
+    /// [`crate::quiet`]).
+    pub paused: bool,
 }
 
 /// A notification to show.
@@ -122,10 +125,11 @@ pub struct NotificationSpec {
 /// i18n key for the body when previews are disabled.
 pub const HIDDEN_BODY_KEY: &str = "notification.new_message";
 
-/// Applies local suppression rules: own messages, disabled notifications, busy
-/// (do not disturb), and the room/thread being on screen in an active window.
+/// Applies local suppression rules: own messages, disabled or paused
+/// notifications, busy (do not disturb), and the room/thread being on screen
+/// in an active window.
 pub fn evaluate(n: &IncomingNotification, ctx: &NotifyContext<'_>) -> Option<NotificationSpec> {
-    if !ctx.prefs.enabled {
+    if !ctx.prefs.enabled || ctx.paused {
         return None;
     }
     if n.sender_id() == Some(ctx.my_user_id) {
@@ -211,6 +215,7 @@ mod tests {
                 show_preview: true,
                 sound: true,
             },
+            paused: false,
         }
     }
 
@@ -251,6 +256,11 @@ mod tests {
         let mut c = ctx();
         c.my_status = UserStatus::Busy;
         assert!(evaluate(&n, &c).is_none(), "do not disturb");
+
+        let mut c = ctx();
+        c.window_active = false;
+        c.paused = true;
+        assert!(evaluate(&n, &c).is_none(), "paused");
 
         let mut c = ctx();
         c.focused_rid = Some("rid1");

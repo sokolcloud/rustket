@@ -329,6 +329,15 @@ impl App {
                     Task::none()
                 }
                 Effect::OpenLocalesFolder => self.open_locales_folder(),
+                Effect::Quiet(crate::quiet::Request::Expiry(e)) => match sid {
+                    Some(sid) => self.set_status_expiry(sid, e),
+                    None => Task::none(),
+                },
+                Effect::Quiet(crate::quiet::Request::ReleaseHold) => match sid {
+                    Some(sid) => self.release_status_hold(sid),
+                    None => Task::none(),
+                },
+                Effect::Quiet(req) => self.on_quiet(crate::quiet::Msg::Request(req)),
                 Effect::RecentStatusTexts(list) => {
                     self.config.set_recent_status_texts(list);
                     self.save_config()
@@ -742,6 +751,10 @@ impl App {
                 desktop::Request::Quit => self.go(Go::Quit),
                 desktop::Request::IdleTime(idle) => self.idle_presence(idle),
                 desktop::Request::SetStatus(status) => self.set_status_everywhere(status),
+                desktop::Request::Pause(p) => self.on_quiet(crate::quiet::Msg::Preset(p)),
+                desktop::Request::Resume => {
+                    self.on_quiet(crate::quiet::Msg::Request(crate::quiet::Request::Resume))
+                }
                 desktop::Request::RoomStep(step) => self.room_step(step),
                 desktop::Request::JoinCall { server_id, call_id } => {
                     self.on_calls(crate::videoconf::Message::Action(

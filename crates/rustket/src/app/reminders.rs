@@ -118,7 +118,9 @@ impl App {
             .later_message(mid)
             .filter(|_| self.config.ui.notification_preview)
             .and_then(body_of);
-        let sound = self.config.ui.reminder_sound;
+        // Reminders still show while notifications are paused (the user
+        // asked for them), silently.
+        let sound = self.config.ui.reminder_sound && !self.quiet_now().paused;
         let place = self.reminder_place(sid, &r.rid, r.tmid.as_deref());
         if sound {
             self.desktop.sound.play_theme("alarm-clock-elapsed");
@@ -193,7 +195,7 @@ impl App {
                 && notify_on
                 && self.reminder_timer.missed_shown.insert(sid.clone())
             {
-                if self.config.ui.reminder_sound {
+                if self.config.ui.reminder_sound && !self.quiet_now().paused {
                     self.desktop.sound.play_theme("alarm-clock-elapsed");
                 }
                 let backend = self.desktop.notifications.backend();

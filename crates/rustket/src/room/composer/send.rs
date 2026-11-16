@@ -103,6 +103,15 @@ impl Composer {
         let is_command = self.quotes.is_empty()
             && text::parse_slash(&text).is_some()
             && !crate::e2e::outgoing::slash_commands_blocked(ctx.workspace, &self.rid);
+        if is_command && self.schedule_at.is_some() {
+            // A command runs now or not at all; the text stays.
+            self.schedule_at = None;
+            return Action::effect(Effect::Toast(
+                BannerKind::Warning,
+                t!("scheduled.no_commands").into_owned(),
+                String::new(),
+            ));
+        }
         if is_command
             && let Some((name, _)) = text::parse_slash(&text)
             && let Some(list) = cached_commands(ctx.server_id)
@@ -155,7 +164,9 @@ impl Composer {
         let stop = self.typing.on_send();
         let typing = self.typing_task(stop, ctx);
         let capped = added && encrypted_mentions_capped(ctx.workspace, &self.rid, &full);
-        let mut action = if is_command {
+        let mut action = if let Some(at) = self.schedule_at.take() {
+            self.schedule_text(full, at, ctx)
+        } else if is_command {
             self.dispatch_text(full, ctx)
         } else {
             Action::task(self.send_text(full, ctx))
@@ -207,6 +218,25 @@ impl Composer {
             .new_local_message(&self.rid, &text, self.tmid.as_deref(), self.tshow);
         ctx.workspace.add_pending(m.clone());
         send_task(ctx, m)
+    }
+
+    /// Keeps the message to send at `at` (UTC ms) instead of now
+    /// (`rustket_core::scheduled`); it is not shown in the timeline until it
+    /// goes out.
+    fn schedule_text(&mut self, text: String, at: i64, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        let m = ctx
+            .workspace
+            .new_local_message(&self.rid, &text, self.tmid.as_deref(), self.tshow);
+        ctx.workspace.schedule_message(m, at);
+        let time = crate::format::moment(at, chrono::Local::now(), ctx.prefs.clock_24h);
+        Action {
+            task: self.focus(),
+            effects: vec![Effect::Toast(
+                BannerKind::Success,
+                t!("scheduled.toast", time = time).into_owned(),
+                String::new(),
+            )],
+        }
     }
 
     /// Pending message `id` this composer owns: the thread composer only

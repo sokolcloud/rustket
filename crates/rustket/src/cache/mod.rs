@@ -31,6 +31,10 @@
 //!   manager can encrypt them (never sent as plaintext). Failed ones stay
 //!   for retry or discard. Uploads are not persisted: one interrupted by
 //!   quitting is reported on the next start.
+//! - Scheduled messages (`rustket_core::scheduled`) are outbox entries with a
+//!   send time, persisted like pending ones (same rooms only) but kept out
+//!   of the timelines; once due they become queued entries
+//!   ([`enqueue_scheduled`]) and go out on the path above.
 //! - Cleanup: logout, a rejected token and server removal delete the
 //!   server's cache; Settings → Storage clears every cache (unsent messages
 //!   stay).
@@ -73,8 +77,9 @@ const THREADS_WRITE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// A timeline instance (see `Timeline::epoch`).
 type Epoch = (u64, u64);
-/// An outbox entry as last written: id, queued, maybe sent, error.
-type OutboxSig = (String, bool, bool, Option<String>);
+/// An outbox entry as last written: id, queued, maybe sent, error, send
+/// time and a hash of the text (scheduled texts can be edited).
+type OutboxSig = (String, bool, bool, Option<String>, Option<i64>, u64);
 
 /// App-wide cache state.
 #[derive(Debug, Default)]
@@ -170,6 +175,12 @@ impl ServerCache {
         self.handle.is_some()
     }
 
+    /// Whether the outbox (and scheduled messages) of this account are kept
+    /// on disk: caching is on and opening did not fail.
+    pub fn persists(&self, caches: &Caches) -> bool {
+        caches.enabled() && self.failed_for.is_none()
+    }
+
     /// Whether a message waits to be sent automatically.
     pub fn is_queued(&self, id: &str) -> bool {
         self.queued.contains(id)
@@ -221,7 +232,7 @@ fn wrap(m: Msg) -> Message {
 }
 
 /// The server answers (realtime up, initial load in).
-fn online(s: &ServerState) -> bool {
+pub(crate) fn online(s: &ServerState) -> bool {
     s.session.is_some()
         && s.workspace.last_sync().is_some()
         && !s.workspace.from_cache()
@@ -258,16 +269,18 @@ pub fn after_update(
     last_room: Option<&str>,
 ) -> Task<Message> {
     let Some(base) = caches.base.as_ref() else {
-        return Task::none();
+        // No cache: queued messages (due scheduled ones) still go out.
+        return send_queued(s);
     };
     let Some(user) = s.credentials.as_ref().map(|c| c.user_id.clone()) else {
         return Task::none();
     };
     if s.cache.user.as_deref() != Some(user.as_str()) {
-        if s.cache.opening.as_deref() == Some(user.as_str())
-            || s.cache.failed_for.as_deref() == Some(user.as_str())
-        {
+        if s.cache.opening.as_deref() == Some(user.as_str()) {
             return Task::none();
+        }
+        if s.cache.failed_for.as_deref() == Some(user.as_str()) {
+            return send_queued(s);
         }
         s.cache = ServerCache {
             opening: Some(user.clone()),
@@ -579,9 +592,14 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
             c.queued.insert(i.message.id.clone());
         }
     }
-    c.restored.retain(|id| ids.contains(id.as_str()));
     c.unconfirmed.retain(|id| ids.contains(id.as_str()));
-    let entries: Vec<OutboxEntry> = items
+    let scheduled = ws.scheduled().sorted();
+    let ids: HashSet<&str> = ids
+        .into_iter()
+        .chain(scheduled.iter().map(|s| s.id()))
+        .collect();
+    c.restored.retain(|id| ids.contains(id.as_str()));
+    let mut entries: Vec<OutboxEntry> = items
         .iter()
         .filter(|i| persistable(ws, &i.message, c.restored.contains(&i.message.id)))
         .map(|i| {
@@ -594,17 +612,37 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
                     DeliveryState::Failed { error } => Some(error.clone()),
                     _ => None,
                 },
+                send_at: None,
             }
         })
         .collect();
+    // Scheduled messages: only those of rooms known to be unencrypted, like
+    // pending ones (the text is never logged nor synced).
+    entries.extend(
+        scheduled
+            .iter()
+            .filter(|e| persistable(ws, &e.message, c.restored.contains(e.id())))
+            .map(|e| OutboxEntry {
+                message: e.message.clone(),
+                queued: false,
+                maybe_sent: false,
+                error: None,
+                send_at: Some(e.send_at),
+            }),
+    );
     let sig: Vec<OutboxSig> = entries
         .iter()
         .map(|e| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            e.message.msg.hash(&mut h);
             (
                 e.message.id.clone(),
                 e.queued,
                 e.maybe_sent,
                 e.error.clone(),
+                e.send_at,
+                h.finish(),
             )
         })
         .collect();
@@ -989,6 +1027,12 @@ fn restore_outbox(s: &mut ServerState, outbox: Vec<OutboxEntry>) {
         if present.contains(&m.id) {
             continue;
         }
+        if let Some(at) = e.send_at {
+            s.cache.restored.insert(m.id.clone());
+            s.workspace
+                .restore_scheduled(rustket_core::scheduled::Scheduled::new(m, at));
+            continue;
+        }
         let (id, rid, tmid) = (m.id.clone(), m.rid.clone(), m.tmid.clone());
         s.workspace.add_pending(m);
         let error = match (e.queued, e.error) {
@@ -1007,6 +1051,34 @@ fn restore_outbox(s: &mut ServerState, outbox: Vec<OutboxEntry>) {
         }
     }
     s.cache.outbox_restored = true;
+}
+
+/// Puts a scheduled message whose time came (or that the user sends now)
+/// into the outbox as a queued entry: it goes out like a message written
+/// offline (`send_queued`), and a failure leaves a failed entry to retry or
+/// discard.
+pub fn enqueue_scheduled(s: &mut ServerState, m: RcMessage) {
+    let (id, rid, tmid) = (m.id.clone(), m.rid.clone(), m.tmid.clone());
+    s.workspace.add_pending(m);
+    s.workspace
+        .mark_pending_failed(&rid, tmid.as_deref(), &id, &t!("cache.waiting"));
+    s.cache.known.insert(id.clone());
+    s.cache.queued.insert(id);
+}
+
+/// Scheduled messages of server `s` whose time came go into the outbox
+/// while the server answers; returns the ones that turned out missed (their
+/// time passed while they could not be sent).
+pub fn tick_scheduled(s: &mut ServerState, now_ms: i64) -> Vec<String> {
+    if s.workspace.scheduled().is_empty() || !s.is_logged_in() {
+        return Vec::new();
+    }
+    let up = online(s);
+    let due = s.workspace.take_due_scheduled(now_ms, up);
+    for e in due.send {
+        enqueue_scheduled(s, e.message);
+    }
+    due.missed
 }
 
 /// Deletes a server's cache (logout, rejected token, server removal).
@@ -1299,6 +1371,74 @@ mod tests {
         let mut batch = Batch::default();
         collect_threads(s, full, at, &mut batch);
         batch.threads
+    }
+
+    #[test]
+    fn scheduled_messages_are_persisted_restored_and_queued_when_due() {
+        use rustket_core::scheduled::MISSED_GRACE_MS;
+        let mut s = thread_server();
+        s.workspace.apply_initial(rustket_core::sync::InitialData {
+            me: rocketchat::models::User {
+                id: "me".into(),
+                username: Some("me".into()),
+                ..Default::default()
+            },
+            subscriptions: vec![rocketchat::models::Subscription {
+                id: "sub-a".into(),
+                rid: "a".into(),
+                name: "a".into(),
+                open: true,
+                ..Default::default()
+            }],
+            rooms: vec![rocketchat::models::Room {
+                id: "a".into(),
+                name: Some("a".into()),
+                ..Default::default()
+            }],
+            next_since: RcDate::from_millis(1),
+            ..Default::default()
+        });
+        s.cache.outbox_restored = true;
+        let m = s
+            .workspace
+            .new_local_message("a", "later text", None, false);
+        let id = m.id.clone();
+        s.workspace.schedule_message(m, 5_000);
+        let mut batch = Batch::default();
+        collect_outbox(&mut s, &mut batch);
+        let entries = batch.outbox.expect("written");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].send_at, Some(5_000));
+        assert!(!entries[0].queued);
+        // Unchanged: not written again; an edited text is.
+        let mut batch = Batch::default();
+        collect_outbox(&mut s, &mut batch);
+        assert!(batch.outbox.is_none());
+        s.workspace.set_scheduled_text(&id, "edited");
+        let mut batch = Batch::default();
+        collect_outbox(&mut s, &mut batch);
+        assert_eq!(batch.outbox.unwrap()[0].message.msg, "edited");
+        // A restart puts it back in the queue, not in the timeline.
+        let mut s2 = thread_server();
+        restore_outbox(&mut s2, entries);
+        assert_eq!(s2.workspace.scheduled().len(), 1);
+        assert_eq!(s2.workspace.outbox_items().count(), 0);
+        assert!(!s2.cache.is_queued(&id));
+        // Not connected: within the grace time it waits, later it is missed.
+        assert!(tick_scheduled(&mut s2, 5_000).is_empty());
+        assert_eq!(s2.workspace.scheduled().len(), 1);
+        assert_eq!(
+            tick_scheduled(&mut s2, 5_001 + MISSED_GRACE_MS),
+            Vec::<String>::new(),
+            "signed out: nothing happens"
+        );
+        // Sent now: a queued outbox entry, waiting for the connection.
+        let e = s2.workspace.take_scheduled_now(&id, 9_000).unwrap();
+        enqueue_scheduled(&mut s2, e.message);
+        assert!(s2.cache.is_queued(&id));
+        assert!(s2.workspace.scheduled().is_empty());
+        let item = s2.workspace.outbox_items().next().unwrap();
+        assert!(matches!(item.state, DeliveryState::Failed { .. }));
     }
 
     #[test]

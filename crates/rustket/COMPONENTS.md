@@ -533,3 +533,30 @@ missed ones once per server and closes notifications of reminders changed
 elsewhere. Unstarring ("Remove done items") goes through the paced star
 queue (`app::star_kept`, shared with "Move kept threads to Favorites").
 
+
+### Drafts & scheduled (`src/drafts/`, `rustket_core::scheduled`, glue `src/app/drafts.rs`)
+
+The third kind of main view (`MainView::Drafts(DraftsView)`, pinned row,
+Ctrl/Cmd+Shift+D). `DraftsView::update(Msg, ctx) -> Vec<Out>` (`Out::{Close,
+SendNow, Reschedule, SetText, Delete, Open}`). Scheduled messages live in
+`Workspace::scheduled` (`Dirty::SCHEDULED`), never in a timeline; the
+composer adds them (`Message::Schedule`, Ctrl/Cmd+Shift+Enter, only where
+`e2e::outgoing::mode` is `Plain`) and shows "N scheduled" above the editor
+(`Effect::OpenDrafts`). The offline cache persists them as outbox entries
+with `send_at` (schema 3). Due ones become queued outbox entries
+(`cache::tick_scheduled` / `enqueue_scheduled`, run in `after_update` before
+`cache::after_update`, which sends queued entries also without a cache);
+ones more than `MISSED_GRACE_MS` late are marked missed and open
+`Modal::Missed` (`drafts::missed`). Drafts are the workspace's composer
+drafts; opening the view stores the open room's composer texts first.
+
+### Quiet time (`src/quiet.rs`, `rustket_core::quiet`, glue `src/app/quiet.rs`)
+
+Pausing notifications (status menu, tray, `Modal::PauseCustom`), working
+hours (Settings → Notifications) and "Clear after" of the status menu. The
+pause lives in `AppConfig::pause`, the busy hold and the status expiry per
+server in `ServerEntry::{status_hold, status_expiry}`. `App::quiet_now()`
+gates `notify::evaluate` (`NotifyEnv::paused`), the omnichannel new-room
+sound and reminder sounds. `App::quiet_tick` (every `after_update`) settles
+statuses one `users.setStatus` call per server at a time while the server
+answers, updates the tray and arms one timer (also for scheduled messages).

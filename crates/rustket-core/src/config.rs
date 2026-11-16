@@ -159,6 +159,19 @@ pub struct ServerEntry {
         deserialize_with = "lenient_vec"
     )]
     pub pending_service_all_accounts: Vec<PendingBlob>,
+    /// The status a notification pause set to busy, with the one to restore
+    /// (`crate::quiet`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_opt"
+    )]
+    pub status_hold: Option<crate::quiet::StatusHold>,
+    /// A custom status that clears itself (`crate::quiet`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_opt"
+    )]
+    pub status_expiry: Option<crate::quiet::StatusExpiry>,
     /// Unix seconds.
     pub added_at: i64,
     pub sort_order: i32,
@@ -592,6 +605,11 @@ pub struct UiPrefs {
     /// Hour the "Tomorrow" and "Next week" reminder presets use
     /// ([`Self::morning_hour`] clamps it).
     pub reminder_morning_hour: u8,
+    /// Set the status to busy while notifications are paused (by hand or
+    /// outside working hours), and back afterwards.
+    pub pause_sets_busy: bool,
+    /// Outside these hours notifications are paused (when enabled).
+    pub working_hours: crate::quiet::WorkingHours,
 }
 
 /// Hours the reminder presets may start at.
@@ -647,6 +665,8 @@ impl Default for UiPrefs {
             reminder_notifications: true,
             reminder_sound: true,
             reminder_morning_hour: 9,
+            pause_sets_busy: true,
+            working_hours: crate::quiet::WorkingHours::default(),
         }
     }
 }
@@ -702,6 +722,8 @@ pub struct AppConfig {
     /// read back as a login ([`Self::mark_secret_deletion`]).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pending_secret_deletions: Vec<String>,
+    /// Notifications paused by hand (`crate::quiet`).
+    pub pause: crate::quiet::PauseState,
     #[serde(skip)]
     unknown: Unknown,
 }
@@ -718,6 +740,7 @@ impl Default for AppConfig {
             window: None,
             device_id: None,
             pending_secret_deletions: Vec::new(),
+            pause: crate::quiet::PauseState::default(),
             unknown: Unknown::default(),
         }
     }
@@ -734,6 +757,7 @@ const APP_KEYS: &[&str] = &[
     "window",
     "device_id",
     "pending_secret_deletions",
+    "pause",
 ];
 const UI_KEYS: &[&str] = &[
     "theme",
@@ -773,6 +797,8 @@ const UI_KEYS: &[&str] = &[
     "reminder_notifications",
     "reminder_sound",
     "reminder_morning_hour",
+    "pause_sets_busy",
+    "working_hours",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -786,6 +812,8 @@ const SERVER_KEYS: &[&str] = &[
     "kept_threads",
     "pending_flags",
     "pending_service",
+    "status_hold",
+    "status_expiry",
     "added_at",
     "sort_order",
 ];
@@ -959,6 +987,9 @@ impl AppConfig {
         }
         if let Some(t) = doc.get("window").and_then(toml::Value::as_table) {
             cfg.window = Some(lenient(t, "window"));
+        }
+        if let Some(t) = doc.get("pause").and_then(toml::Value::as_table) {
+            cfg.pause = lenient(t, "pause");
         }
         if let Some(list) = doc
             .get("pending_secret_deletions")
@@ -1468,6 +1499,19 @@ mod tests {
         s.username = Some("n".into());
         s.last_room = Some("r".into());
         s.token_kind = Some(TokenKind::Login);
+        s.status_hold = Some(crate::quiet::StatusHold {
+            user_id: "u".into(),
+            status: rocketchat::models::UserStatus::Online,
+            text: String::new(),
+            released: false,
+        });
+        s.status_expiry = Some(crate::quiet::StatusExpiry {
+            user_id: "u".into(),
+            at: 1,
+            status: rocketchat::models::UserStatus::Busy,
+            text: String::new(),
+            restore: None,
+        });
         s.set_thread_kept("r", "t", true);
         let mut pending = crate::flags::FlagBlob::default();
         pending
@@ -1834,6 +1878,61 @@ mod tests {
         assert!(c.ui.reminder_sound);
         let c = AppConfig::parse("[ui]\nsound = false\nreminder_sound = true").unwrap();
         assert!(c.ui.reminder_sound);
+    }
+
+    #[test]
+    fn quiet_settings_default_and_round_trip() {
+        use crate::quiet::{DayHours, PauseState, StatusExpiry, StatusHold};
+        use rocketchat::models::UserStatus;
+        let d = AppConfig::default();
+        assert!(d.ui.pause_sets_busy);
+        assert!(!d.ui.working_hours.enabled);
+        assert_eq!(d.pause, PauseState::default());
+        let mut c = AppConfig::default();
+        c.ui.pause_sets_busy = false;
+        c.ui.working_hours.enabled = true;
+        c.ui.working_hours.set_day(
+            chrono::Weekday::Sat,
+            DayHours {
+                on: true,
+                start: 22 * 60,
+                end: 6 * 60,
+            },
+        );
+        c.pause.paused_until = Some(1_900_000_000_000);
+        c.servers.push(ServerEntry {
+            id: ServerId("s1".into()),
+            url: "https://x.example".into(),
+            status_hold: Some(StatusHold {
+                user_id: "u1".into(),
+                status: UserStatus::Away,
+                text: "Lunch".into(),
+                released: false,
+            }),
+            status_expiry: Some(StatusExpiry {
+                user_id: "u1".into(),
+                at: 5,
+                status: UserStatus::Busy,
+                text: "Meeting".into(),
+                restore: Some(UserStatus::Online),
+            }),
+            ..Default::default()
+        });
+        let text = toml::to_string(&c).unwrap();
+        let back = AppConfig::parse(&text).unwrap();
+        assert_eq!(back.ui.working_hours, c.ui.working_hours);
+        assert!(!back.ui.pause_sets_busy);
+        assert_eq!(back.pause, c.pause);
+        assert_eq!(back.servers[0].status_hold, c.servers[0].status_hold);
+        assert_eq!(back.servers[0].status_expiry, c.servers[0].status_expiry);
+        // A broken entry falls back alone.
+        let c = AppConfig::parse(
+            "[pause]\npaused_until = \"soon\"\n[[servers]]\nid = \"s\"\nurl = \"https://x\"\nstatus_hold = 3\n",
+        )
+        .unwrap();
+        assert_eq!(c.pause, PauseState::default());
+        assert_eq!(c.servers[0].status_hold, None);
+        assert_eq!(c.servers[0].url, "https://x");
     }
 
     #[test]
