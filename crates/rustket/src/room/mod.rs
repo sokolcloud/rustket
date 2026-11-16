@@ -3,6 +3,7 @@
 //! right contextual [`panel`]. See `crates/rustket/COMPONENTS.md` for the
 //! component contract.
 
+pub mod bookmarks;
 pub mod composer;
 pub mod emoji_picker;
 pub mod header;

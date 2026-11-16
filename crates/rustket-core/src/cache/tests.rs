@@ -1431,3 +1431,49 @@ fn scheduled_table_needs_no_schema_bump() {
     let db = open(&dir2, "u1");
     assert!(db.load_outbox().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn search_finds_plain_messages_once_and_never_ciphertext() {
+    use crate::search::{LocalMatcher, MatchCtx, SearchQuery};
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("srv");
+    let h = CacheHandle::open(dir, "u1".into(), None)
+        .await
+        .unwrap()
+        .handle;
+    let mut plain = messages("R1", 3);
+    plain[0].msg = "the kumquat harvest".into();
+    plain[2].msg = "another Kumquat".into();
+    let mut reply = plain[2].clone();
+    reply.tmid = Some("R1-m000".into());
+    let thread = CachedTimeline {
+        key: TimelineKey::thread("R1", "R1-m000"),
+        parent: None,
+        messages: vec![reply],
+    };
+    let mut other = messages("R2", 1);
+    other[0].msg = "kumquat elsewhere".into();
+    h.write(Batch {
+        timelines: vec![
+            timeline("R1", plain),
+            thread,
+            timeline("R2", other),
+            timeline("R3", vec![decrypted("e1", "R3", "secret kumquat")]),
+        ],
+        ..Default::default()
+    });
+    assert!(h.flush_blocking(std::time::Duration::from_secs(5)));
+    let ctx = MatchCtx {
+        user_id: "u1".into(),
+        username: "u1".into(),
+        offset: chrono::FixedOffset::east_opt(0).unwrap(),
+    };
+    let m = LocalMatcher::new(&SearchQuery::parse("kumquat"), &ctx).unwrap();
+    let found = h.search(m.clone(), None, 10).await;
+    let ids: Vec<&str> = found.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["R1-m002", "R1-m000", "R2-m000"]);
+    let only = std::collections::HashSet::from(["R2".to_owned()]);
+    let found = h.search(m.clone(), Some(only), 10).await;
+    assert_eq!(found.len(), 1);
+    assert_eq!(h.search(m, None, 1).await.len(), 1);
+}

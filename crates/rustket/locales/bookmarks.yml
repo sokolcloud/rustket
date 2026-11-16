@@ -1,0 +1,67 @@
+_version: 2
+bookmarks.add:
+  en: "Add bookmark"
+  ru: "Добавить закладку"
+  es: "Añadir marcador"
+  th: "เพิ่มบุ๊กมาร์ก"
+  zh: "添加书签"
+bookmarks.add_title:
+  en: "Add bookmark"
+  ru: "Новая закладка"
+  es: "Añadir marcador"
+  th: "เพิ่มบุ๊กมาร์ก"
+  zh: "添加书签"
+bookmarks.url:
+  en: "Link"
+  ru: "Ссылка"
+  es: "Enlace"
+  th: "ลิงก์"
+  zh: "链接"
+bookmarks.title_label:
+  en: "Title"
+  ru: "Название"
+  es: "Título"
+  th: "ชื่อ"
+  zh: "标题"
+bookmarks.title_placeholder:
+  en: "Optional"
+  ru: "Необязательно"
+  es: "Opcional"
+  th: "ไม่บังคับ"
+  zh: "可选"
+bookmarks.add_hint:
+  en: "The link is added to the room description, so every member sees it."
+  ru: "Ссылка добавится в описание комнаты, её увидят все участники."
+  es: "El enlace se añade a la descripción de la sala, así lo ven todos los miembros."
+  th: "ลิงก์จะถูกเพิ่มในคำอธิบายห้อง สมาชิกทุกคนจะเห็น"
+  zh: "链接会添加到聊天室描述中，所有成员都能看到。"
+bookmarks.save:
+  en: "Add"
+  ru: "Добавить"
+  es: "Añadir"
+  th: "เพิ่ม"
+  zh: "添加"
+bookmarks.added:
+  en: "Bookmark added"
+  ru: "Закладка добавлена"
+  es: "Marcador añadido"
+  th: "เพิ่มบุ๊กมาร์กแล้ว"
+  zh: "书签已添加"
+bookmarks.invalid_url:
+  en: "Enter a web address (http or https)."
+  ru: "Введите веб-адрес (http или https)."
+  es: "Escribe una dirección web (http o https)."
+  th: "กรุณาใส่ที่อยู่เว็บ (http หรือ https)"
+  zh: "请输入网址（http 或 https）。"
+bookmarks.setting:
+  en: "Room bookmarks"
+  ru: "Закладки комнаты"
+  es: "Marcadores de la sala"
+  th: "บุ๊กมาร์กของห้อง"
+  zh: "聊天室书签"
+bookmarks.setting_help:
+  en: "Show the links of the topic, announcement and description under the room header."
+  ru: "Показывать ссылки из темы, объявления и описания под заголовком комнаты."
+  es: "Mostrar los enlaces del tema, el anuncio y la descripción bajo el encabezado de la sala."
+  th: "แสดงลิงก์จากหัวข้อ ประกาศ และคำอธิบายใต้ส่วนหัวของห้อง"
+  zh: "在聊天室标题下显示主题、公告和描述中的链接。"

@@ -211,6 +211,39 @@ impl Composer {
         )))
     }
 
+    /// Sends a poll from the "Create poll" dialog (no mention-group
+    /// expansion or `@all` check: the text is generated); `reactions` are
+    /// added once it is sent.
+    pub(super) fn send_poll(
+        &mut self,
+        text: String,
+        reactions: Vec<&'static str>,
+        ctx: &mut UpdateCtx<'_>,
+    ) -> Action<Message> {
+        if matches!(
+            crate::e2e::outgoing::mode(ctx.workspace, &self.rid),
+            crate::e2e::outgoing::Mode::Blocked
+        ) {
+            return Action::effect(error_toast(crate::e2e::outgoing::blocked_text(
+                ctx.workspace,
+                &self.rid,
+            )));
+        }
+        let max = ctx.workspace.settings().max_message_size();
+        if text::too_long(&text, max) {
+            return Action::effect(too_long(max));
+        }
+        self.poll = None;
+        let m = ctx
+            .workspace
+            .new_local_message(&self.rid, &text, self.tmid.as_deref(), self.tshow);
+        if !reactions.is_empty() {
+            self.poll_reactions.insert(m.id.clone(), reactions);
+        }
+        ctx.workspace.add_pending(m.clone());
+        Action::task(Task::batch([send_task(ctx, m), self.focus()]))
+    }
+
     /// Adds a pending message to the outbox and sends it with `chat.sendMessage`.
     fn send_text(&mut self, text: String, ctx: &mut UpdateCtx<'_>) -> Task<Message> {
         let m = ctx
@@ -456,4 +489,30 @@ fn send_task(ctx: &UpdateCtx<'_>, m: rocketchat::models::Message) -> Task<Messag
             Message::Sent(id, r)
         },
     )
+}
+
+/// Adds `reactions` to message `mid` one by one (a poll's options), waiting
+/// out rate limits (`chat.react` allows 10 a minute by default).
+pub(super) async fn add_reactions(
+    rest: rocketchat::RestClient,
+    mid: String,
+    reactions: Vec<&'static str>,
+) -> rocketchat::Result<()> {
+    for emoji in reactions {
+        let mut waits = 0;
+        loop {
+            match rest.react(&mid, emoji, Some(true)).await {
+                Ok(()) => break,
+                Err(rocketchat::Error::RateLimited { retry_after, .. }) if waits < 3 => {
+                    waits += 1;
+                    let d = retry_after
+                        .unwrap_or(std::time::Duration::from_secs(10))
+                        .min(std::time::Duration::from_secs(60));
+                    tokio::time::sleep(d).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
 }

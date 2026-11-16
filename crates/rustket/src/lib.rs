@@ -45,6 +45,7 @@ pub mod reads;
 pub mod renderer;
 pub mod room;
 pub mod screens;
+pub mod search;
 pub mod session;
 pub mod single_instance;
 pub mod teams;

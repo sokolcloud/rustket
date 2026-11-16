@@ -27,7 +27,7 @@ use crate::workspace::{MainView, ServerState};
 const MENTIONS_COUNT: u64 = 50;
 
 /// How a failed fetch counts for the loader's pacing.
-fn load_failure(f: &Failure) -> LoadFailure {
+pub(super) fn load_failure(f: &Failure) -> LoadFailure {
     match classify(f) {
         Class::RateLimited(d) => LoadFailure::RateLimited(d),
         Class::Transient => LoadFailure::Transient,

@@ -52,6 +52,7 @@ impl App {
             // Reserved: `keymap::global` does not produce it yet.
             Shortcut::Later => self.later_shortcut(),
             Shortcut::Drafts => self.drafts_shortcut(),
+            Shortcut::Search => self.search_shortcut(),
         }
     }
 

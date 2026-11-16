@@ -196,6 +196,8 @@ pub enum Message {
     SetEscapeMarksRead(bool),
     /// `UiPrefs::confirm_broad_mentions`.
     SetConfirmBroadMentions(bool),
+    /// `UiPrefs::room_bookmarks`.
+    SetRoomBookmarks(bool),
     /// `UiPrefs::share_utc_offset`.
     SetShareUtcOffset(bool),
     /// Open the keyboard shortcuts cheat sheet.
@@ -414,6 +416,7 @@ impl Settings {
             Message::SetMinimizeToTray(v) => Self::pref(ctx, |p| p.minimize_to_tray = v),
             Message::SetStartMinimized(v) => Self::pref(ctx, |p| p.start_minimized = v),
             Message::SetEscapeMarksRead(v) => Self::pref(ctx, |p| p.escape_marks_read = v),
+            Message::SetRoomBookmarks(v) => Self::pref(ctx, |p| p.room_bookmarks = v),
             Message::SetConfirmBroadMentions(v) => {
                 Self::pref(ctx, |p| p.confirm_broad_mentions = v)
             }
@@ -612,6 +615,7 @@ mod tests {
             (Message::SetStartMinimized(true), |c| c.start_minimized),
             (Message::SetEscapeMarksRead(false), |c| !c.escape_marks_read),
             (Message::SetEscapeMarksRead(true), |c| c.escape_marks_read),
+            (Message::SetRoomBookmarks(false), |c| !c.room_bookmarks),
             (Message::SetConfirmBroadMentions(false), |c| {
                 !c.confirm_broad_mentions
             }),

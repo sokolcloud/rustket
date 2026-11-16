@@ -125,18 +125,26 @@ pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a,
 
     let messages = section(
         t!("settings.messages").into_owned(),
-        vec![switch(
-            t!("settings.confirm_broad_mentions").into_owned(),
-            Some(
-                t!(
-                    "settings.confirm_broad_mentions_help",
-                    count = crate::room::composer::broad::MIN_MEMBERS
-                )
-                .into_owned(),
+        vec![
+            switch(
+                t!("settings.confirm_broad_mentions").into_owned(),
+                Some(
+                    t!(
+                        "settings.confirm_broad_mentions_help",
+                        count = crate::room::composer::broad::MIN_MEMBERS
+                    )
+                    .into_owned(),
+                ),
+                ui.confirm_broad_mentions,
+                Some(Message::SetConfirmBroadMentions),
             ),
-            ui.confirm_broad_mentions,
-            Some(Message::SetConfirmBroadMentions),
-        )],
+            switch(
+                t!("bookmarks.setting").into_owned(),
+                Some(t!("bookmarks.setting_help").into_owned()),
+                ui.room_bookmarks,
+                Some(Message::SetRoomBookmarks),
+            ),
+        ],
     );
 
     vec![

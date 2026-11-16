@@ -185,6 +185,12 @@ shortcuts.later:
   es: "Más tarde: mensajes guardados y recordatorios"
   th: "ภายหลัง: ข้อความที่บันทึกไว้และการเตือน"
   zh: "稍后：已保存的消息和提醒"
+shortcuts.search:
+  en: "Search messages in all rooms"
+  ru: "Поиск сообщений во всех комнатах"
+  es: "Buscar mensajes en todas las salas"
+  th: "ค้นหาข้อความในทุกห้อง"
+  zh: "在所有聊天室中搜索消息"
 shortcuts.group_later:
   en: "Later"
   ru: "Позже"

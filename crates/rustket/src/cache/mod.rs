@@ -171,6 +171,11 @@ impl ServerCache {
         self.later_keys.clear();
     }
 
+    /// The open cache (searches read it).
+    pub fn handle(&self) -> Option<&CacheHandle> {
+        self.handle.as_ref()
+    }
+
     pub fn is_open(&self) -> bool {
         self.handle.is_some()
     }

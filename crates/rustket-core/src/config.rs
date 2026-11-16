@@ -610,6 +610,9 @@ pub struct UiPrefs {
     pub pause_sets_busy: bool,
     /// Outside these hours notifications are paused (when enabled).
     pub working_hours: crate::quiet::WorkingHours,
+    /// The row of links from the topic, announcement and description under
+    /// the room header (`crate::bookmarks`).
+    pub room_bookmarks: bool,
 }
 
 /// Hours the reminder presets may start at.
@@ -667,6 +670,7 @@ impl Default for UiPrefs {
             reminder_morning_hour: 9,
             pause_sets_busy: true,
             working_hours: crate::quiet::WorkingHours::default(),
+            room_bookmarks: true,
         }
     }
 }
@@ -799,6 +803,7 @@ const UI_KEYS: &[&str] = &[
     "reminder_morning_hour",
     "pause_sets_busy",
     "working_hours",
+    "room_bookmarks",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",

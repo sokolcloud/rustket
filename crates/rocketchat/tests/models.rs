@@ -918,3 +918,27 @@ fn me_status_default() {
         serde_json::from_value(serde_json::json!({"_id": "u1", "statusDefault": 5})).unwrap();
     assert_eq!(odd.status_default, None);
 }
+
+/// `rocketchatSearch.getProvider` / `rocketchatSearch.search` over
+/// `method.call` (dev server, global search off).
+#[test]
+fn search_provider_and_results() {
+    let inner = |name: &str| -> Value {
+        let wrapped = raw(name);
+        serde_json::from_str(wrapped["message"].as_str().unwrap()).unwrap()
+    };
+    let p: SearchProvider =
+        serde_json::from_value(inner("method_call_search_provider")["result"].clone()).unwrap();
+    assert!(p.is_default());
+    assert!(!p.global_search());
+    assert_eq!(p.settings.page_size, Some(10));
+    let r: SearchResult =
+        serde_json::from_value(inner("method_call_provider_search")["result"].clone()).unwrap();
+    let docs = r.message.unwrap().docs;
+    assert_eq!(docs.len(), 2);
+    assert!(
+        docs.iter()
+            .all(|m| m.msg.contains("kumquat") && m.ts.is_some())
+    );
+    assert!(docs[0].ts >= docs[1].ts, "newest first");
+}

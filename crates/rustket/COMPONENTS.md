@@ -560,3 +560,31 @@ gates `notify::evaluate` (`NotifyEnv::paused`), the omnichannel new-room
 sound and reminder sounds. `App::quiet_tick` (every `after_update`) settles
 statuses one `users.setStatus` call per server at a time while the server
 answers, updates the tray and arms one timer (also for scheduled messages).
+### Search (`src/search/`, `rustket_core::search`, glue `src/app/search.rs`)
+
+The third kind of main view (`MainView::Search`, same slot and Esc rules;
+Ctrl/Cmd+Shift+F and the sidebar's Search row). The query string is the
+state: the filter builder parses it (`SearchQuery::parse`), edits one part
+and writes it back (`to_query`); `in:` is client-side (it picks the rooms).
+`SearchView::update(Msg, ws) -> Vec<Out>` (`Out::{Close, Start, Debounce,
+Open, Focus}`). `App::start_search` makes a `SearchRun`: local hits at once
+(loaded timelines, decrypted E2E included, memory only; then the offline
+cache through `CacheHandle::search`, plaintext rooms only), then the server:
+one `rocketchatSearch.search` with `searchAll` when the default provider has
+`GlobalSearchEnabled` (looked up once per session with
+`rocketchatSearch.getProvider`), else one per room, newest rooms first, two
+at a time, paced per backend (`chat.search` when another provider is active).
+`App::tick_search` (from `after_update`) starts requests and arms the pacing
+timer; encrypted rooms are never asked. A result opens like an inbox row
+(`RoomView::show`, or its thread).
+
+### Room bookmarks and polls (`src/room/bookmarks.rs`, `src/room/timeline/poll_card.rs`, `src/room/composer/poll.rs`)
+
+Bookmarks are the links of the topic, announcement and description
+(`rustket_core::bookmarks`), a chip row under the header (setting
+`room_bookmarks`); room editors add one through the header's dialog, which
+appends `[title](url)` to the description (`rooms.saveRoomSettings`). Polls
+follow `docs/polls.md`: the timeline row draws `poll_card` instead of the
+body, and a click is the row's `React`; the composer's chart button opens
+the "Create poll" dialog, and the option reactions are added after
+`Message::Sent` for that local id.

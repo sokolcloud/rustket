@@ -591,8 +591,12 @@ pub(crate) fn build(
     let rc = env.rc();
     let name = author_name(m, rc.use_real_names);
     // Encrypted messages: the renderer shows their placeholder until decrypted.
+    let can_vote = matches!(item.state, DeliveryState::Sent)
+        && rustket_core::permissions::can_react(env.ws, env.rid);
     let body: El = if ignored {
         ignored_body(&m.id)
+    } else if let Some(card) = super::poll_card::card(env, m, can_vote) {
+        card
     } else {
         render::message_body_with(m, &rc).map(Message::render)
     };

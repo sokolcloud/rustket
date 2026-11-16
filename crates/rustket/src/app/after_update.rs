@@ -223,6 +223,7 @@ impl App {
             );
             tasks.push(self.tick_inbox(&sid));
             tasks.push(self.tick_later(&sid));
+            tasks.push(self.tick_search(&sid));
             tasks.push(self.tick_hosted_user(&sid, super::hosted_user::Host::Inbox));
             tasks.push(self.tick_hosted_user(&sid, super::hosted_user::Host::Later));
             let Some(s) = self.servers.get_mut(&sid) else {

@@ -40,6 +40,8 @@ pub enum Shortcut {
     Later,
     /// Ctrl/Cmd+Shift+D: "Drafts & scheduled" (toggles).
     Drafts,
+    /// Ctrl/Cmd+Shift+F: message search across rooms (toggles).
+    Search,
 }
 
 impl Shortcut {
@@ -91,6 +93,7 @@ pub fn global(key: &Key, physical: Physical, m: Modifiers) -> Option<Shortcut> {
             true if is('m') => Shortcut::Activity,
             true if is('s') => Shortcut::Later,
             true if is('d') => Shortcut::Drafts,
+            true if is('f') => Shortcut::Search,
             _ => return None,
         }
     };
@@ -263,6 +266,11 @@ pub const GROUPS: &[Group] = &[
                 label: "scheduled.title",
                 chords: &[&[Cmd, Shift, Token::Char('d')]],
                 bound: Bound::Global(Shortcut::Drafts),
+            },
+            Entry {
+                label: "shortcuts.search",
+                chords: &[&[Cmd, Shift, Token::Char('f')]],
+                bound: Bound::Global(Shortcut::Search),
             },
             Entry {
                 label: "shortcuts.regions",
