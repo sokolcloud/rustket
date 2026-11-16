@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-11-16
+
 ### Added
 
 - Slack-style keyboard shortcuts: Escape marks the open room as read when
@@ -42,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then unread threads across rooms. Both views have pinned rows at the top of
   the sidebar (Settings → Sidebar can hide them); only mentions get a loud
   badge.
+- Mention groups: define groups of people per account in Settings →
+  Mentions (synced between your Rustket devices). Typing `@backend` offers
+  the group; when sent it becomes `@backend (@alice @bob)`, so every member
+  is notified on any client, encrypted rooms included. Editing a message does
+  not expand a group twice, and a real username always wins over a group.
 - Message reminders: "Remind me…" in a message's menu (in 20 minutes, 1 or
   3 hours, tomorrow, next week or a custom time). Reminders are synced
   between your Rustket devices and show a desktop notification while
@@ -294,7 +301,8 @@ First public release.
 - Auth tokens and end-to-end encryption keys are kept in the desktop keyring,
   with a warned-about private file fallback when no keyring is available.
 
-[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/sokolcloud/rustket/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/sokolcloud/rustket/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/sokolcloud/rustket/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/sokolcloud/rustket/compare/v0.2.3...v0.2.4
