@@ -49,6 +49,13 @@ pub enum Message {
     E2e(crate::e2e::room::Msg),
     /// Menu: set the room's flag (`None`: remove it).
     Flag(Option<rustket_core::flags::FlagColor>),
+    /// A bookmark chip: open its link.
+    OpenBookmark(String),
+    /// Bookmarks row or menu: open the "Add bookmark" dialog.
+    AddBookmark,
+    /// The "Add bookmark" dialog.
+    Bookmark(super::bookmarks::Msg),
+    BookmarkSaved(Res<()>),
 }
 
 pub struct Header {
@@ -61,6 +68,8 @@ pub struct Header {
     busy: bool,
     /// End-to-end encryption dialogs of this room.
     e2e: crate::e2e::room::RoomE2e,
+    /// The open "Add bookmark" dialog.
+    add_bookmark: Option<super::bookmarks::AddBookmark>,
 }
 
 /// What the header shows for a room.
@@ -179,6 +188,11 @@ pub fn menu_entries(
             "room_header.room_settings",
             panel::Kind::RoomSettings,
         ));
+        v.push(
+            MenuItem::new(t!("bookmarks.add").into_owned(), Message::AddBookmark)
+                .icon(Icon::BookmarkPlus)
+                .into(),
+        );
     }
     for (icon, key, kind) in crate::teams::header_menu(ws, rid) {
         v.push(item(icon, key, kind));
@@ -405,6 +419,7 @@ impl Header {
             confirm: None,
             busy: false,
             e2e: Default::default(),
+            add_bookmark: None,
         }
     }
 
@@ -488,11 +503,83 @@ impl Header {
                     color,
                 }))
             }
+            Message::OpenBookmark(url) => Action::effect(Effect::OpenUrl(url)),
+            Message::AddBookmark => {
+                self.menu_open = false;
+                if !super::bookmarks::can_add(ctx.workspace, &self.rid) {
+                    return Action::none();
+                }
+                self.add_bookmark = Some(Default::default());
+                Action::task(iced::widget::operation::focus(super::bookmarks::URL_ID))
+            }
+            Message::Bookmark(m) => self.bookmark(m, ctx),
+            Message::BookmarkSaved(r) => {
+                let Some(d) = self.add_bookmark.as_mut() else {
+                    return Action::none();
+                };
+                d.saving = false;
+                match r {
+                    Ok(()) => {
+                        self.add_bookmark = None;
+                        Action::effect(common::ok_toast(t!("bookmarks.added").into_owned()))
+                    }
+                    Err(e) => {
+                        d.error = Some(e.user_text());
+                        Action::none()
+                    }
+                }
+            }
         }
+    }
+
+    fn bookmark(&mut self, m: super::bookmarks::Msg, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        use super::bookmarks::Msg as B;
+        let Some(d) = self.add_bookmark.as_mut() else {
+            return Action::none();
+        };
+        match m {
+            B::Title(v) => d.title = v,
+            B::Url(v) => {
+                d.url = v;
+                d.error = None;
+            }
+            B::Cancel => {
+                if !d.saving {
+                    self.add_bookmark = None;
+                }
+            }
+            B::Save => {
+                if d.saving || d.url.trim().is_empty() {
+                    return Action::none();
+                }
+                let Some(description) =
+                    super::bookmarks::new_description(ctx.workspace, &self.rid, d)
+                else {
+                    d.error = Some(t!("bookmarks.invalid_url").into_owned());
+                    return Action::none();
+                };
+                d.saving = true;
+                let body = serde_json::json!({
+                    "rid": self.rid,
+                    "roomDescription": description,
+                });
+                return Action::task(ctx.rest_task(
+                    move |rest| panel::api::save_room_settings(rest, body),
+                    Message::BookmarkSaved,
+                ));
+            }
+        }
+        Action::none()
     }
 
     /// The E2E dialog over the room, if open.
     pub fn overlay<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<(Element<'a, Message>, Message)> {
+        if let Some(d) = &self.add_bookmark {
+            return Some((
+                d.view(Message::Bookmark),
+                Message::Bookmark(super::bookmarks::Msg::Cancel),
+            ));
+        }
         self.e2e
             .overlay(ctx)
             .map(|(e, d)| (e.map(Message::E2e), Message::E2e(d)))
@@ -569,6 +656,7 @@ impl Header {
                 .style(style::container_header),
             divider(),
             rustket_ui::widget::slot(self.announcement_bar(ctx), 0.0),
+            rustket_ui::widget::slot(self.bookmarks_bar(ctx), 0.0),
         ]
         .spacing(0)
         .into()
@@ -612,6 +700,18 @@ impl Header {
                 .on_press(Message::TogglePanel(info));
         }
         Some(area.into())
+    }
+
+    /// The links of the room's topic, announcement and description as
+    /// chips (setting `room_bookmarks`).
+    fn bookmarks_bar<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, Message>> {
+        if !ctx.prefs.room_bookmarks {
+            return None;
+        }
+        let links = super::bookmarks::of_room(ctx.workspace, &self.rid);
+        let add =
+            super::bookmarks::can_add(ctx.workspace, &self.rid).then_some(Message::AddBookmark);
+        super::bookmarks::bar(&links, Message::OpenBookmark, add)
     }
 
     /// The header row for a header `width` px wide (incl. padding).

@@ -1,0 +1,4 @@
+{
+  "message": "{\"msg\":\"result\",\"id\":\"1\",\"result\":{\"key\":\"defaultProvider\",\"description\":\"You_can_search_using_RegExp_eg\",\"icon\":\"magnifier\",\"resultTemplate\":\"DefaultSearchResultTemplate\",\"supportsSuggestions\":false,\"suggestionItemTemplate\":\"DefaultSuggestionItemTemplate\",\"settings\":{\"GlobalSearchEnabled\":false,\"PageSize\":10}}}",
+  "success": true
+}

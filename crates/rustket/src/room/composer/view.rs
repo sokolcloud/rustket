@@ -114,6 +114,13 @@ impl Composer {
         let body = container(col)
             .padding([SPACE_2, SPACE_4])
             .width(Length::Fill);
+        if let Some(p) = &self.poll {
+            return modal(
+                body,
+                Some(p.view(Message::Poll)),
+                Some(Message::Poll(super::poll::Msg::Cancel)),
+            );
+        }
         if self.confirm_delete.is_some() {
             return modal(
                 body,
@@ -317,6 +324,13 @@ impl Composer {
         if let Some(apps) = self.apps_menu(ctx) {
             bar = bar.push(apps);
         }
+        bar = bar.push(icon_button_with(
+            Icon::ChartColumn,
+            self.editing.is_none().then_some(Message::OpenPoll),
+            t!("poll.create"),
+            self.poll.is_some(),
+            30.0,
+        ));
         if permissions::can_upload(ctx.workspace, &self.rid) {
             // Files cannot be added to an edited message.
             bar = bar.push(icon_button_with(

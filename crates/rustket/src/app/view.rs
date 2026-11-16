@@ -220,6 +220,7 @@ impl App {
                 .and_then(|rv| rv.panel.thread_tmid()),
             inbox_open: s.inbox_view().map(crate::inbox::InboxScreen::kind),
             later_open: s.later_view().is_some(),
+            search_open: s.search_view().is_some(),
             now,
         };
         // The cached workspace is shown instead of the placeholder.
@@ -269,6 +270,7 @@ impl App {
         let room_area = self
             .inbox_screen(s)
             .or_else(|| self.later_screen(s))
+            .or_else(|| self.search_screen(s))
             .or_else(|| self.omni_screen(s))
             .unwrap_or(room_area);
         // Strips above the room (connection, E2E banner, app banners) come

@@ -39,34 +39,50 @@ pub enum MainView {
     Inbox(crate::inbox::InboxScreen),
     /// Starred messages and reminders (`crate::later`).
     Later(crate::later::LaterView),
+    /// Message search across the rooms (`crate::search`).
+    Search(Box<crate::search::SearchView>),
 }
 
 impl MainView {
     pub fn inbox(&self) -> Option<&crate::inbox::InboxScreen> {
         match self {
             MainView::Inbox(i) => Some(i),
-            MainView::Later(_) => None,
+            _ => None,
         }
     }
 
     pub fn inbox_mut(&mut self) -> Option<&mut crate::inbox::InboxScreen> {
         match self {
             MainView::Inbox(i) => Some(i),
-            MainView::Later(_) => None,
+            _ => None,
         }
     }
 
     pub fn later(&self) -> Option<&crate::later::LaterView> {
         match self {
             MainView::Later(l) => Some(l),
-            MainView::Inbox(_) => None,
+            _ => None,
         }
     }
 
     pub fn later_mut(&mut self) -> Option<&mut crate::later::LaterView> {
         match self {
             MainView::Later(l) => Some(l),
-            MainView::Inbox(_) => None,
+            _ => None,
+        }
+    }
+
+    pub fn search(&self) -> Option<&crate::search::SearchView> {
+        match self {
+            MainView::Search(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn search_mut(&mut self) -> Option<&mut crate::search::SearchView> {
+        match self {
+            MainView::Search(v) => Some(v),
+            _ => None,
         }
     }
 }
@@ -132,6 +148,8 @@ pub struct ServerState {
     pub inbox: crate::inbox::InboxState,
     /// What Later keeps while closed (the fetch of reminder copies).
     pub later_state: crate::later::LaterState,
+    /// What the search keeps while closed (provider, last query).
+    pub search: crate::search::SearchState,
 }
 
 impl ServerState {
@@ -189,6 +207,7 @@ impl ServerState {
             main_view: None,
             inbox: Default::default(),
             later_state: Default::default(),
+            search: Default::default(),
         })
     }
 
@@ -345,8 +364,16 @@ impl ServerState {
         self.main_view.as_ref().and_then(MainView::later)
     }
 
+    /// The open search view, if any.
+    pub fn search_view(&self) -> Option<&crate::search::SearchView> {
+        self.main_view.as_ref().and_then(MainView::search)
+    }
+
     /// Closes the view in place of the room area (a room opens, Esc).
     pub fn close_main_view(&mut self) {
+        if let Some(v) = self.main_view.as_ref().and_then(MainView::search) {
+            self.search.last_query = v.query.clone();
+        }
         self.main_view = None;
         self.workspace.keep_feeds(&[]);
         // A view opened next starts at the same revision: the loader must

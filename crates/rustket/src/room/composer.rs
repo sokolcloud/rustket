@@ -8,6 +8,7 @@
 pub mod autocomplete;
 pub(crate) mod broad;
 mod cache;
+pub(crate) mod poll;
 mod popup;
 mod send;
 pub mod text;
@@ -137,6 +138,12 @@ pub enum Message {
     PeerLoaded(String, Res<Box<rocketchat::models::User>>),
     /// Redraws the DM partner's local time.
     ClockTick,
+    /// Toolbar: open the "Create poll" dialog.
+    OpenPoll,
+    /// The "Create poll" dialog.
+    Poll(poll::Msg),
+    /// The option reactions of a sent poll were added (or failed).
+    PollReacted(Res<()>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +221,10 @@ pub struct Composer {
     peer: Option<(String, Option<cache::PeerInfo>)>,
     /// Thread composer: replies are also sent to the channel (`tshow`).
     tshow: bool,
+    /// The open "Create poll" dialog.
+    poll: Option<poll::PollDraft>,
+    /// Polls being sent: local message id → option reactions to add.
+    poll_reactions: std::collections::HashMap<String, Vec<&'static str>>,
 }
 
 impl Composer {
@@ -252,6 +263,8 @@ impl Composer {
             broad_seq: 0,
             peer: None,
             tshow: false,
+            poll: None,
+            poll_reactions: Default::default(),
         }
     }
 
@@ -305,7 +318,7 @@ impl Composer {
     /// A confirmation dialog of the composer is open (delete an emptied
     /// edit, `@all`/`@here`).
     pub fn is_confirm_open(&self) -> bool {
-        self.confirm_delete.is_some() || self.confirm_broad.is_some()
+        self.confirm_delete.is_some() || self.confirm_broad.is_some() || self.poll.is_some()
     }
 
     /// Widget id of the editor (F6 target).
@@ -532,7 +545,9 @@ impl Composer {
                 ))
             }
             Message::Cancel => {
-                if self.confirm_broad.is_some() {
+                if self.poll.is_some() {
+                    self.poll = None;
+                } else if self.confirm_broad.is_some() {
                     self.confirm_broad = None;
                 } else if self.confirm_delete.is_some() {
                     self.confirm_delete = None;
@@ -683,9 +698,48 @@ impl Composer {
             },
             Message::Sent(id, r) => {
                 outbox_forget(ctx.server_id, &id);
+                let reactions = self.poll_reactions.remove(&id).filter(|_| r.is_ok());
                 self.apply_sent(&id, r, ctx.workspace);
-                Action::none()
+                match reactions {
+                    Some(list) if !list.is_empty() => Action::task(ctx.rest_task(
+                        move |rest| send::add_reactions(rest, id, list),
+                        Message::PollReacted,
+                    )),
+                    _ => Action::none(),
+                }
             }
+            Message::OpenPoll => {
+                if self.editing.is_some() {
+                    return Action::none();
+                }
+                self.picker = None;
+                self.popup = None;
+                self.poll = Some(poll::PollDraft::default());
+                Action::task(iced::widget::operation::focus(iced::widget::Id::new(
+                    poll::QUESTION_ID,
+                )))
+            }
+            Message::Poll(m) => {
+                let Some(draft) = self.poll.as_mut() else {
+                    return Action::none();
+                };
+                match draft.update(m) {
+                    poll::Done::Keep => Action::none(),
+                    poll::Done::Close => {
+                        self.poll = None;
+                        Action::task(self.focus())
+                    }
+                    poll::Done::Send { text, reactions } => self.send_poll(text, reactions, ctx),
+                }
+            }
+            Message::PollReacted(r) => match r {
+                Ok(()) => Action::none(),
+                Err(e) => Action::effect(Effect::Toast(
+                    BannerKind::Error,
+                    t!("poll.reactions_failed").into_owned(),
+                    e.user_text(),
+                )),
+            },
             Message::Updated(r) => match r {
                 Ok(m) => {
                     ctx.workspace.apply_message(*m);

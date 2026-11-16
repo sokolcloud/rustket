@@ -10,6 +10,7 @@ mod links;
 mod mention_groups;
 mod reminders;
 mod rooms;
+mod search;
 mod secrets;
 mod session;
 mod star_kept;
@@ -643,6 +644,7 @@ impl App {
             Message::CatchUpKey(k) => self.on_catch_up_key(k),
             Message::Later(sid, epoch, m) => self.on_later(sid, epoch, m),
             Message::LaterKey(k) => self.on_later_key(k),
+            Message::Search(sid, epoch, m) => self.on_search(sid, epoch, m),
             Message::LaterCopy(sid, epoch, r) => self.on_later_copy(sid, epoch, r),
             Message::LaterSync(sid, epoch, m) => self.on_later_sync(sid, epoch, m),
             Message::ReminderSync(sid, epoch, m) => self.on_reminder_sync(sid, epoch, m),

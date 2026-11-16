@@ -616,6 +616,40 @@ impl CacheDb {
     pub fn disk_size(&self) -> u64 {
         dir_size(&self.dir)
     }
+
+    /// Cached messages matching `matcher` (in `rooms` when set), newest
+    /// first, at most `limit`, one per id (a reply can be cached in its
+    /// room and its thread). Encrypted messages are stored as ciphertext
+    /// and never match.
+    pub fn search(
+        &self,
+        matcher: &crate::search::LocalMatcher,
+        rooms: Option<&HashSet<String>>,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT t.rid, m.json FROM messages m JOIN timelines t ON t.key = m.tl")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut found: HashMap<String, Message> = HashMap::new();
+        for row in rows {
+            let (rid, json) = row?;
+            if rooms.is_some_and(|r| !r.contains(&rid)) {
+                continue;
+            }
+            let Some(m) = from_json::<Message>("message", &json) else {
+                continue;
+            };
+            if m.is_encrypted() || m.e2e.is_some() || !matcher.matches(&m) {
+                continue;
+            }
+            found.insert(m.id.clone(), m);
+        }
+        let mut list: Vec<Message> = found.into_values().collect();
+        list.sort_by(|a, b| ts_ms(b).cmp(&ts_ms(a)).then(a.id.cmp(&b.id)));
+        list.truncate(limit);
+        Ok(list)
+    }
 }
 
 fn put_doc<T: Serialize>(tx: &Transaction<'_>, kind: &str, id: &str, v: &T) -> Result<()> {

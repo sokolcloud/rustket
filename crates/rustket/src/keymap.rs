@@ -38,6 +38,8 @@ pub enum Shortcut {
     Activity,
     /// Ctrl/Cmd+Shift+S: "Later" (toggles).
     Later,
+    /// Ctrl/Cmd+Shift+F: message search across rooms (toggles).
+    Search,
 }
 
 impl Shortcut {
@@ -88,6 +90,7 @@ pub fn global(key: &Key, physical: Physical, m: Modifiers) -> Option<Shortcut> {
             true if is('a') => Shortcut::AllUnreads,
             true if is('m') => Shortcut::Activity,
             true if is('s') => Shortcut::Later,
+            true if is('f') => Shortcut::Search,
             _ => return None,
         }
     };
@@ -255,6 +258,11 @@ pub const GROUPS: &[Group] = &[
                 label: "shortcuts.later",
                 chords: &[&[Cmd, Shift, Token::Char('s')]],
                 bound: Bound::Global(Shortcut::Later),
+            },
+            Entry {
+                label: "shortcuts.search",
+                chords: &[&[Cmd, Shift, Token::Char('f')]],
+                bound: Bound::Global(Shortcut::Search),
             },
             Entry {
                 label: "shortcuts.regions",

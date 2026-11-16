@@ -184,6 +184,7 @@ impl App {
             sidebar::Out::Omni(m) => self.on_omni_sidebar(sid, m),
             sidebar::Out::Inbox(kind) => self.open_inbox(&sid, kind, false),
             sidebar::Out::Later => self.open_later(&sid, None, false),
+            sidebar::Out::Search => self.open_search(&sid, false),
             sidebar::Out::Directory => self.navigate(component::Nav::Directory),
             sidebar::Out::Create => self.navigate(component::Nav::CreateRoom(
                 crate::dialogs::create_room::Kind::Channel,

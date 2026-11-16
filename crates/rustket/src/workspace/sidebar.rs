@@ -85,6 +85,8 @@ pub enum Message {
     Inbox(crate::inbox::InboxKind),
     /// The Later pinned row.
     Later,
+    /// The Search pinned row.
+    Search,
 }
 
 /// Context menu actions of a section header.
@@ -199,6 +201,8 @@ pub enum Out {
     Inbox(crate::inbox::InboxKind),
     /// Open the Later view (its pinned row).
     Later,
+    /// Open the search view (its pinned row).
+    Search,
 }
 
 #[derive(Clone, Copy)]
@@ -217,6 +221,8 @@ pub struct SidebarCtx<'a> {
     pub inbox_open: Option<crate::inbox::InboxKind>,
     /// The Later view is in place of the room area.
     pub later_open: bool,
+    /// The search view is in place of the room area.
+    pub search_open: bool,
     pub now: Instant,
 }
 
@@ -430,6 +436,7 @@ impl Sidebar {
             Message::AutoScroll(dy) => Out::ScrollBy(dy),
             Message::Inbox(kind) => Out::Inbox(kind),
             Message::Later => Out::Later,
+            Message::Search => Out::Search,
             Message::Header(act) => match act {
                 HeaderAct::Layout(e) => Out::Layout(e),
                 HeaderAct::Refresh => Out::RefreshThreads,
@@ -1366,7 +1373,15 @@ fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
         ctx.later_open,
         Message::Later,
     );
-    column![unreads, activity, later]
+    let search = pinned_row(
+        Icon::TextSearch,
+        t!("search.title").into_owned(),
+        chord_of(Shortcut::Search),
+        None,
+        ctx.search_open,
+        Message::Search,
+    );
+    column![unreads, activity, later, search]
         .spacing(0)
         .padding([0.0, SPACE_2])
         .into()
@@ -2032,6 +2047,7 @@ mod tests {
                     active_thread: None,
                     inbox_open: None,
                     later_open: false,
+                    search_open: false,
                     now: Instant::now(),
                 };
                 self.sidebar.view(&ctx, iced::widget::space().into())
@@ -2282,6 +2298,7 @@ mod tests {
                 active_thread: None,
                 inbox_open: None,
                 later_open: false,
+                search_open: false,
                 now: Instant::now(),
             });
             assert!(start > 200 && end <= ROOMS + 3, "{start}..{end}");
@@ -2307,6 +2324,7 @@ mod tests {
                 active_thread: None,
                 inbox_open: None,
                 later_open: false,
+                search_open: false,
                 now: Instant::now(),
             };
             assert_eq!(fx.sidebar.window(&ctx), (0, 2));
@@ -2621,6 +2639,7 @@ mod tests {
                 active_thread: None,
                 inbox_open: None,
                 later_open: false,
+                search_open: false,
                 now: Instant::now(),
             }
         }
@@ -4032,6 +4051,7 @@ mod pinned_tests {
                 active_thread: None,
                 inbox_open: None,
                 later_open: false,
+                search_open: false,
                 now: Instant::now(),
             };
             crate::tree_probe::texts(sb.view(&ctx, iced::widget::space().into()))
@@ -4062,6 +4082,7 @@ mod pinned_tests {
             active_thread: None,
             inbox_open: None,
             later_open: false,
+            search_open: false,
             now: Instant::now(),
         };
         assert!(crate::tree_probe::key_captured(

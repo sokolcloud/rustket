@@ -569,6 +569,16 @@ impl Workspace {
         self.threads.get(tmid)
     }
 
+    /// Every message of the loaded room and thread timelines (thread
+    /// parents too; a reply shown in both comes twice). Memory only:
+    /// encrypted rooms' messages here may be decrypted.
+    pub fn loaded_messages(&self) -> impl Iterator<Item = &Message> + '_ {
+        self.timelines
+            .values()
+            .chain(self.threads.values())
+            .flat_map(|t| t.parent().into_iter().chain(t.messages()))
+    }
+
     pub fn presence(&self) -> &Presence {
         &self.presence
     }

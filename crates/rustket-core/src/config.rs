@@ -592,6 +592,9 @@ pub struct UiPrefs {
     /// Hour the "Tomorrow" and "Next week" reminder presets use
     /// ([`Self::morning_hour`] clamps it).
     pub reminder_morning_hour: u8,
+    /// The row of links from the topic, announcement and description under
+    /// the room header (`crate::bookmarks`).
+    pub room_bookmarks: bool,
 }
 
 /// Hours the reminder presets may start at.
@@ -647,6 +650,7 @@ impl Default for UiPrefs {
             reminder_notifications: true,
             reminder_sound: true,
             reminder_morning_hour: 9,
+            room_bookmarks: true,
         }
     }
 }
@@ -773,6 +777,7 @@ const UI_KEYS: &[&str] = &[
     "reminder_notifications",
     "reminder_sound",
     "reminder_morning_hour",
+    "room_bookmarks",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",

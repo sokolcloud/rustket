@@ -132,6 +132,8 @@ pub enum Message {
     Later(ServerId, u64, crate::later::Msg),
     /// Up / Down / E that no widget took (the Later view).
     LaterKey(crate::later::LaterKey),
+    /// The search view (`crate::search`): server, session epoch, message.
+    Search(ServerId, u64, crate::search::Msg),
     /// A reminder copy fetched for the Later view (`None`: the pacing
     /// timer): server, session epoch, result.
     LaterCopy(ServerId, u64, Option<Res<Box<rocketchat::models::Message>>>),
