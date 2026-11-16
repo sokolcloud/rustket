@@ -928,3 +928,298 @@ async fn sidebar_threads_follow_the_server() {
     })
     .await;
 }
+
+/// "Mark all as read" (Shift+Esc): the targets come from the synced
+/// workspace, the read queue sends DDP `readMessages(rid, true)` paced, and
+/// afterwards nothing is left, threads included.
+#[tokio::test(flavor = "multi_thread")]
+async fn read_all_through_the_read_queue() {
+    use rustket_core::reads::{Next, Outcome, ReadQueue, ReadReq, Transport};
+    use rustket_core::room_list::read_all_targets;
+    use std::time::Instant;
+    with_fixture(|s, fx| async move {
+        let a = fx.user(&s, "core-rda").await;
+        let b = fx.user(&s, "core-rdb").await;
+        let mut rids = Vec::new();
+        for _ in 0..2 {
+            let mut req = CreateRoom::new(unique("core-rd"));
+            req.members = vec![a.username.clone()];
+            let room = b.rest.channels_create(&req).await.unwrap();
+            fx.room(&room.id);
+            let mention = format!("@{} ping", a.username);
+            let parent = b
+                .rest
+                .send_message(&OutgoingMessage::new(&room.id, &mention))
+                .await
+                .unwrap()
+                .id;
+            b.rest
+                .send_message(&OutgoingMessage::new(&room.id, &mention).in_thread(&parent, false))
+                .await
+                .unwrap();
+            rids.push((room.id, parent));
+        }
+        let mut ws = Workspace::new();
+        for (rid, parent) in &rids {
+            sync_sub(&mut ws, &a.rest, rid, has_tunread(parent)).await;
+        }
+        ws.apply_initial(sync::initial_load(&a.rest).await.unwrap());
+        let targets = read_all_targets(&ws);
+        for (rid, _) in &rids {
+            assert!(targets.contains(rid), "{rid} not in {targets:?}");
+        }
+
+        let creds = a.rest.credentials().unwrap();
+        let tls = TlsConfig::new().build().unwrap();
+        let (session, _events) = rocketchat::Session::start(
+            s.clone(),
+            &tls,
+            creds,
+            rocketchat::SessionOptions::default(),
+        )
+        .await
+        .unwrap();
+        let mut q: ReadQueue<u64> = ReadQueue::default();
+        for (rid, _) in &rids {
+            q.push(
+                ReadReq::Room {
+                    rid: rid.clone(),
+                    threads: true,
+                },
+                7,
+            );
+        }
+        let mut done = 0;
+        while !q.is_idle() {
+            let up = session.connection_state().is_connected();
+            match q.next(Instant::now(), up) {
+                Next::Idle => tokio::time::sleep(Duration::from_millis(50)).await,
+                Next::Wait(d) => {
+                    tokio::time::sleep(d).await;
+                    q.wake();
+                }
+                Next::Send { req, via, ticket } => {
+                    let ReadReq::Room { rid, threads } = req else {
+                        unreachable!()
+                    };
+                    assert_eq!(via, Transport::Ddp);
+                    let r = session.read_messages(&rid, threads).await;
+                    let outcome = Outcome::of(&r);
+                    if let Some(d) = q.finish(ticket, outcome, Instant::now()) {
+                        assert!(d.ok, "{r:?}");
+                        assert_eq!(d.origins, [7]);
+                        done += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(done, 2);
+        for (rid, parent) in &rids {
+            sync_sub(&mut ws, &a.rest, rid, |s| {
+                !s.alert && s.user_mentions == 0 && !has_tunread(parent)(s)
+            })
+            .await;
+        }
+        let left = read_all_targets(&ws);
+        for (rid, _) in &rids {
+            assert!(!left.contains(rid), "{rid} still in {left:?}");
+        }
+        session.close().await;
+    })
+    .await;
+}
+
+/// Mention groups end to end: the blob is stored next to the flags in a
+/// room shaped like a service room (a scratch room, never bound), read back,
+/// and a message expanded with it mentions every member but the sender,
+/// also one outside the room; the server ignores the group name.
+#[tokio::test(flavor = "multi_thread")]
+async fn mention_group_expansion_mentions_every_member() {
+    use rocketchat::models::{FLAGS_KEY, MENTION_GROUPS_KEY, ServiceFields};
+    use rustket_core::mention_groups::{ExpandOptions, MentionGroupBlob, MentionGroupEdit, expand};
+    use rustket_core::service_sync::SyncBlob;
+    with_fixture(|s, fx| async move {
+        let a = fx.user(&s, "core-mga").await;
+        let b = fx.user(&s, "core-mgb").await;
+        let c = fx.user(&s, "core-mgc").await;
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut blob = MentionGroupBlob::default();
+        let edit = MentionGroupEdit::Upsert {
+            id: rocketchat::ids::random_id(),
+            name: "backend".into(),
+            members: vec![c.username.clone(), b.username.clone(), a.username.clone()],
+        };
+        blob.edit(&MentionGroupBlob::default(), &edit, now, "dev")
+            .unwrap();
+        let mut fields = ServiceFields::new(&a.id);
+        fields.set(FLAGS_KEY, json!({ "v": 1, "rooms": {} }));
+        fields.set(MENTION_GROUPS_KEY, blob.to_value_at(now));
+        let svc = a
+            .rest
+            .create_service_room(&unique("core-mg-svc"), &fields)
+            .await
+            .unwrap();
+        fx.room(&svc.id);
+        let read = a
+            .rest
+            .read_service_subscription(&svc.id)
+            .await
+            .unwrap()
+            .flatten()
+            .unwrap();
+        assert!(read.get(FLAGS_KEY).is_some(), "the other key is kept");
+        let stored = MentionGroupBlob::from_value_at(read.get(MENTION_GROUPS_KEY), now);
+        assert_eq!(stored.view(), blob.view());
+        let groups = stored.view();
+
+        // Only b is in the room; c is mentioned all the same.
+        let mut req = CreateRoom::new(unique("core-mg"));
+        req.members = vec![b.username.clone()];
+        let room = a.rest.groups_create(&req).await.unwrap();
+        fx.room(&room.id);
+        let mut names = vec![b.username.clone(), c.username.clone()];
+        names.sort();
+        let text = {
+            let none = |_: &str| false;
+            let opts = ExpandOptions {
+                me: Some(&a.username),
+                is_user: &none,
+            };
+            let e = expand("ping @backend", &groups, &opts).unwrap();
+            assert!(expand(&e.text, &groups, &opts).is_none(), "idempotent");
+            e.text
+        };
+        assert_eq!(text, format!("ping @backend (@{} @{})", names[0], names[1]));
+        let sent = a
+            .rest
+            .send_message(&OutgoingMessage::new(&room.id, &text))
+            .await
+            .unwrap();
+        let mut mentioned: Vec<String> = sent
+            .mentions
+            .iter()
+            .flatten()
+            .filter_map(|m| m.username.clone())
+            .collect();
+        mentioned.sort();
+        assert_eq!(mentioned, names);
+    })
+    .await;
+}
+
+/// All unreads and Activity against the server: the unread room is listed
+/// as a mention, its feed holds the unread main-timeline messages (thread
+/// replies left out), Activity finds the direct and `@all` mentions in it
+/// and the thread mention from `chat.getMentionedMessages`; reading the
+/// room without its threads (DDP `readMessages`) empties the feed and keeps
+/// the thread for Activity until `readThreads`.
+#[tokio::test(flavor = "multi_thread")]
+async fn inbox_feeds_follow_the_server() {
+    use rocketchat::rest::HistoryOptions;
+    use rustket_core::inbox::feeds::FEED_PAGE;
+    use rustket_core::inbox::{
+        ActivityFilter, ActivityItem, InboxPrefs, Skipped, Tier, activity_items, unread_rooms,
+    };
+    with_fixture(|s, fx| async move {
+        let a = fx.user(&s, "core-ina").await;
+        let b = fx.user(&s, "core-inb").await;
+        let mut req = CreateRoom::new(unique("core-in"));
+        req.members = vec![a.username.clone()];
+        let room = b.rest.channels_create(&req).await.unwrap();
+        fx.room(&room.id);
+        let rid = room.id.clone();
+        a.rest.subscriptions_read_with(&rid, true).await.unwrap();
+        let send = |text: String| {
+            let rest = b.rest.clone();
+            let rid = rid.clone();
+            async move {
+                rest.send_message(&OutgoingMessage::new(&rid, &text))
+                    .await
+                    .unwrap()
+                    .id
+            }
+        };
+        let parent = send("plain one".into()).await;
+        send("plain two".into()).await;
+        let direct = send(format!("hey @{}", a.username)).await;
+        let all = send("@all heads up".into()).await;
+        let reply = b
+            .rest
+            .send_message(
+                &OutgoingMessage::new(&rid, format!("in thread @{}", a.username))
+                    .in_thread(&parent, false),
+            )
+            .await
+            .unwrap()
+            .id;
+
+        let mut ws = Workspace::new();
+        ws.apply_initial(sync::initial_load(&a.rest).await.unwrap());
+        sync_sub(&mut ws, &a.rest, &rid, |s| {
+            s.alert
+                && s.user_mentions >= 1
+                && s.group_mentions >= 1
+                && s.tunread_user.iter().flatten().any(|t| *t == parent)
+        })
+        .await;
+        let listed = unread_rooms(&ws, &InboxPrefs::default(), &Skipped::default());
+        let r = listed.iter().find(|r| r.rid == rid).expect("listed");
+        assert_eq!(r.tier, Tier::Mention);
+
+        // The feed: one page with the subscription's `ls`.
+        let req = ws.begin_feed(&rid, false).unwrap();
+        let opts = HistoryOptions {
+            before: req.before,
+            limit: FEED_PAGE,
+            last_seen: req.last_seen,
+            show_thread_messages: false,
+        };
+        let h = a.rest.load_history_with(&rid, &opts).await.unwrap();
+        ws.finish_feed(&req, Ok(h));
+        let feed = ws.feeds().feed(&rid).unwrap();
+        let ids: Vec<&str> = feed.messages().iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&direct.as_str()) && ids.contains(&all.as_str()));
+        assert!(!ids.contains(&reply.as_str()), "thread reply in the feed");
+        assert_eq!(feed.earlier(), 0);
+
+        // Activity: the mentions; the thread mention once fetched.
+        assert!(ws.begin_thread_mentions(&rid));
+        let page = a.rest.get_mentioned(&rid, 0, 50).await.unwrap();
+        ws.finish_thread_mentions(&rid, Ok(page.items));
+        let items = activity_items(&ws, ActivityFilter::All, false);
+        let has = |want: &dyn Fn(&ActivityItem) -> bool| items.iter().any(want);
+        assert!(has(&|i| matches!(i, ActivityItem::Mention { mid, group: false, .. } if *mid == direct)));
+        assert!(has(&|i| matches!(i, ActivityItem::Mention { mid, group: true, .. } if *mid == all)));
+        assert!(has(&|i| matches!(i, ActivityItem::ThreadMention { mid, tmid, .. } if *mid == reply && *tmid == parent)));
+
+        // Read without threads: the feed empties, the thread stays.
+        let creds = a.rest.credentials().unwrap();
+        let tls = TlsConfig::new().build().unwrap();
+        let (session, _events) = rocketchat::Session::start(
+            s.clone(),
+            &tls,
+            creds,
+            rocketchat::SessionOptions::default(),
+        )
+        .await
+        .unwrap();
+        session.read_messages(&rid, false).await.unwrap();
+        sync_sub(&mut ws, &a.rest, &rid, |s| {
+            // `alert` stays while threads are unread.
+            s.user_mentions == 0 && s.group_mentions == 0 && has_tunread(&parent)(s)
+        })
+        .await;
+        assert!(ws.feeds().feed(&rid).unwrap().messages().is_empty());
+        let listed = unread_rooms(&ws, &InboxPrefs::default(), &Skipped::default());
+        assert!(!listed.iter().any(|r| r.rid == rid), "read room listed");
+        let items = activity_items(&ws, ActivityFilter::All, false);
+        assert!(items.iter().all(|i| !matches!(i, ActivityItem::Mention { .. })));
+        assert!(items.iter().any(|i| matches!(i, ActivityItem::ThreadMention { tmid, .. } if *tmid == parent)));
+        session.read_thread_method(&parent).await.unwrap();
+        sync_sub(&mut ws, &a.rest, &rid, |s| !has_tunread(&parent)(s)).await;
+        let items = activity_items(&ws, ActivityFilter::All, false);
+        assert!(!items.iter().any(|i| i.rid() == rid), "{items:?}");
+        session.close().await;
+    })
+    .await;
+}

@@ -313,7 +313,12 @@ impl App {
     }
 
     /// Opens room `rid` and shows message `mid` in it, if given.
-    fn open_room_at(&mut self, sid: &ServerId, rid: &str, mid: Option<&str>) -> Task<Message> {
+    pub(super) fn open_room_at(
+        &mut self,
+        sid: &ServerId,
+        rid: &str,
+        mid: Option<&str>,
+    ) -> Task<Message> {
         let open = self.open_room(sid, rid);
         let focus = match mid {
             Some(mid) => self.focus_message(sid, rid, mid),
@@ -349,6 +354,38 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Asks the composer of the open view of `rid` to do something (forwarded
+    /// quotes); nothing when the view does not exist (the navigation was
+    /// deferred).
+    pub(super) fn room_compose(
+        &mut self,
+        sid: &ServerId,
+        rid: &str,
+        intent: crate::room::ComposeIntent,
+    ) -> Task<Message> {
+        let Some(s) = self.servers.get_mut(sid) else {
+            return Task::none();
+        };
+        let epoch = s.generation;
+        let Some(rv) = s.rooms.get_mut(rid) else {
+            return Task::none();
+        };
+        let mut ctx = UpdateCtx {
+            server_id: &s.id,
+            server: &s.url,
+            rid,
+            workspace: &mut s.workspace,
+            session: s.session.as_ref(),
+            images: &self.images,
+            prefs: &self.config.ui,
+        };
+        let action = rv.compose(intent, &mut ctx);
+        Task::batch([
+            Self::room_task(sid, epoch, rid, action.task),
+            self.handle_effects(sid, rid, action.effects),
+        ])
     }
 
     /// Shows message `mid` in the open view of `rid` (permalinks).

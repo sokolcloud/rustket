@@ -5,13 +5,33 @@ use std::time::Instant;
 use iced::Task;
 use rocketchat::RestClient;
 use rustket_core::ServerId;
-use rustket_core::config::SectionId;
+use rustket_core::config::{SectionId, ThreadsMode, UiPrefs};
 use rustket_core::room_list;
 
 use super::{AVATAR_PREFETCH_ROWS, App};
 use crate::images;
 use crate::message::Message;
 use crate::room::UpdateCtx;
+
+/// How the sidebar Threads loader runs: mode, cap and whether the section
+/// counts as collapsed, from the prefs. While Activity is open (`activity`)
+/// every unread thread is loaded, with the section off, capped or
+/// collapsed too.
+fn threads_load(
+    prefs: &UiPrefs,
+    collapsed: bool,
+    activity: bool,
+) -> (ThreadsMode, crate::workspace::threads::Cap, bool) {
+    let mode = match prefs.sidebar_threads {
+        ThreadsMode::Off if activity => ThreadsMode::Unread,
+        m => m,
+    };
+    let cap = crate::workspace::threads::Cap {
+        unread_all: activity,
+        ..crate::workspace::threads::Cap::from_prefs(prefs)
+    };
+    (mode, cap, collapsed && !activity)
+}
 
 impl App {
     /// Applies pending workspace changes to derived views and fetches wanted images.
@@ -23,7 +43,7 @@ impl App {
         let active = self.active.clone();
         let sids: Vec<ServerId> = self.servers.keys().cloned().collect();
         let mut effects = Vec::new();
-        let mut save_flags = false;
+        let mut save_synced = false;
         for sid in sids {
             let Some(s) = self.servers.get_mut(&sid) else {
                 continue;
@@ -37,43 +57,111 @@ impl App {
                 .and_then(|e| e.last_room.as_deref());
             tasks.push(crate::cache::after_update(s, &self.offline, last_room));
             // Sidebar Threads: mode and kept threads from the config, loads.
-            let mode = self.config.ui.sidebar_threads;
-            let kept = self
-                .config
-                .server(&sid)
-                .into_iter()
-                .flat_map(|e| e.kept_threads().map(|k| (k.rid.as_str(), k.tmid.as_str())));
-            s.workspace.set_thread_config(mode, kept);
-            s.workspace
-                .set_starred_threads(self.config.ui.sidebar_starred_threads);
-            // Flags: the account's pending edits, pushes, persisting them.
-            let entry = self.config.server(&sid);
-            let uid = entry
-                .and_then(|e| e.user_id.as_deref())
-                .filter(|_| s.is_logged_in());
-            s.flags.follow_account(uid, |u| {
-                entry.map(|e| e.pending_flags(u)).unwrap_or_default()
-            });
-            let task = s
-                .flags
-                .tick(&mut s.workspace, s.session.as_ref(), Instant::now());
-            let (fsid, epoch) = (sid.clone(), s.generation);
-            tasks.push(task.map(move |m| Message::Flags(fsid.clone(), epoch, m)));
-            if let Some((uid, blob)) = s.flags.take_save()
-                && let Some(e) = self.config.server_mut(&sid)
-            {
-                save_flags |= e.set_pending_flags(&uid, &blob);
+            // Activity keeps its override a while after it closes (see
+            // `crate::inbox::ACTIVITY_GRACE`).
+            let now = Instant::now();
+            let activity_open = s
+                .inbox_view()
+                .is_some_and(|i| i.shows(crate::inbox::InboxKind::Activity));
+            let activity = s.inbox.activity_hold(activity_open, now);
+            // Feeds of closed inbox views go after a while.
+            if s.inbox.release_feeds(s.inbox_view().is_some(), now) {
+                s.workspace.release_feeds();
             }
             let threads_collapsed = self.ui_state.collapsed_sections.contains(
                 SectionId::Builtin(room_list::SectionKind::Threads)
                     .collapse_key()
                     .as_ref(),
             );
+            let (mode, cap, threads_collapsed) =
+                threads_load(&self.config.ui, threads_collapsed, activity);
+            let kept = self
+                .config
+                .server(&sid)
+                .into_iter()
+                .flat_map(|e| e.kept_threads().map(|k| (k.rid.as_str(), k.tmid.as_str())));
+            s.workspace.set_thread_config(mode, kept);
+            // Starred-message scans serve the starred threads in Favorites
+            // and Later, which always tracks stars (`Workspace::scans_starred`
+            // is what the loader's `plan` follows, together with the
+            // Activity override above).
+            s.workspace
+                .set_starred_threads(self.config.ui.sidebar_starred_threads);
+            s.workspace.set_later_tracking(true);
+            // Synced keys (flags, mention groups, Later, reminders): the
+            // account's pending edits, one push of every key that has some,
+            // persisting them.
+            let entry = self.config.server(&sid);
+            let uid = entry
+                .and_then(|e| e.user_id.as_deref())
+                .filter(|_| s.is_logged_in());
+            s.flags.follow_account(uid, |u| {
+                entry.map(|e| e.pending_blob(u)).unwrap_or_default()
+            });
+            s.mention_groups.follow_account(uid, |u| {
+                entry.map(|e| e.pending_blob(u)).unwrap_or_default()
+            });
+            s.later.follow_account(uid, |u| {
+                entry.map(|e| e.pending_blob(u)).unwrap_or_default()
+            });
+            s.reminders.follow_account(uid, |u| {
+                entry.map(|e| e.pending_blob(u)).unwrap_or_default()
+            });
+            // First use of Later on this account: stars made before now
+            // count as archived (`rustket_core::later::Seed`).
+            if s.later.needs_seed(&s.workspace) {
+                let (device, created) = self.config.ensure_device_id();
+                save_synced |= created;
+                let seed = rustket_core::later::LaterEdit::Seed {
+                    at_ms: chrono::Utc::now().timestamp_millis(),
+                };
+                if let Err(e) = s.later.edit(&mut s.workspace, &seed, &device, now) {
+                    tracing::warn!(server = %sid, error = %e, "Later seed refused");
+                }
+            }
+            let task = s.flags.tick(&mut s.workspace, s.session.as_ref(), now);
+            let (fsid, epoch) = (sid.clone(), s.generation);
+            tasks.push(task.map(move |m| Message::Flags(fsid.clone(), epoch, m)));
+            let task = s
+                .mention_groups
+                .tick(&mut s.workspace, s.session.as_ref(), now);
+            let gsid = sid.clone();
+            tasks.push(task.map(move |m| Message::MentionGroups(gsid.clone(), epoch, m)));
+            let task = s.later.tick(&mut s.workspace, s.session.as_ref(), now);
+            let lsid = sid.clone();
+            tasks.push(task.map(move |m| Message::LaterSync(lsid.clone(), epoch, m)));
+            let task = s.reminders.tick(&mut s.workspace, s.session.as_ref(), now);
+            let rsid = sid.clone();
+            tasks.push(task.map(move |m| Message::ReminderSync(rsid.clone(), epoch, m)));
+            if let Some(task) = s.start_service_push(now) {
+                let psid = sid.clone();
+                tasks.push(task.map(move |o| Message::ServicePushed(psid.clone(), epoch, o)));
+            }
+            if let Some((uid, blob)) = s.flags.take_save()
+                && let Some(e) = self.config.server_mut(&sid)
+            {
+                save_synced |= e.set_pending_blob(&uid, &blob);
+            }
+            if let Some((uid, blob)) = s.mention_groups.take_save()
+                && let Some(e) = self.config.server_mut(&sid)
+            {
+                save_synced |= e.set_pending_blob(&uid, &blob);
+            }
+            if let Some((uid, blob)) = s.later.take_save()
+                && let Some(e) = self.config.server_mut(&sid)
+            {
+                save_synced |= e.set_pending_blob(&uid, &blob);
+            }
+            if let Some((uid, blob)) = s.reminders.take_save()
+                && let Some(e) = self.config.server_mut(&sid)
+            {
+                save_synced |= e.set_pending_blob(&uid, &blob);
+            }
             let task = s.threads.tick(
                 &s.workspace,
                 s.session.as_ref(),
                 mode,
-                crate::workspace::threads::Cap::from_prefs(&self.config.ui),
+                cap,
                 threads_collapsed,
                 Instant::now(),
             );
@@ -104,6 +192,13 @@ impl App {
                 &s.url,
                 AVATAR_PREFETCH_ROWS,
             );
+            tasks.push(self.tick_inbox(&sid));
+            tasks.push(self.tick_later(&sid));
+            tasks.push(self.tick_hosted_user(&sid, super::hosted_user::Host::Inbox));
+            tasks.push(self.tick_hosted_user(&sid, super::hosted_user::Host::Later));
+            let Some(s) = self.servers.get_mut(&sid) else {
+                continue;
+            };
             if s.workspace.pending_changes().is_empty() {
                 continue;
             }
@@ -180,7 +275,8 @@ impl App {
         self.images.set_working_set(working);
         tasks.push(self.fetch_images());
         tasks.push(crate::videoconf::fetch_wanted(self));
-        if save_flags {
+        tasks.push(self.reminders_tick());
+        if save_synced {
             tasks.push(self.save_config());
         }
         Task::batch(tasks)
@@ -223,5 +319,34 @@ impl App {
             }));
         }
         Task::batch(tasks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Activity open: the Threads loader loads every unread thread, with
+    /// the section off or collapsed; closed, the prefs rule.
+    #[test]
+    fn activity_loads_every_unread_thread() {
+        let prefs = UiPrefs {
+            sidebar_threads: ThreadsMode::Off,
+            ..UiPrefs::default()
+        };
+        let (mode, cap, collapsed) = threads_load(&prefs, true, false);
+        assert_eq!(mode, ThreadsMode::Off);
+        assert!(!cap.unread_all && collapsed);
+        let (mode, cap, collapsed) = threads_load(&prefs, true, true);
+        assert_eq!(mode, ThreadsMode::Unread);
+        assert!(cap.unread_all && !collapsed);
+        let following = UiPrefs {
+            sidebar_threads: ThreadsMode::Following,
+            ..UiPrefs::default()
+        };
+        assert_eq!(
+            threads_load(&following, false, true).0,
+            ThreadsMode::Following
+        );
     }
 }

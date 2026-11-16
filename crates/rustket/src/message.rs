@@ -73,6 +73,8 @@ pub enum ModalMessage {
     OpenRegisterHandler,
     /// Keep secrets in memory only (`UiPrefs::secrets_memory_only`): confirmed.
     ConfirmSecretsMemoryOnly,
+    /// "Mark all as read" (Shift+Esc): confirmed.
+    ConfirmReadAll,
 }
 
 #[derive(Debug, Clone)]
@@ -106,17 +108,62 @@ pub enum Message {
     Threads(ServerId, u64, crate::workspace::threads::Msg),
     /// Flag sync message: server, session epoch, message.
     Flags(ServerId, u64, crate::workspace::flags::Msg),
+    /// A push of the synced keys finished: server, session epoch, result.
+    ServicePushed(ServerId, u64, crate::workspace::service_sync::Outcome),
+    /// Mention group sync message: server, session epoch, message.
+    MentionGroups(ServerId, u64, crate::workspace::mention_groups::Msg),
+    /// The server's checks of a mention group the Settings asked for.
+    MentionGroupChecked(
+        ServerId,
+        Box<crate::screens::settings::MentionGroupCheck>,
+        crate::screens::settings::MentionCheckReport,
+    ),
     /// A flag edit of the user (sidebar, room header, thread panel).
     SetFlag(ServerId, rustket_core::flags::FlagEdit),
-    /// Ctrl+K.
-    OpenQuickSwitcher,
+    /// An app-wide keyboard shortcut (`crate::keymap`).
+    Shortcut(crate::keymap::Shortcut),
+    /// Read queue of a server (`crate::reads`): server, session epoch, message.
+    Reads(ServerId, u64, crate::reads::Msg),
+    /// The inbox views (`crate::inbox`): server, session epoch, message.
+    Inbox(ServerId, u64, crate::inbox::Msg),
+    /// Enter / Left / Right that no widget took (the catch-up view).
+    CatchUpKey(crate::inbox::CatchUpKey),
+    /// The Later view (`crate::later`): server, session epoch, message.
+    Later(ServerId, u64, crate::later::Msg),
+    /// Up / Down / E that no widget took (the Later view).
+    LaterKey(crate::later::LaterKey),
+    /// A reminder copy fetched for the Later view (`None`: the pacing
+    /// timer): server, session epoch, result.
+    LaterCopy(ServerId, u64, Option<Res<Box<rocketchat::models::Message>>>),
+    /// Later sync message: server, session epoch, message.
+    LaterSync(ServerId, u64, crate::workspace::later_sync::LaterMsg),
+    /// Reminder sync message: server, session epoch, message.
+    ReminderSync(ServerId, u64, crate::workspace::later_sync::ReminderMsg),
+    /// The reminder timer armed for this time fired.
+    RemindersDue(std::time::Instant),
+    /// Reminder notifications (`crate::later::notify`).
+    ReminderNotify(crate::later::notify::Msg),
+    /// A reminder notification action, replayed after the admin screen's
+    /// leave question.
+    ReminderAction(crate::later::notify::ReminderAction),
+    /// A due reminder's message was fetched for its notification: server,
+    /// session epoch, message id, due time, result.
+    ReminderFetched(
+        ServerId,
+        u64,
+        String,
+        i64,
+        Res<Box<rocketchat::models::Message>>,
+    ),
     /// Tab / Shift+Tab that no widget handled (modal dialogs cycle their own
     /// focus): move focus to the next (`true`) or previous input.
     FocusNext(bool),
     /// F6 / Shift+F6: focus the next (`true`) or previous region
     /// (`crate::focus`).
     FocusRegion(bool),
-    /// Escape that no widget handled: close the right panel / settings page.
+    /// Escape that no widget handled: close the main view or the right
+    /// panel, mark the room read, or close the settings page
+    /// (`App::on_escape`).
     Escape,
     SidebarResized(f32),
     /// Room component message: server, session epoch, room id.
@@ -177,8 +224,20 @@ pub enum Message {
         on: bool,
         result: Res<()>,
     },
-    /// "Move kept threads to Favorites": time for the next star.
+    /// The star queue ("Move kept threads to Favorites", Later's "Remove
+    /// done items"): time for the next change.
     StarKeptNext,
+    /// `chat.starMessage`/`chat.unStarMessage` of a message ended (Later
+    /// reverts it on failure).
+    MessageStarred {
+        sid: ServerId,
+        epoch: u64,
+        m: Box<rocketchat::models::Message>,
+        on: bool,
+        /// Queued (failures are reported together).
+        job: Option<crate::app::StarJob>,
+        result: Res<()>,
+    },
     /// Current handler, whether it is Rustket, and the executable check
     /// (warnings to confirm, or why registration is refused).
     HandlerQueried(Option<String>, bool, Result<Vec<String>, String>),

@@ -49,6 +49,8 @@ pub(super) struct Cx<'r, 'a> {
     pub me: Option<&'r str>,
     pub t: &'static Tokens,
     spoiler: Cell<usize>,
+    /// Index of the next code block (fold toggles).
+    code: Cell<usize>,
     /// A dropped quote link left whitespace behind: trim the next text.
     trim_next: Cell<bool>,
 }
@@ -62,15 +64,23 @@ impl<'r, 'a> Cx<'r, 'a> {
             me: rc.workspace.username(),
             t: tokens(),
             spoiler: Cell::new(0),
+            code: Cell::new(0),
             trim_next: Cell::new(false),
         }
     }
 
-    /// Spoiler indices start at `base` (attachments use their own range so
-    /// they never share an index with the message text).
+    /// Spoiler and code block indices start at `base` (attachments use
+    /// their own range so they never share an index with the message text).
     pub fn with_spoiler_base(self, base: usize) -> Self {
         self.spoiler.set(base);
+        self.code.set(base);
         self
+    }
+
+    fn next_code(&self) -> usize {
+        let i = self.code.get();
+        self.code.set(i + 1);
+        i
     }
 
     fn spoiler_shown(&self, idx: usize) -> bool {
@@ -428,6 +438,23 @@ fn block_list(list: &[Block], cx: &Cx<'_, '_>, depth: usize) -> El {
     col.into()
 }
 
+/// Code blocks [`block_list`] would render for `list` at `depth` (each
+/// takes a fold index).
+fn code_blocks(list: &[Block], depth: usize) -> usize {
+    if depth > MAX_DEPTH {
+        return 0;
+    }
+    list.iter()
+        .map(|b| match b {
+            Block::Code { .. } => 1,
+            Block::Quote { value }
+            | Block::Blockquote { value }
+            | Block::SpoilerBlock { value } => code_blocks(value, depth + 1),
+            _ => 0,
+        })
+        .sum()
+}
+
 fn block(b: &Block, cx: &Cx<'_, '_>, depth: usize) -> El {
     if depth > MAX_DEPTH {
         let mut s = String::new();
@@ -440,7 +467,9 @@ fn block(b: &Block, cx: &Cx<'_, '_>, depth: usize) -> El {
             paragraph(inline_spans(value, cx), TEXT_BODY)
         }
         Block::BigEmoji { value } => big_emoji(value, cx),
-        Block::Code { language, value } => code_block(language.as_deref(), value),
+        Block::Code { language, value } => {
+            code_block(language.as_deref(), value, cx, cx.next_code())
+        }
         Block::Heading { level, value } => {
             let size = match level {
                 1 => TEXT_HEADLINE,
@@ -472,6 +501,9 @@ fn block(b: &Block, cx: &Cx<'_, '_>, depth: usize) -> El {
                     .width(Length::Fill)
                     .into()
             } else {
+                // Code blocks inside keep their indices, so revealing the
+                // spoiler does not shift the fold state of later blocks.
+                cx.code.set(cx.code.get() + code_blocks(value, depth + 1));
                 hidden_spoiler(cx.mid, idx)
             }
         }
@@ -906,12 +938,17 @@ fn big_emoji(list: &[Inline], cx: &Cx<'_, '_>) -> El {
     r.into()
 }
 
-fn code_block(language: Option<&str>, lines: &[CodeLine]) -> El {
-    let code = lines
-        .iter()
-        .map(|l| l.value.value.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+fn code_block(language: Option<&str>, lines: &[CodeLine], cx: &Cx<'_, '_>, idx: usize) -> El {
+    let all: Vec<&str> = lines.iter().map(|l| l.value.value.as_str()).collect();
+    let code = all.join("\n");
+    // Big blocks fold to their first lines; Copy still copies everything.
+    let foldable = cx.rc.interactive && super::fold::code_folds(all.len());
+    let expanded = foldable && cx.rc.state.is_expanded(cx.mid, idx);
+    let shown = if foldable && !expanded {
+        all[..super::fold::CODE_FOLD_KEEP].join("\n")
+    } else {
+        code.clone()
+    };
     let lang = language
         .filter(|l| !l.is_empty() && *l != "none")
         .unwrap_or_default();
@@ -938,13 +975,42 @@ fn code_block(language: Option<&str>, lines: &[CodeLine]) -> El {
         ),
     ]
     .align_y(Alignment::Center);
-    let body = scrollable(container(code_text(code)).padding(Padding::ZERO.bottom(SPACE_2)))
+    let body = scrollable(container(code_text(shown)).padding(Padding::ZERO.bottom(SPACE_2)))
         .direction(Direction::Horizontal(
             Scrollbar::new().width(4).scroller_width(4),
         ))
         .style(style::scrollable)
         .width(Length::Fill);
-    container(column![header, body].spacing(SPACE_1))
+    let mut col = column![header, body].spacing(SPACE_1);
+    if foldable {
+        let hidden = (all.len() - super::fold::CODE_FOLD_KEEP) as u64;
+        let (glyph, label) = if expanded {
+            (Icon::ChevronUp, t!("room_render.show_less").into_owned())
+        } else {
+            (
+                Icon::ChevronDown,
+                t!(
+                    format!("room_render.code_more_{}", super::plural(hidden)),
+                    count = hidden
+                )
+                .into_owned(),
+            )
+        };
+        col = col.push(
+            button(
+                row![
+                    icon::sized(glyph, 12.0),
+                    text(label).size(TEXT_CAPTION).font(font_semibold())
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+            )
+            .padding(0)
+            .style(style::button_link)
+            .on_press(RenderMsg::ToggleExpanded(cx.mid.to_owned(), idx)),
+        );
+    }
+    container(col)
         .padding([SPACE_2, SPACE_3])
         .width(Length::Fill)
         .style(style::container_code_block)
@@ -1483,6 +1549,122 @@ mod tests {
         );
     }
 
+    /// Big code blocks show their first lines until unfolded; stateless
+    /// renders show everything.
+    #[test]
+    fn big_code_blocks_fold() {
+        let lines: Vec<_> = (0..20)
+            .map(|i| serde_json::json!({"type": "CODE_LINE", "value": plain(&format!("l{i}"))}))
+            .collect();
+        let md = serde_json::json!([{"type": "CODE", "language": "rust", "value": lines}]);
+        let mut fx = Fx::new();
+        let folded = body(md.clone(), &fx);
+        assert!(folded.contains("l9") && !folded.contains("l10"), "{folded}");
+        assert!(fx.state.handle(&RenderMsg::ToggleExpanded("m1".into(), 0)));
+        let unfolded = body(md.clone(), &fx);
+        assert!(unfolded.contains("l19"), "{unfolded}");
+        let fx = Fx::new();
+        let msg = Message {
+            id: "m1".into(),
+            md: Some(root(md)),
+            ..Message::default()
+        };
+        let rc = RenderCtx {
+            interactive: false,
+            ..fx.rc()
+        };
+        let stateless = copied(crate::room::render::message_body_with(&msg, &rc));
+        assert!(stateless.contains("l19"), "{stateless}");
+        let shown = labels(crate::room::render::message_body_with(&msg, &rc));
+        assert!(!shown.iter().any(|l| l.starts_with("Show")), "{shown:?}");
+    }
+
+    /// The fold footer names the hidden lines, then offers to fold again.
+    #[test]
+    fn code_fold_footer() {
+        let lines: Vec<_> = (0..20)
+            .map(|i| serde_json::json!({"type": "CODE_LINE", "value": plain(&format!("l{i}"))}))
+            .collect();
+        let md = serde_json::json!([{"type": "CODE", "language": "rust", "value": lines}]);
+        let mut fx = Fx::new();
+        let folded = body_labels(md.clone(), &fx);
+        assert!(
+            folded.iter().any(|l| l == "Show 10 more lines"),
+            "{folded:?}"
+        );
+        assert!(fx.state.handle(&RenderMsg::ToggleExpanded("m1".into(), 0)));
+        let unfolded = body_labels(md, &fx);
+        assert!(unfolded.iter().any(|l| l == "Show less"), "{unfolded:?}");
+    }
+
+    /// Code blocks inside a hidden spoiler keep their fold indices: revealing
+    /// the spoiler leaves an unfolded block after it unfolded.
+    #[test]
+    fn spoiler_keeps_code_fold_indices() {
+        let code = |tag: &str| {
+            let lines: Vec<_> = (0..20)
+                .map(|i| {
+                    serde_json::json!({"type": "CODE_LINE", "value": plain(&format!("{tag}{i}"))})
+                })
+                .collect();
+            serde_json::json!({"type": "CODE", "language": "rust", "value": lines})
+        };
+        let md = serde_json::json!([
+            {"type": "SPOILER_BLOCK", "value": [code("a")]},
+            code("b"),
+        ]);
+        let mut fx = Fx::new();
+        assert!(fx.state.handle(&RenderMsg::ToggleExpanded("m1".into(), 1)));
+        let hidden = body(md.clone(), &fx);
+        assert!(hidden.contains("b19") && !hidden.contains("a0"), "{hidden}");
+        assert!(fx.state.handle(&RenderMsg::ToggleSpoiler("m1".into(), 0)));
+        let shown = body(md, &fx);
+        assert!(shown.contains("b19"), "{shown}");
+        assert!(shown.contains("a9") && !shown.contains("a10"), "{shown}");
+    }
+
+    /// A long body is clipped behind "Show more" (interactive renders only)
+    /// and offers "Show less" once expanded.
+    #[test]
+    fn long_body_folds() {
+        let paras: Vec<_> = (0..30)
+            .map(|i| serde_json::json!({"type": "PARAGRAPH", "value": [plain(&format!("p{i}"))]}))
+            .collect();
+        let md = serde_json::json!(paras);
+        let mut fx = Fx::new();
+        let folded = body_labels(md.clone(), &fx);
+        assert!(folded.iter().any(|l| l == "Show more"), "{folded:?}");
+        assert!(!folded.iter().any(|l| l == "Show less"), "{folded:?}");
+        assert!(fx.state.handle(&RenderMsg::ToggleExpanded(
+            "m1".into(),
+            crate::room::render::fold::EXPAND_BODY
+        )));
+        let unfolded = body_labels(md.clone(), &fx);
+        assert!(unfolded.iter().any(|l| l == "Show less"), "{unfolded:?}");
+        assert!(!unfolded.iter().any(|l| l == "Show more"), "{unfolded:?}");
+        let fx = Fx::new();
+        let msg = Message {
+            id: "m1".into(),
+            md: Some(root(md)),
+            ..Message::default()
+        };
+        let rc = RenderCtx {
+            interactive: false,
+            ..fx.rc()
+        };
+        let stateless = labels(crate::room::render::message_body_with(&msg, &rc));
+        assert!(
+            !stateless.iter().any(|l| l.starts_with("Show")),
+            "{stateless:?}"
+        );
+        // A short body has no toggle.
+        let short = body_labels(
+            serde_json::json!([{"type": "PARAGRAPH", "value": [plain("hi")]}]),
+            &fx,
+        );
+        assert!(!short.iter().any(|l| l.starts_with("Show")), "{short:?}");
+    }
+
     #[test]
     fn plain_fallback_linkifies() {
         let fx = Fx::new();
@@ -1567,6 +1749,44 @@ mod tests {
         ui.operate(&renderer, &mut c);
         assert_eq!(c.texts.len(), 1, "one scope per body");
         c.texts.remove(0)
+    }
+
+    /// Every plain `text` widget's content (button labels, …) of `el`.
+    fn labels(el: Element<'_, RenderMsg>) -> Vec<String> {
+        use iced::advanced::widget::{Id, Operation};
+        use iced_runtime::user_interface::{Cache, UserInterface};
+        struct Texts(Vec<String>);
+        impl Operation for Texts {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn text(&mut self, _id: Option<&Id>, _bounds: iced::Rectangle, text: &str) {
+                self.0.push(text.to_owned());
+            }
+        }
+        let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+            iced::Font::DEFAULT,
+            iced::Pixels(14.0),
+        ));
+        let mut ui = UserInterface::build(
+            el,
+            iced::Size::new(600.0, 4000.0),
+            Cache::default(),
+            &mut renderer,
+        );
+        let mut t = Texts(Vec::new());
+        ui.operate(&renderer, &mut t);
+        t.0
+    }
+
+    fn body_labels(md: serde_json::Value, fx: &Fx) -> Vec<String> {
+        rust_i18n::set_locale("en");
+        let msg = Message {
+            id: "m1".into(),
+            md: Some(root(md)),
+            ..Message::default()
+        };
+        labels(crate::room::render::message_body_with(&msg, &fx.rc()))
     }
 
     fn body(md: serde_json::Value, fx: &Fx) -> String {

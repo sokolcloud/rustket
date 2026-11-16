@@ -478,9 +478,10 @@ pub fn check_edit(ws: &Workspace, m: &rocketchat::models::Message) -> Result<(),
     }
 }
 
-/// Message actions not offered for encrypted messages (§10: copy link; the
-/// web also disables reply-in-DM and forward, which Rustket does not have),
-/// and edits/quotes of messages that are not shown decrypted.
+/// Message actions not offered for encrypted messages (§10: copy link and,
+/// like the web, forward and selecting for forward; the web also disables
+/// reply-in-DM, which Rustket does not have), and edits/quotes of messages
+/// that are not shown decrypted.
 pub fn filter_actions(
     ws: &Workspace,
     m: &rocketchat::models::Message,
@@ -496,7 +497,7 @@ pub fn filter_actions(
     let decrypted = super::shown::is_decrypted(m);
     let editable = check_edit(ws, m).is_ok();
     acts.retain(|a| match a {
-        Act::CopyLink => false,
+        Act::CopyLink | Act::Forward | Act::Select => false,
         Act::Edit => editable,
         Act::Quote | Act::CopyText => decrypted,
         _ => true,
@@ -551,6 +552,27 @@ mod tests {
             }
         }
         w
+    }
+
+    /// Like the web: encrypted messages cannot be forwarded (nor selected
+    /// for it); plaintext ones in the same room can.
+    #[test]
+    fn encrypted_messages_are_not_forwarded() {
+        use crate::room::timeline::Act;
+        let w = ws(RoomType::Private, true, false);
+        let e2e = rocketchat::models::Message {
+            id: "m".into(),
+            rid: "r".into(),
+            t: Some("e2e".into()),
+            ..Default::default()
+        };
+        let mut acts = vec![Act::CopyLink, Act::Forward, Act::Select, Act::React];
+        filter_actions(&w, &e2e, &mut acts);
+        assert_eq!(acts, [Act::React]);
+        let plain = rocketchat::models::Message { t: None, ..e2e };
+        let mut acts = vec![Act::Forward, Act::Select];
+        filter_actions(&w, &plain, &mut acts);
+        assert_eq!(acts, [Act::Forward, Act::Select]);
     }
 
     #[test]

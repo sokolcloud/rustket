@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Slack-style keyboard shortcuts: Escape marks the open room as read when
+  there is nothing left to close (can be turned off in Settings → General),
+  Shift+Escape marks every room of the server as read after a confirmation,
+  Ctrl+Shift+\ reacts to the last message, Ctrl+, opens the preferences, and
+  the message field gets Ctrl+Shift+X / C / U / 9 and Ctrl+Alt+Shift+C for
+  strikethrough, inline code, link, quote and code block (Cmd on macOS).
+- A keyboard shortcuts overview: Ctrl+/ (Cmd+/ on macOS), the user menu or
+  Settings → General. The formatting buttons show their shortcut.
+- Marking many rooms read goes through one paced queue over the realtime
+  connection (much faster than the per-request web route on servers with the
+  default rate limits), falling back to the web API when needed.
+- Long messages and code blocks longer than 15 lines are folded with
+  "Show more"; Copy still copies the whole block.
+- Who reacted: a button after the reactions and a "Who reacted" menu entry
+  open a list of everyone per emoji; a click opens the person's profile.
+- Sending `@all` or `@here` to a room with 5 or more other members (also as
+  an upload's message) asks for a confirmation first, with the number of
+  people it notifies (can be turned off in Settings → General).
+- 1:1 direct messages show the other person's local time above the message
+  field when it differs from yours ("It's 03:12 for Bob").
+- Forward a message, or select up to 20 messages and forward them or copy
+  their links: pick a room or person, add an optional comment and send. The
+  old "forward" entry of 0.1 meant copying a link.
+- All unreads (Ctrl+Shift+A): every room with unread messages in one list,
+  direct mentions and DMs first, then @all/@here, then the rest, with the
+  unread messages of each room; reply, reply in thread, show in the room,
+  mark a room read or skip it. "Mark all as read" there marks the listed
+  rooms and leaves unread threads for Activity. Catch up goes through the
+  rooms one at a time (Enter: read and next, →: skip, ←: back).
+- Activity (Ctrl+Shift+M): unread mentions, @all/@here and thread mentions,
+  then unread threads across rooms. Both views have pinned rows at the top of
+  the sidebar (Settings → Sidebar can hide them); only mentions get a loud
+  badge.
+- Message reminders: "Remind me…" in a message's menu (in 20 minutes, 1 or
+  3 hours, tomorrow, next week or a custom time). Reminders are synced
+  between your Rustket devices and show a desktop notification while
+  Rustket runs (Open, Snooze 1 hour, Done); ones missed while it was closed
+  are summed up at the next start. Settings → Notifications has their
+  switches and the morning hour of "Tomorrow" and "Next week".
+- Later (Ctrl+Shift+S, a third pinned sidebar row with a count of overdue
+  reminders): your starred messages from every room as a to-do list with In
+  progress, Reminders, Done and Archived tabs, due dates and "Remove done
+  items". Stars that existed before go to Archived. Status, due dates and
+  reminders sync through your hidden service room as ids and times only,
+  never message text.
+
+### Changed
+
+- Like the web client, Rustket now stores your UTC offset on the server
+  after sign-in so others see your local time; Settings → Privacy & storage
+  can turn this off.
+- Message menus are grouped with separators (respond, share, organise,
+  delete).
+
 ## [0.2.6] - 2026-11-15
 
 ### Security

@@ -21,6 +21,7 @@ use rocketchat::models::{
 
 use crate::emoji::EmojiRegistry;
 use crate::flags::{FlagBlob, Flags};
+use crate::mention_groups::{MentionGroupBlob, MentionGroups};
 use crate::presence::Presence;
 use crate::settings::Settings;
 use crate::thread_index::ThreadIndex;
@@ -28,7 +29,11 @@ use crate::timeline::{Timeline, TimelineItem};
 use crate::typing::{TypingLabel, TypingState};
 use crate::uikit::UiKitStore;
 
+mod later;
 mod load;
+
+pub use later::{LaterRow, LaterTab};
+mod mention_groups;
 mod realtime;
 mod thread_parents;
 mod timelines;
@@ -68,8 +73,20 @@ impl Dirty {
     /// Synced flags: the stored blob, the pending overlay or the effective
     /// flags (see [`Workspace::flags`]).
     pub const FLAGS: Self = Self(1 << 16);
-    pub const ALL: Self = Self((1 << 17) - 1);
-    const BITS: usize = 17;
+    /// Later: the synced state of starred messages (stored blob, overlay)
+    /// and the index of starred messages and their scans (see
+    /// [`Workspace::later`], [`Workspace::later_index`]).
+    pub const LATER: Self = Self(1 << 17);
+    /// Synced message reminders: the stored blob, the overlay or the live
+    /// reminders (see [`Workspace::reminders`]).
+    pub const REMINDERS: Self = Self(1 << 18);
+    /// Synced mention groups: the stored blob, the pending overlay or the
+    /// effective groups (see [`Workspace::mention_groups`]).
+    pub const MENTION_GROUPS: Self = Self(1 << 19);
+    /// All unreads / Activity feeds (see [`Workspace::feeds`]).
+    pub const FEEDS: Self = Self(1 << 20);
+    pub const ALL: Self = Self((1 << 21) - 1);
+    const BITS: usize = 21;
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -290,8 +307,37 @@ pub struct Workspace {
     flag_overlay: FlagBlob,
     /// `flag_blob` merged with `flag_overlay`.
     flags: Flags,
+    /// The mention groups blob of the user's service rooms.
+    mention_group_blob: MentionGroupBlob,
+    /// This device's mention group edits not known to be stored yet.
+    mention_group_overlay: MentionGroupBlob,
+    /// `mention_group_blob` merged with `mention_group_overlay`.
+    mention_groups: MentionGroups,
+    /// The Later blob of the user's service rooms.
+    later_blob: crate::later::LaterBlob,
+    /// This device's Later edits not known to be stored yet.
+    later_overlay: crate::later::LaterBlob,
+    /// `later_blob` merged with `later_overlay`.
+    later: crate::later::LaterBlob,
+    /// The reminders blob of the user's service rooms.
+    reminder_blob: crate::reminders::ReminderBlob,
+    /// This device's reminder edits not known to be stored yet.
+    reminder_overlay: crate::reminders::ReminderBlob,
+    /// The live reminders of `reminder_blob` merged with `reminder_overlay`.
+    reminders: crate::reminders::Reminders,
+    /// Starred messages and reminder copies for the Later view.
+    later_index: crate::later::LaterIndex,
+    /// The app wants starred messages tracked for Later.
+    later_wanted: bool,
+    /// Starred messages are tracked for Later (wanted, and starring allowed
+    /// on the server).
+    later_tracking: bool,
     /// The user's own service rooms, primary first.
     service_rooms: Vec<String>,
+    /// Unread messages and thread mentions of the All unreads and Activity
+    /// views (memory only). Kept while the views are closed, so reopening
+    /// one fetches nothing loaded; dropped with the workspace on sign-out.
+    feeds: crate::inbox::feeds::FeedStore,
 }
 
 /// When a realtime event touched something.
@@ -405,10 +451,15 @@ impl Workspace {
     fn mark_room(&mut self, rid: &str) {
         self.mark(Dirty::ROOMS);
         self.changes.rooms.insert(rid.to_owned());
+        // Whatever moved the room's `ls` (read here, elsewhere, a sync).
+        let ls = self.subscription(rid).and_then(|s| s.ls);
+        if self.feeds.prune(rid, ls) {
+            self.mark(Dirty::FEEDS);
+        }
         if self.service_rooms.iter().any(|r| r == rid)
             || self.rooms.get(rid).is_some_and(RoomEntry::is_service_room)
         {
-            self.refresh_flags();
+            self.refresh_service_data();
         }
     }
 
@@ -633,21 +684,32 @@ impl Workspace {
         self.e2e = manager;
     }
 
-    /// Rooms with an open room or thread timeline.
+    /// Rooms with an open room or thread timeline, an inbox feed or a
+    /// message in the Later index.
     pub fn rooms_with_timelines(&self) -> HashSet<String> {
         self.timelines
             .keys()
             .cloned()
             .chain(self.threads.values().map(|t| t.rid().to_owned()))
+            .chain(self.feeds.rooms().cloned())
+            .chain(self.later_index.rooms().cloned())
             .collect()
     }
 
     /// Rewrites the messages of room `rid` in place: its room timeline, its
-    /// thread timelines and the room's last message (see
-    /// [`Timeline::rewrite`]). Changed timelines and rooms are marked. Returns
-    /// whether anything changed.
+    /// thread timelines, its inbox feed, its Later messages and the room's
+    /// last message (see [`Timeline::rewrite`]). Changed timelines and rooms
+    /// are marked. Returns whether anything changed.
     pub fn rewrite_messages(&mut self, rid: &str, f: &mut dyn FnMut(&mut Message) -> bool) -> bool {
         let mut changed = false;
+        if self.feeds.rewrite(rid, f) {
+            self.mark(Dirty::FEEDS);
+            changed = true;
+        }
+        if self.later_index.rewrite(rid, f) {
+            self.mark(Dirty::LATER);
+            changed = true;
+        }
         if let Some(t) = self.timelines.get_mut(rid)
             && t.rewrite(f)
         {
@@ -683,6 +745,68 @@ impl Workspace {
             changed = true;
         }
         changed
+    }
+
+    // --- inbox feeds (All unreads, Activity) ------------------------------------
+
+    pub fn feeds(&self) -> &crate::inbox::feeds::FeedStore {
+        &self.feeds
+    }
+
+    /// The rooms the open inbox view wants: their feeds are not evicted
+    /// (empty: the view closed). Changes nothing shown.
+    pub fn keep_feeds<'a>(&mut self, rids: impl IntoIterator<Item = &'a String>) {
+        self.feeds.keep(rids);
+    }
+
+    /// The inbox views closed a while ago: their room feeds go
+    /// ([`crate::inbox::feeds::FeedStore::release`]).
+    pub fn release_feeds(&mut self) {
+        if self.feeds.release() {
+            self.mark(Dirty::FEEDS);
+        }
+    }
+
+    /// Starts a page of room `rid`'s feed (`earlier`: the next older one),
+    /// against the subscription's current `ls`.
+    pub fn begin_feed(&mut self, rid: &str, earlier: bool) -> Option<crate::inbox::feeds::FeedReq> {
+        let ls = self.subscription(rid).and_then(|s| s.ls);
+        let req = self.feeds.begin(rid, earlier, ls)?;
+        self.mark(Dirty::FEEDS);
+        Some(req)
+    }
+
+    /// A feed page ended (see [`crate::inbox::feeds::FeedStore::finish`]).
+    pub fn finish_feed(
+        &mut self,
+        req: &crate::inbox::feeds::FeedReq,
+        res: Result<rocketchat::models::History, Option<String>>,
+    ) {
+        let ls = self.subscription(&req.rid).and_then(|s| s.ls);
+        if self.feeds.finish(req, res, ls) {
+            self.mark(Dirty::FEEDS);
+        }
+    }
+
+    /// Forgets a failed feed so it loads again.
+    pub fn reset_feed(&mut self, rid: &str) {
+        if self.feeds.reset(rid) {
+            self.mark(Dirty::FEEDS);
+        }
+    }
+
+    pub fn begin_thread_mentions(&mut self, rid: &str) -> bool {
+        let started = self.feeds.begin_mentions(rid);
+        if started {
+            self.mark(Dirty::FEEDS);
+        }
+        started
+    }
+
+    pub fn finish_thread_mentions(&mut self, rid: &str, res: Result<Vec<Message>, Option<String>>) {
+        if self.feeds.finish_mentions(rid, res) {
+            self.mark(Dirty::FEEDS);
+        }
     }
 
     /// Rewrites the last message of every room (sidebar previews).

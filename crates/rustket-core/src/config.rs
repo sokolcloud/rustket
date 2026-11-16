@@ -149,6 +149,16 @@ pub struct ServerEntry {
         deserialize_with = "lenient_vec"
     )]
     pub pending_flags_all_accounts: Vec<PendingFlags>,
+    /// Edits of the other synced blobs (`crate::service_sync`) not known to
+    /// be stored yet, per account and key; read them through
+    /// [`Self::pending_blob()`]. Flags keep `pending_flags`, which older
+    /// versions read.
+    #[serde(
+        rename = "pending_service",
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_vec"
+    )]
+    pub pending_service_all_accounts: Vec<PendingBlob>,
     /// Unix seconds.
     pub added_at: i64,
     pub sort_order: i32,
@@ -160,6 +170,64 @@ pub struct ServerEntry {
 pub struct PendingFlags {
     pub user_id: String,
     pub blob: String,
+}
+
+/// An account's pending edits of one synced blob: its `customFields` key
+/// and the blob as JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingBlob {
+    pub user_id: String,
+    pub key: String,
+    pub blob: String,
+}
+
+/// A pending-edits list entry (`PendingFlags`, `PendingBlob`).
+trait PendingSlot {
+    fn blob_mut(&mut self) -> &mut String;
+}
+
+impl PendingSlot for PendingFlags {
+    fn blob_mut(&mut self) -> &mut String {
+        &mut self.blob
+    }
+}
+
+impl PendingSlot for PendingBlob {
+    fn blob_mut(&mut self) -> &mut String {
+        &mut self.blob
+    }
+}
+
+/// Puts `json` into the entry at `pos` (a new one from `new` when there is
+/// none), or removes the entry when `json` is `None`. Returns whether the
+/// list changed.
+fn set_pending<T: PendingSlot>(
+    list: &mut Vec<T>,
+    pos: Option<usize>,
+    json: Option<String>,
+    new: impl FnOnce() -> T,
+) -> bool {
+    match (pos, json) {
+        (Some(i), None) => {
+            list.remove(i);
+            true
+        }
+        (None, None) => false,
+        (Some(i), Some(json)) => {
+            let slot = list[i].blob_mut();
+            if *slot == json {
+                return false;
+            }
+            *slot = json;
+            true
+        }
+        (None, Some(json)) => {
+            let mut entry = new();
+            *entry.blob_mut() = json;
+            list.push(entry);
+            true
+        }
+    }
 }
 
 impl Default for ServerId {
@@ -262,48 +330,71 @@ impl ServerEntry {
         }
     }
 
+    /// Pending edits of `uid` of the synced blob `B` (empty when there are
+    /// none or they do not parse).
+    pub fn pending_blob<B: crate::service_sync::SyncBlob>(&self, uid: &str) -> B {
+        let json = if B::KEY == rocketchat::models::FLAGS_KEY {
+            self.pending_flags_all_accounts
+                .iter()
+                .find(|p| p.user_id == uid)
+                .map(|p| p.blob.as_str())
+        } else {
+            self.pending_service_all_accounts
+                .iter()
+                .find(|p| p.user_id == uid && p.key == B::KEY)
+                .map(|p| p.blob.as_str())
+        };
+        json.and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+            .map(|v| B::from_value_at(Some(&v), chrono::Utc::now().timestamp_millis()))
+            .unwrap_or_default()
+    }
+
+    /// Stores the pending edits of `uid` of the synced blob `B` (an empty
+    /// blob removes them). Returns whether the entry changed.
+    pub fn set_pending_blob<B: crate::service_sync::SyncBlob>(
+        &mut self,
+        uid: &str,
+        blob: &B,
+    ) -> bool {
+        let json = (!blob.is_empty()).then(|| {
+            blob.to_value_at(chrono::Utc::now().timestamp_millis())
+                .to_string()
+        });
+        if B::KEY == rocketchat::models::FLAGS_KEY {
+            let pos = self
+                .pending_flags_all_accounts
+                .iter()
+                .position(|p| p.user_id == uid);
+            return set_pending(&mut self.pending_flags_all_accounts, pos, json, || {
+                PendingFlags {
+                    user_id: uid.to_owned(),
+                    blob: String::new(),
+                }
+            });
+        }
+        let pos = self
+            .pending_service_all_accounts
+            .iter()
+            .position(|p| p.user_id == uid && p.key == B::KEY);
+        set_pending(&mut self.pending_service_all_accounts, pos, json, || {
+            PendingBlob {
+                user_id: uid.to_owned(),
+                key: B::KEY.to_owned(),
+                blob: String::new(),
+            }
+        })
+    }
+
     /// Pending flag edits of `uid` (empty when there are none or they do
     /// not parse).
     pub fn pending_flags(&self, uid: &str) -> crate::flags::FlagBlob {
-        self.pending_flags_all_accounts
-            .iter()
-            .find(|p| p.user_id == uid)
-            .and_then(|p| serde_json::from_str::<serde_json::Value>(&p.blob).ok())
-            .map(|v| crate::flags::FlagBlob::from_value(Some(&v)))
-            .unwrap_or_default()
+        self.pending_blob(uid)
     }
 
     /// Stores the pending flag edits of `uid` (an empty blob removes them).
     /// Returns whether the entry changed.
     pub fn set_pending_flags(&mut self, uid: &str, blob: &crate::flags::FlagBlob) -> bool {
-        let pos = self
-            .pending_flags_all_accounts
-            .iter()
-            .position(|p| p.user_id == uid);
-        if blob.is_empty() {
-            return match pos {
-                Some(i) => {
-                    self.pending_flags_all_accounts.remove(i);
-                    true
-                }
-                None => false,
-            };
-        }
-        let json = blob.to_value().to_string();
-        match pos {
-            Some(i) if self.pending_flags_all_accounts[i].blob == json => false,
-            Some(i) => {
-                self.pending_flags_all_accounts[i].blob = json;
-                true
-            }
-            None => {
-                self.pending_flags_all_accounts.push(PendingFlags {
-                    user_id: uid.to_owned(),
-                    blob: json,
-                });
-                true
-            }
-        }
+        self.set_pending_blob(uid, blob)
     }
 
     pub fn new(url: impl Into<String>, display_name: impl Into<String>) -> Self {
@@ -478,6 +569,42 @@ pub struct UiPrefs {
     /// keyring they are kept in memory for the session only
     /// (`crate::secrets::FilePolicy::Never`).
     pub secrets_memory_only: bool,
+    /// Escape with nothing else to close marks the open room as read (with
+    /// its threads), like Slack.
+    pub escape_marks_read: bool,
+    /// Ask before sending `@all` / `@here` to a room with several members
+    /// (also an upload's message).
+    pub confirm_broad_mentions: bool,
+    /// Publish the local UTC offset to the server after sign-in (as the web
+    /// client does), so others see the user's local time.
+    pub share_utc_offset: bool,
+    /// The pinned rows at the top of the sidebar (All unreads, Activity,
+    /// Later; the views' shortcuts work either way).
+    pub sidebar_pinned_views: bool,
+    /// All unreads lists rooms with notifications disabled too.
+    pub inbox_include_muted: bool,
+    /// Desktop notifications for message reminders (independent of the
+    /// message notifications).
+    pub reminder_notifications: bool,
+    /// Reminder notifications play a sound (independent of `sound`, which
+    /// it starts from when not set).
+    pub reminder_sound: bool,
+    /// Hour the "Tomorrow" and "Next week" reminder presets use
+    /// ([`Self::morning_hour`] clamps it).
+    pub reminder_morning_hour: u8,
+}
+
+/// Hours the reminder presets may start at.
+pub const REMINDER_MORNING_HOURS: std::ops::RangeInclusive<u8> = 5..=12;
+
+impl UiPrefs {
+    /// The reminder presets' morning hour, within [`REMINDER_MORNING_HOURS`].
+    pub fn morning_hour(&self) -> u32 {
+        u32::from(self.reminder_morning_hour.clamp(
+            *REMINDER_MORNING_HOURS.start(),
+            *REMINDER_MORNING_HOURS.end(),
+        ))
+    }
 }
 
 impl Default for UiPrefs {
@@ -512,6 +639,14 @@ impl Default for UiPrefs {
             check_updates: true,
             update_prereleases: false,
             secrets_memory_only: false,
+            escape_marks_read: true,
+            confirm_broad_mentions: true,
+            share_utc_offset: true,
+            sidebar_pinned_views: true,
+            inbox_include_muted: false,
+            reminder_notifications: true,
+            reminder_sound: true,
+            reminder_morning_hour: 9,
         }
     }
 }
@@ -630,6 +765,14 @@ const UI_KEYS: &[&str] = &[
     "check_updates",
     "update_prereleases",
     "secrets_memory_only",
+    "escape_marks_read",
+    "confirm_broad_mentions",
+    "share_utc_offset",
+    "sidebar_pinned_views",
+    "inbox_include_muted",
+    "reminder_notifications",
+    "reminder_sound",
+    "reminder_morning_hour",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -642,6 +785,7 @@ const SERVER_KEYS: &[&str] = &[
     "pinned_certificates",
     "kept_threads",
     "pending_flags",
+    "pending_service",
     "added_at",
     "sort_order",
 ];
@@ -792,6 +936,11 @@ impl AppConfig {
             .map(str::to_owned);
         if let Some(t) = doc.get("ui").and_then(toml::Value::as_table) {
             cfg.ui = lenient(t, "ui");
+            // Not set yet (a config from before reminders): follow the
+            // message sound, so a client kept silent stays silent.
+            if !t.contains_key("reminder_sound") {
+                cfg.ui.reminder_sound = cfg.ui.sound;
+            }
         }
         if let Some(list) = doc.get("recent_emoji").and_then(toml::Value::as_array) {
             cfg.recent_emoji = list
@@ -1333,6 +1482,10 @@ mod tests {
             )
             .unwrap();
         s.set_pending_flags("u", &pending);
+        s.set_pending_blob(
+            "u",
+            &crate::service_sync::tests::toy(&[("a", Some("1"), 1)]),
+        );
         c.add_server(s);
         c.ensure_device_id();
         c.mark_secret_deletion("rustket:s:u");
@@ -1425,6 +1578,89 @@ mod tests {
         .unwrap();
         assert_eq!(c.device_id, None);
         assert!(c.servers[0].pending_flags("u").is_empty());
+    }
+
+    #[test]
+    fn pending_service_blobs_are_per_account_and_key() {
+        use crate::service_sync::SyncBlob;
+        use crate::service_sync::tests::{Toy, toy};
+        let mut s = ServerEntry::new("https://a", "A");
+        // Recent enough for the toy's tombstone TTL; older ones are not saved.
+        let now = chrono::Utc::now().timestamp_millis();
+        let a = toy(&[("a", Some("1"), 5), ("gone", None, now)]);
+        let b = toy(&[("b", Some("2"), 7)]);
+        assert!(s.set_pending_blob("u1", &a));
+        assert!(!s.set_pending_blob("u1", &a));
+        assert!(s.set_pending_blob("u2", &b));
+        // Flags stay in their own list, other keys do not touch it.
+        let mut flags = crate::flags::FlagBlob::default();
+        flags
+            .edit(
+                &crate::flags::FlagBlob::default(),
+                &crate::flags::FlagEdit::Room {
+                    rid: "r1".into(),
+                    color: Some(crate::flags::FlagColor::Red),
+                },
+                1,
+                "d",
+            )
+            .unwrap();
+        assert!(s.set_pending_blob("u1", &flags));
+        assert_eq!(s.pending_flags_all_accounts.len(), 1);
+        assert_eq!(s.pending_service_all_accounts.len(), 2);
+        let mut c = AppConfig::default();
+        c.add_server(s);
+        let mut c = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
+        let s = &mut c.servers[0];
+        assert_eq!(s.pending_blob::<Toy>("u1"), a, "tombstones survive TOML");
+        let mut stale = ServerEntry::new("https://a", "A");
+        stale.set_pending_blob("u1", &toy(&[("a", Some("1"), 5), ("gone", None, 6)]));
+        assert_eq!(stale.pending_blob::<Toy>("u1"), toy(&[("a", Some("1"), 5)]));
+        assert_eq!(s.pending_blob::<Toy>("u2"), b);
+        assert!(s.pending_blob::<Toy>("u3").is_empty());
+        assert_eq!(s.pending_flags("u1").to_value(), flags.to_value());
+        assert!(s.set_pending_blob("u1", &Toy::default()));
+        assert!(!s.set_pending_blob("u1", &Toy::default()));
+        assert_eq!(s.pending_service_all_accounts.len(), 1);
+        assert_eq!(s.pending_flags_all_accounts.len(), 1);
+        // Junk is ignored.
+        let c = AppConfig::parse(
+            r#"
+            [[servers]]
+            id = "s"
+            pending_service = [{ user_id = "u", key = "rustketToy", blob = "not json" }, "junk", { user_id = "u" }]
+            "#,
+        )
+        .unwrap();
+        assert!(c.servers[0].pending_blob::<Toy>("u").is_empty());
+        assert_eq!(c.servers[0].pending_service_all_accounts.len(), 1);
+    }
+
+    #[test]
+    fn pending_mention_groups_survive_toml() {
+        use crate::mention_groups::{MentionGroupBlob, MentionGroupEdit};
+        let mut blob = MentionGroupBlob::default();
+        let now = chrono::Utc::now().timestamp_millis();
+        let edit = MentionGroupEdit::Upsert {
+            id: "g1".into(),
+            name: "backend".into(),
+            members: vec!["alice".into(), "bob".into()],
+        };
+        blob.edit(&MentionGroupBlob::default(), &edit, now, "d")
+            .unwrap();
+        let gone = MentionGroupEdit::Delete { id: "g1".into() };
+        let mut deleted = blob.clone();
+        deleted
+            .edit(&MentionGroupBlob::default(), &gone, now, "d")
+            .unwrap();
+        let mut s = ServerEntry::new("https://a", "A");
+        assert!(s.set_pending_blob("u1", &deleted));
+        assert!(s.pending_flags_all_accounts.is_empty());
+        let mut c = AppConfig::default();
+        c.add_server(s);
+        let c = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
+        let read: MentionGroupBlob = c.servers[0].pending_blob("u1");
+        assert_eq!(read.groups, deleted.groups, "the removal survives");
     }
 
     fn with_sidebar_layout() -> AppConfig {
@@ -1564,6 +1800,43 @@ mod tests {
     }
 
     #[test]
+    fn inbox_prefs_default_and_round_trip() {
+        let d = UiPrefs::default();
+        assert!(d.sidebar_pinned_views && !d.inbox_include_muted);
+        let c = AppConfig::parse("[ui]\nunread_on_top = true").unwrap();
+        assert!(c.ui.sidebar_pinned_views);
+        let mut c = AppConfig::default();
+        c.ui.sidebar_pinned_views = false;
+        c.ui.inbox_include_muted = true;
+        let back = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
+        assert!(!back.ui.sidebar_pinned_views && back.ui.inbox_include_muted);
+    }
+
+    #[test]
+    fn reminder_prefs_default_round_trip_and_clamp() {
+        let d = UiPrefs::default();
+        assert!(d.reminder_notifications && d.reminder_sound);
+        assert_eq!(d.morning_hour(), 9);
+        let c = AppConfig::parse("[ui]\nreminder_morning_hour = 3").unwrap();
+        assert_eq!(c.ui.morning_hour(), 5);
+        let c = AppConfig::parse("[ui]\nreminder_morning_hour = 20").unwrap();
+        assert_eq!(c.ui.morning_hour(), 12);
+        let mut c = AppConfig::default();
+        c.ui.reminder_sound = false;
+        c.ui.reminder_morning_hour = 7;
+        let back = AppConfig::parse(&toml::to_string(&c).unwrap()).unwrap();
+        assert!(!back.ui.reminder_sound && back.ui.reminder_notifications);
+        assert_eq!(back.ui.morning_hour(), 7);
+        // Not set: follows the message sound; set: stays independent.
+        let c = AppConfig::parse("[ui]\nsound = false").unwrap();
+        assert!(!c.ui.reminder_sound);
+        let c = AppConfig::parse("[ui]\nsound = true").unwrap();
+        assert!(c.ui.reminder_sound);
+        let c = AppConfig::parse("[ui]\nsound = false\nreminder_sound = true").unwrap();
+        assert!(c.ui.reminder_sound);
+    }
+
+    #[test]
     fn sidebar_starred_threads_defaults_on() {
         assert!(UiPrefs::default().sidebar_starred_threads);
         let c = AppConfig::parse("[ui]\nunread_on_top = true").unwrap();
@@ -1652,6 +1925,23 @@ mod tests {
         assert_eq!(AppConfig::parse(&text).unwrap().ui, c.ui);
         let c = AppConfig::parse("[ui]\ncheck_updates = \"no\"").unwrap();
         assert!(c.ui.check_updates, "invalid value falls back");
+    }
+
+    #[test]
+    fn escape_marks_read_defaults_on() {
+        let c = AppConfig::parse("[ui]\nzoom = 1.0").unwrap();
+        assert!(c.ui.escape_marks_read);
+        let c = AppConfig::parse("[ui]\nescape_marks_read = false").unwrap();
+        assert!(!c.ui.escape_marks_read);
+    }
+
+    #[test]
+    fn broad_confirm_and_utc_offset_default_on() {
+        let c = AppConfig::parse("[ui]\nzoom = 1.0").unwrap();
+        assert!(c.ui.confirm_broad_mentions && c.ui.share_utc_offset);
+        let c = AppConfig::parse("[ui]\nconfirm_broad_mentions = false\nshare_utc_offset = false")
+            .unwrap();
+        assert!(!c.ui.confirm_broad_mentions && !c.ui.share_utc_offset);
     }
 
     #[test]

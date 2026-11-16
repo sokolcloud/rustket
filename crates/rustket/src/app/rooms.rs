@@ -18,15 +18,15 @@ use crate::workspace::sidebar;
 impl App {
     /// Tells every room view whether it is on screen: the window is
     /// focused, its server is active and the server view is shown (not a
-    /// page such as Settings or Administration, the contact center or a
-    /// dialog over it) and it is the server's active room. A room that
+    /// page such as Settings or Administration, a view in place of the room
+    /// area (`ServerState::room_area_taken`) or a dialog over it) and it is
+    /// the server's active room. A room that
     /// becomes readable catches up on its read mark (`RoomView::set_visible`).
     pub(super) fn sync_room_visibility(&mut self) -> Task<Message> {
         let shown = self.focused && matches!(self.screen, Screen::Server) && self.modals.is_empty();
         let mut tasks = Vec::new();
         for (sid, s) in self.servers.iter_mut() {
-            let server_shown =
-                shown && self.active.as_ref() == Some(sid) && s.omni.contact_center.is_none();
+            let server_shown = shown && self.active.as_ref() == Some(sid) && !s.room_area_taken();
             let epoch = s.generation;
             for (rid, rv) in s.rooms.iter_mut() {
                 let visible = server_shown && s.active_room.as_deref() == Some(rid.as_str());
@@ -105,6 +105,36 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// A push of the synced keys finished: each key takes its part.
+    pub(super) fn on_service_pushed(
+        &mut self,
+        sid: ServerId,
+        epoch: u64,
+        o: crate::workspace::service_sync::Outcome,
+    ) -> Task<Message> {
+        let Some(s) = self.servers.get_mut(&sid) else {
+            return Task::none();
+        };
+        if !s.is_current(epoch) {
+            return Task::none();
+        }
+        let parts = s.service_pushed(&o, Instant::now());
+        let mut tasks = Vec::new();
+        if let Some(m) = parts.flags {
+            tasks.push(self.on_flags(sid.clone(), epoch, m));
+        }
+        if let Some(m) = parts.mention_groups {
+            tasks.push(self.on_mention_groups(sid.clone(), epoch, m));
+        }
+        if let Some(m) = parts.later {
+            tasks.push(self.on_later_sync(sid.clone(), epoch, m));
+        }
+        if let Some(m) = parts.reminders {
+            tasks.push(self.on_reminder_sync(sid, epoch, m));
+        }
+        Task::batch(tasks)
+    }
+
     /// Applies a flag edit of the user: shown at once, stored on the server
     /// by the flag sync (`after_update` persists it until then).
     pub(super) fn set_flag(
@@ -152,6 +182,8 @@ impl App {
             }
             sidebar::Out::Status(m) => self.on_status_menu(sid, m),
             sidebar::Out::Omni(m) => self.on_omni_sidebar(sid, m),
+            sidebar::Out::Inbox(kind) => self.open_inbox(&sid, kind, false),
+            sidebar::Out::Later => self.open_later(&sid, None, false),
             sidebar::Out::Directory => self.navigate(component::Nav::Directory),
             sidebar::Out::Create => self.navigate(component::Nav::CreateRoom(
                 crate::dialogs::create_room::Kind::Channel,
@@ -233,6 +265,7 @@ impl App {
             return Task::none();
         }
         s.omni.close_contact_center();
+        s.close_main_view();
         if s.active_room.as_deref() == Some(rid) && s.rooms.contains_key(rid) {
             return Task::none();
         }
@@ -383,6 +416,11 @@ impl App {
                 | room::Effect::Compose(_)
                 | room::Effect::Omni(_) => Task::none(),
                 room::Effect::MarkUnread(mid) => self.mark_unread(sid, rid, mid),
+                room::Effect::AskReadAll => self.ask_read_all(),
+                room::Effect::Forward(refs) => self.navigate(component::Nav::Forward(refs)),
+                room::Effect::ManageMentionGroups => {
+                    self.navigate(component::Nav::MentionGroupSettings)
+                }
                 room::Effect::Call(a) => {
                     self.on_calls(crate::videoconf::Message::Action(sid.clone(), a))
                 }
@@ -399,6 +437,8 @@ impl App {
                 }
                 room::Effect::StarThread { rid, tmid, on } => self.star_thread(sid, rid, tmid, on),
                 room::Effect::SetFlag(edit) => self.set_flag(sid, edit),
+                room::Effect::Later(edit) => self.set_later(sid, edit),
+                room::Effect::Reminder(edit) => self.set_reminder(sid, edit),
                 room::Effect::E2e(req) => self.on_e2e_room(sid, req),
                 room::Effect::RecentEmoji(key) => {
                     self.config.push_recent_emoji(&key);
@@ -434,7 +474,12 @@ impl App {
         tmid: String,
         on: bool,
     ) -> Task<Message> {
-        self.star_thread_call(sid, rid, tmid, on, false)
+        let ts = self
+            .servers
+            .get(sid)
+            .and_then(|s| super::later::message_ts(&s.workspace, &rid, &tmid));
+        let later = self.later_starred(sid, &rid, &tmid, ts, on);
+        Task::batch([later, self.star_thread_call(sid, rid, tmid, on, false)])
     }
 
     /// [`Self::star_thread`]; `queued`: for "Move kept threads to
@@ -519,7 +564,7 @@ impl App {
 
     /// Hands a dropped file to the shown room (its open thread, else the
     /// room composer). Nothing happens while no room is shown (another
-    /// page, the contact center or a dialog is on screen).
+    /// page, a view in place of the room area or a dialog is on screen).
     pub(super) fn route_file_drop(&mut self, path: std::path::PathBuf) -> Task<Message> {
         if !matches!(self.screen, Screen::Server) || !self.modals.is_empty() {
             return Task::none();
@@ -530,7 +575,7 @@ impl App {
         let Some(s) = self.servers.get(&sid) else {
             return Task::none();
         };
-        if s.omni.contact_center.is_some() {
+        if s.room_area_taken() {
             return Task::none();
         }
         let Some(rid) = s.active_room.clone().filter(|r| s.rooms.contains_key(r)) else {

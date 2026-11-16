@@ -9,7 +9,8 @@ use rustket_core::{ServerId, Workspace};
 use rustket_ui::widget::BannerKind;
 
 use super::cache::{
-    cached_commands, commands_recently_failed, outbox_finish, outbox_forget, outbox_start,
+    cached_commands, cached_members, commands_recently_failed, outbox_finish, outbox_forget,
+    outbox_start,
 };
 use super::text;
 use super::{Composer, FetchFor, Message, PendingItem};
@@ -20,7 +21,23 @@ impl Composer {
     /// Enter: saves an edit, runs a slash command or sends the message.
     pub(super) fn send(&mut self, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
         let raw = self.content.text();
-        let text = text::close_code_block(raw.trim());
+        let typed = text::close_code_block(raw.trim());
+        // Mention groups expand before anything else looks at the text
+        // (length, `@all` confirmation, encryption); slash commands keep
+        // their parameters as typed. The editor keeps `@group`, and
+        // expanding an expanded text changes nothing, so a send run again
+        // (after a confirmation) gives the same text.
+        let command = self.editing.is_none()
+            && self.quotes.is_empty()
+            && text::parse_slash(&typed).is_some()
+            && !crate::e2e::outgoing::slash_commands_blocked(ctx.workspace, &self.rid);
+        let expanded = if command {
+            None
+        } else {
+            expand_groups(ctx.workspace, ctx.server_id, &self.rid, &typed)
+        };
+        let added = expanded.as_ref().is_some_and(|e| !e.added.is_empty());
+        let text = expanded.map_or_else(|| typed.clone(), |e| e.text);
         let max = ctx.workspace.settings().max_message_size();
         if let Some(ed) = self.editing.clone() {
             if text.is_empty() {
@@ -28,12 +45,14 @@ impl Composer {
                 self.confirm_delete = Some(ed.mid);
                 return Action::none();
             }
-            if text::too_long(&text, max) {
-                return Action::effect(too_long(max));
-            }
-            if text == ed.original.trim() {
+            // Unchanged as typed: no edit, even where a group would expand
+            // now (a message sent elsewhere, or before the group existed).
+            if typed == ed.original.trim() {
                 self.cancel_edit();
                 return Action::task(self.focus());
+            }
+            if text::too_long(&text, max) {
+                return Action::effect(too_long(max));
             }
             let rid = self.rid.clone();
             // Encrypted messages are edited encrypted (never with plaintext);
@@ -45,16 +64,29 @@ impl Composer {
                     None => None,
                 };
             self.cancel_edit();
-            return Action::task(Task::batch([
+            let task = Task::batch([
                 ctx.rest_task(
                     move |rest| crate::e2e::outgoing::update_message(rest, rid, ed.mid, text, enc),
                     |r| Message::Updated(r.map(Box::new)),
                 ),
                 self.focus(),
-            ]));
+            ]);
+            // The server notifies nobody of an edit.
+            let effects = added
+                .then(|| {
+                    Effect::Toast(
+                        BannerKind::Info,
+                        t!("mention_groups.edit_no_notify").into_owned(),
+                        String::new(),
+                    )
+                })
+                .into_iter()
+                .collect();
+            return Action { task, effects };
         }
-        // Quotes need some text, as in the web client.
-        if text.is_empty() {
+        // Quotes need some text, as in the web client; forwarded messages
+        // may go without a comment.
+        if text.is_empty() && !self.quotes.iter().any(|q| q.forwarded) {
             return Action::none();
         }
         // An encrypted room without its key: nothing goes out (§7.6).
@@ -99,10 +131,13 @@ impl Composer {
             self.commands_loading = true;
             return Action::task(load_commands(ctx, Some(text)));
         }
+        if !is_command && let Some(ask) = self.ask_broad(&text, ctx) {
+            return ask;
+        }
         let permalinks: Vec<String> = self
             .quotes
             .iter()
-            .map(|q| self.permalink(ctx.workspace, ctx.server.as_str(), &q.mid))
+            .map(|q| permalink(ctx.workspace, ctx.server.as_str(), &q.rid, &q.mid))
             .collect();
         let full = if permalinks.is_empty() {
             text.clone()
@@ -119,11 +154,19 @@ impl Composer {
         ctx.workspace.take_draft(&self.rid, self.tmid.as_deref());
         let stop = self.typing.on_send();
         let typing = self.typing_task(stop, ctx);
-        let action = if is_command {
+        let capped = added && encrypted_mentions_capped(ctx.workspace, &self.rid, &full);
+        let mut action = if is_command {
             self.dispatch_text(full, ctx)
         } else {
             Action::task(self.send_text(full, ctx))
         };
+        if capped {
+            action.effects.push(Effect::Toast(
+                BannerKind::Warning,
+                t!("mention_groups.e2e_cap", max = MAX_ENCRYPTED_MENTIONS).into_owned(),
+                String::new(),
+            ));
+        }
         Action {
             task: Task::batch([action.task, typing]),
             effects: action.effects,
@@ -204,19 +247,68 @@ impl Composer {
         }
         Action::none()
     }
+}
 
-    fn permalink(&self, ws: &Workspace, server: &str, mid: &str) -> String {
-        let site = ws
-            .settings()
-            .str("Site_Url")
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(server);
-        let (t, name) = ws
-            .room(&self.rid)
-            .map(|e| (e.room_type(), e.name().to_owned()))
-            .unwrap_or((RoomType::Channel, String::new()));
-        text::permalink(site, t, &name, &self.rid, mid)
+/// Mentions an encrypted message lists in plaintext (the rest notify nobody).
+const MAX_ENCRYPTED_MENTIONS: usize = rocketchat::e2e::MAX_MENTIONS;
+
+/// Whether `text` sent to `rid` goes out encrypted with more user mentions
+/// than its plaintext mention list holds.
+fn encrypted_mentions_capped(ws: &Workspace, rid: &str, text: &str) -> bool {
+    let crate::e2e::outgoing::Mode::Encrypt(_) = crate::e2e::outgoing::mode(ws, rid) else {
+        return false;
+    };
+    let settings = crate::e2e::outgoing::settings(ws);
+    settings.mentions
+        && rocketchat::e2e::e2e_user_mention_count(
+            text,
+            &settings.username_pattern,
+            &crate::e2e::outgoing::is_group(ws),
+        ) > MAX_ENCRYPTED_MENTIONS
+}
+
+/// `text` with the account's mention groups expanded for room `rid`
+/// ([`rustket_core::mention_groups::expand`]); `None` when it has none. A
+/// token that names a known user of the room (a member, the DM partner) is
+/// left alone.
+pub(crate) fn expand_groups(
+    ws: &Workspace,
+    server: &ServerId,
+    rid: &str,
+    text: &str,
+) -> Option<rustket_core::mention_groups::Expanded> {
+    let groups = ws.mention_groups();
+    if groups.is_empty() {
+        return None;
     }
+    let members = cached_members(server, rid);
+    let is_user = |name: &str| {
+        members
+            .as_ref()
+            .is_some_and(|list| list.iter().any(|m| m.username.as_deref() == Some(name)))
+            || ws
+                .room(rid)
+                .is_some_and(|e| e.room_type() == RoomType::Direct && e.name() == name)
+    };
+    let opts = rustket_core::mention_groups::ExpandOptions {
+        me: ws.username(),
+        is_user: &is_user,
+    };
+    rustket_core::mention_groups::expand(text, groups, &opts)
+}
+
+/// Permalink of message `mid` of room `rid` (quote links).
+fn permalink(ws: &Workspace, server: &str, rid: &str, mid: &str) -> String {
+    let site = ws
+        .settings()
+        .str("Site_Url")
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(server);
+    let (t, name) = ws
+        .room(rid)
+        .map(|e| (e.room_type(), e.name().to_owned()))
+        .unwrap_or((RoomType::Channel, String::new()));
+    text::permalink(site, t, &name, rid, mid)
 }
 
 pub(super) fn error_toast(body: String) -> Effect {

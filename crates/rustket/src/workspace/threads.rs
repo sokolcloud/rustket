@@ -32,7 +32,8 @@
 //! dropped threads (deleted, hidden) or when its set shrank since.
 //!
 //! Starred threads (Favorites) are tracked whatever the Threads mode is,
-//! while the thread index has pins on. Live updates and every parent copy
+//! while the thread index has pins on, and every starred message is for
+//! Later (`Workspace::scans_starred`; Later keeps its own scan records). Live updates and every parent copy
 //! keep their star state current; stars made while this device was away,
 //! or on threads it never indexed, are found by scanning each listed room's
 //! starred messages (`chat.getStarredMessages`, its own route and limit:
@@ -54,6 +55,7 @@ use rocketchat::models::{Message, Paginated, RoomType, Subscription};
 use rocketchat::{Error, RcDate};
 use rustket_core::cache::{CachedFollowed, CachedParentsSynced, CachedStarred, CachedThreads};
 use rustket_core::config::{SidebarSort, ThreadsMode, UiPrefs};
+use rustket_core::inbox::load::retry_delay;
 use rustket_core::room_list::{SectionKind, display_name, thread_unread};
 use rustket_core::sidebar_layout::{SectionId, section_sort, section_unread_first};
 use rustket_core::thread_index::{FOLLOWED_PER_ROOM, FollowedRoom, ShortCrawl, follows};
@@ -103,13 +105,6 @@ pub const STARRED_RESCAN_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 /// error page, an unreadable body) before it is given up for the session.
 const MAX_OTHER_FAILURES: u32 = 3;
 
-/// Wait after `failures` (1-based) transient failures of one request: 5 s,
-/// doubling, at most 5 min.
-fn retry_delay(failures: u32) -> Duration {
-    let secs = 5u64.saturating_mul(1 << failures.saturating_sub(1).min(6));
-    Duration::from_secs(secs.min(300))
-}
-
 /// What the Threads section shows at most, which bounds the loads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cap {
@@ -119,6 +114,9 @@ pub struct Cap {
     pub unread_first: bool,
     /// `ui.use_real_names` (room names order the by-name sort).
     pub real_names: Option<bool>,
+    /// Every unread thread is loaded, past the limit (the Activity view is
+    /// open); the Following crawl stays bounded.
+    pub unread_all: bool,
 }
 
 impl Default for Cap {
@@ -129,6 +127,7 @@ impl Default for Cap {
             sort: SidebarSort::Activity,
             unread_first: true,
             real_names: None,
+            unread_all: false,
         }
     }
 }
@@ -141,6 +140,7 @@ impl Cap {
             sort: section_sort(p, &id),
             unread_first: section_unread_first(p, &id),
             real_names: p.use_real_names,
+            unread_all: false,
         }
     }
 
@@ -163,6 +163,8 @@ struct Bound {
     limit: Option<usize>,
     sort: SidebarSort,
     unread_first: bool,
+    /// Unread rows always reach (`Cap::unread_all`).
+    unread_all: bool,
     /// Unread rows, loaded or not.
     unread: usize,
     /// Activity of loaded unread / read rows, ascending.
@@ -205,6 +207,7 @@ impl Bound {
             limit: Some(limit),
             sort: cap.sort,
             unread_first: cap.unread_first,
+            unread_all: cap.unread_all,
             followed_hint,
             ..Self::default()
         };
@@ -325,6 +328,9 @@ impl Bound {
         let Some(limit) = self.limit else {
             return true;
         };
+        if unread && self.unread_all {
+            return true;
+        }
         let before = match (self.unread_first, unread) {
             (true, true) => self.before(true, rid, lr),
             // Every unread row, loaded or not, comes first.
@@ -586,6 +592,9 @@ struct TickKey {
     sync: u64,
     connection: u64,
     me: u64,
+    /// Later's state (its starred-message scans).
+    later: u64,
+    scans_starred: bool,
     from_cache: bool,
 }
 
@@ -602,6 +611,8 @@ impl TickKey {
             sync: ws.revision(Dirty::SYNC),
             connection: ws.revision(Dirty::CONNECTION),
             me: ws.revision(Dirty::ME),
+            later: ws.revision(Dirty::LATER),
+            scans_starred: ws.scans_starred(),
             from_cache: ws.from_cache(),
         }
     }
@@ -690,10 +701,12 @@ pub fn plan(
     st: &SidebarThreads,
     now: Instant,
 ) -> Next {
-    let pins = ws.thread_index().pins_enabled();
-    if !ws.thread_index().indexing()
+    // Starred scans serve the starred threads in Favorites and Later
+    // (`Workspace::scans_starred`); the other loads need the thread index.
+    let stars = ws.scans_starred();
+    let threads = ws.thread_index().indexing() && ws.settings().threads_enabled();
+    if !(stars || threads)
         || st.in_flight.is_some()
-        || !ws.settings().threads_enabled()
         || ws.from_cache()
         || *ws.connection() != ConnectionState::Connected
         || ws.user_id().is_none()
@@ -701,9 +714,9 @@ pub fn plan(
         return Next::Idle;
     }
     let mut wake = None;
-    if let Some(p) = st.paused_until.filter(|p| *p > now) {
+    if let Some(p) = st.paused_until.filter(|p| threads && *p > now) {
         wake = Some(p);
-    } else {
+    } else if threads {
         let bound = Bound::new(ws, mode, cap);
         let page = cap.followed_page();
         let list = (mode != ThreadsMode::Off)
@@ -725,7 +738,7 @@ pub fn plan(
             wake = earliest(wake, at);
         }
     }
-    if pins {
+    if stars {
         if let Some(p) = st.starred_paused_until.filter(|p| *p > now) {
             wake = earliest(wake, p);
         } else if let Some(f) = st.starred_candidate(ws, now, &mut wake) {
@@ -889,11 +902,7 @@ impl SidebarThreads {
         match self.starred_passes.get(rid) {
             Some(p) if p.pages > 0 && p.pages % STARRED_PAGES_PER_TURN == 0 => Some(2),
             Some(_) => Some(0),
-            None if self.starred_due.contains(rid)
-                || ws.thread_index().starred_scan(rid).is_none() =>
-            {
-                Some(1)
-            }
+            None if self.starred_due.contains(rid) || ws.starred_scan(rid).is_none() => Some(1),
             None => None,
         }
     }
@@ -1157,14 +1166,14 @@ impl SidebarThreads {
         }
     }
 
-    /// Starred-scan bookkeeping: everything goes with pins off; scans under
+    /// Starred-scan bookkeeping: everything goes with scans off (neither
+    /// starred threads nor Later, `Workspace::scans_starred`); scans under
     /// way of rooms left are dropped; once the workspace is live, each scan
     /// not checked yet in this session (restored from the offline cache) is
     /// due when the room had messages since or it is older than
     /// [`STARRED_RESCAN_TTL`].
     fn observe_starred(&mut self, ws: &Workspace) {
-        let idx = ws.thread_index();
-        if !idx.pins_enabled() {
+        if !ws.scans_starred() {
             self.starred_due.clear();
             self.starred_passes.clear();
             self.starred_checked.clear();
@@ -1178,16 +1187,16 @@ impl SidebarThreads {
         }
         let now_ms = RcDate::now().timestamp_millis();
         let ttl_ms = STARRED_RESCAN_TTL.as_millis() as i64;
-        for (rid, scan) in idx.starred_scans() {
-            if self.starred_checked.contains(rid) {
+        for (rid, scan) in ws.starred_scans() {
+            if self.starred_checked.contains(&rid) {
                 continue;
             }
-            self.starred_checked.insert(rid.to_owned());
+            self.starred_checked.insert(rid.clone());
             let old = scan
                 .scanned_at
                 .is_none_or(|at| now_ms.saturating_sub(at.timestamp_millis()) > ttl_ms);
-            if old || ws.room(rid).and_then(room_lm) > scan.lm {
-                self.starred_due.insert(rid.to_owned());
+            if old || ws.room(&rid).and_then(room_lm) > scan.lm {
+                self.starred_due.insert(rid);
                 self.changed = true;
             }
         }
@@ -1215,7 +1224,7 @@ impl SidebarThreads {
         self.starred_passes.clear();
         let idx = ws.thread_index();
         for (e, s) in scanned_rooms(ws) {
-            if idx.starred_scan(&s.rid).is_some()
+            if ws.starred_scan(&s.rid).is_some()
                 && lm_before.get(&s.rid).is_some_and(|lm| *lm != room_lm(e))
             {
                 self.starred_due.insert(s.rid.clone());
@@ -1357,6 +1366,26 @@ impl SidebarThreads {
     /// Following crawl progress as of the last `tick`.
     pub fn progress(&self) -> Option<(usize, usize)> {
         self.progress
+    }
+
+    /// Starred-message scans while rooms are still to be scanned: (rooms
+    /// done, rooms in all). `None` when every room is scanned or scans are
+    /// off (the Later view's progress line).
+    pub fn starred_progress(&self, ws: &Workspace) -> Option<(usize, usize)> {
+        if !ws.scans_starred() || *ws.connection() != ConnectionState::Connected {
+            return None;
+        }
+        let (mut done, mut total) = (0, 0);
+        for (_, s) in scanned_rooms(ws) {
+            if self.starred_failed.contains(&s.rid) {
+                continue;
+            }
+            total += 1;
+            if self.starred_tier(ws, &s.rid).is_none() {
+                done += 1;
+            }
+        }
+        (done < total).then_some((done, total))
     }
 
     /// Sets the pacing timer unless one fires earlier.
@@ -1673,9 +1702,9 @@ impl SidebarThreads {
         self.changed = true;
         self.starred_failed.clear();
         self.backoff.retain(|k, _| !matches!(k, Key::Starred(_)));
-        for (rid, _) in ws.thread_index().starred_scans() {
-            if !self.starred_passes.contains_key(rid) {
-                self.starred_due.insert(rid.to_owned());
+        for (rid, _) in ws.starred_scans() {
+            if !self.starred_passes.contains_key(&rid) {
+                self.starred_due.insert(rid);
             }
         }
     }
@@ -1851,7 +1880,7 @@ pub fn cached_threads(ws: &Workspace, st: &SidebarThreads) -> CachedThreads {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Class {
+pub(crate) enum Class {
     RateLimited(Duration),
     /// Network, timeout, 5xx: retried with back-off.
     Transient,
@@ -1863,7 +1892,7 @@ enum Class {
     Other,
 }
 
-fn classify(f: &Failure) -> Class {
+pub(crate) fn classify(f: &Failure) -> Class {
     match f.error() {
         Error::RateLimited { retry_after, .. } => Class::RateLimited(
             retry_after
@@ -2287,6 +2316,23 @@ mod tests {
         unread_done(&mut fx, 12_100, "c", Vec::new());
         // Not in the list: fetched singly, within the limit too.
         assert_eq!(fx.start(14_000), Next::Fetch(get("c", "c1")));
+    }
+
+    /// The Activity view needs every unread thread: past the limit.
+    #[test]
+    fn unread_all_loads_past_the_limit() {
+        let mut fx = Fx::new(ThreadsMode::Unread);
+        fx.cap = Cap {
+            unread_all: true,
+            ..capped(1, SidebarSort::Activity)
+        };
+        add(&mut fx.ws, "a", Some(300), &["a1"]);
+        add(&mut fx.ws, "b", Some(200), &["b1"]);
+        fx.plan(0);
+        assert_eq!(fx.start(1000), Next::Fetch(unread("a", 0)));
+        unread_done(&mut fx, 1100, "a", vec![parent("a1", "a", 290)]);
+        // One row fills the limit; b1 still loads.
+        assert_eq!(fx.start(3100), Next::Fetch(unread("b", 0)));
     }
 
     #[test]
@@ -3801,6 +3847,24 @@ mod tests {
         assert_eq!(fx.plan(50_000), Next::Idle);
     }
 
+    /// Later keeps scanning with the starred threads off; turned on again,
+    /// every room is scanned for them once more (Later's records do not
+    /// hide that the thread index has none).
+    #[test]
+    fn starred_threads_turned_on_again_rescan_while_later_tracks() {
+        let mut fx = pinned(ThreadsMode::Off);
+        fx.ws.set_later_tracking(true);
+        add_lm(&mut fx.ws, "a", 100);
+        assert_eq!(fx.start(0), Next::Fetch(scan("a", 0, Some(100))));
+        scan_done(&mut fx, 100, "a", 0, starred_page(Vec::new(), 0, 0, 0));
+        assert_eq!(fx.plan(20_000), Next::Idle);
+        fx.ws.set_starred_threads(false);
+        assert!(fx.ws.scans_starred());
+        assert_eq!(fx.plan(30_000), Next::Idle, "Later's scan stands");
+        fx.ws.set_starred_threads(true);
+        assert_eq!(fx.start(40_000), Next::Fetch(scan("a", 0, Some(100))));
+    }
+
     #[test]
     fn starred_scans_page_and_let_other_rooms_go_in_between() {
         let mut fx = pinned(ThreadsMode::Off);
@@ -3964,6 +4028,7 @@ mod tests {
             sort: SidebarSort::Activity,
             unread_first: false,
             real_names: None,
+            unread_all: false,
         };
         add(&mut fx.ws, "k", Some(500), &[]);
         add(&mut fx.ws, "u", Some(100), &["u1"]);

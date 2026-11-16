@@ -1,0 +1,62 @@
+{
+    "subscription": {
+        "_id": "6af9c3e4d5de71deb45c4432",
+        "open": true,
+        "alert": false,
+        "unread": 0,
+        "userMentions": 0,
+        "groupMentions": 0,
+        "ts": "2026-11-15T14:38:28.441Z",
+        "rid": "6af9c3e4d5de71deb45c4431",
+        "name": "rk-mg-probe-1794753508",
+        "fname": "rk-mg-probe-1794753508",
+        "customFields": {
+            "rustketService": {
+                "v": 1,
+                "owner": "Er3h8XYKahaopbSA7"
+            },
+            "rustketFlags": {
+                "v": 1,
+                "rooms": {
+                    "GENERAL": {
+                        "c": "red",
+                        "t": 1794464953000,
+                        "d": "dev-a"
+                    }
+                },
+                "threads": {},
+                "names": {}
+            },
+            "rustketMentionGroups": {
+                "v": 1,
+                "groups": {
+                    "Kq3xY7pLmN2aB9cDe": {
+                        "n": "backend",
+                        "u": [
+                            "bob",
+                            "carol"
+                        ],
+                        "t": 1794464953100,
+                        "d": "dev-a"
+                    },
+                    "Zz9yX8wV7uT6sR5qP": {
+                        "t": 1794464953200,
+                        "d": "dev-b"
+                    }
+                }
+            }
+        },
+        "t": "p",
+        "u": {
+            "_id": "Er3h8XYKahaopbSA7",
+            "username": "alice",
+            "name": "Alice"
+        },
+        "ls": "2026-11-15T14:38:28.441Z",
+        "roles": [
+            "owner"
+        ],
+        "_updatedAt": "2026-11-15T14:38:28.450Z"
+    },
+    "success": true
+}

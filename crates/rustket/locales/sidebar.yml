@@ -449,3 +449,9 @@ sidebar.omnichannel:
   es: "Omnichannel"
   th: "Omnichannel"
   zh: "全渠道"
+sidebar.menu_catch_up:
+  en: "Catch up"
+  ru: "Наверстать"
+  es: "Ponerse al día"
+  th: "ไล่อ่าน"
+  zh: "逐个查看"

@@ -102,7 +102,13 @@ secret_backend, … }` in `view`.
 Wiring (already done in `app/components.rs`, `app/view.rs`): rail gear →
 settings; sidebar header avatar → status menu (`workspace/status_menu.rs`,
 which renders the trigger and its popover; its "My account" entry → account);
-sidebar header buttons → directory and create room; Ctrl+K → quick switcher.
+sidebar header buttons → directory and create room. App-wide chords (Ctrl+K
+quick switcher, Ctrl+/ cheat sheet, Ctrl+, settings, Shift+Esc mark all read,
+Ctrl+Shift+\ react to the last message) live in one table, `src/keymap.rs`,
+handled in `app/keys.rs`; the composer swallows them and keeps its
+formatting chords from the same table. Ctrl+K and Ctrl+, do nothing while a
+dialog or overlay is shown; Shift+Esc and Ctrl+Shift+\ only count when no
+widget took the key (a focused composer passes them on itself).
 
 ### Desktop (`src/desktop/`)
 
@@ -268,7 +274,9 @@ something; `RoomView` routes it to `Composer::intent(intent, ctx)`:
 `React(mid)` (emoji picker for a reaction), `ReplyInThread(tmid)` (also opens
 `Kind::Thread(tmid)`), `Retry(mid)` / `Discard(mid)` (failed sends: the
 single outbox path; the rows' `interact` actions only emit these, the composer
-has no failed list of its own). The thread view routes its rows' intents to
+has no failed list of its own), `Forward(refs)` (quotes of messages of any
+room, sent as `[ ](permalink)` lines, a comment optional). The app reaches a
+room's composer with `RoomView::compose(intent, ctx)` (`App::room_compose`). The thread view routes its rows' intents to
 its own composer, which only takes replies of its thread; the room composer
 takes any pending message of the room (a thread reply shown in the room while
 its thread is closed included).
@@ -289,7 +297,9 @@ its thread is closed included).
   unread mark made elsewhere is not undone. Own and pending messages never
   count. It runs only while the room is readable (`RoomView::readable`):
   the app sets `RoomView::set_visible` after every update (window focused,
-  server active, `Screen::Server`, no contact center or app dialog, the
+  server active, `Screen::Server`, no view in place of the room area
+  (`ServerState::room_area_taken`: a `MainView` or the contact center) or
+  app dialog, the
   server's active room); the timeline must be at the bottom, not under the
   E2E cover or an expanded thread. Opening an unread room marks it once
   it is readable; becoming readable again catches up; a failed mark is
@@ -359,9 +369,18 @@ Message lists share more than the body renderer (`room/timeline/`):
   the "more" menu, retry/discard of failed sends (`ComposeIntent::Retry` /
   `Discard`), mark unread (`Effect::MarkUnread`), start a discussion
   (`Effect::StartDiscussion`, not in the thread view, as in the web's
-  `threads` context), delete/report dialogs; for `Source::Room` or
-  `Source::Thread(tmid)`. `Effect::Compose` requests are routed by the owner
-  to its composer.
+  `threads` context), forward (`Effect::Forward(refs)`: the app opens the
+  quick switcher in forward mode, `Nav::Forward`, and the pick becomes
+  `component::Effect::ForwardTo`), delete/report/who-reacted dialogs
+  (overlay keys 1, 2 and 5; 3 is the lightbox, 4 is reserved for the
+  reminder dialog); for `Source::Room` or `Source::Thread(tmid)`.
+  `Effect::Compose` requests are routed by the owner to its composer. Menu
+  entries are grouped (respond, share, organise, destructive: `Act::group`)
+  with separators between the groups.
+- `select`: selection mode of the room timeline (`Act::Select`,
+  `ItemMsg::Pick`, at most 20): checkboxes instead of the hover toolbar, a
+  bar with Copy links / Forward / Cancel; Escape clears it (step 2 of the
+  server view's Escape chain, `app/keys.rs`).
 - `list::{plan, row, Common}`, `row::{Env, RowFlags}`: grouping, day and
   unread separators and the `lazy` rows, used by the timeline and the thread.
 - `list::Follow`: built window, bottom following and the frozen view while
@@ -468,3 +487,49 @@ while the server is unreachable, seeds opened timelines without a first page
   interrupted uploads reported on the next start), `cache::view::strip`
   replaces the connection strip while cached data is shown (one strip with
   Retry).
+
+### Inbox views (`src/inbox/`, `rustket_core::inbox`, glue `src/app/inbox.rs`)
+
+All unreads, Catch up and Activity replace the room area like the contact
+center: `ServerState::main_view = Some(MainView::Inbox(InboxScreen))` (one
+slot for every such view; opening one closes the others and the contact
+center, `App::open_room` closes it, Esc closes it first, and
+`room_area_taken()` keeps the covered room from auto-reading, taking dropped
+files or hiding its notifications). `InboxScreen::update(Msg, ws, state,
+include_muted, online) -> Vec<Out>` turns input into requests (`Out::{Close,
+OpenRoom, Reveal, OpenThread, Compose, Read, SetIncludeMuted, Effects}`); the
+glue runs them (`Reveal`: `RoomView::show` with the local copy, no fetch;
+`Compose`: `RoomView::compose`; `Read`: the read queue with `Origin::Inbox`,
+All unreads without threads; `Effects` of message bodies: room-local ones open
+the room). Feeds (unread messages per room, thread mentions) live in the
+workspace (`Workspace::feeds`, `Dirty::FEEDS`), so live messages, deletions,
+hidden messages, `ls` moves, E2E decryption and renames
+(`rewrite_messages` / `rooms_with_timelines`) reach them; nothing is
+persisted. `InboxState` (skipped rooms, the loader's pacing) lives on
+`ServerState` for the session; `App::tick_inbox` (from `after_update`) plans
+one fetch at a time (`rustket_core::inbox::load::plan`) while a view is open.
+While Activity is open the sidebar Threads loader also runs with the section
+off and past its row limit (`Cap::unread_all`).
+
+### Later and reminders (`src/later/`, `rustket_core::{later, reminders}`, glue `src/app/later.rs`, `src/app/reminders.rs`)
+
+Later is the second kind of main view (`MainView::Later(LaterView)`, the
+same slot, Esc and `room_area_taken()` rules as the inbox views).
+`LaterView::update(Msg, ctx) -> Vec<Out>` (`Out::{Close, Open, Later,
+Reminder, Unstar, Refresh, Effects}`); rows are `Workspace::later_rows(tab)`
+over the Later index (`Workspace::later_index`: starred messages from the
+paced `chat.getStarredMessages` scans of `workspace::threads`, which run
+whenever `Workspace::scans_starred()`, plus live updates and reminder
+copies; it takes part in `rewrite_messages` and is cached as `later_msg` /
+`later_scan` docs). Status, due dates (`rustketLater`) and reminders
+(`rustketReminders`) are two keys of the generic service sync
+(`workspace::later_sync`). `Open` reveals with the local copy
+(`RoomView::show`), else `open_room_at`. The shared time picker is
+`later::when` (also the message menu's reminder dialog, overlay key 4).
+`app::reminders` arms one timer (at most a minute, so a suspend is noticed),
+fires due reminders through `later::notify::ReminderNotifier` (foreign
+notification signals are routed there by id before the calls'), sums up
+missed ones once per server and closes notifications of reminders changed
+elsewhere. Unstarring ("Remove done items") goes through the paced star
+queue (`app::star_kept`, shared with "Move kept threads to Favorites").
+

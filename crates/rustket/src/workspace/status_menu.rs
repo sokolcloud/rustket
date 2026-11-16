@@ -46,6 +46,8 @@ pub enum Message {
     StatusSet(Option<UserStatus>, Option<String>, Res<()>),
     Account,
     Settings,
+    /// The keyboard shortcuts cheat sheet.
+    Shortcuts,
     /// Administration (shown with any admin permission).
     Admin,
     Logout,
@@ -266,6 +268,10 @@ impl StatusMenu {
                 self.open = false;
                 Action::effect(Effect::Navigate(Nav::Settings))
             }
+            Message::Shortcuts => {
+                self.open = false;
+                Action::effect(Effect::Navigate(Nav::Shortcuts))
+            }
             Message::Admin => {
                 self.open = false;
                 Action::effect(Effect::Navigate(Nav::Admin))
@@ -480,6 +486,11 @@ impl StatusMenu {
         rows.item(
             labelled(Icon::Settings, t!("status_menu.settings").into_owned()),
             Some(Message::Settings),
+            false,
+        );
+        rows.item(
+            labelled(Icon::Keyboard, t!("shortcuts.title").into_owned()),
+            Some(Message::Shortcuts),
             false,
         );
         if rustket_core::admin::can_view_admin(ws) {

@@ -671,6 +671,27 @@ fn thread_index_is_marked_only_on_real_changes() {
     assert!(Dirty::ALL.contains(Dirty::THREAD_INDEX));
 }
 
+#[test]
+fn reserved_dirty_bits_have_their_own_revisions() {
+    let all = [
+        Dirty::FLAGS,
+        Dirty::LATER,
+        Dirty::REMINDERS,
+        Dirty::MENTION_GROUPS,
+        Dirty::FEEDS,
+    ];
+    let mut ws = Workspace::new();
+    for (i, d) in all.into_iter().enumerate() {
+        assert!(Dirty::ALL.contains(d));
+        assert!(all[..i].iter().all(|o| !o.intersects(d)), "{i}");
+        let rev = ws.revision(d);
+        ws.mark(d);
+        assert_eq!(ws.revision(d), rev + 1);
+        assert!(ws.take_changes().areas.contains(d));
+    }
+    assert_eq!(Dirty::ALL.bits().count_ones() as usize, Dirty::BITS);
+}
+
 fn starred(mut m: Message, by: &[&str]) -> Message {
     m.starred = Some(
         by.iter()
@@ -900,4 +921,300 @@ fn unbound_service_rooms_hold_no_flags() {
     ws.apply_me(me("u1", "alice"));
     assert!(ws.service_rooms().is_empty());
     assert_eq!(ws.room_flag("A"), None);
+}
+
+/// Mention groups come from the bound service room, with this device's
+/// pending edits on top.
+#[test]
+fn mention_groups_come_from_the_service_room_and_the_overlay() {
+    use crate::mention_groups::{MentionGroupBlob, MentionGroupEdit};
+    use rocketchat::models::{MENTION_GROUPS_KEY, ServiceFields, UNBOUND_CUTOFF_MS};
+    use serde_json::json;
+
+    let mut fields = ServiceFields::new("u1");
+    fields.set(
+        MENTION_GROUPS_KEY,
+        json!({ "v": 1, "groups": {
+            "g1": { "n": "backend", "u": ["bob", "alice"], "t": 5, "d": "a" }
+        } }),
+    );
+    let mut svc = sub("SVC", "rustket-sync-u1", RoomType::Private);
+    svc.u.id = "u1".into();
+    svc.open = false;
+    svc.roles = Some(vec!["owner".into()]);
+    svc.custom_fields = Some(fields.to_custom_fields());
+    let mut svc_room = crate::test_util::service_room(&svc, "u1", 1);
+    svc_room.ts = Some(ts(UNBOUND_CUTOFF_MS + 1));
+    let mut bound = me("u1", "alice");
+    bound.settings = serde_json::from_value(json!({
+        "preferences": { "dontAskAgainList": [
+            { "action": "rustket-service-room:SVC", "label": "Rustket sync" },
+        ] },
+    }))
+    .unwrap();
+
+    let mut ws = Workspace::new();
+    ws.apply_me(me("u1", "alice"));
+    ws.apply_subscription(Change::Inserted, svc);
+    ws.apply_room(Change::Inserted, svc_room);
+    assert!(ws.mention_groups().is_empty(), "not bound: not trusted");
+    let rev = ws.revision(Dirty::MENTION_GROUPS);
+    ws.apply_me(bound);
+    assert!(ws.revision(Dirty::MENTION_GROUPS) > rev);
+    assert_eq!(
+        ws.mention_groups().get("backend").unwrap().members,
+        ["alice", "bob"]
+    );
+
+    let mut overlay = MentionGroupBlob::default();
+    let edit = MentionGroupEdit::Upsert {
+        id: "g2".into(),
+        name: "qa".into(),
+        members: vec!["carol".into()],
+    };
+    overlay
+        .edit(ws.mention_group_blob(), &edit, 20, "dev")
+        .unwrap();
+    ws.set_mention_group_overlay(overlay);
+    assert_eq!(ws.mention_groups().all().len(), 2);
+    assert_eq!(ws.mention_group_overlay().groups.len(), 1);
+}
+
+/// Later and reminders come from the bound service room (one pass with
+/// the other keys), with this device's pending edits on top.
+#[test]
+fn later_and_reminders_come_from_the_service_room() {
+    use crate::later::LaterStatus;
+    use crate::reminders::ReminderEdit;
+    use rocketchat::models::{LATER_KEY, REMINDERS_KEY, ServiceFields, UNBOUND_CUTOFF_MS};
+    use serde_json::json;
+
+    let far = chrono::Utc::now().timestamp_millis() + 3_600_000;
+    let mut fields = ServiceFields::new("u1");
+    fields.set(
+        LATER_KEY,
+        json!({ "v": 1, "seeded": {"t": 1000, "d": "a"}, "status": {
+            "m1": { "r": "A", "s": "done", "t": 5, "d": "a" }
+        }, "due": {} }),
+    );
+    fields.set(
+        REMINDERS_KEY,
+        json!({ "v": 1, "items": { "m2": { "r": "A", "at": far, "t": 5, "d": "a" } } }),
+    );
+    let mut svc = sub("SVC", "rustket-sync-u1", RoomType::Private);
+    svc.u.id = "u1".into();
+    svc.open = false;
+    svc.roles = Some(vec!["owner".into()]);
+    svc.custom_fields = Some(fields.to_custom_fields());
+    let mut svc_room = crate::test_util::service_room(&svc, "u1", 1);
+    svc_room.ts = Some(ts(UNBOUND_CUTOFF_MS + 1));
+    let mut bound = me("u1", "alice");
+    bound.settings = serde_json::from_value(json!({
+        "preferences": { "dontAskAgainList": [
+            { "action": "rustket-service-room:SVC", "label": "Rustket sync" },
+        ] },
+    }))
+    .unwrap();
+
+    let mut ws = Workspace::new();
+    ws.apply_me(me("u1", "alice"));
+    ws.apply_subscription(Change::Inserted, sub("A", "a", RoomType::Channel));
+    ws.apply_subscription(Change::Inserted, svc);
+    ws.apply_room(Change::Inserted, svc_room);
+    assert!(ws.reminders().is_empty(), "not bound: not trusted");
+    let (later_rev, rem_rev) = (ws.revision(Dirty::LATER), ws.revision(Dirty::REMINDERS));
+    ws.apply_me(bound);
+    assert!(ws.revision(Dirty::LATER) > later_rev);
+    assert!(ws.revision(Dirty::REMINDERS) > rem_rev);
+    assert_eq!(ws.later().status_of("m1", None), LaterStatus::Done);
+    assert_eq!(
+        ws.later().status_of("old", Some(999)),
+        LaterStatus::Archived
+    );
+    assert_eq!(ws.reminders().get("m2").unwrap().at_ms, far);
+    // Nothing is due yet; an overlay edit shows at once.
+    assert_eq!(ws.overdue_reminders(far - 1), 0);
+    assert_eq!(ws.overdue_reminders(far), 1);
+    let mut overlay = ws.reminder_overlay().clone();
+    overlay
+        .edit(
+            ws.reminder_blob(),
+            &ReminderEdit::Clear { mid: "m2".into() },
+            far,
+            "dev",
+        )
+        .unwrap();
+    ws.set_reminder_overlay(overlay);
+    assert!(ws.reminders().is_empty());
+}
+
+/// Later and the starred threads each need their own scan of a room: with
+/// both on, a room one of them has not scanned (the starred threads turned
+/// off and on again) counts as never scanned.
+#[test]
+fn starred_scans_combine_later_and_the_starred_threads() {
+    use crate::thread_index::StarredScan;
+    let mut ws = Workspace::new();
+    ws.apply_me(me("u1", "alice"));
+    for r in ["A", "B"] {
+        ws.apply_subscription(Change::Inserted, sub(r, r, RoomType::Channel));
+        ws.apply_room(Change::Inserted, room(r, r, RoomType::Channel));
+    }
+    ws.set_starred_threads(true);
+    ws.set_later_tracking(true);
+    let scan = |ws: &mut Workspace| {
+        let started = Instant::now();
+        ws.apply_starred_page("A", Vec::new(), started);
+        ws.finish_starred_scan("A", Vec::<String>::new(), started, None);
+    };
+    scan(&mut ws);
+    assert!(ws.starred_scan("A").is_some());
+    assert!(ws.starred_scan("B").is_none());
+    ws.set_starred_threads(false);
+    assert!(ws.starred_scan("A").is_some(), "Later's alone");
+    ws.set_starred_threads(true);
+    assert!(
+        ws.starred_scan("A").is_none(),
+        "none of the starred threads"
+    );
+    assert_eq!(
+        ws.starred_scans(),
+        vec![("A".to_owned(), StarredScan::default())]
+    );
+    // One scan serves both again.
+    scan(&mut ws);
+    assert!(ws.starred_scan("A").is_some());
+    ws.set_later_tracking(false);
+    assert!(ws.starred_scan("A").is_some(), "the starred threads' alone");
+}
+
+/// Later entries of messages a newer complete scan did not find starred
+/// are orphans (unstarred elsewhere); entries of starred messages and of
+/// rooms not scanned since are not.
+#[test]
+fn later_orphans_need_a_newer_scan_without_the_star() {
+    use crate::later::{LaterBlob, LaterEdit, LaterStatus};
+    let mut ws = Workspace::new();
+    ws.apply_me(me("u1", "alice"));
+    for r in ["A", "B"] {
+        ws.apply_subscription(Change::Inserted, sub(r, r, RoomType::Channel));
+        ws.apply_room(Change::Inserted, room(r, r, RoomType::Channel));
+    }
+    ws.set_later_tracking(true);
+    let mut starred = msg("s1", "A", 1, "u2");
+    starred.starred = Some(vec![rocketchat::models::IdRef { id: "u1".into() }]);
+    let started = Instant::now();
+    ws.apply_starred_page("A", vec![starred], started);
+    ws.finish_starred_scan("A", Vec::<String>::new(), started, None);
+    let mut overlay = LaterBlob::default();
+    let entry = |rid: &str, mid: &str| LaterEdit::Status {
+        rid: rid.into(),
+        mid: mid.into(),
+        ts_ms: None,
+        status: LaterStatus::Done,
+    };
+    // Written long before the scan.
+    for (rid, mid) in [("A", "s1"), ("A", "x"), ("B", "y")] {
+        overlay
+            .edit(&LaterBlob::default(), &entry(rid, mid), 1000, "dev")
+            .unwrap();
+    }
+    let due = LaterEdit::Due {
+        rid: "A".into(),
+        mid: "z".into(),
+        at_ms: Some(5000),
+    };
+    overlay
+        .edit(&LaterBlob::default(), &due, 1000, "dev")
+        .unwrap();
+    // Written after it: the scan may have missed a fresh star.
+    let fresh = chrono::Utc::now().timestamp_millis() + 60_000;
+    overlay
+        .edit(&LaterBlob::default(), &entry("A", "w"), fresh, "dev")
+        .unwrap();
+    ws.set_later_overlay(overlay);
+    assert_eq!(ws.later_orphans(), ["x", "z"]);
+    ws.set_later_tracking(false);
+    assert!(ws.later_orphans().is_empty());
+}
+
+/// Reminders of rooms the user is not in stay synced but are not active:
+/// they neither fire nor count as overdue.
+#[test]
+fn reminders_of_rooms_left_are_not_active() {
+    use crate::reminders::{ReminderBlob, ReminderEdit};
+    let mut ws = Workspace::new();
+    ws.apply_me(me("u1", "alice"));
+    ws.apply_subscription(Change::Inserted, sub("A", "a", RoomType::Channel));
+    ws.apply_room(Change::Inserted, room("A", "a", RoomType::Channel));
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut overlay = ReminderBlob::default();
+    for (mid, rid) in [("m1", "A"), ("m2", "GONE")] {
+        let set = ReminderEdit::Set {
+            rid: rid.into(),
+            tmid: None,
+            mid: mid.into(),
+            at_ms: now + 1000,
+        };
+        overlay
+            .edit(&ReminderBlob::default(), &set, now, "dev")
+            .unwrap();
+    }
+    ws.set_reminder_overlay(overlay);
+    assert_eq!(ws.reminders().len(), 2);
+    let active = ws.active_reminders();
+    assert!(active.get("m1").is_some() && active.get("m2").is_none());
+    assert_eq!(ws.overdue_reminders(now + 1000), 1);
+}
+
+/// Starred-message scans feed Later with the starred threads off; live
+/// updates follow stars, deletions and rooms left; Later's index takes part
+/// in message rewrites (E2E, renames).
+#[test]
+fn later_index_follows_scans_and_live_updates() {
+    let mut ws = Workspace::new();
+    ws.apply_me(me("u1", "alice"));
+    ws.apply_subscription(Change::Inserted, sub("A", "a", RoomType::Channel));
+    ws.apply_room(Change::Inserted, room("A", "a", RoomType::Channel));
+    ws.set_starred_threads(false);
+    assert!(!ws.scans_starred());
+    ws.set_later_tracking(true);
+    assert!(ws.scans_starred() && ws.later_tracking());
+    let star = |id: &str, t: i64, on: bool| {
+        let mut m = msg(id, "A", t, "u2");
+        m.starred = on.then(|| vec![rocketchat::models::IdRef { id: "u1".into() }]);
+        m
+    };
+    let started = Instant::now();
+    ws.apply_starred_page(
+        "A",
+        vec![star("s1", 1, true), star("s2", 2, false)],
+        started,
+    );
+    ws.finish_starred_scan("A", Vec::<String>::new(), started, None);
+    assert!(ws.later_index().is_starred("s1"));
+    assert!(!ws.later_index().is_starred("s2"));
+    assert!(ws.starred_scan("A").is_some(), "Later's scan");
+    assert_eq!(
+        ws.later_rows(crate::workspace::LaterTab::InProgress).len(),
+        1
+    );
+    // Live: a new star, an unstar, a deletion.
+    ws.apply_message(star("s3", 3, true));
+    ws.apply_message(star("s1", 1, false));
+    assert!(ws.later_index().is_starred("s3") && !ws.later_index().is_starred("s1"));
+    assert!(ws.rooms_with_timelines().contains("A"));
+    assert!(ws.rewrite_messages("A", &mut |m| {
+        m.msg = "renamed".into();
+        true
+    }));
+    assert_eq!(ws.later_message("s3").unwrap().msg, "renamed");
+    ws.apply_message_deleted("A", "s3");
+    assert!(ws.later_message("s3").is_none());
+    ws.apply_message(star("s4", 4, true));
+    ws.apply_subscription(Change::Removed, sub("A", "a", RoomType::Channel));
+    assert!(ws.later_message("s4").is_none());
+    // Tracking off forgets everything.
+    ws.set_later_tracking(false);
+    assert!(ws.later_index().starred().next().is_none());
 }

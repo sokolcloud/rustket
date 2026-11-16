@@ -870,6 +870,26 @@ impl Session {
         self.ddp.call(method, params).await.map_err(map_call_error)
     }
 
+    /// DDP `readMessages`: marks room `rid` read like `subscriptions.read`
+    /// (`read_threads`: its unread threads too), but rate limited per
+    /// connection and method (10 / 10 s by default) instead of per IP and
+    /// route (REST: 10 / 60 s).
+    pub async fn read_messages(&self, rid: &str, read_threads: bool) -> Result<()> {
+        self.call(
+            "readMessages",
+            vec![Value::from(rid), Value::from(read_threads)],
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// DDP `readThreads`: marks thread `tmid` read (REST `chat.readThread`).
+    pub async fn read_thread_method(&self, tmid: &str) -> Result<()> {
+        self.call("readThreads", vec![Value::from(tmid)])
+            .await
+            .map(|_| ())
+    }
+
     pub fn connection_state(&self) -> ConnectionState {
         if self.core.is_terminated() {
             return ConnectionState::Closed;

@@ -24,6 +24,17 @@ impl RestClient {
         field(v, "user")
     }
 
+    /// Publishes the current user's UTC offset in hours (`users.setPreferences`
+    /// `{data:{utcOffset}}`; the server stores it on the user, where
+    /// `users.info` returns it as `utcOffset`).
+    pub async fn set_utc_offset(&self, hours: f64) -> Result<()> {
+        self.post_ok(
+            "users.setPreferences",
+            &json!({ "data": { "utcOffset": hours } }),
+        )
+        .await
+    }
+
     /// Sets the current user's status and optional custom status text.
     pub async fn users_set_status(&self, status: UserStatus, message: Option<&str>) -> Result<()> {
         let mut body = json!({ "status": status.as_str() });

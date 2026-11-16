@@ -1,4 +1,5 @@
-//! General tab: language, window and startup, `rocketchat://` links.
+//! General tab: language, window and startup, keyboard, messages,
+//! `rocketchat://` links.
 
 use iced::widget::{column, text};
 use iced::{Element, Length};
@@ -94,12 +95,58 @@ pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a,
         )
     };
 
+    let keyboard = section(
+        t!("settings.keyboard").into_owned(),
+        vec![
+            switch(
+                t!("settings.escape_marks_read").into_owned(),
+                Some(t!("settings.escape_marks_read_help").into_owned()),
+                ui.escape_marks_read,
+                Some(Message::SetEscapeMarksRead),
+            ),
+            action_row(
+                t!("shortcuts.title").into_owned(),
+                caption(
+                    t!(
+                        "settings.shortcuts_help",
+                        keys = crate::keymap::display(&[
+                            crate::keymap::Token::Cmd,
+                            crate::keymap::Token::Char('/'),
+                        ])
+                    )
+                    .into_owned(),
+                )
+                .into(),
+                t!("settings.shortcuts_show").into_owned(),
+                Some(Message::ShowShortcuts),
+            ),
+        ],
+    );
+
+    let messages = section(
+        t!("settings.messages").into_owned(),
+        vec![switch(
+            t!("settings.confirm_broad_mentions").into_owned(),
+            Some(
+                t!(
+                    "settings.confirm_broad_mentions_help",
+                    count = crate::room::composer::broad::MIN_MEMBERS
+                )
+                .into_owned(),
+            ),
+            ui.confirm_broad_mentions,
+            Some(Message::SetConfirmBroadMentions),
+        )],
+    );
+
     vec![
         section(
             t!("settings.language").into_owned(),
             vec![language_picker(ui, v.locales)],
         ),
         behaviour,
+        keyboard,
+        messages,
         section(t!("settings.integration").into_owned(), vec![links]),
     ]
 }

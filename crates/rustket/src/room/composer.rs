@@ -6,6 +6,7 @@
 //! Strings: `locales/room_composer.yml` (`room_composer.*`).
 
 pub mod autocomplete;
+pub(crate) mod broad;
 mod cache;
 mod popup;
 mod send;
@@ -33,6 +34,7 @@ use self::cache::{
     commands_failed, outbox_in_flight, outbox_take_done, store_commands, store_members,
 };
 pub(crate) use self::cache::{outbox_forget, outbox_start};
+pub(crate) use self::send::expand_groups;
 pub use self::send::orphan_result;
 use self::send::{apply_send_result, commands_unavailable, error_toast, fetch, needs_join_code};
 use self::text::{Format, TriggerKind};
@@ -101,6 +103,12 @@ pub enum Message {
     TypingTick,
     DraftTick(u64),
     TogglePicker,
+    /// Ctrl/Cmd+Shift+\: the emoji picker for the newest message here (the
+    /// room timeline without thread replies, or this thread).
+    ReactLast,
+    /// Shift+Esc in the focused composer: the app's "Mark all as read?"
+    /// (the app listener skips keys a widget took).
+    AskReadAll,
     Picker(emoji_picker::Message),
     Reacted(Res<()>),
     Upload(upload::Message),
@@ -120,6 +128,15 @@ pub enum Message {
     DeleteConfirmed,
     DeleteCancelled,
     Deleted(Res<()>),
+    /// The `@all`/`@here` confirmation: send anyway, or keep the text.
+    BroadConfirmed,
+    BroadCancelled,
+    /// Members online for the `@here` confirmation (its `seq`).
+    OnlineCount(u64, Res<u64>),
+    /// `users.info` of the DM partner (local time hint).
+    PeerLoaded(String, Res<Box<rocketchat::models::User>>),
+    /// Redraws the DM partner's local time.
+    ClockTick,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,9 +157,25 @@ struct Editing {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Quote {
+    /// Room of the quoted message (the permalink is built for it).
+    rid: String,
     mid: String,
     author: String,
     excerpt: String,
+    /// Forwarded from elsewhere: may be sent without a comment.
+    forwarded: bool,
+}
+
+impl Quote {
+    fn from_ref(r: super::ForwardRef, forwarded: bool) -> Self {
+        Self {
+            rid: r.rid,
+            mid: r.mid,
+            author: r.author,
+            excerpt: r.excerpt,
+            forwarded,
+        }
+    }
 }
 
 /// What the emoji picker does with the chosen emoji.
@@ -172,6 +205,13 @@ pub struct Composer {
     join_code: String,
     /// Message waiting for the delete confirmation (emptied edit).
     confirm_delete: Option<String>,
+    /// A send waiting for the `@all`/`@here` confirmation.
+    confirm_broad: Option<broad::BroadConfirm>,
+    /// The confirmation was given: the next `send` skips the check.
+    broad_ok: bool,
+    broad_seq: u64,
+    /// 1:1 DM: the partner's username and, once known, their offset.
+    peer: Option<(String, Option<cache::PeerInfo>)>,
     /// Thread composer: replies are also sent to the channel (`tshow`).
     tshow: bool,
 }
@@ -207,6 +247,10 @@ impl Composer {
             joining: false,
             join_code: String::new(),
             confirm_delete: None,
+            confirm_broad: None,
+            broad_ok: false,
+            broad_seq: 0,
+            peer: None,
             tshow: false,
         }
     }
@@ -245,13 +289,36 @@ impl Composer {
         self.picker.is_some()
     }
 
+    /// The message the open emoji picker reacts to.
+    #[cfg(test)]
+    fn react_target(&self) -> Option<&str> {
+        match &self.picker {
+            Some((_, PickTarget::React(mid))) => Some(mid),
+            _ => None,
+        }
+    }
+
     pub fn is_upload_dialog_open(&self) -> bool {
         self.uploads.is_dialog_open()
+    }
+
+    /// A confirmation dialog of the composer is open (delete an emptied
+    /// edit, `@all`/`@here`).
+    pub fn is_confirm_open(&self) -> bool {
+        self.confirm_delete.is_some() || self.confirm_broad.is_some()
     }
 
     /// Widget id of the editor (F6 target).
     pub fn editor_id(&self) -> &iced::widget::Id {
         &self.editor_id
+    }
+
+    /// Whether the Send button is enabled: there is text, an edit to save,
+    /// or forwarded quotes (which may go without a comment).
+    pub(crate) fn can_send(&self) -> bool {
+        !self.content.is_empty()
+            || self.editing.is_some()
+            || self.quotes.iter().any(|q| q.forwarded)
     }
 
     /// Focuses the editor.
@@ -270,7 +337,43 @@ impl Composer {
             let end = d.len();
             self.set_text(&d, end..end);
         }
-        Action::task(self.focus())
+        Action::task(Task::batch([self.focus(), self.load_peer(ctx)]))
+    }
+
+    /// The partner of a 1:1 DM (room composer only) and their UTC offset,
+    /// cached or fetched, for the local time hint.
+    fn load_peer(&mut self, ctx: &UpdateCtx<'_>) -> Task<Message> {
+        if self.tmid.is_some() {
+            return Task::none();
+        }
+        let Some(u) = super::header::dm_partner(ctx.workspace, &self.rid)
+            .filter(|u| Some(u.as_str()) != ctx.workspace.username())
+        else {
+            return Task::none();
+        };
+        let cached = cache::cached_peer(ctx.server_id, &u);
+        let fetch = cached.is_none();
+        self.peer = Some((u.clone(), cached));
+        if !fetch {
+            return Task::none();
+        }
+        let name = u.clone();
+        ctx.rest_task(
+            move |rest| async move {
+                rest.users_info(rocketchat::rest::UserLookup::Username(&name))
+                    .await
+            },
+            move |r| Message::PeerLoaded(u.clone(), r.map(Box::new)),
+        )
+    }
+
+    /// The DM partner's clock when it differs from ours.
+    fn peer_clock(&self) -> Option<(&str, &cache::PeerInfo, rustket_core::clock::PeerClock)> {
+        let (u, info) = self.peer.as_ref()?;
+        let info = info.as_ref()?;
+        let mine = chrono::Local::now().offset().local_minus_utc();
+        let clock = rustket_core::clock::peer_clock(info.offset?, mine, chrono::Utc::now())?;
+        Some((u.as_str(), info, clock))
     }
 
     /// Stores the current text as the draft right away (room closing).
@@ -429,7 +532,9 @@ impl Composer {
                 ))
             }
             Message::Cancel => {
-                if self.confirm_delete.is_some() {
+                if self.confirm_broad.is_some() {
+                    self.confirm_broad = None;
+                } else if self.confirm_delete.is_some() {
                     self.confirm_delete = None;
                 } else if self.popup_visible() {
                     self.popup = None;
@@ -556,6 +661,20 @@ impl Composer {
                         self.start_edit(&m, ctx.workspace)
                     }
                     FetchFor::Quote => {
+                        // Decrypted like every shown message: an encrypted
+                        // room's message fetched here (an inbox Reply in a
+                        // room not open yet) is quotable once it is.
+                        let mut m = m;
+                        crate::e2e::shown::process_list(
+                            ctx.workspace,
+                            ctx.server,
+                            std::slice::from_mut(&mut m),
+                        );
+                        if crate::e2e::shown::undecrypted(&m) {
+                            return Action::effect(error_toast(
+                                t!("e2e.quote_unreadable").into_owned(),
+                            ));
+                        }
                         self.add_quote(&m);
                         Action::task(self.focus())
                     }
@@ -604,6 +723,13 @@ impl Composer {
                 }
                 self.open_picker(PickTarget::Insert, ctx)
             }
+            Message::ReactLast => {
+                match last_reactable(ctx.workspace, &self.rid, self.tmid.as_deref()) {
+                    Some(mid) => self.intent(ComposeIntent::React(mid), ctx),
+                    None => Action::none(),
+                }
+            }
+            Message::AskReadAll => Action::effect(Effect::AskReadAll),
             Message::Picker(m) => {
                 let Some((picker, target)) = &mut self.picker else {
                     return Action::none();
@@ -767,7 +893,74 @@ impl Composer {
                     e.user_text(),
                 )),
             },
+            Message::BroadConfirmed => {
+                if self.confirm_broad.take().is_none() {
+                    return Action::none();
+                }
+                self.broad_ok = true;
+                let a = self.send(ctx);
+                self.broad_ok = false;
+                a
+            }
+            Message::BroadCancelled => {
+                self.confirm_broad = None;
+                Action::task(self.focus())
+            }
+            Message::PeerLoaded(u, r) => {
+                match r {
+                    Ok(user) => {
+                        let info = cache::PeerInfo {
+                            offset: user.utc_offset,
+                            name: user.name.clone(),
+                        };
+                        cache::store_peer(ctx.server_id, &u, info.clone());
+                        if let Some((p, slot)) = &mut self.peer
+                            && *p == u
+                        {
+                            *slot = Some(info);
+                        }
+                    }
+                    Err(e) => tracing::debug!(error = %e, "users.info of the DM partner failed"),
+                }
+                Action::none()
+            }
+            Message::ClockTick => Action::none(),
+            Message::OnlineCount(seq, r) => {
+                match r {
+                    Ok(n) => {
+                        if let Some(c) = self.confirm_broad.as_mut().filter(|c| c.seq == seq) {
+                            // The sender is online too.
+                            c.online = Some(n.saturating_sub(1));
+                        }
+                    }
+                    Err(e) => tracing::debug!(error = %e, "online member count failed"),
+                }
+                Action::none()
+            }
         }
+    }
+
+    /// Asks before `text` notifies the whole room (see
+    /// [`broad::broad_check`]); `None` when it may go out now.
+    fn ask_broad(&mut self, text: &str, ctx: &UpdateCtx<'_>) -> Option<Action<Message>> {
+        if self.broad_ok || !ctx.prefs.confirm_broad_mentions {
+            return None;
+        }
+        let mut c = broad::broad_check(ctx.workspace, &self.rid, text)?;
+        self.broad_seq += 1;
+        c.seq = self.broad_seq;
+        let task = if c.here {
+            let (rid, seq) = (self.rid.clone(), c.seq);
+            ctx.rest_task(
+                move |rest| async move { rest.room_member_total(&rid, &["online"]).await },
+                move |r| Message::OnlineCount(seq, r),
+            )
+        } else {
+            Task::none()
+        };
+        self.confirm_broad = Some(c);
+        self.popup = None;
+        Some(Action::task(task))
     }
 
     /// A request from another room component.
@@ -798,6 +991,9 @@ impl Composer {
                     return Action::task(self.focus());
                 }
                 match find_message(ctx.workspace, &self.rid, self.tmid.as_deref(), &mid) {
+                    Some(m) if crate::e2e::shown::undecrypted(m) => {
+                        Action::effect(error_toast(t!("e2e.quote_unreadable").into_owned()))
+                    }
                     Some(m) => {
                         let m = m.clone();
                         self.add_quote(&m);
@@ -811,6 +1007,14 @@ impl Composer {
                     return Action::none();
                 }
                 self.open_picker(PickTarget::React(mid), ctx)
+            }
+            ComposeIntent::Forward(refs) => {
+                for r in refs {
+                    if !self.quotes.iter().any(|q| q.mid == r.mid) {
+                        self.quotes.push(Quote::from_ref(r, true));
+                    }
+                }
+                Action::task(self.focus())
             }
             // The thread panel owns its own composer (`Composer::for_thread`).
             ComposeIntent::ReplyInThread(_) => Action::none(),
@@ -826,11 +1030,18 @@ impl Composer {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        if self.typing.is_active() {
+        let typing = if self.typing.is_active() {
             iced::time::every(Duration::from_secs(1)).map(|_| Message::TypingTick)
         } else {
             Subscription::none()
-        }
+        };
+        // The DM partner's local time stays current while it is shown.
+        let clock = if self.peer_clock().is_some() {
+            iced::time::every(Duration::from_secs(30)).map(|_| Message::ClockTick)
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([typing, clock])
     }
 
     // --- flows --------------------------------------------------------------------
@@ -911,27 +1122,13 @@ impl Composer {
     }
 
     fn add_quote(&mut self, m: &rocketchat::models::Message) {
-        if self.quotes.iter().any(|q| q.mid == m.id) {
+        // Only what is shown decrypted can be quoted (the server's text of
+        // an encrypted message is unauthenticated), whoever asks.
+        if self.quotes.iter().any(|q| q.mid == m.id) || crate::e2e::shown::undecrypted(m) {
             return;
         }
-        let author =
-            m.u.username
-                .clone()
-                .or_else(|| m.u.name.clone())
-                .unwrap_or_default();
-        let excerpt: String = m
-            .msg
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .chars()
-            .take(80)
-            .collect();
-        self.quotes.push(Quote {
-            mid: m.id.clone(),
-            author,
-            excerpt,
-        });
+        self.quotes
+            .push(Quote::from_ref(super::ForwardRef::of(m), false));
     }
 
     fn open_picker(&mut self, target: PickTarget, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
@@ -960,6 +1157,18 @@ fn find_message<'a>(
         .or_else(|| ws.timeline(rid).and_then(|t| t.get(mid)))
         .map(|i| &i.message)
         .or_else(|| thread.and_then(|t| t.parent()).filter(|p| p.id == mid))
+}
+
+/// The newest message to react to (Ctrl/Cmd+Shift+\): of the thread, or of
+/// the room without the thread replies shown there.
+fn last_reactable(ws: &Workspace, rid: &str, tmid: Option<&str>) -> Option<String> {
+    let timeline = match tmid {
+        Some(t) => ws.thread(t)?,
+        None => ws.timeline(rid)?,
+    };
+    timeline
+        .last_reactable(tmid.is_some())
+        .map(|m| m.id.clone())
 }
 
 /// The newest own message the user may edit (Up in an empty composer).

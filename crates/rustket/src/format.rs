@@ -35,6 +35,40 @@ pub fn short_time(ts: RcDate, now: DateTime<Local>, clock_24h: bool) -> String {
     }
 }
 
+/// A point in time near now, for reminders and due dates: `14:05` today,
+/// `Tomorrow 09:00`, the weekday within a week either way, else the date
+/// and time.
+pub fn moment(at_ms: i64, now: DateTime<Local>, clock_24h: bool) -> String {
+    let Some(local) = Local.timestamp_millis_opt(at_ms).single() else {
+        return String::new();
+    };
+    let Some(day) = rocketchat::date::local_date(&local) else {
+        return String::new();
+    };
+    let time = if clock_24h {
+        local.format("%H:%M").to_string()
+    } else {
+        local.format("%-I:%M %p").to_string()
+    };
+    let days = day.signed_duration_since(now.date_naive()).num_days();
+    match days {
+        0 => time,
+        1 => t!("later.at_tomorrow", time = time).into_owned(),
+        -1 => format!("{} {time}", t!("app.yesterday")),
+        -6..=6 => format!(
+            "{} {time}",
+            t!(format!(
+                "app.weekday_{}",
+                local.weekday().num_days_from_monday()
+            ))
+        ),
+        _ if local.year() == now.year() => {
+            format!("{} {time}", localized(&local, "app.date_short_fmt"))
+        }
+        _ => format!("{} {time}", full_date(&local)),
+    }
+}
+
 /// Date with the year in the UI locale (`Nov 8, 2026` / `08.11.2026`).
 pub fn full_date(local: &DateTime<Local>) -> String {
     localized(local, "app.date_full_fmt")

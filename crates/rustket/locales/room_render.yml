@@ -689,3 +689,33 @@ room_render.sys.unknown:
   es: "%{user}: mensaje del sistema (%{kind})"
   th: "%{user}: ข้อความระบบ (%{kind})"
   zh: "%{user}：系统消息（%{kind}）"
+room_render.show_more:
+  en: "Show more"
+  ru: "Показать ещё"
+  es: "Mostrar más"
+  th: "แสดงเพิ่มเติม"
+  zh: "显示更多"
+room_render.show_less:
+  en: "Show less"
+  ru: "Свернуть"
+  es: "Mostrar menos"
+  th: "แสดงน้อยลง"
+  zh: "收起"
+room_render.code_more_one:
+  en: "Show %{count} more line"
+  ru: "Показать ещё %{count} строку"
+  es: "Mostrar %{count} línea más"
+  th: "แสดงอีก %{count} บรรทัด"
+  zh: "再显示 %{count} 行"
+room_render.code_more_few:
+  en: "Show %{count} more lines"
+  ru: "Показать ещё %{count} строки"
+  es: "Mostrar %{count} líneas más"
+  th: "แสดงอีก %{count} บรรทัด"
+  zh: "再显示 %{count} 行"
+room_render.code_more_many:
+  en: "Show %{count} more lines"
+  ru: "Показать ещё %{count} строк"
+  es: "Mostrar %{count} líneas más"
+  th: "แสดงอีก %{count} บรรทัด"
+  zh: "再显示 %{count} 行"

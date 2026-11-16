@@ -1217,3 +1217,128 @@ fn restored_parents_are_current_up_to_their_mark() {
     let idx = ws.thread_index();
     assert!(idx.is_stale("t1") && idx.is_stale("t2") && idx.is_stale("t4"));
 }
+
+/// Later's messages and scans survive a restart, follow the rooms of full
+/// snapshots and of removals, keep no E2E plaintext and restore into a
+/// workspace that tracks stars.
+#[test]
+fn later_data_round_trip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    let mut starred = msg("s1", "A", 1000, "u2");
+    starred.starred = Some(vec![rocketchat::models::IdRef { id: "u1".into() }]);
+    let later = CachedLater {
+        messages: vec![
+            starred.clone(),
+            msg("c1", "B", 1000, "u2"),
+            decrypted("e1", "A", "top secret later"),
+        ],
+        scans: vec![CachedLaterScan {
+            rid: "A".into(),
+            scanned_at: Some(ts(5000)),
+            scanned_lm: Some(ts(900)),
+        }],
+        ..Default::default()
+    };
+    db.write(Batch {
+        later: Some(later),
+        ..Default::default()
+    })
+    .unwrap();
+    let raw: Vec<String> = {
+        let mut st = db
+            .conn_ref()
+            .prepare("SELECT json FROM docs WHERE kind = 'later_msg'")
+            .unwrap();
+        st.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    assert_eq!(raw.len(), 3);
+    assert!(!raw.iter().any(|j| j.contains("top secret")));
+    drop(db);
+    let mut db = open(tmp.path(), "u1");
+    let state = db.load_state().unwrap();
+    assert_eq!(state.later.messages.len(), 3);
+    assert_eq!(state.later.scans.len(), 1);
+    // Restored into a workspace (cache first, then tracking on).
+    let mut ws = Workspace::new();
+    ws.apply_me(me("u1", "alice"));
+    ws.set_later_tracking(true);
+    let mut state = state;
+    state.me = Some(me("u1", "alice"));
+    state.subscriptions = vec![sub("A", "a", RoomType::Channel)];
+    assert!(ws.apply_cached(state));
+    assert!(ws.later_index().is_starred("s1"));
+    assert!(ws.starred_scan("A").is_some());
+    // A copy without a reminder is not kept.
+    assert!(ws.later_message("c1").is_none());
+    // A full snapshot keeps the rooms it lists; a removal takes them along.
+    db.write(Batch {
+        full: Some(Box::new(CachedState {
+            subscriptions: vec![sub("A", "a", RoomType::Channel)],
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
+    .unwrap();
+    let l = db.load_state().unwrap().later;
+    assert_eq!(l.messages.len(), 2, "B is no longer listed");
+    db.write(Batch {
+        rooms: vec![("A".into(), None, None)],
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(db.load_state().unwrap().later.is_empty());
+}
+
+/// A delta write changes and drops only the messages it names (batches
+/// waiting for the writer fold into one), and Later's messages count
+/// against the message budget.
+#[test]
+fn later_delta_writes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    let scan = |rid: &str| CachedLaterScan {
+        rid: rid.into(),
+        scanned_at: Some(ts(5000)),
+        scanned_lm: Some(ts(900)),
+    };
+    db.write(Batch {
+        later: Some(CachedLater {
+            messages: vec![msg("a", "A", 1000, "u2"), msg("b", "A", 1001, "u2")],
+            scans: vec![scan("A")],
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut first = Batch {
+        later: Some(CachedLater {
+            messages: vec![msg("c", "A", 1002, "u2")],
+            removed: vec!["a".into()],
+            scans: vec![scan("A")],
+            delta: true,
+        }),
+        ..Default::default()
+    };
+    let mut edited = msg("b", "A", 1001, "u2");
+    edited.msg = "edited".into();
+    first.merge(Batch {
+        later: Some(CachedLater {
+            messages: vec![edited],
+            removed: vec!["c".into()],
+            scans: vec![scan("A"), scan("B")],
+            delta: true,
+        }),
+        ..Default::default()
+    });
+    db.write(first).unwrap();
+    let mut l = db.load_state().unwrap().later;
+    l.messages.sort_by(|x, y| x.id.cmp(&y.id));
+    let ids: Vec<&str> = l.messages.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["b"]);
+    assert_eq!(l.messages[0].msg, "edited");
+    assert_eq!(l.scans.len(), 2);
+}

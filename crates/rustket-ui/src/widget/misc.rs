@@ -1,7 +1,7 @@
 //! Small decorations: tooltips, chips/tags, keyboard hints, dividers.
 
-use iced::widget::{Column, column, container, text, tooltip as iced_tooltip};
-use iced::{Element, Length, Theme, border};
+use iced::widget::{Column, column, container, row, text, tooltip as iced_tooltip};
+use iced::{Alignment, Element, Length, Theme, border};
 
 use crate::style;
 use crate::theme::{TEXT_CAPTION, TEXT_MICRO, font_mono, font_semibold, radius_sm, tokens};
@@ -66,23 +66,72 @@ pub fn chip<'a, Message: 'a>(label: impl Into<String>, kind: ChipKind) -> Elemen
 
 /// Keyboard key hint (`Ctrl`, `K`, `Enter`).
 pub fn kbd<'a, Message: 'a>(key: impl Into<String>) -> Element<'a, Message> {
-    container(
-        text(key.into())
-            .size(TEXT_MICRO + 1.0)
-            .font(font_mono())
-            .wrapping(text::Wrapping::None),
-    )
-    .padding([1, 5])
-    .style(|theme: &Theme| {
-        let t = tokens(theme);
-        container::Style {
-            text_color: Some(t.text_secondary),
-            background: Some(t.surface_sunken.into()),
-            border: border::rounded(radius_sm()).width(1).color(t.border_strong),
-            ..container::Style::default()
+    // The monospace font has no arrows (its fallback glyphs are tiny): only
+    // the arrows are drawn in the UI font, the rest stays monospace.
+    let mono = TEXT_MICRO + 1.0;
+    let parts = kbd_parts(&key.into()).into_iter().map(|part| match part {
+        KbdPart::Gap => iced::widget::space().width(mono * 0.6).into(),
+        KbdPart::Text(part, arrows) => {
+            let (font, size) = if arrows {
+                (iced::Font::DEFAULT, TEXT_MICRO + 3.0)
+            } else {
+                (font_mono(), mono)
+            };
+            text(part)
+                .size(size)
+                .font(font)
+                .wrapping(text::Wrapping::None)
+                .into()
         }
-    })
-    .into()
+    });
+    container(row(parts).align_y(Alignment::Center))
+        .padding([1, 5])
+        .style(|theme: &Theme| {
+            let t = tokens(theme);
+            container::Style {
+                text_color: Some(t.text_secondary),
+                background: Some(t.surface_sunken.into()),
+                border: border::rounded(radius_sm()).width(1).color(t.border_strong),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// A piece of a keycap label.
+#[derive(Debug, PartialEq, Eq)]
+enum KbdPart {
+    /// A run of arrows (`true`) or of other characters.
+    Text(String, bool),
+    /// A blank between runs (drawn as a fixed gap: a text's edge blanks
+    /// may not take room).
+    Gap,
+}
+
+/// `key` split into runs of arrows and of other characters.
+fn kbd_parts(key: &str) -> Vec<KbdPart> {
+    let mut runs: Vec<(String, bool)> = Vec::new();
+    for c in key.chars() {
+        let arrow = matches!(c, '←' | '↑' | '→' | '↓');
+        match runs.last_mut() {
+            Some((run, a)) if *a == arrow => run.push(c),
+            _ => runs.push((c.to_string(), arrow)),
+        }
+    }
+    let mut out = Vec::new();
+    for (run, arrows) in runs {
+        let trimmed = run.trim();
+        if run.starts_with(char::is_whitespace) && out.last() != Some(&KbdPart::Gap) {
+            out.push(KbdPart::Gap);
+        }
+        if !trimmed.is_empty() {
+            out.push(KbdPart::Text(trimmed.to_owned(), arrows));
+            if run.ends_with(char::is_whitespace) {
+                out.push(KbdPart::Gap);
+            }
+        }
+    }
+    out
 }
 
 /// 1px horizontal line in the border colour.
@@ -128,4 +177,27 @@ pub fn above<'a, Message: 'a>(
     body: impl Into<Element<'a, Message>>,
 ) -> Column<'a, Message> {
     column![slot(top, gap), body.into()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keycaps_split_arrows_from_the_rest() {
+        use KbdPart::{Gap, Text};
+        let t = |s: &str, a: bool| Text(s.to_owned(), a);
+        assert_eq!(kbd_parts("Ctrl+K"), [t("Ctrl+K", false)]);
+        assert_eq!(kbd_parts("Ctrl Shift"), [t("Ctrl Shift", false)]);
+        assert_eq!(
+            kbd_parts("Alt+Shift+↑"),
+            [t("Alt+Shift+", false), t("↑", true)]
+        );
+        assert_eq!(
+            kbd_parts("↑ / ↓"),
+            [t("↑", true), Gap, t("/", false), Gap, t("↓", true)]
+        );
+        assert_eq!(kbd_parts("Skip →"), [t("Skip", false), Gap, t("→", true)]);
+        assert!(kbd_parts("").is_empty());
+    }
 }

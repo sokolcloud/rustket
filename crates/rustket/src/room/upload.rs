@@ -54,6 +54,11 @@ pub struct Dialog {
     pub name: String,
     pub description: String,
     pub message: String,
+    /// The message notifies the whole room: waiting for the confirmation.
+    pub confirm: Option<super::composer::broad::BroadConfirm>,
+    /// The confirmation was given for the current file.
+    broad_ok: bool,
+    broad_seq: u64,
 }
 
 impl Dialog {
@@ -63,6 +68,9 @@ impl Dialog {
             name: String::new(),
             description: String::new(),
             message: String::new(),
+            confirm: None,
+            broad_ok: false,
+            broad_seq: 0,
         };
         d.reset_fields();
         (!d.queue.is_empty()).then_some(d)
@@ -76,6 +84,8 @@ impl Dialog {
             .unwrap_or_default();
         self.description.clear();
         self.message.clear();
+        self.confirm = None;
+        self.broad_ok = false;
     }
 
     pub fn current(&self) -> Option<&PendingFile> {
@@ -237,6 +247,12 @@ pub enum Message {
     Text(String),
     /// Upload the current file of the dialog.
     Send,
+    /// The `@all`/`@here` confirmation of the message: upload anyway, or
+    /// back to the dialog.
+    BroadConfirmed,
+    BroadCancelled,
+    /// Members online for the `@here` confirmation (its `seq`).
+    OnlineCount(u64, Res<u64>),
     /// Skip the current file.
     Skip,
     /// Close the dialog, dropping every queued file.
@@ -251,6 +267,16 @@ pub enum Message {
 impl Uploads {
     pub fn is_dialog_open(&self) -> bool {
         self.dialog.is_some()
+    }
+
+    /// What dismissing the dialog does: back from the confirmation, else
+    /// close.
+    pub fn dismiss(&self) -> Message {
+        if self.dialog.as_ref().is_some_and(|d| d.confirm.is_some()) {
+            Message::BroadCancelled
+        } else {
+            Message::Close
+        }
     }
 
     pub fn update(
@@ -327,6 +353,8 @@ impl Uploads {
             Message::Text(s) => {
                 if let Some(d) = &mut self.dialog {
                     d.message = s;
+                    // A changed message is checked again.
+                    d.broad_ok = false;
                 }
                 Action::none()
             }
@@ -352,6 +380,30 @@ impl Uploads {
                 if file.error.is_some() {
                     return Action::none();
                 }
+                // Mention groups expand first, as in the composer: the
+                // `@all` check and the upload see the same text.
+                let text = caption(ctx.workspace, ctx.server_id, ctx.rid, &d.message);
+                if !d.broad_ok
+                    && ctx.prefs.confirm_broad_mentions
+                    && let Some(mut c) =
+                        super::composer::broad::broad_check(ctx.workspace, ctx.rid, &text)
+                {
+                    d.broad_seq += 1;
+                    c.seq = d.broad_seq;
+                    let task = if c.here {
+                        let (rid, seq) = (ctx.rid.to_owned(), c.seq);
+                        ctx.rest_task(
+                            move |rest| async move {
+                                rest.room_member_total(&rid, &["online"]).await
+                            },
+                            move |r| Message::OnlineCount(seq, r),
+                        )
+                    } else {
+                        Task::none()
+                    };
+                    d.confirm = Some(c);
+                    return Action::task(task);
+                }
                 // Encrypted rooms: encrypted upload, or refused (§7.8).
                 let e2e = match crate::e2e::outgoing::upload_mode(ctx.workspace, ctx.rid) {
                     crate::e2e::outgoing::UploadMode::Refused(why) => {
@@ -371,7 +423,7 @@ impl Uploads {
                     n => n.to_owned(),
                 };
                 let description = Some(d.description.trim().to_owned()).filter(|s| !s.is_empty());
-                let message = Some(d.message.trim().to_owned()).filter(|s| !s.is_empty());
+                let message = Some(text).filter(|s| !s.is_empty());
                 if !d.advance() {
                     self.dialog = None;
                 }
@@ -403,6 +455,38 @@ impl Uploads {
                     handle,
                 );
                 Action::task(task)
+            }
+            Message::BroadConfirmed => {
+                let Some(d) = &mut self.dialog else {
+                    return Action::none();
+                };
+                if d.confirm.take().is_none() {
+                    return Action::none();
+                }
+                d.broad_ok = true;
+                self.update(Message::Send, ctx, tmid)
+            }
+            Message::BroadCancelled => {
+                if let Some(d) = &mut self.dialog {
+                    d.confirm = None;
+                }
+                Action::none()
+            }
+            Message::OnlineCount(seq, r) => {
+                match r {
+                    Ok(n) => {
+                        if let Some(c) = self
+                            .dialog
+                            .as_mut()
+                            .and_then(|d| d.confirm.as_mut())
+                            .filter(|c| c.seq == seq)
+                        {
+                            c.online = Some(n.saturating_sub(1));
+                        }
+                    }
+                    Err(e) => tracing::debug!(error = %e, "online member count failed"),
+                }
+                Action::none()
             }
             // Only redraws: the upload keeps the registry up to date.
             Message::Progress(..) => Action::none(),
@@ -466,6 +550,13 @@ impl Uploads {
     /// The upload dialog, while open.
     pub fn dialog_view<'a>(&'a self) -> Option<Element<'a, Message>> {
         let d = self.dialog.as_ref()?;
+        if let Some(c) = &d.confirm {
+            return Some(super::composer::broad::dialog(
+                c,
+                Message::BroadCancelled,
+                Message::BroadConfirmed,
+            ));
+        }
         let file = d.current()?;
         let preview: Element<'a, Message> = match &file.thumb {
             Some(h) => container(image(h.clone()).height(Length::Fixed(180.0)))
@@ -570,6 +661,19 @@ fn field<'a>(label: String, input: Element<'a, Message>) -> Element<'a, Message>
     ]
     .spacing(SPACE_1)
     .into()
+}
+
+/// The upload's message as sent: trimmed, mention groups expanded (the
+/// dialog keeps what was typed).
+pub(super) fn caption(
+    ws: &rustket_core::Workspace,
+    server: &rustket_core::ServerId,
+    rid: &str,
+    message: &str,
+) -> String {
+    let typed = message.trim();
+    super::composer::expand_groups(ws, server, rid, typed)
+        .map_or_else(|| typed.to_owned(), |e| e.text)
 }
 
 fn toast_error(body: String) -> Effect {

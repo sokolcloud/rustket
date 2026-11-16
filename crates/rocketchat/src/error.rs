@@ -247,6 +247,12 @@ impl Error {
         matches!(self, Error::Unauthorized { .. })
     }
 
+    /// A DDP method the server does not have (Meteor error `404`, "Method
+    /// '…' not found").
+    pub fn is_method_not_found(&self) -> bool {
+        matches!(self, Error::Method(m) if m.code().as_deref() == Some("404"))
+    }
+
     pub fn is_certificate_error(&self) -> bool {
         matches!(self, Error::Certificate { .. })
     }

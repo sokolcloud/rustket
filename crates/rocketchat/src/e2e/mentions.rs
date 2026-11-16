@@ -1,6 +1,7 @@
 //! Plaintext `e2eMentions` sent next to encrypted messages so the server can
 //! notify mentioned users (§7.6, `MentionsParser.ts`).
 
+use std::ops::Range;
 use std::sync::LazyLock;
 
 use regex::{Regex, RegexBuilder};
@@ -80,7 +81,7 @@ fn js_class_to_rust(pattern: &str) -> String {
 /// Longest `@name`/`#name` entry sent in plaintext, in bytes (sigil excluded).
 const MAX_MENTION_LEN: usize = 128;
 /// Most entries per list sent in plaintext with one message.
-const MAX_MENTIONS: usize = 50;
+pub const MAX_MENTIONS: usize = 50;
 /// Longest accepted `UTF8_User_Names_Validation`.
 const MAX_PATTERN_LEN: usize = 256;
 /// Compiled-size limit of the server pattern.
@@ -137,20 +138,104 @@ fn mention_len(name: &Regex, token: &str, user: bool) -> Option<usize> {
     Some(end)
 }
 
+/// Whether `rest` starts with a mention group's expansion list: `(`, one or
+/// more `@name`s separated by blanks or commas, `)`, on one line.
+fn expansion_list(rest: &str) -> bool {
+    let Some(inner) = rest.strip_prefix('(') else {
+        return false;
+    };
+    let Some(close) = inner.find(')') else {
+        return false;
+    };
+    let mut items = inner[..close]
+        .split([' ', '\t', ','])
+        .filter(|t| !t.is_empty())
+        .peekable();
+    items.peek().is_some()
+        && items.all(|t| {
+            t.strip_prefix('@')
+                .is_some_and(|n| !n.is_empty() && !n.contains(['(', '\n']))
+        })
+}
+
+/// A mention group's expansion in the text: `@group (@a @b)`.
+struct Expansion {
+    /// The group's `@name`.
+    group: Range<usize>,
+    /// Offset of the list's `(`.
+    list: usize,
+}
+
+/// The mention-group expansions of `text` (`is_group` tells the sender's
+/// group names; `@all`/`@here` never are). The group token is found where
+/// the composer expands one: at the start of the text or after whitespace,
+/// `>` or a `(` that itself follows one of these; its name is the run of
+/// `[0-9A-Za-z_.-]` without trailing dots, followed by one space and the
+/// list.
+fn expansions(text: &str, is_group: &dyn Fn(&str) -> bool) -> Vec<Expansion> {
+    let bytes = text.as_bytes();
+    let edge = |c: Option<char>| c.is_none_or(|p| p.is_whitespace() || p == '>');
+    let mut out = Vec::new();
+    let mut prev: Option<char> = None;
+    let mut before: Option<char> = None;
+    for (i, c) in text.char_indices() {
+        let boundary = edge(prev) || (prev == Some('(') && edge(before));
+        before = prev;
+        prev = Some(c);
+        if c != '@' || !boundary {
+            continue;
+        }
+        let start = i + 1;
+        let run = bytes[start..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+            .count();
+        let group = text[start..start + run].trim_end_matches('.');
+        let end = start + group.len();
+        if group.is_empty()
+            || ["all", "here"]
+                .iter()
+                .any(|r| group.eq_ignore_ascii_case(r))
+            || !is_group(group)
+        {
+            continue;
+        }
+        if text[end..].strip_prefix(' ').is_some_and(expansion_list) {
+            out.push(Expansion {
+                group: i..end,
+                list: end + 1,
+            });
+        }
+    }
+    out
+}
+
 /// Fixed candidate scan: `sigil` at the start of the text or after whitespace
-/// or `>`, followed by the token up to the next whitespace. Every entry is
-/// the sigil plus a prefix of such a token, so no whitespace and nothing
-/// outside a mention-shaped token can be emitted, whatever `name` matches.
-fn collect(text: &str, sigil: char, name: &Regex, user: bool) -> Vec<String> {
+/// or `>`, followed by the token up to the next whitespace. Users also right
+/// after the `(` of a mention group's expansion (`@backend (@alice @bob)`):
+/// the expanded users count and the group's own name (account-private,
+/// nobody's username) is left out; any other `(@x` stays inside the
+/// ciphertext, like the web client's parser. Every entry is the sigil plus a
+/// prefix of such a token, so no whitespace and nothing outside a
+/// mention-shaped token can be emitted, whatever `name` matches. At most
+/// `cap` entries.
+fn collect(text: &str, sigil: char, name: &Regex, groups: &[Expansion], cap: usize) -> Vec<String> {
+    let user = sigil == '@';
     let mut out = Vec::new();
     // End of the previous entry: matches do not overlap.
     let mut consumed = 0;
     let mut prev: Option<(usize, char)> = None;
+    let edge = |c: char| c.is_whitespace() || c == '>';
     for (i, c) in text.char_indices() {
         let boundary = match prev {
             None => true,
-            Some((pi, pc)) => pi >= consumed && (pc.is_whitespace() || pc == '>'),
+            Some((pi, pc)) => pi >= consumed && (edge(pc) || groups.iter().any(|g| g.list == pi)),
         };
+        if let Some(g) = groups.iter().find(|g| g.group.start == i) {
+            consumed = g.group.end;
+            prev = Some((i, c));
+            continue;
+        }
         prev = Some((i, c));
         if c != sigil || !boundary {
             continue;
@@ -167,7 +252,7 @@ fn collect(text: &str, sigil: char, name: &Regex, user: bool) -> Vec<String> {
         };
         out.push(format!("{sigil}{}", &window[..len]));
         consumed = i + sigil.len_utf8() + len;
-        if out.len() >= MAX_MENTIONS {
+        if out.len() >= cap {
             break;
         }
     }
@@ -179,18 +264,48 @@ fn collect(text: &str, sigil: char, name: &Regex, user: bool) -> Vec<String> {
 /// `username_pattern` is `UTF8_User_Names_Validation`; a pattern that is
 /// invalid on its own, too long or too large falls back to the default.
 pub fn e2e_mentions(text: &str, username_pattern: &str) -> E2eMentions {
-    let Some(name) = name_regex(username_pattern).or_else(|| name_regex(DEFAULT_USERNAME_PATTERN))
-    else {
-        return E2eMentions::default();
-    };
+    e2e_mentions_with_groups(text, username_pattern, &|_| false)
+}
+
+/// [`e2e_mentions`] for a text that may hold the sender's mention-group
+/// expansions (`@backend (@alice @bob)`; `is_group` tells the sender's group
+/// names): the listed users count, the group names are left out.
+pub fn e2e_mentions_with_groups(
+    text: &str,
+    username_pattern: &str,
+    is_group: &dyn Fn(&str) -> bool,
+) -> E2eMentions {
+    scan(text, username_pattern, |text, name| {
+        let groups = expansions(text, is_group);
+        E2eMentions {
+            e2e_user_mentions: collect(text, '@', name, &groups, MAX_MENTIONS),
+            e2e_channel_mentions: collect(text, '#', name, &[], MAX_MENTIONS),
+        }
+    })
+    .unwrap_or_default()
+}
+
+/// How many user entries [`e2e_mentions_with_groups`] would find without its
+/// cap of [`MAX_MENTIONS`] (only that many notify).
+pub fn e2e_user_mention_count(
+    text: &str,
+    username_pattern: &str,
+    is_group: &dyn Fn(&str) -> bool,
+) -> usize {
+    scan(text, username_pattern, |text, name| {
+        collect(text, '@', name, &expansions(text, is_group), usize::MAX).len()
+    })
+    .unwrap_or(0)
+}
+
+/// Runs `f` on `text` without markdown links, with the username filter.
+fn scan<T>(text: &str, username_pattern: &str, f: impl FnOnce(&str, &Regex) -> T) -> Option<T> {
+    let name = name_regex(username_pattern).or_else(|| name_regex(DEFAULT_USERNAME_PATTERN))?;
     let stripped = match LINKS.as_ref() {
         Some(re) => re.replace_all(text, ""),
         None => std::borrow::Cow::Borrowed(text),
     };
-    E2eMentions {
-        e2e_user_mentions: collect(&stripped, '@', &name, true),
-        e2e_channel_mentions: collect(&stripped, '#', &name, false),
-    }
+    Some(f(&stripped, &name))
 }
 
 #[cfg(test)]
@@ -231,6 +346,92 @@ mod tests {
         assert_eq!(m.e2e_user_mentions, ["@alice", "@bob", "@carol"]);
         assert_eq!(m.e2e_channel_mentions, ["#a", "#c"]);
         assert!(e2e_mentions("@ # @! x@y", DEFAULT_USERNAME_PATTERN).is_empty());
+        // Without known groups `(@x` never counts, as with the web client.
+        for text in [
+            "void f(@NonNull x)",
+            "print(@decorator)",
+            "a(@b)",
+            "handled it (@alice was paged)",
+            "(@alice) >(@bob",
+            "ping @backend (@alice @carol)",
+        ] {
+            let m = e2e_mentions(text, DEFAULT_USERNAME_PATTERN);
+            assert!(
+                m.e2e_user_mentions.iter().all(|u| u != "@alice"),
+                "{text}: {:?}",
+                m.e2e_user_mentions
+            );
+        }
+    }
+
+    fn groups(text: &str, pattern: &str) -> Vec<String> {
+        let is_group = |n: &str| ["backend", "on-call", "ops"].contains(&n.to_lowercase().as_str());
+        let m = e2e_mentions_with_groups(text, pattern, &is_group);
+        assert_eq!(
+            e2e_user_mention_count(text, pattern, &is_group),
+            m.e2e_user_mentions.len()
+        );
+        m.e2e_user_mentions
+    }
+
+    #[test]
+    fn mention_group_expansions() {
+        let d = DEFAULT_USERNAME_PATTERN;
+        // The listed users count, the group's own name stays encrypted.
+        assert_eq!(
+            groups("ping @backend (@bob @carol) (#ops) @dave", d),
+            ["@bob", "@carol", "@dave"]
+        );
+        assert_eq!(groups("@Backend (@bob)", d), ["@bob"]);
+        // A group inside parentheses, as the composer expands it.
+        assert_eq!(
+            groups("Deploy blocked (@backend (@alice @bob))", d),
+            ["@alice", "@bob"]
+        );
+        assert_eq!(
+            groups("@carol look (@backend (@alice @bob))", d),
+            ["@carol", "@alice", "@bob"]
+        );
+        // Lists written by hand with commas (kept by expand on an edit).
+        assert_eq!(groups("@backend (@alice, @bob)", d), ["@alice", "@bob"]);
+        // A group name the username pattern does not fully accept.
+        assert_eq!(
+            groups("@on-call (@alice @bob) now", "[a-z0-9.]+"),
+            ["@alice", "@bob"]
+        );
+        // A mention before the list is never dropped unless it is a group.
+        assert_eq!(groups("@alice (@bob)", d), ["@alice"]);
+        assert_eq!(groups("cc @alice (@bob)", d), ["@alice"]);
+        assert_eq!(groups("@here (@alice @bob)", d), ["@here", "@bob"]);
+        assert_eq!(groups("@all (@alice)", d), ["@all"]);
+        // Not an expansion: other `(@x` stay encrypted.
+        for text in [
+            "handled it (@alice was paged)",
+            "@backend(@alice)",
+            "@backend  (@alice)",
+            "@backend (@alice\n@bob)",
+            "@backend.x (@alice)",
+            "f(@backend (@alice))",
+            "@backend@srv (@alice)",
+            "@backend ()",
+        ] {
+            let m = groups(text, d);
+            assert!(m.iter().all(|u| u != "@alice"), "{text}: {m:?}");
+        }
+        // The uncapped count.
+        let many = (0..60)
+            .map(|i| format!("@u{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = format!("@backend ({many})");
+        let is_group = |n: &str| n == "backend";
+        assert_eq!(e2e_user_mention_count(&text, d, &is_group), 60);
+        assert_eq!(
+            e2e_mentions_with_groups(&text, d, &is_group)
+                .e2e_user_mentions
+                .len(),
+            MAX_MENTIONS
+        );
     }
 
     /// Every entry is a sigil plus a short whitespace-free token.

@@ -81,6 +81,7 @@ impl App {
             Nav::Settings
                 | Nav::SidebarSettings { .. }
                 | Nav::SecretStoreSettings
+                | Nav::MentionGroupSettings
                 | Nav::Workspace
                 | Nav::Account
                 | Nav::Directory
@@ -101,7 +102,7 @@ impl App {
 
     /// Leaving the settings: flag names typed but not saved with Enter are
     /// saved (iced's `text_input` has no blur event).
-    fn commit_flag_drafts(&mut self) -> Task<Message> {
+    pub(super) fn commit_flag_drafts(&mut self) -> Task<Message> {
         let Screen::Settings(s) = &mut self.screen else {
             return Task::none();
         };
@@ -123,7 +124,13 @@ impl App {
 
     fn navigate_to(&mut self, nav: Nav, sid: Option<ServerId>) -> Task<Message> {
         match (nav, sid) {
-            (nav @ (Nav::Settings | Nav::SidebarSettings { .. } | Nav::SecretStoreSettings), _) => {
+            (
+                nav @ (Nav::Settings
+                | Nav::SidebarSettings { .. }
+                | Nav::SecretStoreSettings
+                | Nav::MentionGroupSettings),
+                _,
+            ) => {
                 // The real autostart location only with real desktop integration.
                 let at = self
                     .desktop
@@ -135,6 +142,7 @@ impl App {
                 let tab = match nav {
                     Nav::SidebarSettings { .. } => settings::Tab::Sidebar,
                     Nav::SecretStoreSettings => settings::Tab::Privacy,
+                    Nav::MentionGroupSettings => settings::Tab::Mentions,
                     _ => self.settings_tab,
                 };
                 self.settings_tab = tab;
@@ -218,6 +226,25 @@ impl App {
                 quick_switcher::QuickSwitcher::focus()
                     .map(move |m| Message::QuickSwitcher(sid.clone(), m))
             }
+            // Replaces an open quick switcher (Ctrl+K or another forward).
+            (Nav::Forward(refs), Some(sid)) => {
+                self.modals
+                    .retain(|m| !matches!(m, Modal::QuickSwitcher(..)));
+                self.dialog_instances.1 += 1;
+                self.modals.push(Modal::QuickSwitcher(
+                    sid.clone(),
+                    Box::new(quick_switcher::QuickSwitcher::for_forward(refs)),
+                ));
+                quick_switcher::QuickSwitcher::focus()
+                    .map(move |m| Message::QuickSwitcher(sid.clone(), m))
+            }
+            // Over whatever is shown (pages and other dialogs included).
+            (Nav::Shortcuts, _) => {
+                if !self.modals.iter().any(|m| matches!(m, Modal::Shortcuts)) {
+                    self.modals.push(Modal::Shortcuts);
+                }
+                Task::none()
+            }
             (_, None) => Task::none(),
         }
     }
@@ -239,6 +266,19 @@ impl App {
                         rid,
                         tmid: None,
                     }),
+                    None => Task::none(),
+                },
+                Effect::ForwardTo { rid, refs } => match sid {
+                    Some(sid) => {
+                        let open = self.go(Go::Room {
+                            sid: sid.clone(),
+                            rid: rid.clone(),
+                            tmid: None,
+                        });
+                        let compose =
+                            self.room_compose(sid, &rid, crate::room::ComposeIntent::Forward(refs));
+                        Task::batch([open, compose])
+                    }
                     None => Task::none(),
                 },
                 Effect::OpenUrl(url) => self.open_url(url),
@@ -295,6 +335,11 @@ impl App {
                 }
                 Effect::SetFlag(sid, edit) => self.set_flag(&sid, edit),
                 Effect::StarKeptThreads => self.star_kept_threads(),
+                Effect::EditMentionGroup(sid, edit) => self.edit_mention_group(&sid, edit),
+                Effect::CheckMentionGroup(sid, check) => self.check_mention_group(sid, *check),
+                Effect::SuggestMentionMembers(sid, seq, term) => {
+                    self.suggest_mention_members(&sid, seq, term)
+                }
                 Effect::SetSecretsMemoryOnly(on) => self.on_secrets_memory_only(on),
                 Effect::UiKit(m) => match sid {
                     Some(sid) => {
@@ -704,11 +749,7 @@ impl App {
                         crate::videoconf::CallAction::Join(call_id),
                     ))
                 }
-                desktop::Request::ForeignSignal(id, signal) => {
-                    self.on_calls(crate::videoconf::Message::Notify(
-                        crate::videoconf::notify::Msg::Signal(id, signal),
-                    ))
-                }
+                desktop::Request::ForeignSignal(id, signal) => self.on_foreign_signal(id, signal),
             });
         }
         Task::batch(tasks)
@@ -831,7 +872,10 @@ impl App {
                 .enabled()
                 .then_some((self.offline.size, self.offline.clearing)),
             flags: self.flag_accounts(),
-            star_kept_busy: !self.star_kept.is_empty(),
+            star_kept_busy: self
+                .star_kept
+                .has_job(super::star_kept::StarJob::KeptThread),
+            mention_groups: self.mention_accounts(),
             #[cfg(feature = "self-update")]
             updater: crate::updater::view::settings_data(
                 &self.updater,
@@ -841,9 +885,8 @@ impl App {
         }
     }
 
-    /// The signed-in accounts' flags for the Settings, the active server's
-    /// first.
-    fn flag_accounts(&self) -> Vec<settings::FlagAccount<'_>> {
+    /// The signed-in accounts, the active server's first.
+    fn signed_in(&self) -> Vec<&ServerState> {
         let mut servers: Vec<&ServerState> = self
             .servers
             .values()
@@ -851,6 +894,32 @@ impl App {
             .collect();
         servers.sort_by_key(|s| (Some(&s.id) != self.active.as_ref(), s.name.to_lowercase()));
         servers
+    }
+
+    /// The signed-in accounts' mention groups for the Settings.
+    fn mention_accounts(&self) -> Vec<settings::MentionAccount<'_>> {
+        self.signed_in()
+            .into_iter()
+            .map(|s| settings::MentionAccount {
+                sid: s.id.clone(),
+                label: t!(
+                    "settings.flags_account",
+                    user = s.workspace.username().unwrap_or_default(),
+                    server = s.name
+                )
+                .into_owned(),
+                groups: s.workspace.mention_groups(),
+                status: s.mention_groups.status(),
+                online: s.session.is_some()
+                    && *s.workspace.connection() == ConnectionState::Connected,
+            })
+            .collect()
+    }
+
+    /// The signed-in accounts' flags for the Settings, the active server's
+    /// first.
+    fn flag_accounts(&self) -> Vec<settings::FlagAccount<'_>> {
+        self.signed_in()
             .into_iter()
             .map(|s| settings::FlagAccount {
                 sid: s.id.clone(),

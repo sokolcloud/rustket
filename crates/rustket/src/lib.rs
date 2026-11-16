@@ -30,12 +30,16 @@ pub mod focus;
 pub mod format;
 pub mod i18n;
 pub mod images;
+pub mod inbox;
+pub mod keymap;
+pub mod later;
 pub mod locales;
 #[cfg(target_os = "macos")]
 pub mod macos_events;
 pub mod message;
 pub mod omnichannel;
 pub mod os_events;
+pub mod reads;
 pub mod renderer;
 pub mod room;
 pub mod screens;

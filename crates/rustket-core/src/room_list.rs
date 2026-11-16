@@ -1179,6 +1179,76 @@ pub fn room_is_unread(e: &RoomEntry) -> bool {
     is_unread(e)
 }
 
+/// The kind of a room (icon, omnichannel or not).
+pub fn room_kind(e: &RoomEntry) -> RoomKind {
+    kind_of(e)
+}
+
+/// Whether the sidebar lists rows of room `rid` (subscribed, open, not
+/// archived, not a service room); the All unreads and Activity views agree.
+pub fn is_listed(ws: &Workspace, rid: &str) -> bool {
+    listed(ws, rid).is_some()
+}
+
+/// Every unread thread of the listed rooms, whatever the Threads mode,
+/// starred threads and flags are (the Activity view): unknown parents give
+/// placeholder rows. Newest activity first.
+pub fn unread_thread_items(ws: &Workspace, use_real_names: bool) -> Vec<ThreadListItem> {
+    if !ws.settings().threads_enabled() {
+        return Vec::new();
+    }
+    let opts = RoomListOptions {
+        use_real_names,
+        ..RoomListOptions::default()
+    };
+    let mut wanted: std::collections::BTreeMap<&str, &str> = Default::default();
+    for e in ws.rooms().values() {
+        let Some(s) = e.sub.as_ref().filter(|_| listed(ws, e.rid()).is_some()) else {
+            continue;
+        };
+        for v in [&s.tunread, &s.tunread_user, &s.tunread_group]
+            .into_iter()
+            .flatten()
+        {
+            for t in v {
+                if thread_unread(s, t).is_some() {
+                    wanted.insert(t, e.rid());
+                }
+            }
+        }
+    }
+    let mut out: Vec<ThreadListItem> = wanted
+        .into_iter()
+        .filter_map(|(tmid, rid)| thread_item(ws, listed(ws, rid)?, tmid, &opts, ""))
+        .collect();
+    out.sort_by(|a, b| b.tlm.cmp(&a.tlm).then_with(|| a.tmid.cmp(&b.tmid)));
+    out
+}
+
+/// Rooms "Mark all as read" (Shift+Esc) covers: open, non-archived,
+/// non-service subscriptions with anything unread or mentioned, unread
+/// threads included; muted rooms and hidden unread status included. Sorted
+/// by rid.
+pub fn read_all_targets(ws: &Workspace) -> Vec<String> {
+    let mut out: Vec<String> = ws
+        .rooms()
+        .values()
+        .filter(|e| !e.is_archived() && !e.is_service_room())
+        .filter_map(|e| e.sub.as_ref())
+        .filter(|s| {
+            s.open
+                && (s.alert
+                    || s.unread > 0
+                    || s.user_mentions > 0
+                    || s.group_mentions > 0
+                    || s.tunread.as_ref().is_some_and(|t| !t.is_empty()))
+        })
+        .map(|s| s.rid.clone())
+        .collect();
+    out.sort();
+    out
+}
+
 /// Totals for a window/tray badge: (unread rooms, mentions) over open,
 /// non-archived rooms (service rooms aside); muted rooms (`disableNotifications`) don't count as
 /// unread rooms, hidden mention status hides mentions.
@@ -1788,6 +1858,52 @@ mod tests {
         ]);
         // Rooms: p, h, g (muted and closed don't count); mentions: p 1 + m 2.
         assert_eq!(unread_totals(&ws), (3, 3));
+    }
+
+    #[test]
+    fn read_all_targets_cover_everything_unread() {
+        let with = |rid: &str, f: &dyn Fn(&mut Subscription)| {
+            let mut s = sub(rid, rid, RoomType::Channel);
+            f(&mut s);
+            s
+        };
+        let svc = service_sub("svc", serde_json::json!({ "v": 1 }));
+        let svc_room = crate::test_util::service_room(&svc, "me", 1);
+        let mut archived_room = room("arch", "arch", RoomType::Channel);
+        archived_room.archived = Some(true);
+        let ws = ws_with(vec![
+            (with("unread", &|s| s.unread = 2), None),
+            (with("alert", &|s| s.alert = true), None),
+            (
+                with("thread", &|s| s.tunread = Some(vec!["t".into()])),
+                None,
+            ),
+            (with("mention", &|s| s.user_mentions = 1), None),
+            (with("group", &|s| s.group_mentions = 1), None),
+            (
+                with("hidden", &|s| {
+                    s.unread = 1;
+                    s.hide_unread_status = Some(true);
+                    s.disable_notifications = Some(true);
+                }),
+                None,
+            ),
+            (
+                with("closed", &|s| {
+                    s.unread = 1;
+                    s.open = false;
+                }),
+                None,
+            ),
+            (with("arch", &|s| s.unread = 1), Some(archived_room)),
+            (with("empty", &|s| s.tunread = Some(Vec::new())), None),
+            (sub("read", "read", RoomType::Channel), None),
+            (svc, Some(svc_room)),
+        ]);
+        assert_eq!(
+            read_all_targets(&ws),
+            ["alert", "group", "hidden", "mention", "thread", "unread"]
+        );
     }
 
     #[test]

@@ -15,9 +15,11 @@ mod dialogs;
 pub mod interact;
 pub(crate) mod list;
 pub(crate) mod row;
+pub(crate) mod select;
 pub(crate) mod transfer;
 pub mod viewer;
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use chrono::Local;
@@ -29,7 +31,7 @@ use rust_i18n::t;
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
-use rustket_ui::theme::{SPACE_2, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
+use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
 use rustket_ui::widget::{BannerKind, empty_state, keyed_list, loading_placeholder, spinner};
 
 use super::render::system;
@@ -40,7 +42,7 @@ pub use actions::{
     star_thread_offer,
 };
 pub use interact::{Interactions, Msg as ItemMsg, Source};
-pub use viewer::{Viewer, ViewerMsg};
+pub use viewer::{Viewer, ViewerMsg, opens_image as viewer_opens_image};
 
 /// History pages loaded at most while looking for a jump target.
 const SEEK_PAGES: u32 = 20;
@@ -60,6 +62,12 @@ pub enum Message {
     Reveal(String),
     /// The highlight with this stamp ends.
     Unselect(u64),
+    /// Leave selection mode (Cancel, Escape).
+    ClearPicks,
+    /// Forward the selected messages (asks for the target room).
+    ForwardPicked,
+    /// Copy the permalinks of the selected messages.
+    CopyPickedLinks,
 }
 
 /// A message being looked for in older history.
@@ -80,6 +88,8 @@ pub struct Timeline {
     selected: Option<(String, u64)>,
     stamp: u64,
     seek: Option<Seek>,
+    /// Selected messages (`None`: not selecting).
+    picked: Option<BTreeSet<String>>,
 }
 
 /// Id of the container around a jumped-to row.
@@ -97,6 +107,41 @@ impl Timeline {
             selected: None,
             stamp: 0,
             seek: None,
+            picked: None,
+        }
+    }
+
+    /// Selection mode is on.
+    pub fn picking(&self) -> bool {
+        self.picked.is_some()
+    }
+
+    /// Selects or deselects `mid` (starting selection mode); a full
+    /// selection refuses more with a warning.
+    fn pick(&mut self, mid: &str, ctx: &UpdateCtx<'_>) -> Action<Message> {
+        let Some(item) = interact::find_item(ctx.workspace, ctx.rid, self.items.source(), mid)
+        else {
+            return Action::none();
+        };
+        let set = self.picked.get_or_insert_with(BTreeSet::new);
+        if !set.contains(mid)
+            && !select::pickable(
+                ctx.workspace,
+                self.items.source(),
+                &item,
+                chrono::Utc::now(),
+            )
+        {
+            return Action::none();
+        }
+        self.items.menu = None;
+        match select::toggle(set, mid, select::MAX_PICKED) {
+            Ok(()) => Action::none(),
+            Err(select::Full) => Action::effect(Effect::Toast(
+                BannerKind::Warning,
+                t!("room_timeline.pick_limit", max = select::MAX_PICKED).into_owned(),
+                String::new(),
+            )),
         }
     }
 
@@ -136,7 +181,38 @@ impl Timeline {
                 }
                 a
             }
+            Message::Item(ItemMsg::Act(mid, Act::Select)) => {
+                self.items.menu = None;
+                self.picked = Some(BTreeSet::new());
+                self.pick(&mid, ctx)
+            }
+            Message::Item(ItemMsg::Pick(mid)) => self.pick(&mid, ctx),
             Message::Item(m) => self.items.update(m, ctx).map(Message::Item),
+            Message::ClearPicks => {
+                self.picked = None;
+                Action::none()
+            }
+            Message::ForwardPicked => {
+                let Some(set) = self.picked.take() else {
+                    return Action::none();
+                };
+                let refs = select::ordered_refs(ctx.workspace, ctx.rid, &set);
+                if refs.is_empty() {
+                    return Action::none();
+                }
+                Action::effect(Effect::Forward(refs))
+            }
+            Message::CopyPickedLinks => {
+                let Some(set) = self.picked.as_ref().filter(|s| !s.is_empty()) else {
+                    return Action::none();
+                };
+                let links = select::links(ctx.server, ctx.workspace, ctx.rid, set);
+                Action::task(iced::clipboard::write(links)).with(Effect::Toast(
+                    BannerKind::Success,
+                    t!("room_timeline.links_copied").into_owned(),
+                    String::new(),
+                ))
+            }
             Message::Reveal(mid) => {
                 Action::task(list::reveal(self.scroll_id.clone(), row_id(&mid), true))
             }
@@ -289,6 +365,9 @@ impl Timeline {
         };
         // Forget state of deleted messages.
         self.items.prune(|mid| tl.contains(mid));
+        if let Some(set) = &mut self.picked {
+            set.retain(|mid| tl.contains(mid));
+        }
         // An own message being sent while scrolled up: jump down to it.
         if self.follow.on_changes(tl) {
             self.seek = None;
@@ -384,6 +463,8 @@ impl Timeline {
                 menu_open: self.items.menu.as_deref() == Some(m.id.as_str()),
                 thread_unread: tunread.is_some_and(|t| t.contains(&m.id)),
                 selected: selected == Some(m.id.as_str()),
+                picking: self.picked.is_some(),
+                picked: self.picked.as_ref().is_some_and(|p| p.contains(&m.id)),
             };
             let el = list::row(env, &common, r, flags);
             let el = if flags.selected {
@@ -409,8 +490,54 @@ impl Timeline {
             };
             (label, Message::JumpToLatest)
         });
-        list::with_jump_button(list.into(), jump)
+        // The bar slot always exists, so the list keeps its tree position
+        // (and scroll state) when selection mode starts or ends.
+        let bar: Element<'a, Message> = match &self.picked {
+            Some(set) => selection_bar(set.len()),
+            None => space().height(0).into(),
+        };
+        column![list::with_jump_button(list.into(), jump), bar].into()
     }
+}
+
+/// "3 messages selected" with Copy links, Forward and Cancel.
+fn selection_bar<'a>(count: usize) -> Element<'a, Message> {
+    use rustket_ui::widget::{ButtonSize, ghost_button, primary_button, secondary_button};
+    let n = count as u64;
+    let some = count > 0;
+    let bar = container(
+        hrow![
+            text(
+                t!(
+                    format!("room_timeline.picked_{}", super::render::plural(n)),
+                    count = n
+                )
+                .into_owned()
+            )
+            .size(TEXT_SMALL)
+            .width(Length::Fill),
+            ghost_button(t!("app.cancel").into_owned(), Some(Message::ClearPicks))
+                .size(ButtonSize::Small),
+            secondary_button(
+                t!("room_timeline.copy_links").into_owned(),
+                some.then_some(Message::CopyPickedLinks)
+            )
+            .icon(Icon::Link)
+            .size(ButtonSize::Small),
+            primary_button(
+                t!("room_timeline.act_forward").into_owned(),
+                some.then_some(Message::ForwardPicked)
+            )
+            .icon(Icon::Forward)
+            .size(ButtonSize::Small),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center),
+    )
+    .padding([SPACE_2, SPACE_3])
+    .width(Length::Fill)
+    .style(style::container_composer(false));
+    container(bar).padding([SPACE_1, SPACE_4]).into()
 }
 
 /// The first history page failed: error with a retry button.

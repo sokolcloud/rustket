@@ -181,7 +181,11 @@ async fn restart_shows_the_cache_until_the_initial_load() {
     let _ = app.update(Message::Noop);
     // Settings → Storage → Clear: what is shown is written again in full,
     // unsent messages stay.
-    run(rustket::cache::clear_all(&mut app)).await;
+    let cleared = run_out(rustket::cache::clear_all(&mut app)).await;
+    assert!(!cleared.is_empty(), "the clear reports back");
+    for m in cleared {
+        let _ = app.update(m);
+    }
     let _ = app.update(Message::Noop);
     rustket::cache::on_quit(&app);
     let offline_dir = server_dir(&dir.join("offline"), &sid);
@@ -289,6 +293,23 @@ async fn sign_out(app: &mut App, m: Message) -> iced::Task<Message> {
 
 /// Runs a task's futures (results are dropped; follow-up messages that
 /// matter are fed by the test).
+/// Runs `task` and returns the messages it produced.
+async fn run_out(task: iced::Task<Message>) -> Vec<Message> {
+    use iced::futures::StreamExt;
+    let Some(s) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), s.collect::<Vec<_>>())
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|a| match a {
+            iced_runtime::Action::Output(m) => Some(m),
+            _ => None,
+        })
+        .collect()
+}
+
 async fn run(task: iced::Task<Message>) {
     use iced::futures::StreamExt;
     if let Some(s) = iced_runtime::task::into_stream(task) {

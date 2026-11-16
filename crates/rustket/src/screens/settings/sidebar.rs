@@ -505,6 +505,12 @@ impl Settings {
                 ui.group_by_type,
                 Some(SettingsMessage::SetGroupByType),
             ),
+            switch(
+                t!("settings.pinned_views").into_owned(),
+                Some(t!("settings.pinned_views_help").into_owned()),
+                ui.sidebar_pinned_views,
+                Some(SettingsMessage::SetPinnedViews),
+            ),
             field(
                 t!("settings.sidebar_sort").into_owned(),
                 None,

@@ -2,7 +2,10 @@
 
 pub mod flag_menu;
 pub mod flags;
+pub mod later_sync;
+pub mod mention_groups;
 pub mod rail;
+pub mod service_sync;
 pub mod sidebar;
 pub mod status_menu;
 pub mod threads;
@@ -18,6 +21,55 @@ use rustket_core::{ServerId, Workspace};
 use crate::room::RoomView;
 use crate::screens::login::Login;
 use crate::session::{SessionHandle, SessionSpec, tls_for};
+
+/// Each synced key's part of a combined push ([`ServerState::service_pushed`]).
+pub struct ServicePushed {
+    pub flags: Option<flags::Msg>,
+    pub mention_groups: Option<mention_groups::Msg>,
+    pub later: Option<later_sync::LaterMsg>,
+    pub reminders: Option<later_sync::ReminderMsg>,
+}
+
+/// A view shown in place of the room area (the active room stays open
+/// behind it). Opening one closes the other and the contact center;
+/// opening a room closes it.
+#[derive(Debug)]
+pub enum MainView {
+    /// All unreads, Catch up or Activity (`crate::inbox`).
+    Inbox(crate::inbox::InboxScreen),
+    /// Starred messages and reminders (`crate::later`).
+    Later(crate::later::LaterView),
+}
+
+impl MainView {
+    pub fn inbox(&self) -> Option<&crate::inbox::InboxScreen> {
+        match self {
+            MainView::Inbox(i) => Some(i),
+            MainView::Later(_) => None,
+        }
+    }
+
+    pub fn inbox_mut(&mut self) -> Option<&mut crate::inbox::InboxScreen> {
+        match self {
+            MainView::Inbox(i) => Some(i),
+            MainView::Later(_) => None,
+        }
+    }
+
+    pub fn later(&self) -> Option<&crate::later::LaterView> {
+        match self {
+            MainView::Later(l) => Some(l),
+            MainView::Inbox(_) => None,
+        }
+    }
+
+    pub fn later_mut(&mut self) -> Option<&mut crate::later::LaterView> {
+        match self {
+            MainView::Later(l) => Some(l),
+            MainView::Inbox(_) => None,
+        }
+    }
+}
 
 /// Everything the app keeps for one configured server.
 pub struct ServerState {
@@ -42,6 +94,15 @@ pub struct ServerState {
     pub threads: threads::SidebarThreads,
     /// Sync of the account's flags (`workspace::flags`).
     pub flags: flags::FlagSync,
+    /// Sync of the account's mention groups (`workspace::mention_groups`).
+    pub mention_groups: mention_groups::MentionGroupSync,
+    /// Sync of the account's Later state (`workspace::later_sync`).
+    pub later: later_sync::LaterSync,
+    /// Sync of the account's reminders (`workspace::later_sync`).
+    pub reminders: later_sync::ReminderSync,
+    /// What the synced keys of the account share: the write lock
+    /// (`workspace::service_sync`).
+    pub service: service_sync::Shared,
     /// Open room views (currently only the active one is kept open).
     pub rooms: HashMap<String, RoomView>,
     pub active_room: Option<String>,
@@ -63,6 +124,14 @@ pub struct ServerState {
     pub e2e: crate::e2e::ServerE2e,
     /// Offline cache of this account (`crate::cache`).
     pub cache: crate::cache::ServerCache,
+    /// Read marks waiting to be sent (`crate::reads`).
+    pub reads: crate::reads::Queue,
+    /// The view in place of the room area, if any.
+    pub main_view: Option<MainView>,
+    /// What the inbox views keep while closed (skipped rooms, loader).
+    pub inbox: crate::inbox::InboxState,
+    /// What Later keeps while closed (the fetch of reminder copies).
+    pub later_state: crate::later::LaterState,
 }
 
 impl ServerState {
@@ -100,6 +169,10 @@ impl ServerState {
             omni: crate::omnichannel::Omni::default(),
             threads: threads::SidebarThreads::default(),
             flags: flags::FlagSync::default(),
+            mention_groups: mention_groups::MentionGroupSync::default(),
+            later: later_sync::LaterSync::default(),
+            reminders: later_sync::ReminderSync::default(),
+            service: service_sync::Shared::default(),
             rooms: HashMap::new(),
             active_room: None,
             syncing: false,
@@ -112,6 +185,10 @@ impl ServerState {
             uikit: crate::uikit::Local::default(),
             e2e: Default::default(),
             cache: Default::default(),
+            reads: Default::default(),
+            main_view: None,
+            inbox: Default::default(),
+            later_state: Default::default(),
         })
     }
 
@@ -153,11 +230,92 @@ impl ServerState {
         self.omni.reset(&self.id);
         self.threads.reset();
         self.flags.reset();
+        self.mention_groups.reset();
+        self.later.reset();
+        self.reminders.reset();
+        // `service` stays: a push of the old session may still hold its lock.
+        self.reads.clear();
+        self.main_view = None;
+        self.inbox.reset();
+        self.later_state = Default::default();
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;
         self.sync_error = None;
         self.start_error = None;
+    }
+
+    /// The workspace and every synced key of the account. Keys added later
+    /// join here (and in [`Self::service_pushed`]'s `finish`es).
+    fn service_syncs(
+        &mut self,
+    ) -> (
+        &rustket_core::Workspace,
+        [&mut dyn service_sync::Syncing; 4],
+    ) {
+        (
+            &self.workspace,
+            [
+                &mut self.flags.sync,
+                &mut self.mention_groups,
+                &mut self.later,
+                &mut self.reminders,
+            ],
+        )
+    }
+
+    /// Starts one push of the account's synced keys when one of them is
+    /// due (after their `tick`s).
+    pub fn start_service_push(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<iced::Task<service_sync::Outcome>> {
+        self.session.as_ref()?;
+        let parts = self.service_parts(now)?;
+        let h = self.session.as_ref()?;
+        Some(service_sync::push_task(
+            &self.workspace,
+            h,
+            &self.service,
+            parts,
+        ))
+    }
+
+    /// The parts of a push, when one key's time has come.
+    pub(crate) fn service_parts(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<Vec<service_sync::Outgoing>> {
+        let (ws, mut syncs) = self.service_syncs();
+        service_sync::take_parts(ws, &mut syncs, now)
+    }
+
+    /// Hands a combined push's result to the keys: each key's part, for
+    /// its `update`. Every key learns the room the push used and keeps a
+    /// rate limit it hit.
+    pub fn service_pushed(
+        &mut self,
+        o: &service_sync::Outcome,
+        now: std::time::Instant,
+    ) -> ServicePushed {
+        let (_, mut syncs) = self.service_syncs();
+        service_sync::pause_on_rate_limit(o, &mut syncs, now);
+        let flags = self.flags.finish(o);
+        let groups = self.mention_groups.finish(o);
+        let later = self.later.finish(o);
+        let reminders = self.reminders.finish(o);
+        if let Some(rid) = o.rid() {
+            self.flags.adopt_created(rid);
+            self.mention_groups.adopt_created(rid);
+            self.later.adopt_created(rid);
+            self.reminders.adopt_created(rid);
+        }
+        ServicePushed {
+            flags: flags.map(|(epoch, res)| flags::Msg::Pushed { epoch, res }),
+            mention_groups: groups.map(|(epoch, res)| service_sync::Msg::Pushed { epoch, res }),
+            later: later.map(|(epoch, res)| service_sync::Msg::Pushed { epoch, res }),
+            reminders: reminders.map(|(epoch, res)| service_sync::Msg::Pushed { epoch, res }),
+        }
     }
 
     /// Whether a result tagged with `epoch` belongs to the current session.
@@ -167,5 +325,32 @@ impl ServerState {
 
     pub fn is_logged_in(&self) -> bool {
         self.credentials.is_some()
+    }
+
+    /// Another view replaces the room area (a [`MainView`] or the
+    /// omnichannel contact center): the active room is not on screen, so it
+    /// is not marked read, takes no dropped files and its notifications
+    /// still show.
+    pub fn room_area_taken(&self) -> bool {
+        self.main_view.is_some() || self.omni.contact_center.is_some()
+    }
+
+    /// The open inbox view, if any.
+    pub fn inbox_view(&self) -> Option<&crate::inbox::InboxScreen> {
+        self.main_view.as_ref().and_then(MainView::inbox)
+    }
+
+    /// The open Later view, if any.
+    pub fn later_view(&self) -> Option<&crate::later::LaterView> {
+        self.main_view.as_ref().and_then(MainView::later)
+    }
+
+    /// Closes the view in place of the room area (a room opens, Esc).
+    pub fn close_main_view(&mut self) {
+        self.main_view = None;
+        self.workspace.keep_feeds(&[]);
+        // A view opened next starts at the same revision: the loader must
+        // plan for it rather than take the old view's key as current.
+        self.inbox.plan_key = None;
     }
 }

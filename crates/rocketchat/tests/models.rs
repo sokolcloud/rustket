@@ -617,6 +617,25 @@ fn misc_lists() {
     let inner: Value = serde_json::from_str(err["message"].as_str().unwrap()).unwrap();
     let me: rocketchat::MethodError = serde_json::from_value(inner["error"].clone()).unwrap();
     assert_eq!(me.code().as_deref(), Some("404"));
+    assert!(Error::from_method_error(me).is_method_not_found());
+}
+
+/// DDP `readMessages` / `readThreads` answer with a result frame without a
+/// `result`; a bad room id is a method error, not a missing method.
+#[test]
+fn read_messages_method_frames() {
+    let frame = |name: &str| -> Value {
+        let v = raw(name);
+        serde_json::from_str(v["message"].as_str().unwrap()).unwrap()
+    };
+    let ok = frame("method_call_read_messages");
+    assert_eq!(ok["msg"], "result");
+    assert!(ok.get("result").is_none() && ok.get("error").is_none());
+    let bad = frame("method_call_read_messages_invalid");
+    let me: rocketchat::MethodError = serde_json::from_value(bad["error"].clone()).unwrap();
+    assert_eq!(me.code().as_deref(), Some("error-room-does-not-exist"));
+    let e = Error::from_method_error(me);
+    assert!(!e.is_method_not_found(), "{e:?}");
 }
 
 #[test]
@@ -754,4 +773,133 @@ fn service_room_fields() {
     room.users_count = Some(1);
     room.id = "other".into();
     assert!(service_subscriptions([(&sub, &room)], uid).is_empty());
+}
+
+/// A service room holding the flags and the mention groups: writing one key
+/// keeps the other.
+#[test]
+fn service_room_fields_with_mention_groups() {
+    let sub: Subscription = get("subscriptions_get_one_service_groups", "subscription");
+    assert!(sub.is_service_room_of("Er3h8XYKahaopbSA7"));
+    let mut fields = sub.service_fields().unwrap();
+    let groups = fields.get(MENTION_GROUPS_KEY).unwrap();
+    assert_eq!(
+        groups["groups"]["Kq3xY7pLmN2aB9cDe"]["u"],
+        serde_json::json!(["bob", "carol"])
+    );
+    assert!(groups["groups"]["Zz9yX8wV7uT6sR5qP"].get("n").is_none());
+    fields.set(
+        MENTION_GROUPS_KEY,
+        serde_json::json!({ "v": 1, "groups": {} }),
+    );
+    let out = fields.to_custom_fields();
+    assert_eq!(out[FLAGS_KEY]["rooms"]["GENERAL"]["c"], "red");
+    assert_eq!(out[MENTION_GROUPS_KEY]["groups"], serde_json::json!({}));
+    assert_eq!(out[SERVICE_MARKER_KEY]["owner"], "Er3h8XYKahaopbSA7");
+}
+
+/// A service room holding Later's state and the reminders next to the
+/// flags (captured from the dev server): writing one key keeps the others,
+/// tombstones (`null`-free entries with only `t`/`d`) round-trip.
+#[test]
+fn service_room_fields_with_later_and_reminders() {
+    let sub: Subscription = get("subscriptions_get_one_service_later", "subscription");
+    assert!(sub.is_service_room_of("Er3h8XYKahaopbSA7"));
+    let mut fields = sub.service_fields().unwrap();
+    let later = fields.get(LATER_KEY).unwrap();
+    assert_eq!(later["status"]["Ab3cD4eF5gH6iJ7kL"]["s"], "done");
+    assert!(later["status"]["Yz3aB4cD5eF6gH7iJ"].get("s").is_none());
+    assert_eq!(later["seeded"]["t"], 1_794_700_000_000i64);
+    let reminders = fields.get(REMINDERS_KEY).unwrap();
+    assert_eq!(
+        reminders["items"]["Wx3yZ4aB5cD6eF7gH"]["m"],
+        "Kl8mN9oP0qR1sT2uV"
+    );
+    fields.set(REMINDERS_KEY, serde_json::json!({ "v": 1, "items": {} }));
+    let out = fields.to_custom_fields();
+    assert_eq!(
+        out[LATER_KEY]["due"]["Ab3cD4eF5gH6iJ7kL"]["at"],
+        1_794_800_000_000i64
+    );
+    assert_eq!(out[REMINDERS_KEY]["items"], serde_json::json!({}));
+    assert!(out.get(FLAGS_KEY).is_some());
+}
+
+/// A sent group mention `@backend (@bob @carol)`: the server takes the
+/// parenthesised names as mentions (an unknown `@backend` is ignored).
+#[test]
+fn group_mention_expansion_mentions_the_members() {
+    let m: Message = get("chat_send_message_group_mention", "message");
+    assert_eq!(m.msg, "ping @backend (@bob @carol)");
+    let names: Vec<&str> = m
+        .mentions
+        .iter()
+        .flatten()
+        .filter_map(|x| x.username.as_deref())
+        .collect();
+    assert_eq!(names, ["bob", "carol"]);
+}
+
+/// `users.info` of a user who published a UTC offset (`users.setPreferences`).
+#[test]
+fn users_info_utc_offset() {
+    let u: User = get("users_info_utc_offset", "user");
+    assert_eq!(u.utc_offset, Some(3.0));
+    // Fractional and negative offsets (India, Newfoundland) parse as well.
+    let u: User =
+        serde_json::from_value(serde_json::json!({"_id": "x", "utcOffset": -3.5})).unwrap();
+    assert_eq!(u.utc_offset, Some(-3.5));
+}
+
+/// Online members of a room (`rooms.membersOrderedByRole` with `status[]`).
+#[test]
+fn room_members_online() {
+    let v = raw("room_members_online");
+    assert_eq!(v["total"], 1);
+    let members: Vec<UserSummary> = get("room_members_online", "members");
+    assert_eq!(members[0].status, Some(UserStatus::Online));
+}
+
+/// A message of only `[ ](permalink)` lines (a forward without a comment):
+/// the server turns each link into a quote attachment.
+#[test]
+fn forwarded_message_has_quote_attachments() {
+    let m: Message = get("message_forwarded", "");
+    let quotes = m.attachments.as_deref().unwrap_or_default();
+    assert_eq!(quotes.len(), 2);
+    assert!(quotes.iter().all(MessageAttachment::is_quote));
+    let texts: Vec<&str> = quotes.iter().filter_map(|a| a.text.as_deref()).collect();
+    assert_eq!(texts, ["first forwarded", "second forwarded"]);
+    assert!(quotes[0].message_link.as_deref().unwrap().contains("?msg="));
+    assert!(
+        m.urls
+            .iter()
+            .flatten()
+            .all(|u| u.ignore_parse == Some(true))
+    );
+}
+
+/// `rooms.history` with `lastSeen` (All unreads' feeds): newest first, the
+/// unread messages older than the page counted, the first unread one sent.
+#[test]
+fn rooms_history_with_last_seen() {
+    let h: History = get("rooms_history_unread", "");
+    assert_eq!(h.messages.len(), 2);
+    assert!(h.messages[0].ts > h.messages[1].ts, "newest first");
+    assert_eq!(h.unread_not_loaded, Some(2));
+    assert!(h.first_unread.is_some());
+    assert!(h.messages.iter().all(|m| m.tmid.is_none()));
+}
+
+/// `chat.getMentionedMessages` (Activity's thread mentions): direct
+/// mentions only, thread replies included with their `tmid`.
+#[test]
+fn mentioned_messages_include_thread_replies() {
+    let v = raw("chat_get_mentioned_inbox");
+    let list: Vec<Message> = serde_json::from_value(v["messages"].clone()).unwrap();
+    assert_eq!(v["total"], 2);
+    let reply = list.iter().find(|m| m.tmid.is_some()).unwrap();
+    let m = &reply.mentions.as_ref().unwrap()[0];
+    assert_eq!(m.username.as_deref(), Some("alice"));
+    assert!(list.iter().any(|m| m.tmid.is_none()));
 }

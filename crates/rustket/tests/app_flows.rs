@@ -999,8 +999,9 @@ async fn confirmations_of_two_servers_do_not_stack() {
     assert!(signed_in(&app, &s2).is_none(), "not armed yet");
     // Covered by another dialog: disarmed, re-armed when uncovered.
     let _ = app.update(Message::ArmConfirm(stamp2));
-    let _ = app.update(Message::OpenQuickSwitcher);
-    assert!(top_stamp(&app).is_none(), "covered by the quick switcher");
+    // (The cheat sheet opens over dialogs; Ctrl+K no longer does.)
+    let _ = app.update(Message::Shortcut(rustket::keymap::Shortcut::CheatSheet));
+    assert!(top_stamp(&app).is_none(), "covered by the cheat sheet");
     let _ = app.update(Message::CloseModal);
     let (_, stamp3, armed3) = top_stamp(&app).unwrap();
     assert!(!armed3);
@@ -1163,8 +1164,8 @@ async fn component_navigation() {
         rustket::dialogs::create_room::Message::Close,
     ));
     assert!(app.modals.is_empty());
-    let _ = app.update(Message::OpenQuickSwitcher);
-    let _ = app.update(Message::OpenQuickSwitcher);
+    let _ = app.update(Message::Shortcut(rustket::keymap::Shortcut::QuickSwitcher));
+    let _ = app.update(Message::Shortcut(rustket::keymap::Shortcut::QuickSwitcher));
     assert_eq!(app.modals.len(), 1);
     let _ = app.update(Message::QuickSwitcher(
         sid.clone(),
@@ -3223,4 +3224,725 @@ async fn file_fallback_toast_opens_the_privacy_tab() {
     };
     assert_eq!(s.tab, Tab::Privacy);
     assert!(app.toasts.iter().all(|t| t.id != toast.id), "toast closed");
+}
+
+// --- keyboard shortcuts --------------------------------------------------------------
+
+/// Esc on the server view: the right panel closes first; then an unread
+/// room is marked read with its threads (unless the setting is off); a view
+/// in place of the room area (the contact center) closes instead, and the
+/// room it covers is not marked read.
+#[test]
+fn escape_chain_on_the_server_view() {
+    use rustket::room::panel::{Kind, Message as Pm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let esc = |app: &mut App| outputs_within(app.update(Message::Escape), 300);
+    let marks_all = |outs: &[Message]| {
+        outs.iter().any(|m| {
+            matches!(m, Message::Room(_, _, r, rustket::room::Message::MarkAllRead) if r == "r1")
+        })
+    };
+    assert!(!marks_all(&esc(&mut app)), "nothing unread");
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 2, T0 + 11);
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Thread("p1".into()))),
+    ));
+    let outs = esc(&mut app);
+    assert!(!marks_all(&outs));
+    assert!(outs.iter().any(|m| matches!(
+        m,
+        Message::Room(_, _, _, rustket::room::Message::Panel(Pm::Close))
+    )));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Close),
+    ));
+    assert!(marks_all(&esc(&mut app)));
+    app.config.ui.escape_marks_read = false;
+    assert!(!marks_all(&esc(&mut app)), "switched off in Settings");
+    app.config.ui.escape_marks_read = true;
+    app.servers
+        .get_mut(&sid)
+        .unwrap()
+        .omni
+        .open_contact_center();
+    assert!(app.servers[&sid].room_area_taken());
+    let outs = esc(&mut app);
+    assert!(!marks_all(&outs), "the covered room was marked read");
+    assert!(outs.iter().any(|m| matches!(
+        m,
+        Message::Omni(
+            _,
+            _,
+            rustket::omnichannel::Message::ContactCenter(
+                rustket::omnichannel::contact_center::Msg::Close
+            )
+        )
+    )));
+    // Ctrl+Shift+\ does not reach the covered room either.
+    let outs = outputs_within(
+        app.update(Message::Shortcut(rustket::keymap::Shortcut::ReactLast)),
+        300,
+    );
+    assert!(!outs.iter().any(|m| matches!(m, Message::Room(..))));
+}
+
+/// Esc with a message selection and a panel open: the selection is
+/// cleared first (it is what the user just did), then the panel closes.
+#[test]
+fn escape_clears_the_selection_before_the_panel() {
+    use rustket::room::Message as Rm;
+    use rustket::room::panel::{Kind, Message as Pm};
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Act("p1".into(), Act::Select))),
+    ));
+    assert!(app.servers[&sid].rooms["r1"].picking());
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Panel(Pm::Open(Kind::Thread("p1".into()))),
+    ));
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert!(
+        outs.iter()
+            .any(|m| matches!(m, Message::Room(_, _, _, Rm::Timeline(Tm::ClearPicks))))
+    );
+    assert!(
+        !outs
+            .iter()
+            .any(|m| matches!(m, Message::Room(_, _, _, Rm::Panel(Pm::Close))))
+    );
+    let _ = app.update(room_msg(&app, &sid, "r1", Rm::Timeline(Tm::ClearPicks)));
+    assert!(!app.servers[&sid].rooms["r1"].picking());
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert!(
+        outs.iter()
+            .any(|m| matches!(m, Message::Room(_, _, _, Rm::Panel(Pm::Close))))
+    );
+}
+
+/// Forward from a room: the quick switcher opens in forward mode; picking a
+/// room opens it with the message quoted as forwarded in its composer.
+#[test]
+fn forward_opens_the_target_with_the_quote() {
+    use rustket::room::Message as Rm;
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 10, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Act("p1".into(), Act::Forward))),
+    ));
+    assert!(matches!(
+        app.modals.last(),
+        Some(rustket::app::Modal::QuickSwitcher(..))
+    ));
+    let target = "r2".to_owned();
+    let _ = app.update(Message::QuickSwitcher(
+        sid.clone(),
+        rustket::dialogs::quick_switcher::Message::Query(String::new()),
+    ));
+    let items = rustket::dialogs::quick_switcher::results_for(
+        &app.servers[&sid].workspace,
+        &rustket_core::room_list::RoomListOptions::default(),
+        "",
+        None,
+        true,
+    );
+    let i = items
+        .iter()
+        .position(|it| matches!(it, rustket::dialogs::quick_switcher::Item::Local { rid, .. } if *rid == target))
+        .expect("the target is offered");
+    let _ = app.update(Message::QuickSwitcher(
+        sid.clone(),
+        rustket::dialogs::quick_switcher::Message::Select(i),
+    ));
+    let _ = app.update(Message::QuickSwitcher(
+        sid.clone(),
+        rustket::dialogs::quick_switcher::Message::Submit,
+    ));
+    assert!(app.modals.is_empty(), "the switcher closed");
+    let s = &app.servers[&sid];
+    assert_eq!(s.active_room.as_deref(), Some(target.as_str()));
+    assert_eq!(s.rooms[&target].composer.quoted(), ["p1"]);
+}
+
+/// Ctrl+/ toggles the cheat sheet (also from the status menu and over the
+/// preferences), Ctrl+, opens the preferences, Ctrl+Shift+\ goes to the open
+/// room's composer, Shift+Esc needs a connection.
+#[tokio::test]
+async fn app_wide_shortcuts() {
+    use rustket::app::Screen;
+    use rustket::keymap::Shortcut;
+    use rustket::workspace::status_menu;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(Message::Shortcut(Shortcut::CheatSheet));
+    assert!(matches!(app.modals.last(), Some(Modal::Shortcuts)));
+    let _ = app.view();
+    let _ = app.update(Message::Shortcut(Shortcut::CheatSheet));
+    assert!(app.modals.is_empty());
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Status(status_menu::Message::Shortcuts),
+    ));
+    assert!(matches!(app.modals.last(), Some(Modal::Shortcuts)));
+    let _ = app.update(Message::CloseModal);
+    assert!(app.modals.is_empty());
+
+    let _ = app.update(Message::Shortcut(Shortcut::Settings));
+    assert!(matches!(app.screen, Screen::Settings(_)));
+    let _ = app.update(Message::Settings(
+        rustket::screens::settings::Message::ShowShortcuts,
+    ));
+    assert!(matches!(app.modals.last(), Some(Modal::Shortcuts)));
+    let _ = app.view();
+    let _ = app.update(Message::CloseModal);
+    let _ = app.update(Message::Settings(
+        rustket::screens::settings::Message::Close,
+    ));
+    assert!(matches!(app.screen, Screen::Server));
+
+    set_unread(&mut app, &sid, "r2", 1, T0 + 5);
+    let toasts = app.toasts.len();
+    let _ = app.update(Message::Shortcut(Shortcut::MarkAllRead));
+    assert!(app.modals.is_empty(), "no dialog without a connection");
+    assert_eq!(app.toasts.len(), toasts + 1);
+}
+
+/// Chords the listener hears while a dialog has the keyboard leave it
+/// alone: Ctrl+K and Ctrl+, do nothing over it. Shift+Esc in the focused
+/// composer (the listener skips captured Shift+Esc) still asks.
+#[tokio::test]
+async fn shortcuts_behind_a_dialog() {
+    use rustket::app::Screen;
+    use rustket::keymap::Shortcut;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Create));
+    assert!(matches!(app.modals.last(), Some(Modal::CreateRoom(..))));
+    let _ = app.update(Message::Shortcut(Shortcut::QuickSwitcher));
+    assert_eq!(app.modals.len(), 1, "no quick switcher over the dialog");
+    let _ = app.update(Message::Shortcut(Shortcut::Settings));
+    assert!(matches!(app.screen, Screen::Server));
+    let toasts = app.toasts.len();
+    let _ = app.update(Message::Shortcut(Shortcut::MarkAllRead));
+    assert_eq!(app.modals.len(), 1);
+    assert_eq!(app.toasts.len(), toasts);
+    let _ = app.update(Message::CloseModal);
+    assert!(app.modals.is_empty());
+
+    // From the composer: the same path as the listener (offline here).
+    set_unread(&mut app, &sid, "r2", 1, T0 + 5);
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Composer(rustket::room::composer::Message::AskReadAll),
+    ));
+    assert_eq!(app.toasts.len(), toasts + 1, "not connected");
+}
+
+/// "Mark all as read": a running dialog cannot be dismissed, a failed run
+/// closes it with an error, and it closes when its server's queue is gone.
+#[tokio::test]
+async fn mark_all_read_dialog() {
+    use rustket::reads::Origin;
+    use rustket_core::reads::ReadReq;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let dialog = |stamp, busy| Modal::ReadAll {
+        server_id: sid.clone(),
+        rids: vec!["r1".into(), "r2".into()],
+        busy,
+        done: 0,
+        failed: 0,
+        stamp,
+    };
+    // Confirmed without a session: both rooms fail at once.
+    app.modals.push(dialog(7, false));
+    let _ = app.view();
+    let toasts = app.toasts.len();
+    let _ = app.update(Message::Modal(ModalMessage::ConfirmReadAll));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.len(), toasts + 1);
+    assert!(matches!(
+        app.toasts.last().unwrap().kind,
+        rustket_ui::widget::BannerKind::Error
+    ));
+
+    // Running: Esc / Cancel do nothing.
+    app.servers.get_mut(&sid).unwrap().reads.push(
+        ReadReq::Room {
+            rid: "r1".into(),
+            threads: true,
+        },
+        Origin::ReadAll(8),
+    );
+    app.modals.push(dialog(8, true));
+    let _ = app.view();
+    let _ = app.update(Message::CloseModal);
+    assert!(matches!(app.modals.last(), Some(Modal::ReadAll { .. })));
+    // Signed out meanwhile (queue cleared): the dialog goes.
+    app.servers.get_mut(&sid).unwrap().reads.clear();
+    let _ = app.update(Message::Noop);
+    assert!(app.modals.is_empty());
+}
+
+/// All unreads and Activity replace the room area like the contact center:
+/// their shortcuts toggle them, the sidebar rows switch between them, the
+/// covered room is not marked read, Esc closes them without marking the
+/// room, and opening a room closes them.
+#[test]
+fn inbox_views_cover_the_room_area() {
+    use rustket::inbox::{CatchUpKey, InboxKind};
+    use rustket::keymap::Shortcut;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let kind = |app: &App| app.servers[&sid].inbox_view().map(|i| i.kind());
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::MarkedRead(Ok(())),
+    ));
+    let _ = app.update(Message::Shortcut(Shortcut::AllUnreads));
+    assert_eq!(kind(&app), Some(InboxKind::Unreads));
+    assert!(app.servers[&sid].room_area_taken());
+    let _ = app.view();
+    // The covered room is not read when messages arrive.
+    deliver(&mut app, &sid, rc_msg("m1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 11);
+    deliver(&mut app, &sid, rc_msg("m2", "r2", T0 + 12, "B"));
+    set_unread(&mut app, &sid, "r2", 1, T0 + 13);
+    {
+        let s = &app.servers[&sid];
+        assert!(s.rooms["r1"].wants_auto_read(&s.workspace));
+    }
+    // A feed with a message renders in every view.
+    {
+        let s = app.servers.get_mut(&sid).unwrap();
+        let req = s.workspace.begin_feed("r2", false).unwrap();
+        s.workspace.finish_feed(
+            &req,
+            Ok(rocketchat::models::History {
+                messages: vec![rc_msg("m2", "r2", T0 + 12, "B")],
+                raw_len: 1,
+                ..Default::default()
+            }),
+        );
+    }
+    let _ = app.view();
+    // The shortcut again closes it; Activity, then the sidebar's row.
+    let _ = app.update(Message::Shortcut(Shortcut::AllUnreads));
+    assert_eq!(kind(&app), None);
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    assert_eq!(kind(&app), Some(InboxKind::Activity));
+    let _ = app.view();
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Inbox(InboxKind::Unreads),
+    ));
+    assert_eq!(kind(&app), Some(InboxKind::Unreads));
+    // Catch up from the Unread section's menu; its keys walk the rooms.
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Header(sidebar::HeaderAct::CatchUp),
+    ));
+    assert_eq!(kind(&app), Some(InboxKind::CatchUp));
+    let _ = app.view();
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Right));
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Right));
+    let _ = app.view();
+    // Esc closes the view and leaves the covered room alone.
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert_eq!(kind(&app), None);
+    assert!(!outs.iter().any(|m| matches!(
+        m,
+        Message::Room(_, _, _, rustket::room::Message::MarkAllRead)
+    )));
+    // Opening a room (or the contact center) closes it.
+    let _ = app.update(Message::Shortcut(Shortcut::AllUnreads));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    assert_eq!(kind(&app), None);
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    assert_eq!(kind(&app), None, "the open room closes it too");
+    // Hidden rows: the shortcuts still work.
+    app.config.ui.sidebar_pinned_views = false;
+    let _ = app.view();
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    assert_eq!(kind(&app), Some(InboxKind::Activity));
+}
+
+/// Esc with an inbox view over a room whose right panel is open closes
+/// only the view; the catch-up keys do nothing outside catch-up or under a
+/// modal; a view reopened as another kind starts its loads at once.
+#[test]
+fn inbox_esc_order_keys_and_reopen() {
+    use rustket::inbox::{CatchUpKey, InboxKind};
+    use rustket::keymap::Shortcut;
+    use rustket::room::panel::{Kind, Message as Pm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let kind = |app: &App| app.servers[&sid].inbox_view().map(|i| i.kind());
+    deliver(&mut app, &sid, rc_msg("m2", "r2", T0 + 12, "B"));
+    set_unread(&mut app, &sid, "r2", 1, T0 + 13);
+    deliver(&mut app, &sid, rc_msg("p1", "r1", T0 + 14, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Panel(Pm::Open(Kind::Thread("p1".into()))),
+    ));
+    assert!(app.servers[&sid].rooms["r1"].panel.kind().is_some());
+
+    // Activity's loader settles (its inputs recorded); Esc closes it and
+    // leaves the panel. A view opened next starts at the same revision, so
+    // the loader must not take the old inputs as current. (No session
+    // here: the key stands for a settled loader.)
+    let settled = Some([1, 1, 1, 1, 1]);
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    assert_eq!(kind(&app), Some(InboxKind::Activity));
+    app.servers.get_mut(&sid).unwrap().inbox.plan_key = settled;
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert_eq!(kind(&app), None);
+    assert!(app.servers[&sid].rooms["r1"].panel.kind().is_some());
+    assert!(!outs.iter().any(|m| matches!(
+        m,
+        Message::Room(_, _, _, rustket::room::Message::Panel(Pm::Close))
+    )));
+    assert_eq!(app.servers[&sid].inbox.plan_key, None);
+    let _ = app.update(Message::Shortcut(Shortcut::Activity));
+    app.servers.get_mut(&sid).unwrap().inbox.plan_key = settled;
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Inbox(InboxKind::Unreads),
+    ));
+    assert_eq!(kind(&app), Some(InboxKind::Unreads));
+    assert_eq!(app.servers[&sid].inbox.plan_key, None);
+
+    // Enter in All unreads (not catch-up) reads nothing.
+    let reads = |app: &App| {
+        app.servers[&sid]
+            .reads
+            .has_origin(&rustket::reads::Origin::Inbox)
+    };
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Enter));
+    assert!(!reads(&app));
+    assert_eq!(kind(&app), Some(InboxKind::Unreads));
+    // In catch-up under a modal the keys are the modal's.
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Header(sidebar::HeaderAct::CatchUp),
+    ));
+    assert_eq!(kind(&app), Some(InboxKind::CatchUp));
+    let current = |app: &App| {
+        app.servers[&sid]
+            .inbox_view()
+            .and_then(|i| i.catch_up())
+            .and_then(|c| c.current().map(str::to_owned))
+    };
+    let at = current(&app);
+    assert!(at.is_some());
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Create));
+    assert!(!app.modals.is_empty());
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Right));
+    let _ = app.update(Message::CatchUpKey(CatchUpKey::Enter));
+    assert_eq!(current(&app), at);
+    assert!(!reads(&app));
+}
+
+/// Later covers the room area like the inbox views: the covered room is not
+/// read, Esc closes the view and leaves the room alone, the shortcut
+/// toggles it, the sidebar row opens it and opening a room closes it.
+/// "Remind me…" from a message's menu sets a reminder the Reminders tab
+/// lists; it waits in the config until the service room stores it.
+#[test]
+fn later_view_and_reminders() {
+    use rustket::keymap::Shortcut;
+    use rustket::later::when::Msg as Wm;
+    use rustket::room::Message as Rm;
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    use rustket_core::reminders::{Preset, ReminderBlob};
+    use rustket_core::workspace::LaterTab;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let tab = |app: &App| app.servers[&sid].later_view().map(|v| v.tab);
+    let _ = app.update(room_msg(&app, &sid, "r1", Rm::MarkedRead(Ok(()))));
+    let _ = app.update(Message::Shortcut(Shortcut::Later));
+    assert_eq!(tab(&app), Some(LaterTab::InProgress));
+    assert!(app.servers[&sid].room_area_taken());
+    let _ = app.view();
+    // The covered room is not read when messages arrive.
+    deliver(&mut app, &sid, rc_msg("m1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 11);
+    assert!(!app.servers[&sid].rooms["r1"].is_visible());
+    // Esc closes it and does not mark the covered room read.
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert_eq!(tab(&app), None);
+    assert!(!outs.iter().any(|m| matches!(
+        m,
+        Message::Room(_, _, _, rustket::room::Message::MarkAllRead)
+    )));
+    // The shortcut toggles; the sidebar row opens; a room closes it.
+    let _ = app.update(Message::Shortcut(Shortcut::Later));
+    let _ = app.update(Message::Shortcut(Shortcut::Later));
+    assert_eq!(tab(&app), None);
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Later));
+    assert_eq!(tab(&app), Some(LaterTab::InProgress));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    assert_eq!(tab(&app), None);
+    // Back in r1: "Remind me…" on a new message, then "In 1 hour".
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r1".into()),
+    ));
+    deliver(&mut app, &sid, rc_msg("m3", "r1", T0 + 20, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Act("m3".into(), Act::Remind))),
+    ));
+    let _ = app.view();
+    let before = chrono::Utc::now().timestamp_millis();
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Remind(Wm::Preset(Preset::In1Hour)))),
+    ));
+    let s = &app.servers[&sid];
+    let r = s.workspace.reminders().get("m3").expect("reminder set");
+    assert_eq!(r.rid, "r1");
+    assert!(r.at_ms >= before + 3_599_000);
+    // The message's copy is kept for the notification.
+    assert!(s.workspace.later_message("m3").is_some());
+    // The Reminders tab lists it; the sidebar row shows no overdue count.
+    let _ = app.update(Message::Shortcut(Shortcut::Later));
+    let epoch = app.servers[&sid].generation;
+    let _ = app.update(Message::Later(
+        sid.clone(),
+        epoch,
+        rustket::later::Msg::Tab(LaterTab::Reminders),
+    ));
+    let rows = app.servers[&sid].workspace.later_rows(LaterTab::Reminders);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].mid, "m3");
+    let _ = app.view();
+    // The edit waits in the config (`pending_service`) until stored.
+    let _ = app.update(Message::Noop);
+    let entry = app.config.server(&sid).unwrap();
+    let pending: ReminderBlob = entry.pending_blob("A");
+    assert!(pending.view().get("m3").is_some());
+    // Removing it from the view clears it.
+    let _ = app.update(Message::Later(
+        sid.clone(),
+        epoch,
+        rustket::later::Msg::RemoveReminder("m3".into()),
+    ));
+    assert!(app.servers[&sid].workspace.reminders().get("m3").is_none());
+}
+
+/// A due reminder gets one notification (its text from the local copy);
+/// clicking it opens the message and marks the reminder done; one cleared
+/// elsewhere closes its notification; with reminder notifications off
+/// nothing is shown.
+#[test]
+fn due_reminders_notify_once_and_a_click_opens_and_clears() {
+    use rustket::desktop::notifications::{
+        self as dn, ACTION_DEFAULT, MockNotifier, Notifications, Signal,
+    };
+    use rustket_core::reminders::ReminderEdit;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let mock = MockNotifier::default();
+    app.desktop.notifications = Notifications::with_backend(Arc::new(mock.clone()));
+    deliver(&mut app, &sid, rc_msg("m3", "r1", T0 + 20, "B"));
+    let _ = app.update(Message::Noop);
+    // A reminder due in a moment (the dialog refuses times this close), on
+    // a reply in thread m3 known only from its local copy.
+    let soon = chrono::Utc::now().timestamp_millis() + 150;
+    {
+        let s = app.servers.get_mut(&sid).unwrap();
+        let set = ReminderEdit::Set {
+            rid: "r1".into(),
+            tmid: Some("m3".into()),
+            mid: "t1".into(),
+            at_ms: soon,
+        };
+        s.reminders
+            .edit(&mut s.workspace, &set, "dev", std::time::Instant::now())
+            .unwrap();
+        let mut reply = rc_msg("t1", "r1", T0 + 30, "B");
+        reply.tmid = Some("m3".into());
+        s.workspace.keep_reminder_copy(&reply);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let task = app.update(Message::Noop);
+    {
+        let shown = mock.shown.lock().unwrap();
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert!(shown[0].body.contains("text t1"), "{:?}", shown[0]);
+        assert!(shown[0].actions.iter().any(|(k, _)| k == "snooze"));
+    }
+    // Its id comes back; later passes show nothing more.
+    for m in outputs_within(task, 300) {
+        if matches!(m, Message::ReminderNotify(_)) {
+            let _ = app.update(m);
+        }
+    }
+    let _ = app.update(Message::Noop);
+    assert_eq!(mock.shown.lock().unwrap().len(), 1);
+    // A click: the room opens with the thread at the reply (from the local
+    // copy, no fetch) and the reminder is done.
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r2".into()),
+    ));
+    let _ = app.update(Message::Desktop(rustket::desktop::Message::Notifications(
+        dn::Message::Signal {
+            id: 1,
+            signal: Signal::Action(ACTION_DEFAULT.into()),
+        },
+    )));
+    let s = &app.servers[&sid];
+    assert_eq!(s.active_room.as_deref(), Some("r1"));
+    let panel = &s.rooms["r1"].panel;
+    assert_eq!(panel.thread_tmid(), Some("m3"));
+    assert_eq!(panel.thread_focus(), Some("t1"), "shown at the reply");
+    assert!(s.workspace.reminders().get("t1").is_none(), "marked done");
+    assert!(s.workspace.later_message("t1").is_none(), "copy dropped");
+
+    // Another reminder, cleared elsewhere after it fired: closed.
+    let soon = chrono::Utc::now().timestamp_millis() + 150;
+    let set = |s: &mut rustket::workspace::ServerState, mid: &str, at: i64| {
+        let e = ReminderEdit::Set {
+            rid: "r1".into(),
+            tmid: None,
+            mid: mid.into(),
+            at_ms: at,
+        };
+        s.reminders
+            .edit(&mut s.workspace, &e, "dev", std::time::Instant::now())
+            .unwrap();
+    };
+    set(app.servers.get_mut(&sid).unwrap(), "m4", soon);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let task = app.update(Message::Noop);
+    assert_eq!(mock.shown.lock().unwrap().len(), 2);
+    for m in outputs_within(task, 300) {
+        if matches!(m, Message::ReminderNotify(_)) {
+            let _ = app.update(m);
+        }
+    }
+    {
+        let s = app.servers.get_mut(&sid).unwrap();
+        s.reminders
+            .edit(
+                &mut s.workspace,
+                &ReminderEdit::Clear { mid: "m4".into() },
+                "dev",
+                std::time::Instant::now(),
+            )
+            .unwrap();
+    }
+    let _ = app.update(Message::Noop);
+    assert_eq!(*mock.closed.lock().unwrap(), [2]);
+
+    // Notifications off: a due reminder shows nothing.
+    app.config.ui.reminder_notifications = false;
+    let soon = chrono::Utc::now().timestamp_millis() + 150;
+    set(app.servers.get_mut(&sid).unwrap(), "m5", soon);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let _ = app.update(Message::Noop);
+    assert_eq!(mock.shown.lock().unwrap().len(), 2);
+}
+
+/// Later's first run seeds the account (older stars count as archived);
+/// a kept thread starred by "Move kept threads to Favorites" is archived;
+/// a star from the message menu goes to In progress, an unstar forgets it.
+#[test]
+fn later_seed_kept_threads_and_menu_stars() {
+    use rustket::room::Message as Rm;
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    use rustket_core::later::LaterStatus;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(Message::Noop);
+    let later = |app: &App| app.servers[&sid].workspace.later().clone();
+    assert!(later(&app).is_seeded());
+    assert_eq!(later(&app).default_status(Some(T0)), LaterStatus::Archived);
+    // A queued star of a kept thread succeeded.
+    let _ = app.update(Message::ThreadStarred {
+        sid: sid.clone(),
+        epoch: app.servers[&sid].generation,
+        rid: "r1".into(),
+        tmid: "t9".into(),
+        on: true,
+        queued: true,
+        result: Ok(()),
+    });
+    assert_eq!(later(&app).status_of("t9", None), LaterStatus::Archived);
+    // The menu's star of an old message: In progress explicitly.
+    deliver(&mut app, &sid, rc_msg("m6", "r1", T0 + 30, "B"));
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        Rm::Timeline(Tm::Item(ItemMsg::Act("m6".into(), Act::Star))),
+    ));
+    assert_eq!(
+        later(&app).status_of("m6", Some(T0 + 30)),
+        LaterStatus::InProgress
+    );
+    // The pending edits wait in the config.
+    let _ = app.update(Message::Noop);
+    let pending: rustket_core::later::LaterBlob =
+        app.config.server(&sid).unwrap().pending_blob("A");
+    assert!(pending.is_seeded() && pending.status.contains_key("m6"));
 }

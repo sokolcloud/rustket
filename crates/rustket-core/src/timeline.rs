@@ -407,6 +407,18 @@ impl Timeline {
         self.items.values().map(|i| &i.message)
     }
 
+    /// Newest message one can react to: delivered, not a system message
+    /// (removed messages included) and, in a room timeline (`in_thread`
+    /// false), not a thread reply shown in the channel.
+    pub fn last_reactable(&self, in_thread: bool) -> Option<&Message> {
+        self.items
+            .values()
+            .rev()
+            .filter(|i| i.state == DeliveryState::Sent)
+            .map(|i| &i.message)
+            .find(|m| !m.is_system() && (in_thread || m.tmid.is_none()))
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }
@@ -846,6 +858,34 @@ mod tests {
     use crate::test_util::{fixture, msg, ts};
     use chrono::FixedOffset;
     use rocketchat::models::History;
+
+    #[test]
+    fn last_reactable_skips_pending_system_and_replies() {
+        let mut t = Timeline::new_room("r");
+        assert!(t.last_reactable(false).is_none());
+        t.upsert(msg("a", "r", 1000, "u"));
+        let mut reply = msg("b", "r", 2000, "u");
+        reply.tmid = Some("a".into());
+        reply.tshow = Some(true);
+        assert!(t.upsert(reply));
+        let mut joined = msg("c", "r", 3000, "u");
+        joined.t = Some("uj".into());
+        t.upsert(joined);
+        let mut removed = msg("d", "r", 4000, "u");
+        removed.t = Some("rm".into());
+        t.upsert(removed);
+        let mut encrypted = msg("e", "r", 5000, "u");
+        encrypted.t = Some("e2e".into());
+        t.upsert(encrypted);
+        t.insert_pending(msg("f", "r", 6000, "me"));
+        t.insert_pending(msg("g", "r", 7000, "me"));
+        t.mark_failed("g", "boom");
+        assert_eq!(t.last_reactable(false).map(|m| m.id.as_str()), Some("e"));
+        t.remove("e");
+        assert_eq!(t.last_reactable(false).map(|m| m.id.as_str()), Some("a"));
+        // In a thread every reply counts.
+        assert_eq!(t.last_reactable(true).map(|m| m.id.as_str()), Some("b"));
+    }
 
     #[test]
     fn epoch_changes_on_reset_and_per_timeline() {

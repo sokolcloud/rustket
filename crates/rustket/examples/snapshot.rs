@@ -657,7 +657,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     d.shoot(&out, "06-workspace-light");
     d.app.config.ui.theme = rustket_core::config::Theme::Dark;
     d.shoot(&out, "07-workspace-dark");
-    d.send(Message::OpenQuickSwitcher);
+    d.send(Message::Shortcut(rustket::keymap::Shortcut::QuickSwitcher));
     d.send(Message::QuickSwitcher(
         sid.clone(),
         rustket::dialogs::quick_switcher::Message::Query("rk-snap".into()),
@@ -1023,7 +1023,7 @@ async fn account_shots(d: &mut Driver, out: &Path, sid: &rustket_core::ServerId)
     }
 
     // Quick switcher: local rooms plus spotlight people.
-    d.send(Message::OpenQuickSwitcher);
+    d.send(Message::Shortcut(rustket::keymap::Shortcut::QuickSwitcher));
     d.send(Message::QuickSwitcher(
         sid.clone(),
         quick_switcher::Message::Query("rk".into()),

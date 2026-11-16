@@ -112,6 +112,9 @@ pub enum Nav {
     /// App preferences on the Privacy & storage tab, scrolled to the secret
     /// store card.
     SecretStoreSettings,
+    /// App preferences on the Mentions tab (the composer's "Manage mention
+    /// groups…").
+    MentionGroupSettings,
     /// Account of the active server (`screens/account.rs`).
     Account,
     /// Directory of the active server (`screens/directory.rs`).
@@ -123,6 +126,10 @@ pub enum Nav {
     CreateDiscussion { rid: String, pmid: Option<String> },
     /// Ctrl+K (`dialogs/quick_switcher.rs`).
     QuickSwitcher,
+    /// The quick switcher in forward mode: pick where these messages go.
+    Forward(Vec<crate::room::ForwardRef>),
+    /// The keyboard shortcuts cheat sheet (`dialogs/shortcuts.rs`).
+    Shortcuts,
     /// Back to the workspace of the active server.
     Workspace,
     /// Administration of the active server (`screens/admin/`).
@@ -137,6 +144,12 @@ pub enum Effect {
     Navigate(Nav),
     /// Open a room of the component's server.
     OpenRoom(String),
+    /// Open room `rid` of the component's server with these messages
+    /// quoted as forwarded in its composer.
+    ForwardTo {
+        rid: String,
+        refs: Vec<crate::room::ForwardRef>,
+    },
     /// Open a URL in the browser (absolute http/https/mailto only).
     OpenUrl(String),
     /// Close this screen/dialog.
@@ -177,6 +190,20 @@ pub enum Effect {
     SetFlag(rustket_core::ServerId, rustket_core::flags::FlagEdit),
     /// Star the parents of the signed-in accounts' kept threads (Settings).
     StarKeptThreads,
+    /// A mention group edit for the account of server `ServerId` (Settings).
+    EditMentionGroup(
+        rustket_core::ServerId,
+        rustket_core::mention_groups::MentionGroupEdit,
+    ),
+    /// Check a mention group on the server (and save it when it passes);
+    /// the answer goes back to the Settings.
+    CheckMentionGroup(
+        rustket_core::ServerId,
+        Box<crate::screens::settings::MentionGroupCheck>,
+    ),
+    /// Users matching a term (`users.autocomplete`) for the mention group
+    /// editor, tagged with its sequence number.
+    SuggestMentionMembers(rustket_core::ServerId, u64, String),
     /// The "never store secrets in a file" switch (Settings): turning it on
     /// asks for confirmation first.
     SetSecretsMemoryOnly(bool),

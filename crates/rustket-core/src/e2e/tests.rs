@@ -518,6 +518,11 @@ async fn creates_the_first_room_key_and_provides_it() {
     let out = m.encrypt_outgoing(RID, "hello @alice").unwrap();
     assert_eq!(out.content["kid"], kid.as_str());
     assert_eq!(out.mentions.unwrap().e2e_user_mentions, ["@alice"]);
+    // A mention group's expansion lists its users, not the group.
+    let grouped = m
+        .encrypt_edit(RID, "@backend (@bob)", None, &|n| n == "backend")
+        .unwrap();
+    assert_eq!(grouped.mentions.unwrap().e2e_user_mentions, ["@bob"]);
     let env = rocketchat::e2e::EncryptedContent::from_value(&out.content).unwrap();
     assert_eq!(
         their_key.decrypt_json(&env).unwrap(),
@@ -1436,7 +1441,7 @@ async fn editing_an_upload_keeps_the_file_key() {
         panic!()
     };
     let edit = m
-        .encrypt_edit(RID, "new caption", Some(&orig.message))
+        .encrypt_edit(RID, "new caption", Some(&orig.message), &|_| false)
         .unwrap();
     let DecryptResult::Decrypted(d) = m.decrypt_message(&e2e_msg("u", edit.content, 2)) else {
         panic!()

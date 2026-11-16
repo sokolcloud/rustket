@@ -65,3 +65,33 @@ quick_switcher.archived:
   es: "Archivada"
   th: "เก็บถาวรแล้ว"
   zh: "已归档"
+quick_switcher.forward_title_one:
+  en: "Forward %{count} message to…"
+  ru: "Переслать %{count} сообщение в…"
+  es: "Reenviar %{count} mensaje a…"
+  th: "ส่งต่อ %{count} ข้อความไปยัง…"
+  zh: "将 %{count} 条消息转发到…"
+quick_switcher.forward_title_few:
+  en: "Forward %{count} messages to…"
+  ru: "Переслать %{count} сообщения в…"
+  es: "Reenviar %{count} mensajes a…"
+  th: "ส่งต่อ %{count} ข้อความไปยัง…"
+  zh: "将 %{count} 条消息转发到…"
+quick_switcher.forward_title_many:
+  en: "Forward %{count} messages to…"
+  ru: "Переслать %{count} сообщений в…"
+  es: "Reenviar %{count} mensajes a…"
+  th: "ส่งต่อ %{count} ข้อความไปยัง…"
+  zh: "将 %{count} 条消息转发到…"
+quick_switcher.forward_placeholder:
+  en: "Person or channel"
+  ru: "Человек или канал"
+  es: "Persona o canal"
+  th: "บุคคลหรือช่อง"
+  zh: "用户或频道"
+quick_switcher.forward_refused:
+  en: "Messages can't be forwarded to this room"
+  ru: "В эту комнату нельзя пересылать сообщения"
+  es: "No se pueden reenviar mensajes a esta sala"
+  th: "ไม่สามารถส่งต่อข้อความไปยังห้องนี้ได้"
+  zh: "无法将消息转发到此房间"

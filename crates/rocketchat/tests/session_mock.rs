@@ -33,10 +33,14 @@ enum SubReply {
 
 type SubPolicy = Box<dyn Fn(usize, &str, &str) -> SubReply + Send>;
 type LoginPolicy = Box<dyn Fn(usize) -> Value + Send>;
+/// Answer (`result`/`error` fields) to a method call other than `login`;
+/// `None`: an empty result.
+type MethodPolicy = Box<dyn Fn(&Value) -> Option<Value> + Send>;
 
 struct State {
     sub: SubPolicy,
     login: LoginPolicy,
+    method: MethodPolicy,
     real_name: bool,
     username: String,
     name: String,
@@ -69,6 +73,7 @@ impl Mock {
             state: Arc::new(Mutex::new(State {
                 sub: Box::new(|_, _, _| SubReply::Ready),
                 login: Box::new(login_ok),
+                method: Box::new(|_| None),
                 real_name: false,
                 username: "alice".into(),
                 name: "Alice A".into(),
@@ -176,7 +181,12 @@ impl Mock {
                                 r["id"] = v["id"].clone();
                                 Some(r)
                             }
-                            "method" => Some(json!({"msg": "result", "id": v["id"], "result": null})),
+                            "method" => {
+                                let mut r = (st.method)(&v).unwrap_or_else(|| json!({"result": null}));
+                                r["msg"] = json!("result");
+                                r["id"] = v["id"].clone();
+                                Some(r)
+                            }
                             "sub" => {
                                 let name = v["name"].as_str().unwrap_or_default();
                                 let event = v["params"][0].as_str().unwrap_or_default();
@@ -866,6 +876,43 @@ async fn non_participant_messages_are_flagged() {
             ..
         }
     ));
+    session.close().await;
+}
+
+/// `readMessages` / `readThreads` go out on the session's connection with
+/// the server's parameter shapes; a server without the method answers 404.
+#[tokio::test]
+async fn read_methods() {
+    let mock = Mock::start().await;
+    let (session, _events) = start(&mock).await;
+    session.read_messages(RID, true).await.unwrap();
+    session.read_messages(RID, false).await.unwrap();
+    session.read_thread_method("t1").await.unwrap();
+    let calls = mock
+        .wait_frames(3, |_, v| {
+            v["msg"] == "method" && (v["method"] == "readMessages" || v["method"] == "readThreads")
+        })
+        .await;
+    let shapes: Vec<(Value, Value)> = calls
+        .iter()
+        .map(|(_, v)| (v["method"].clone(), v["params"].clone()))
+        .collect();
+    assert_eq!(
+        shapes,
+        [
+            (json!("readMessages"), json!([RID, true])),
+            (json!("readMessages"), json!([RID, false])),
+            (json!("readThreads"), json!(["t1"])),
+        ]
+    );
+    mock.state.lock().unwrap().method = Box::new(|v| {
+        (v["method"] == "readMessages").then(|| {
+            json!({"error": {"isClientSafe": true, "error": 404,
+                "reason": "Method 'readMessages' not found", "errorType": "Meteor.Error"}})
+        })
+    });
+    let e = session.read_messages(RID, true).await.unwrap_err();
+    assert!(e.is_method_not_found(), "{e:?}");
     session.close().await;
 }
 

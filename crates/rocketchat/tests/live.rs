@@ -1395,3 +1395,162 @@ async fn service_room_custom_fields() {
         std::panic::resume_unwind(e.into_panic());
     }
 }
+
+/// Forwarding is a message of `[ ](permalink)` lines (Rustket's forward and
+/// the web's): the server turns each link into a quote attachment.
+#[tokio::test]
+async fn forward_links_become_quotes() {
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let src = a
+        .groups_create(&CreateRoom::new(unique("fwd-src")))
+        .await
+        .unwrap();
+    let dst = a
+        .groups_create(&CreateRoom::new(unique("fwd-dst")))
+        .await
+        .unwrap();
+    let m1 = a
+        .send_message(&OutgoingMessage::new(&src.id, "forward one"))
+        .await
+        .unwrap();
+    let m2 = a
+        .send_message(&OutgoingMessage::new(&src.id, "forward two"))
+        .await
+        .unwrap();
+    let site: Value = client(&s)
+        .get(
+            "settings.public",
+            &rocketchat::rest::Query::new().push("_id", "Site_Url"),
+        )
+        .await
+        .unwrap();
+    let site = site["settings"][0]["value"]
+        .as_str()
+        .unwrap()
+        .trim_end_matches('/')
+        .to_owned();
+    let name = src.name.clone().unwrap();
+    let text = format!(
+        "[ ]({site}/group/{name}?msg={})\n[ ]({site}/group/{name}?msg={})",
+        m1.id, m2.id
+    );
+    let fwd = a
+        .send_message(&OutgoingMessage::new(&dst.id, &text))
+        .await
+        .unwrap();
+    let quotes = fwd.attachments.clone().unwrap_or_default();
+    assert_eq!(quotes.len(), 2, "{fwd:?}");
+    assert!(quotes.iter().all(|q| q.is_quote()));
+    let texts: Vec<&str> = quotes.iter().filter_map(|q| q.text.as_deref()).collect();
+    assert_eq!(texts, ["forward one", "forward two"]);
+    a.rooms_delete(&dst.id).await.unwrap();
+    a.rooms_delete(&src.id).await.unwrap();
+}
+
+/// Members online (`status[]=online`) and all members of a room.
+#[tokio::test]
+async fn online_member_total() {
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let room = a
+        .groups_create(&CreateRoom {
+            members: vec!["bob".into()],
+            ..CreateRoom::new(unique("online-total"))
+        })
+        .await
+        .unwrap();
+    assert_eq!(a.room_member_total(&room.id, &[]).await.unwrap(), 2);
+    assert!(a.room_member_total(&room.id, &["online"]).await.unwrap() <= 2);
+    a.rooms_delete(&room.id).await.unwrap();
+}
+
+/// The UTC offset a client publishes is what `users.info` returns (on a
+/// throwaway user, so no shared account changes).
+#[tokio::test]
+async fn utc_offset_roundtrip() {
+    let Some(s) = server() else { return };
+    let temp = TempUser::create(&s, "utc").await;
+    let c = temp.login(&s).await;
+    let before = c
+        .users_info(UserLookup::Username(&temp.username))
+        .await
+        .unwrap();
+    assert_eq!(before.utc_offset, None, "never set");
+    c.set_utc_offset(-3.5).await.unwrap();
+    let a = login(&s, "alice").await;
+    let after = a
+        .users_info(UserLookup::Username(&temp.username))
+        .await
+        .unwrap();
+    assert_eq!(after.utc_offset, Some(-3.5));
+    let me = c.me().await.unwrap();
+    assert_eq!(me.utc_offset, Some(-3.5), "the sign-in data carries it");
+    temp.delete().await;
+}
+
+/// What Later builds on: a room's starred messages include thread replies
+/// (with `tmid`) next to plain messages, an unstar leaves the list at once,
+/// and the Later and reminder keys of a service room survive writes of
+/// another key. Own throwaway rooms, deleted afterwards.
+#[tokio::test]
+async fn later_stars_and_service_keys() {
+    use rocketchat::models::{FLAGS_KEY, LATER_KEY, REMINDERS_KEY, ServiceFields};
+
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let me = a.user_id().unwrap();
+    let room = a
+        .groups_create(&CreateRoom::new(unique("rk-later")))
+        .await
+        .unwrap();
+    let parent = a
+        .send_message(&OutgoingMessage::new(&room.id, "later parent"))
+        .await
+        .unwrap();
+    let reply = a
+        .send_message(&OutgoingMessage::new(&room.id, "later reply").in_thread(&parent.id, false))
+        .await
+        .unwrap();
+    let plain = a
+        .send_message(&OutgoingMessage::new(&room.id, "not starred"))
+        .await
+        .unwrap();
+    a.star_message(&parent.id).await.unwrap();
+    a.star_message(&reply.id).await.unwrap();
+    let page = a.get_starred(&room.id, 0, 50).await.unwrap();
+    let mut ids: Vec<&str> = page.items.iter().map(|m| m.id.as_str()).collect();
+    ids.sort();
+    let mut want = vec![parent.id.as_str(), reply.id.as_str()];
+    want.sort();
+    assert_eq!(ids, want);
+    assert!(page.items.iter().all(|m| m.is_starred_by(&me)));
+    let r = page.items.iter().find(|m| m.id == reply.id).unwrap();
+    assert_eq!(r.tmid.as_deref(), Some(parent.id.as_str()));
+    assert!(!page.items.iter().any(|m| m.id == plain.id));
+    a.unstar_message(&reply.id).await.unwrap();
+    let page = a.get_starred(&room.id, 0, 50).await.unwrap();
+    assert_eq!(page.items.len(), 1);
+    a.rooms_delete(&room.id).await.unwrap();
+
+    let svc = a
+        .create_service_room(&unique("rk-svc-later"), &ServiceFields::new(&me))
+        .await
+        .unwrap();
+    let rid = svc.id.clone();
+    let mut fields = a.read_service_fields(&rid).await.unwrap().unwrap();
+    let later = json!({ "v": 1, "status": { "m1": { "r": "R", "s": "done", "t": 5, "d": "x" } }, "due": {} });
+    let reminders = json!({ "v": 1, "items": { "m1": { "r": "R", "at": 9, "t": 5, "d": "x" } } });
+    fields.set(LATER_KEY, later.clone());
+    fields.set(REMINDERS_KEY, reminders.clone());
+    a.write_service_fields(&rid, &fields).await.unwrap();
+    let mut read = a.read_service_fields(&rid).await.unwrap().unwrap();
+    read.set(FLAGS_KEY, json!({ "v": 1, "rooms": {} }));
+    let stored = a.write_service_fields(&rid, &read).await.unwrap();
+    assert_eq!(stored.get(LATER_KEY), Some(&later));
+    assert_eq!(stored.get(REMINDERS_KEY), Some(&reminders));
+    let sub = a.subscriptions_get_one(&rid).await.unwrap();
+    let in_sub = sub.service_fields().unwrap();
+    assert_eq!(in_sub.get(LATER_KEY), Some(&later));
+    a.rooms_delete(&rid).await.unwrap();
+}

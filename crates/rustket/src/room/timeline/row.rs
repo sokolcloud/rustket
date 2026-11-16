@@ -3,7 +3,7 @@
 //! can live inside `lazy`.
 
 use chrono::{DateTime, Local, TimeZone, Utc};
-use iced::widget::{button, column, container, row, text};
+use iced::widget::{button, checkbox, column, container, mouse_area, row, space, text};
 use iced::{Alignment, Element};
 use rocketchat::models::Message as RcMessage;
 use rocketchat::{RcDate, ServerUrl};
@@ -65,6 +65,11 @@ pub(crate) struct RowFlags {
     pub thread_unread: bool,
     /// Jumped-to message (permalink, search result).
     pub selected: bool,
+    /// The list is selecting messages: checkboxes instead of the toolbar
+    /// and context menu.
+    pub picking: bool,
+    /// This message is selected.
+    pub picked: bool,
 }
 
 pub(crate) fn time_label(ts: Option<RcDate>, clock_24h: bool) -> String {
@@ -291,6 +296,13 @@ fn reactions(env: &Env<'_>, m: &RcMessage, can_react: bool) -> Option<El> {
     if pills.is_empty() {
         return None;
     }
+    pills.push(icon_button_with(
+        Icon::Users,
+        Some(Message::Act(m.id.clone(), Act::Reactions)),
+        t!("room_timeline.all_reactions").into_owned(),
+        false,
+        26.0,
+    ));
     if can_react {
         pills.push(icon_button_with(
             Icon::SmilePlus,
@@ -534,6 +546,30 @@ fn ignored_body(mid: &str) -> El {
     .into()
 }
 
+/// Width of the checkbox column in selection mode.
+const PICK_WIDTH: f32 = 28.0;
+
+/// `el` in selection mode: a checkbox at its left (a click anywhere on the
+/// row toggles it too), or a spacer for rows that cannot be selected.
+fn pick_row(el: El, mid: &str, pickable: bool, picked: bool) -> El {
+    if !pickable {
+        return row![space().width(PICK_WIDTH), el].into();
+    }
+    let id = mid.to_owned();
+    let check = container(
+        checkbox(picked)
+            .on_toggle(move |_| Message::Pick(id.clone()))
+            .size(16)
+            .style(style::checkbox),
+    )
+    .width(PICK_WIDTH)
+    .padding(iced::Padding::ZERO.top(12).left(SPACE_1));
+    mouse_area(row![check, el].align_y(Alignment::Start))
+        .on_press(Message::Pick(mid.to_owned()))
+        .interaction(iced::mouse::Interaction::Pointer)
+        .into()
+}
+
 /// Builds the row of `item`. `ignored`: the author is ignored and the row is
 /// not revealed; the header and toolbar stay, the content is collapsed.
 pub(crate) fn build(
@@ -545,7 +581,12 @@ pub(crate) fn build(
 ) -> El {
     let m = &item.message;
     if m.is_system() {
-        return system_row(env, m);
+        let el = system_row(env, m);
+        return if flags.picking {
+            pick_row(el, &m.id, false, false)
+        } else {
+            el
+        };
     }
     let rc = env.rc();
     let name = author_name(m, rc.use_real_names);
@@ -627,6 +668,10 @@ pub(crate) fn build(
                     p.attachments.push(d);
                 }
             }
+            if flags.picking {
+                let pickable = acts.contains(&Act::Forward);
+                return pick_row(message_row(p), &m.id, pickable, flags.picked);
+            }
             if !acts.is_empty() || !apps.is_empty() {
                 p.actions_toolbar = Some(toolbar(&acts, &m.id, flags.menu_open, &apps));
             }
@@ -640,7 +685,12 @@ pub(crate) fn build(
         }
         DeliveryState::Sending => {
             p.is_pending = true;
-            message_row(p)
+            let el = message_row(p);
+            if flags.picking {
+                pick_row(el, &m.id, false, false)
+            } else {
+                el
+            }
         }
         DeliveryState::Failed { .. } => {
             // Error line with Retry and Discard side by side.
@@ -669,7 +719,12 @@ pub(crate) fn build(
                 .align_y(Alignment::Center)
                 .into(),
             );
-            message_row(p)
+            let el = message_row(p);
+            if flags.picking {
+                pick_row(el, &m.id, false, false)
+            } else {
+                el
+            }
         }
     }
 }

@@ -300,6 +300,14 @@ impl Panel {
         }
     }
 
+    /// The reply the open thread shows (highlighted), if any.
+    pub fn thread_focus(&self) -> Option<&str> {
+        match &self.body {
+            Some(Body::Thread(t)) => t.focus(),
+            _ => None,
+        }
+    }
+
     /// Focuses the thread composer (reply in thread on an open thread).
     pub fn focus_thread_composer(&self) -> Task<Message> {
         let g = self.generation;

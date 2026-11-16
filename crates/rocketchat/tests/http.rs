@@ -593,3 +593,42 @@ async fn set_avatar_sends_multipart_image() {
     assert!(req.starts_with("POST /api/v1/users.resetAvatar "));
     assert_eq!(body_json(&req), json!({"userId": "UID123"}));
 }
+
+/// `room_member_total` reads `total` of a one-row page (the captured
+/// `room_members_online.json`); the status filter goes as `status[]`.
+#[tokio::test]
+async fn room_member_total_reads_the_page_total() {
+    let fixture = std::fs::read_to_string(format!(
+        "{}/tests/fixtures/room_members_online.json",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let (pa, log) = serve(move |_| Some(json_ok(&fixture))).await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    assert_eq!(c.room_member_total("G1", &["online"]).await.unwrap(), 1);
+    assert_eq!(c.room_member_total("G1", &[]).await.unwrap(), 1);
+    let reqs = log.lock().unwrap().join("\n");
+    assert!(
+        reqs.contains(
+            "GET /api/v1/rooms.membersOrderedByRole?roomId=G1&count=1&status%5B%5D=online "
+        ),
+        "{reqs}"
+    );
+    assert!(
+        reqs.contains("GET /api/v1/rooms.membersOrderedByRole?roomId=G1&count=1 "),
+        "{reqs}"
+    );
+}
+
+#[tokio::test]
+async fn set_utc_offset_posts_the_preference() {
+    let (pa, log) = serve(|_| Some(json_ok(r#"{"user":{"_id":"UID123"},"success":true}"#))).await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    c.set_utc_offset(-3.5).await.unwrap();
+    let reqs = log.lock().unwrap().clone();
+    let req = reqs
+        .iter()
+        .find(|r| r.starts_with("POST /api/v1/users.setPreferences"))
+        .expect("users.setPreferences");
+    assert_eq!(body_json(req), json!({"data": {"utcOffset": -3.5}}));
+}

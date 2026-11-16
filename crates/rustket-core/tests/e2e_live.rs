@@ -399,7 +399,7 @@ async fn e2e_keys_and_messages_with_e2e_disabled() {
             decrypted_text(ma.decrypt_message(&a.rest.get_message(&reply.id).await.unwrap())),
             "reply"
         );
-        let edit = ma.encrypt_edit(&rid, "edited", None).unwrap();
+        let edit = ma.encrypt_edit(&rid, "edited", None, &|_| false).unwrap();
         a.rest
             .e2e_update_message(&rid, &sent.id, &edit.content, edit.mentions.as_ref())
             .await

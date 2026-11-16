@@ -1,5 +1,6 @@
 //! Process-wide caches of the composer: room members and slash commands for
-//! autocomplete, and the outbox registry of running sends.
+//! autocomplete, DM partners' UTC offsets, and the outbox registry of
+//! running sends.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -19,6 +20,52 @@ const COMMANDS_TTL: Duration = Duration::from_secs(600);
 const COMMANDS_RETRY: Duration = Duration::from_secs(15);
 
 type MemberCache = HashMap<(String, String), (Instant, Arc<Vec<UserSummary>>)>;
+
+/// DM partners' offsets are refetched after this long.
+const PEER_TTL: Duration = Duration::from_secs(3600);
+/// At most this many users keep a cached offset.
+const PEER_MAX: usize = 256;
+
+/// A DM partner's UTC offset (hours) and real name, when known.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct PeerInfo {
+    pub offset: Option<f64>,
+    pub name: Option<String>,
+}
+
+type PeerCache = HashMap<(String, String), (Instant, PeerInfo)>;
+
+/// `users.info` answers per (server, username), so switching DMs does not
+/// refetch them.
+static PEERS: LazyLock<Mutex<PeerCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(super) fn cached_peer(server: &ServerId, username: &str) -> Option<PeerInfo> {
+    let key = (server.as_str().to_owned(), username.to_owned());
+    PEERS
+        .lock()
+        .ok()?
+        .get(&key)
+        .filter(|(at, _)| at.elapsed() < PEER_TTL)
+        .map(|(_, p)| p.clone())
+}
+
+pub(super) fn store_peer(server: &ServerId, username: &str, info: PeerInfo) {
+    if let Ok(mut map) = PEERS.lock() {
+        map.retain(|_, (at, _)| at.elapsed() < PEER_TTL);
+        if map.len() >= PEER_MAX
+            && let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(k, _)| k.clone())
+        {
+            map.remove(&oldest);
+        }
+        map.insert(
+            (server.as_str().to_owned(), username.to_owned()),
+            (Instant::now(), info),
+        );
+    }
+}
 
 /// Room members per (server, room) for `@` completion.
 static MEMBERS: LazyLock<Mutex<MemberCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));

@@ -314,6 +314,18 @@ impl RestClient {
         paginated(v, "members")
     }
 
+    /// Number of members of `rid` with one of `status` (`rooms.membersOrderedByRole`
+    /// with `count=1`, its `total`); an empty `status` counts every member.
+    /// Not available for direct messages.
+    pub async fn room_member_total(&self, rid: &str, status: &[&str]) -> Result<u64> {
+        let opts = RoomMembersOptions {
+            count: Some(1),
+            status: status.iter().map(|s| (*s).to_owned()).collect(),
+            ..Default::default()
+        };
+        Ok(self.room_members(rid, &opts).await?.total)
+    }
+
     /// Type-specific members endpoint (`channels.members` / `groups.members` / `im.members`).
     pub async fn room_members_by_type(
         &self,

@@ -1,5 +1,6 @@
 //! Privacy & storage tab: where login tokens and E2E keys are kept (and
-//! whether they may go to a file), the offline cache and the image cache.
+//! whether they may go to a file), what the profile shares, the offline
+//! cache and the image cache.
 
 use iced::widget::{container, text};
 use iced::{Element, Length};
@@ -12,7 +13,20 @@ use super::widgets::{action_row, caption, field, section, segmented, switch};
 use super::{IMAGE_CACHE_CHOICES, Message, SECRET_STORE_CARD, STORAGE_CARD, SettingsView};
 
 pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
-    vec![secret_store_card(v), storage_card(v)]
+    vec![secret_store_card(v), profile_card(v), storage_card(v)]
+}
+
+/// What Rustket publishes to the user's profile (the local time zone).
+fn profile_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
+    section(
+        t!("settings.profile_sharing").into_owned(),
+        vec![switch(
+            t!("settings.share_utc_offset").into_owned(),
+            Some(t!("settings.share_utc_offset_help").into_owned()),
+            v.config.ui.share_utc_offset,
+            Some(Message::SetShareUtcOffset as fn(bool) -> Message),
+        )],
+    )
 }
 
 /// The secret store in use (the file and the no-directory fallbacks warn)

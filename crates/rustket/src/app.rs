@@ -2,7 +2,13 @@
 
 mod after_update;
 mod components;
+mod hosted_user;
+mod inbox;
+mod keys;
+mod later;
 mod links;
+mod mention_groups;
+mod reminders;
 mod rooms;
 mod secrets;
 mod session;
@@ -44,6 +50,7 @@ use crate::url_handler;
 use crate::workspace::sidebar;
 use crate::workspace::{ServerState, rail};
 use secrets::open_secrets;
+pub use star_kept::StarJob;
 use subscription::{query_handler_task, query_maximized};
 
 /// How long a toast stays.
@@ -134,6 +141,20 @@ pub enum Modal {
     },
     CreateRoom(ServerId, Box<crate::dialogs::create_room::CreateRoom>),
     QuickSwitcher(ServerId, Box<crate::dialogs::quick_switcher::QuickSwitcher>),
+    /// The keyboard shortcuts cheat sheet (Ctrl/Cmd+/).
+    Shortcuts,
+    /// "Mark all as read" (Shift+Esc) of a server: the rooms fixed when it
+    /// opened, and the progress once confirmed.
+    ReadAll {
+        server_id: ServerId,
+        rids: Vec<String>,
+        /// Confirmed and running: the dialog cannot be dismissed.
+        busy: bool,
+        done: usize,
+        failed: usize,
+        /// Identifies this run in the read queue (`reads::Origin::ReadAll`).
+        stamp: u64,
+    },
 }
 
 pub struct App {
@@ -188,8 +209,10 @@ pub struct App {
     pub decorated: bool,
     /// Offline cache (`crate::cache`).
     pub offline: crate::cache::Caches,
-    /// "Move kept threads to Favorites" in progress.
+    /// The paced star queue ("Move kept threads to Favorites", Later).
     star_kept: star_kept::StarKept,
+    /// Reminder firing and notifications (`app::reminders`).
+    reminder_timer: reminders::ReminderTimer,
     /// In-app updates (`crate::updater`).
     #[cfg(feature = "self-update")]
     pub updater: crate::updater::Updater,
@@ -287,6 +310,7 @@ impl App {
             decorated,
             offline: crate::cache::Caches::new(flags.offline_cache.clone()),
             star_kept: Default::default(),
+            reminder_timer: Default::default(),
             #[cfg(feature = "self-update")]
             updater: crate::updater::Updater::new(flags.desktop),
         };
@@ -514,6 +538,7 @@ impl App {
         let confirm = self.show_next_confirmation();
         let unread = self.unread_hook();
         let unread = Task::batch([unread, self.omni_after_update()]);
+        self.drop_orphaned_read_all();
         Task::batch([task, after, confirm, unread])
     }
 
@@ -612,7 +637,29 @@ impl App {
             Message::UiKit(sid, epoch, m) => self.on_uikit_in(sid, epoch, m),
             Message::Desktop(m) => self.on_desktop(m),
             Message::Calls(m) => self.on_calls(m),
-            Message::OpenQuickSwitcher => self.navigate(component::Nav::QuickSwitcher),
+            Message::Shortcut(s) => self.on_shortcut(s),
+            Message::Reads(sid, epoch, m) => self.on_reads(sid, epoch, m),
+            Message::Inbox(sid, epoch, m) => self.on_inbox(sid, epoch, m),
+            Message::CatchUpKey(k) => self.on_catch_up_key(k),
+            Message::Later(sid, epoch, m) => self.on_later(sid, epoch, m),
+            Message::LaterKey(k) => self.on_later_key(k),
+            Message::LaterCopy(sid, epoch, r) => self.on_later_copy(sid, epoch, r),
+            Message::LaterSync(sid, epoch, m) => self.on_later_sync(sid, epoch, m),
+            Message::ReminderSync(sid, epoch, m) => self.on_reminder_sync(sid, epoch, m),
+            Message::RemindersDue(at) => self.on_reminders_due(at),
+            Message::ReminderNotify(m) => self.on_reminder_notify(m),
+            Message::ReminderAction(a) => self.on_reminder_action(a),
+            Message::ReminderFetched(sid, epoch, mid, at, r) => {
+                self.on_reminder_fetched(sid, epoch, mid, at, r)
+            }
+            Message::MessageStarred {
+                sid,
+                epoch,
+                m,
+                on,
+                job,
+                result,
+            } => self.on_message_starred(sid, epoch, *m, on, job, result),
             Message::FocusNext(forward) => rustket_ui::widget::focus_cycle(forward),
             Message::FocusRegion(forward) => self.focus_region(forward),
             Message::Escape => self.on_escape(),
@@ -640,6 +687,11 @@ impl App {
             Message::Omni(sid, epoch, m) => self.on_omni(sid, epoch, m),
             Message::Threads(sid, epoch, m) => self.on_threads(sid, epoch, m),
             Message::Flags(sid, epoch, m) => self.on_flags(sid, epoch, m),
+            Message::ServicePushed(sid, epoch, o) => self.on_service_pushed(sid, epoch, o),
+            Message::MentionGroups(sid, epoch, m) => self.on_mention_groups(sid, epoch, m),
+            Message::MentionGroupChecked(sid, check, report) => {
+                self.mention_group_checked(sid, *check, report)
+            }
             Message::SetFlag(sid, edit) => self.set_flag(&sid, edit),
             Message::InitialLoaded(sid, epoch, r) => self.on_initial_loaded(sid, epoch, r),
             Message::Resynced(sid, epoch, delta, rooms) => {
@@ -843,7 +895,9 @@ impl App {
                 queued,
                 result,
             } => match result {
-                // The parent's realtime update confirms it.
+                // The parent's realtime update confirms it; a queued star
+                // of a kept thread is archived in Later.
+                Ok(()) if queued => self.star_kept_done(&sid, &rid, &tmid),
                 Ok(()) => Task::none(),
                 Err(e) => {
                     tracing::warn!(server = %sid, %rid, %tmid, on, error = %e, "thread star failed");
@@ -891,6 +945,12 @@ impl App {
                 }
             },
             Message::Modal(m) => self.on_modal(m),
+            // A running "Mark all as read" finishes first.
+            Message::CloseModal
+                if matches!(self.modals.last(), Some(Modal::ReadAll { busy: true, .. })) =>
+            {
+                Task::none()
+            }
             Message::CloseModal => {
                 if let Some(Modal::ConfirmToken { server_id, .. }) = self.modals.pop() {
                     // Rejecting the account also ends the browser login.
@@ -961,8 +1021,9 @@ impl App {
     }
 
     /// Escape no widget took (popovers, dialogs and focused inputs handle
-    /// their own): close the active room's right panel, or the settings,
-    /// account, directory or administration page.
+    /// their own): on the server view the chain of `escape_on_server`
+    /// (`app/keys.rs`); else close the settings, account, directory or
+    /// administration page.
     fn on_escape(&mut self) -> Task<Message> {
         if !self.modals.is_empty() {
             return Task::none();
@@ -982,23 +1043,7 @@ impl App {
                 sid.clone(),
                 crate::screens::admin::Message::Close,
             )),
-            Screen::Server => {
-                let Some(s) = self.active.as_ref().and_then(|sid| self.servers.get(sid)) else {
-                    return Task::none();
-                };
-                let Some(rid) = s.active_room.clone() else {
-                    return Task::none();
-                };
-                if s.rooms.get(&rid).is_none_or(|rv| rv.panel.kind().is_none()) {
-                    return Task::none();
-                }
-                Task::done(Message::Room(
-                    s.id.clone(),
-                    s.generation,
-                    rid,
-                    room::Message::Panel(room::panel::Message::Close),
-                ))
-            }
+            Screen::Server => self.escape_on_server(),
             Screen::Loading | Screen::AddServer(_) => Task::none(),
         }
     }
@@ -1076,6 +1121,7 @@ impl App {
                     .retain(|m| !matches!(m, Modal::SecretsMemoryOnly { .. }));
                 self.set_secrets_memory_only(true)
             }
+            ModalMessage::ConfirmReadAll => self.confirm_read_all(),
         }
     }
 }

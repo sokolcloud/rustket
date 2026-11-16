@@ -11,7 +11,7 @@ use super::cache::{cached_commands, cached_members, commands_recently_failed};
 use super::send::load_commands;
 use super::text::{self, Trigger, TriggerKind};
 use super::{Composer, MEMBERS_COUNT, Message, QUERY_DELAY};
-use crate::room::{Action, UpdateCtx};
+use crate::room::{Action, Effect, UpdateCtx};
 
 impl Composer {
     /// Opens, updates or closes the autocomplete popup for the cursor position.
@@ -93,7 +93,9 @@ impl Composer {
         match trigger.kind {
             TriggerKind::User => {
                 let members = cached_members(server, &self.rid).unwrap_or_default();
-                autocomplete::match_users(ws, &self.rid, &members, &trigger.query)
+                let mut items = autocomplete::match_users(ws, &self.rid, &members, &trigger.query);
+                items.extend(autocomplete::group_footer(ws, &trigger.query, &items));
+                items
             }
             TriggerKind::Room => autocomplete::match_rooms(ws, &trigger.query),
             TriggerKind::Emoji => autocomplete::match_emoji(ws, &trigger.query),
@@ -138,6 +140,9 @@ impl Composer {
         let Some(item) = popup.items.get(i) else {
             return Action::none();
         };
+        if matches!(item, Item::ManageGroups { .. }) {
+            return Action::effect(Effect::ManageMentionGroups);
+        }
         let (text, _, _) = self.snapshot();
         self.apply_edit(text::complete(&text, &popup.trigger, &item.replacement()));
         Action::task(Task::batch([self.after_edit(ctx), self.focus()]))
