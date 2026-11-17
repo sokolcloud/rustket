@@ -79,7 +79,7 @@ impl App {
         }
         let online = s.session.is_some();
         if !matches!(s.main_view, Some(MainView::Inbox(_))) {
-            s.main_view = Some(MainView::Inbox(InboxScreen::new(InboxKind::Unreads)));
+            s.show_main_view(MainView::Inbox(InboxScreen::new(InboxKind::Unreads)));
         }
         // What the loader wants changes with the view: plan afresh.
         s.inbox.plan_key = None;

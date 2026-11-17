@@ -11,7 +11,7 @@ use iced::{Element, Task};
 use rocketchat::models::Message as RcMessage;
 use rustket_core::ServerId;
 use rustket_core::search::{
-    Backend, GLOBAL_LIMIT, LocalMatcher, MatchCtx, Next, PER_ROOM_LIMIT, SearchRun, Target,
+    Backend, GLOBAL_LIMIT, LocalMatcher, MatchCtx, Next, PER_ROOM_LIMIT, Pacing, SearchRun, Target,
     resolve_rooms, rooms_to_search,
 };
 use rustket_core::workspace::ConnectionState;
@@ -32,10 +32,13 @@ fn backend(p: &Provider) -> Option<Backend> {
     match p {
         Provider::Known(Some(p)) if p.global_search() => Some(Backend::Global),
         Provider::Known(Some(p)) if p.is_default() => Some(Backend::Provider),
-        // Another provider, none, or the lookup failed: `chat.search`
-        // parses the default operators whatever is active.
-        Provider::Known(_) | Provider::Failed => Some(Backend::ChatSearch),
-        Provider::Unknown | Provider::Loading => None,
+        // Another provider, none, or the lookup failed (asked again
+        // later): `chat.search` parses the default operators whatever is
+        // active.
+        // A retry after a failure keeps to `chat.search` meanwhile.
+        Provider::Known(_) | Provider::Failed { .. } => Some(Backend::ChatSearch),
+        Provider::Loading { failures } if *failures > 0 => Some(Backend::ChatSearch),
+        Provider::Unknown | Provider::Loading { .. } => None,
     }
 }
 
@@ -60,10 +63,21 @@ impl App {
             return focus;
         }
         s.close_main_view();
-        let query = s.search.last_query.clone();
-        s.main_view = Some(MainView::Search(Box::new(SearchView::new(query))));
+        // The view closed last comes back with its results; its run goes
+        // on where it stopped.
+        let view = s
+            .search
+            .stash
+            .take()
+            .unwrap_or_else(|| Box::new(SearchView::new(String::new())));
+        let resume = view.resumable();
+        s.main_view = Some(MainView::Search(view));
         let provider = self.ensure_provider(sid);
-        let start = self.start_search(sid);
+        let start = if resume {
+            self.tick_search(sid)
+        } else {
+            self.start_search(sid)
+        };
         Task::batch([focus, provider, start])
     }
 
@@ -86,10 +100,10 @@ impl App {
         let Some(h) = s.session.as_ref() else {
             return Task::none();
         };
-        if s.search.provider != Provider::Unknown {
+        if !s.search.provider.due(Instant::now()) {
             return Task::none();
         }
-        s.search.provider = Provider::Loading;
+        s.search.provider = s.search.provider.loading();
         let rest = h.rest().clone();
         let (tsid, epoch) = (sid.clone(), s.generation);
         Task::perform(
@@ -104,22 +118,31 @@ impl App {
         };
         match m {
             Msg::Provider(r) => {
+                let now = Instant::now();
                 s.search.provider = match r {
                     Ok(p) => Provider::Known(p),
                     Err(e) => {
                         tracing::debug!(error = %e, "search provider lookup failed");
-                        Provider::Failed
+                        let wait = match super::inbox::load_failure(&e) {
+                            rustket_core::inbox::load::LoadFailure::RateLimited(d) => Some(d),
+                            _ => None,
+                        };
+                        s.search.provider.failed(now, wait)
                     }
                 };
                 Task::none()
             }
             Msg::Fetched { run, target, res } => {
+                s.search.requests.remove(&(run, target.clone()));
+                let pacing = &mut s.search.pacing;
+                // The open view's run, or the one put away with the view.
                 let Some(r) = s
                     .main_view
                     .as_mut()
                     .and_then(MainView::search_mut)
-                    .and_then(|v| v.run.as_mut())
-                    .filter(|r| r.id == run)
+                    .into_iter()
+                    .chain(s.search.stash.as_deref_mut())
+                    .find_map(|v| v.run.as_mut().filter(|r| r.id == run))
                 else {
                     return Task::none();
                 };
@@ -127,12 +150,18 @@ impl App {
                     tracing::debug!(error = %f, "search request failed");
                     super::inbox::load_failure(&f)
                 });
-                r.finish(&target, res, Instant::now());
+                r.finish(&target, res, Instant::now(), pacing);
                 Task::none()
             }
             Msg::Cached { run, found } => {
-                if let Some(v) = s.main_view.as_mut().and_then(MainView::search_mut)
-                    && let Some(r) = v.run.as_mut().filter(|r| r.id == run)
+                if let Some(v) = s
+                    .main_view
+                    .as_mut()
+                    .and_then(MainView::search_mut)
+                    .into_iter()
+                    .chain(s.search.stash.as_deref_mut())
+                    .find(|v| v.run.as_ref().is_some_and(|r| r.id == run))
+                    && let Some(r) = v.run.as_mut()
                 {
                     r.merge_local(found);
                     v.cache_pending = false;
@@ -177,28 +206,19 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// Opens a result: its thread for a reply, else the room at the
-    /// message.
+    /// Opens a result: the room at the message, or for a reply its
+    /// thread scrolled to it.
     fn open_search_hit(&mut self, sid: &ServerId, m: RcMessage) -> Task<Message> {
         let rid = m.rid.clone();
-        match m.tmid.clone() {
-            Some(tmid) => self.go(crate::message::Go::Room {
-                sid: sid.clone(),
-                rid,
-                tmid: Some(tmid),
-            }),
-            None => {
-                let open = self.open_room(sid, &rid);
-                let show = self.room_show(sid, &rid, m);
-                Task::batch([open, show])
-            }
-        }
+        let open = self.open_room(sid, &rid);
+        let show = self.room_show(sid, &rid, m);
+        Task::batch([open, show])
     }
 
     /// Starts a run for the view's query (the previous run's answers are
-    /// dropped): local hits at once, the offline cache's when read, the
-    /// server's as the paced requests come back. Waits for the provider
-    /// when it is not known yet.
+    /// dropped and its requests aborted): local hits at once, the offline
+    /// cache's when read, the server's as the paced requests come back
+    /// (once the provider is known).
     fn start_search(&mut self, sid: &ServerId) -> Task<Message> {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
@@ -208,6 +228,12 @@ impl App {
         let Some(view) = s.main_view.as_mut().and_then(MainView::search_mut) else {
             return Task::none();
         };
+        let stashed = s
+            .search
+            .stash
+            .as_ref()
+            .and_then(|v| v.run.as_ref().map(|r| r.id));
+        s.search.abort_except(stashed.as_slice());
         let q = view.parsed();
         if q.is_empty() {
             view.set_run(None);
@@ -215,14 +241,11 @@ impl App {
             return Task::none();
         }
         let backend = match known {
-            Some(b) => b,
+            Some(b) => Some(b),
             // Offline: the local hits now, the server once connected.
-            None if !session => Backend::Provider,
-            None => {
-                view.set_run(None);
-                view.pending_start = true;
-                return Task::none();
-            }
+            None if !session => Some(Backend::Provider),
+            // The provider lookup is running: local hits now.
+            None => None,
         };
         let id = s.search.next_run;
         s.search.next_run += 1;
@@ -230,18 +253,32 @@ impl App {
         let ws = &s.workspace;
         let only = (!q.rooms.is_empty()).then(|| resolve_rooms(ws, &q.rooms));
         let (plain, encrypted) = rooms_to_search(ws, only.as_ref());
-        let mut run = SearchRun::new(
+        // A regex the server cannot run finds nothing there: not asked.
+        let (plain, rooms_only) = if q.regex_unsupported() {
+            (Vec::new(), true)
+        } else {
+            (plain, only.is_some())
+        };
+        let mut run = SearchRun::deferred(
             id,
-            q.server_query(),
-            backend,
+            q.server_query_as(ws.username()),
             plain,
             encrypted.len(),
-            only.is_some(),
+            rooms_only,
         );
+        if let Some(b) = backend {
+            run.start_server(b);
+        }
+        // Day bounds as the server computes them, with the offset it has
+        // stored for the user (whole hours).
+        let utc_offset = ws.me().and_then(|u| u.utc_offset).unwrap_or(0.0);
         let ctx = MatchCtx {
             user_id: ws.user_id().unwrap_or_default().to_owned(),
             username: ws.username().unwrap_or_default().to_owned(),
-            offset: chrono::Local::now().offset().fix(),
+            offset: chrono::FixedOffset::east_opt(
+                (utc_offset.trunc() as i32).clamp(-14, 14) * 3600,
+            )
+            .unwrap_or_else(|| chrono::Utc.fix()),
         };
         let matcher = LocalMatcher::new(&q, &ctx);
         let mut cache_task = Task::none();
@@ -277,7 +314,8 @@ impl App {
     }
 
     /// Per update: a new session restarts the search; the open run starts
-    /// its next requests (or arms the pacing timer).
+    /// its server part once the provider is known, then its next requests
+    /// (or arms the pacing timer).
     pub(super) fn tick_search(&mut self, sid: &ServerId) -> Task<Message> {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
@@ -288,13 +326,18 @@ impl App {
             s.search.session = ptr;
             s.search.provider = Provider::Unknown;
             s.search.timer = None;
+            s.search.pacing = Pacing::default();
+            s.search.abort_except(&[]);
+            // Results of the old session are searched again on reopening.
+            if let Some(v) = s.search.stash.as_mut() {
+                v.set_run(None);
+            }
         }
         let Some(view) = s.main_view.as_ref().and_then(MainView::search) else {
             return Task::none();
         };
-        let restart = (renewed && view.run.is_some())
-            || (view.pending_start && backend(&s.search.provider).is_some());
-        let provider = if s.search.provider == Provider::Unknown {
+        let restart = renewed && view.run.is_some();
+        let provider = if s.search.provider.due(Instant::now()) {
             self.ensure_provider(sid)
         } else {
             Task::none()
@@ -305,6 +348,16 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return provider;
         };
+        if let Some(b) = backend(&s.search.provider)
+            && let Some(run) = s
+                .main_view
+                .as_mut()
+                .and_then(MainView::search_mut)
+                .and_then(|v| v.run.as_mut())
+                .filter(|r| r.awaiting_backend())
+        {
+            run.start_server(b);
+        }
         if !online(s) {
             return provider;
         }
@@ -322,13 +375,14 @@ impl App {
         let now = Instant::now();
         let (epoch, mut tasks) = (s.generation, vec![provider]);
         loop {
-            match run.next(now) {
+            match run.next(now, &mut s.search.pacing) {
                 Next::Fetch(target) => {
                     let rest = h.rest().clone();
                     let (q, b, id) = (run.server_query.clone(), run.backend, run.id);
                     let tsid = sid.clone();
                     let t2 = target.clone();
-                    tasks.push(Task::perform(
+                    let key = (id, target.clone());
+                    let (task, handle) = Task::perform(
                         async move {
                             match (&t2, b) {
                                 (Target::All, _) => {
@@ -355,7 +409,10 @@ impl App {
                                 },
                             )
                         },
-                    ));
+                    )
+                    .abortable();
+                    s.search.requests.insert(key, handle.abort_on_drop());
+                    tasks.push(task);
                 }
                 Next::Wait(at) => {
                     if s.search.timer.is_none_or(|t| t <= now || t > at) {

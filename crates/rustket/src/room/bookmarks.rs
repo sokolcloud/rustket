@@ -3,7 +3,10 @@
 //! "Add bookmark" dialog that appends a link to the description
 //! (`rooms.saveRoomSettings`). Strings: `locales/bookmarks.yml`.
 
-use iced::widget::{button, column, container, row, text};
+use std::cell::RefCell;
+use std::hash::{DefaultHasher, Hash, Hasher};
+
+use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Alignment, Element, Length};
 use rust_i18n::t;
 use rustket_core::Workspace;
@@ -12,8 +15,8 @@ use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
 use rustket_ui::widget::{
-    TooltipPosition, dialog, divider, icon_button_with, primary_button, secondary_button,
-    text_field, tooltip,
+    TooltipPosition, dialog, divider, icon_button_with, primary_button, sanitize_bidi,
+    secondary_button, text_field, tooltip,
 };
 
 /// Characters of a chip's label.
@@ -38,16 +41,35 @@ pub struct AddBookmark {
     pub error: Option<String>,
 }
 
+thread_local! {
+    /// The last extraction, by a hash of the three fields: the header asks
+    /// on every frame, the fields rarely change.
+    static LAST: RefCell<Option<(u64, Vec<Bookmark>)>> = const { RefCell::new(None) };
+}
+
 /// The links of room `rid`, in field order.
 pub fn of_room(ws: &Workspace, rid: &str) -> Vec<Bookmark> {
     let Some(r) = ws.room(rid).and_then(|e| e.room.as_ref()) else {
         return Vec::new();
     };
-    bookmarks::extract(
+    let fields = (
         r.topic.as_deref(),
         r.announcement.as_deref(),
         r.description.as_deref(),
-    )
+    );
+    let mut h = DefaultHasher::new();
+    fields.hash(&mut h);
+    let key = h.finish();
+    LAST.with_borrow_mut(|last| {
+        if let Some((k, links)) = last.as_ref()
+            && *k == key
+        {
+            return links.clone();
+        }
+        let links = bookmarks::extract(fields.0, fields.1, fields.2);
+        *last = Some((key, links.clone()));
+        links
+    })
 }
 
 /// Who may add bookmarks: the users who may edit the room info.
@@ -55,8 +77,8 @@ pub fn can_add(ws: &Workspace, rid: &str) -> bool {
     super::panel::settings::offered(ws, rid)
 }
 
-/// The URL as typed, with `https://` when it has no scheme; `None` when it
-/// is not a web address.
+/// The URL as typed, with `https://` when it has no scheme, normalized
+/// (`bookmarks::web_url`); `None` when it is not a web address.
 pub fn normalize_url(input: &str) -> Option<String> {
     let s = input.trim();
     let s = if s.contains("://") {
@@ -64,18 +86,29 @@ pub fn normalize_url(input: &str) -> Option<String> {
     } else {
         format!("https://{s}")
     };
-    bookmarks::is_web_url(&s).then_some(s)
+    bookmarks::web_url(&s)
 }
 
-/// The room description with the link appended (`None`: invalid URL).
-pub fn new_description(ws: &Workspace, rid: &str, d: &AddBookmark) -> Option<String> {
-    let url = normalize_url(&d.url)?;
-    let current = ws
-        .room(rid)
-        .and_then(|e| e.room.as_ref())
-        .and_then(|r| r.description.clone())
-        .unwrap_or_default();
-    Some(bookmarks::append(&current, &d.title, &url))
+/// Appends the link of `d` to the room's description as the server has it
+/// now (not the local copy, which may lag behind another editor's change
+/// or not be loaded at all) and saves it.
+pub async fn save(
+    rest: rocketchat::RestClient,
+    rid: String,
+    title: String,
+    url: String,
+) -> rocketchat::Result<()> {
+    let room = rest.rooms_info(&rid).await?;
+    let description = bookmarks::append(
+        room.description.as_deref().unwrap_or_default(),
+        &title,
+        &url,
+    );
+    let body = serde_json::json!({
+        "rid": rid,
+        "roomDescription": description,
+    });
+    super::panel::api::save_room_settings(rest, body).await
 }
 
 /// The chip row; `None` when the room has no links.
@@ -89,9 +122,13 @@ pub fn bar<'a, M: Clone + 'a>(
     }
     let mut chips: Vec<Element<'a, M>> = Vec::new();
     for b in links {
+        // Titles come from other users' text; the URL is normalized.
+        let label = sanitize_bidi(&bookmarks::label(b, LABEL_CHARS)).into_owned();
         let content = row![
             icon::sized(Icon::Link2, 12.0).style(style::text_secondary),
-            text(bookmarks::label(b, LABEL_CHARS)).size(TEXT_CAPTION),
+            text(label)
+                .size(TEXT_CAPTION)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(SPACE_1)
         .align_y(Alignment::Center);
@@ -99,10 +136,30 @@ pub fn bar<'a, M: Clone + 'a>(
             .padding([2.0, SPACE_2])
             .style(style::button_reaction(false))
             .on_press(open(b.url.clone()));
-        chips.push(tooltip(chip, b.url.clone(), TooltipPosition::Bottom));
+        let tip = sanitize_bidi(&b.url).into_owned();
+        chips.push(tooltip(chip, tip, TooltipPosition::Bottom));
     }
+    // One line whatever the number of links (it sits above the timeline
+    // and the composer): the rest scrolls sideways.
+    let mut line = row![
+        scrollable(
+            row(chips)
+                .spacing(SPACE_1)
+                .padding(iced::Padding::ZERO.bottom(4.0))
+        )
+        .direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::new()
+                .width(3)
+                .scroller_width(3)
+                .margin(0),
+        ))
+        .style(style::scrollable)
+        .width(Length::Fill)
+    ]
+    .spacing(SPACE_1)
+    .align_y(Alignment::Center);
     if let Some(m) = add {
-        chips.push(icon_button_with(
+        line = line.push(icon_button_with(
             Icon::BookmarkPlus,
             Some(m),
             t!("bookmarks.add"),
@@ -110,7 +167,7 @@ pub fn bar<'a, M: Clone + 'a>(
             22.0,
         ));
     }
-    let strip = container(row(chips).spacing(SPACE_1).wrap().vertical_spacing(SPACE_1))
+    let strip = container(line)
         .width(Length::Fill)
         .padding([SPACE_1 + 1.0, SPACE_4])
         .style(style::container_header);
@@ -164,8 +221,12 @@ mod tests {
             Some("https://example.com/x")
         );
         assert_eq!(
-            normalize_url("http://a.example.com").as_deref(),
-            Some("http://a.example.com")
+            normalize_url("HTTP://A.example.com").as_deref(),
+            Some("http://a.example.com/")
+        );
+        assert_eq!(
+            normalize_url("example.com/a b").as_deref(),
+            Some("https://example.com/a%20b")
         );
         assert_eq!(normalize_url("ftp://a.example.com"), None);
         assert_eq!(normalize_url("not a url"), None);

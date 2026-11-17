@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use chrono::{DateTime, Local};
 use iced::widget::{
-    button, column, container, mouse_area, rich_text, row, scrollable, space, span, text,
+    button, column, container, lazy, mouse_area, rich_text, row, scrollable, space, span, text,
     text_input,
 };
 use iced::{Alignment, Element, Length};
@@ -15,7 +15,7 @@ use rocketchat::models::{Message as RcMessage, RoomType};
 use rust_i18n::t;
 use rustket_core::config::UiPrefs;
 use rustket_core::room_list::{self, Avatar};
-use rustket_core::search::{Backend, Has, Origin, format_date, snippet};
+use rustket_core::search::{Backend, Has, Origin, format_date};
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
@@ -99,12 +99,16 @@ fn filter_chip<'a>(icon_: Icon, label: String, remove: Msg) -> Element<'a, Msg> 
 }
 
 /// The text with its matches highlighted.
-fn highlighted<'a>(s: String, ranges: &[Range<usize>]) -> Element<'a, Msg> {
+fn highlighted<'a>(s: &str, ranges: &[Range<usize>]) -> Element<'a, Msg> {
     let t = crate::room::render::tokens();
     let mut spans: Vec<iced::advanced::text::Span<'a, Msg>> = Vec::new();
     let mut at = 0;
     for r in ranges {
-        if r.start < at || r.end > s.len() {
+        if r.start < at
+            || r.end > s.len()
+            || !s.is_char_boundary(r.start)
+            || !s.is_char_boundary(r.end)
+        {
             continue;
         }
         if r.start > at {
@@ -201,13 +205,13 @@ impl SearchView {
                 Msg::ClearDate(Picker::Before),
             ));
         }
-        chips.push(self.picker_chip(c, Picker::From, t!("search.from")));
-        chips.push(self.picker_chip(c, Picker::In, t!("search.in")));
+        chips.push(self.picker_chip(Picker::From, t!("search.from")));
+        chips.push(self.picker_chip(Picker::In, t!("search.in")));
         if q.after.is_none() {
-            chips.push(self.picker_chip(c, Picker::After, t!("search.after")));
+            chips.push(self.picker_chip(Picker::After, t!("search.after")));
         }
         if q.before.is_none() {
-            chips.push(self.picker_chip(c, Picker::Before, t!("search.before")));
+            chips.push(self.picker_chip(Picker::Before, t!("search.before")));
         }
         for (h, ic, key) in [
             (Has::Link, Icon::Link, "search.has_link"),
@@ -243,12 +247,7 @@ impl SearchView {
     }
 
     /// A picker trigger with its popover.
-    fn picker_chip<'a>(
-        &'a self,
-        c: &Ctx<'a>,
-        p: Picker,
-        label: std::borrow::Cow<'_, str>,
-    ) -> Element<'a, Msg> {
+    fn picker_chip<'a>(&'a self, p: Picker, label: std::borrow::Cow<'_, str>) -> Element<'a, Msg> {
         let open = self.picker == Some(p);
         let trigger = chip_button(
             Icon::Plus,
@@ -257,14 +256,14 @@ impl SearchView {
             Some(Msg::Pick(Some(p))),
         );
         let popup: Element<'a, Msg> = if open {
-            self.picker_popup(c, p)
+            self.picker_popup(p)
         } else {
             space().into()
         };
         popover(trigger, popup, open, Placement::BelowStart, Msg::Pick(None))
     }
 
-    fn picker_popup<'a>(&'a self, c: &Ctx<'a>, p: Picker) -> Element<'a, Msg> {
+    fn picker_popup<'a>(&'a self, p: Picker) -> Element<'a, Msg> {
         let placeholder = match p {
             Picker::From => t!("search.from_placeholder"),
             Picker::In => t!("search.in_placeholder"),
@@ -299,19 +298,23 @@ impl SearchView {
         };
         match p {
             Picker::From => {
-                for (u, name) in super::user_suggestions(c.workspace, &self.picker_input) {
-                    let shown = sanitize_bidi(&name).into_owned();
-                    col = col.push(item(format!("@{u}"), shown, Msg::AddFrom(u)));
+                for (u, name) in &self.suggestions {
+                    let shown = sanitize_bidi(name).into_owned();
+                    col = col.push(item(format!("@{u}"), shown, Msg::AddFrom(u.clone())));
                 }
             }
             Picker::In => {
-                for (name, shown) in super::room_suggestions(c.workspace, &self.picker_input) {
+                for (name, shown) in &self.suggestions {
                     let secondary = if shown == name {
                         String::new()
                     } else {
-                        sanitize_bidi(&shown).into_owned()
+                        sanitize_bidi(shown).into_owned()
                     };
-                    col = col.push(item(format!("#{name}"), secondary, Msg::AddRoom(name)));
+                    col = col.push(item(
+                        format!("#{name}"),
+                        secondary,
+                        Msg::AddRoom(name.clone()),
+                    ));
                 }
             }
             Picker::After => {
@@ -353,7 +356,7 @@ impl SearchView {
         };
         let mut parts: Vec<Element<'a, Msg>> = Vec::new();
         let Some(run) = &self.run else {
-            if self.pending_start || c.state.provider == Provider::Loading {
+            if matches!(c.state.provider, Provider::Loading { .. }) {
                 parts.push(spinner(12.0));
             }
             return row(parts)
@@ -366,7 +369,11 @@ impl SearchView {
         if running {
             parts.push(spinner(12.0));
         }
-        if !c.online && !run.is_finished() {
+        if self.parsed().regex_unsupported() {
+            parts.push(line(t!("search.regex_slash").into_owned()));
+        } else if run.stopped {
+            parts.push(line(t!("search.server_error").into_owned()));
+        } else if !c.online && !run.is_finished() {
             parts.push(line(t!("search.offline").into_owned()));
         } else if run.backend == Backend::Global && total > 0 {
             parts.push(line(if run.is_finished() {
@@ -379,7 +386,12 @@ impl SearchView {
                 t!("search.progress", done = done, total = total).into_owned(),
             ));
         }
-        if let Some(until) = run.paused_until(c.now) {
+        if let Some(until) = c
+            .state
+            .pacing
+            .paused_until(c.now)
+            .filter(|_| !run.is_finished())
+        {
             let secs = until.saturating_duration_since(c.now).as_secs().max(1);
             parts.push(line(t!("search.paused", seconds = secs).into_owned()));
         }
@@ -390,7 +402,7 @@ impl SearchView {
                 TooltipPosition::Bottom,
             ));
         }
-        if !run.failed.is_empty() {
+        if !run.failed.is_empty() && !run.stopped {
             parts.push(line(
                 t!("search.failed_rooms", count = run.failed.len()).into_owned(),
             ));
@@ -415,7 +427,25 @@ impl SearchView {
         };
         if run.is_empty() {
             if run.is_finished() && !self.cache_pending {
-                let body = if !q.rooms.is_empty() && run.progress().1 == 0 && run.encrypted == 0 {
+                if run.stopped {
+                    // The server never answered: not "nothing found".
+                    return centered(
+                        column![
+                            empty_state(
+                                Icon::SearchX,
+                                t!("search.server_error"),
+                                t!("search.server_error_body"),
+                            ),
+                            secondary_button(t!("search.retry"), Some(Msg::Submit)),
+                        ]
+                        .spacing(SPACE_3)
+                        .align_x(Alignment::Center)
+                        .into(),
+                    );
+                }
+                let body = if q.regex_unsupported() {
+                    t!("search.regex_slash")
+                } else if !q.rooms.is_empty() && run.progress().1 == 0 && run.encrypted == 0 {
                     t!("search.no_room")
                 } else {
                     t!("search.no_results_body")
@@ -424,12 +454,16 @@ impl SearchView {
             }
             return centered(spinner(24.0));
         }
-        let words = q.words();
+        let words: std::rc::Rc<[String]> = q.words().into();
         let groups = self.groups();
         let mut col = column![].spacing(0);
         let mut rows = 0usize;
         let total: usize = groups.iter().map(|g| g.1.len()).sum();
         'groups: for (rid, mids) in groups.iter() {
+            // No header without a row under it at the page's end.
+            if rows >= self.shown {
+                break;
+            }
             col = col.push(self.group_header(c, rid, mids.len()));
             for mid in mids {
                 if rows >= self.shown {
@@ -483,10 +517,11 @@ impl SearchView {
     fn hit_row<'a>(
         &'a self,
         c: &Ctx<'a>,
-        m: &RcMessage,
+        m: &'a RcMessage,
         origin: Origin,
-        words: &[String],
+        words: &std::rc::Rc<[String]>,
     ) -> Element<'a, Msg> {
+        let words = words.clone();
         let username = m.u.username.clone().unwrap_or_default();
         let name = m
             .alias
@@ -504,21 +539,6 @@ impl SearchView {
             .ts
             .map(|d| crate::format::moment(d.timestamp_millis(), c.local_now, c.prefs.clock_24h))
             .unwrap_or_default();
-        let (snip, ranges) = snippet(&m.msg, words, SNIPPET_CHARS);
-        let mut body = column![highlighted(sanitize_bidi(&snip).into_owned(), &ranges)].spacing(2);
-        let mut notes: Vec<Element<'a, Msg>> = Vec::new();
-        if m.tmid.is_some() {
-            notes.push(note(
-                Icon::MessageCircle,
-                t!("search.in_thread").into_owned(),
-            ));
-        }
-        if origin == Origin::Local {
-            notes.push(note(Icon::HardDrive, t!("search.from_cache").into_owned()));
-        }
-        if !notes.is_empty() {
-            body = body.push(row(notes).spacing(SPACE_3));
-        }
         let src = c.images.avatar(
             c.server_id,
             c.server,
@@ -527,23 +547,58 @@ impl SearchView {
             },
             &name,
         );
-        let mut p = MessageRowProps::new(
-            avatar(src, 32.0, AvatarShape::Rounded),
-            sanitize_bidi(&name).into_owned(),
-            time,
-            body,
+        // Rows are rebuilt only when what they show changes (many rows,
+        // views on every update).
+        let key = (
+            self.run.as_ref().map_or(0, |r| r.id),
+            m.id.clone(),
+            origin == Origin::Local,
+            super::text_tag(&m.msg),
+            name.clone(),
+            time.clone(),
+            (
+                crate::room::render::mode() == rustket_ui::theme::Mode::Dark,
+                rustket_ui::theme::generation(),
+            ),
+            crate::i18n::cache_tag(),
+            c.images.generation(c.server_id),
         );
-        p.actions_toolbar = Some(rustket_ui::widget::message_toolbar(vec![icon_button_with(
-            Icon::ArrowUpRight,
-            Some(Msg::Open(m.id.clone())),
-            t!("search.open"),
-            false,
-            28.0,
-        )]));
-        mouse_area(message_row(p))
-            .interaction(iced::mouse::Interaction::Pointer)
-            .on_press(Msg::Open(m.id.clone()))
-            .into()
+        lazy(key, move |_| {
+            let snip = self.snippet(m, &words, SNIPPET_CHARS);
+            let mut body = column![highlighted(&snip.0, &snip.1)].spacing(2);
+            let mut notes: Vec<Element<'static, Msg>> = Vec::new();
+            if m.tmid.is_some() {
+                notes.push(note(
+                    Icon::MessageCircle,
+                    t!("search.in_thread").into_owned(),
+                ));
+            }
+            if origin == Origin::Local {
+                notes.push(note(Icon::HardDrive, t!("search.from_cache").into_owned()));
+            }
+            if !notes.is_empty() {
+                body = body.push(row(notes).spacing(SPACE_3));
+            }
+            let mut p = MessageRowProps::new(
+                avatar(src.clone(), 32.0, AvatarShape::Rounded),
+                sanitize_bidi(&name).into_owned(),
+                time.clone(),
+                body,
+            );
+            p.actions_toolbar = Some(rustket_ui::widget::message_toolbar(vec![icon_button_with(
+                Icon::ArrowUpRight,
+                Some(Msg::Open(m.id.clone())),
+                t!("search.open"),
+                false,
+                28.0,
+            )]));
+            Element::from(
+                mouse_area(message_row(p))
+                    .interaction(iced::mouse::Interaction::Pointer)
+                    .on_press(Msg::Open(m.id.clone())),
+            )
+        })
+        .into()
     }
 }
 

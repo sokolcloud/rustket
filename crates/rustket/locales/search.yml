@@ -257,3 +257,27 @@ search.open:
   es: "Abrir"
   th: "เปิด"
   zh: "打开"
+search.server_error:
+  en: "The server could not run this search"
+  ru: "Сервер не смог выполнить этот поиск"
+  es: "El servidor no pudo realizar esta búsqueda"
+  th: "เซิร์ฟเวอร์ไม่สามารถค้นหานี้ได้"
+  zh: "服务器无法执行此搜索"
+search.server_error_body:
+  en: "It may not accept this query, or it is not answering right now. Only messages saved on this device are shown."
+  ru: "Возможно, сервер не принимает такой запрос или сейчас не отвечает. Показаны только сообщения, сохранённые на этом устройстве."
+  es: "Puede que no acepte esta consulta o que no responda ahora. Solo se muestran mensajes guardados en este dispositivo."
+  th: "เซิร์ฟเวอร์อาจไม่รับคำค้นนี้ หรือไม่ตอบสนองในขณะนี้ แสดงเฉพาะข้อความที่บันทึกในอุปกรณ์นี้"
+  zh: "服务器可能不接受此查询，或暂时没有响应。仅显示保存在本设备上的消息。"
+search.retry:
+  en: "Try again"
+  ru: "Повторить"
+  es: "Reintentar"
+  th: "ลองอีกครั้ง"
+  zh: "重试"
+search.regex_slash:
+  en: "A regular expression cannot contain “/” on the server: write \\x2F instead"
+  ru: "Регулярное выражение на сервере не может содержать «/»: пишите \\x2F"
+  es: "Una expresión regular no puede contener «/» en el servidor: escribe \\x2F en su lugar"
+  th: "นิพจน์ปกติบนเซิร์ฟเวอร์ใช้ “/” ไม่ได้ ให้เขียน \\x2F แทน"
+  zh: "服务器上的正则表达式不能包含“/”：请改写为 \\x2F"

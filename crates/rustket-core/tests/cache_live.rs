@@ -160,6 +160,7 @@ async fn offline_edits_deletions_and_outbox_reconcile() {
                     error: None,
                     send_at: None,
                     scheduled: false,
+                    reactions: Vec::new(),
                 }]),
                 ..Default::default()
             })

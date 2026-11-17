@@ -12,6 +12,6 @@ mod tests;
 pub use matcher::{LocalMatcher, MatchCtx, highlight, snippet};
 pub use query::{Has, SearchQuery, format_date, parse_date};
 pub use run::{
-    Backend, GLOBAL_LIMIT, Hit, Next, Origin, PER_ROOM_LIMIT, SearchRun, Target, resolve_rooms,
-    rooms_to_search,
+    Backend, GLOBAL_LIMIT, Hit, Next, Origin, PER_ROOM_LIMIT, Pacing, SearchRun, Target,
+    resolve_rooms, rooms_to_search,
 };

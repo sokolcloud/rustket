@@ -321,6 +321,38 @@ mod tests {
     }
 
     #[test]
+    fn places_drop_bidi_controls() {
+        use rocketchat::models::{Room, RoomType, Subscription};
+        let mut ws = Workspace::new();
+        ws.apply_subscription(
+            rustket_core::workspace::Change::Inserted,
+            Subscription {
+                id: "s-d1".into(),
+                rid: "D1".into(),
+                name: "mallory".into(),
+                fname: Some("\u{202E}fdp.eciovni".into()),
+                t: RoomType::Direct,
+                open: true,
+                ..Default::default()
+            },
+        );
+        ws.apply_room(
+            rustket_core::workspace::Change::Inserted,
+            Room {
+                id: "D1".into(),
+                t: RoomType::Direct,
+                ..Default::default()
+            },
+        );
+        let prefs = rustket_core::config::UiPrefs {
+            use_real_names: Some(true),
+            ..Default::default()
+        };
+        let p = view::place(&ws, &prefs, "D1", None);
+        assert!(!p.contains('\u{202E}'), "{p:?}");
+    }
+
+    #[test]
     fn dialogs_turn_into_requests() {
         let ws = ws_with_scheduled();
         let mut v = DraftsView::new();

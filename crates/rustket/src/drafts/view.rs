@@ -13,7 +13,7 @@ use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_SMALL, font_semibold};
 use rustket_ui::widget::{
     danger_button, dialog, empty_state, header_bar, icon_button, icon_button_with, modal_keyed,
-    primary_button,
+    primary_button, sanitize_bidi,
 };
 
 use super::{Dialog, DraftsView, Msg, preview};
@@ -38,9 +38,10 @@ impl Ctx<'_> {
 /// Where a message goes: the room's name, "Thread in #room" for a reply.
 pub fn place(ws: &Workspace, prefs: &UiPrefs, rid: &str, tmid: Option<&str>) -> String {
     let real = ws.use_real_names(prefs.use_real_names);
+    // Display names are other users' text: no bidi controls in a label.
     let room = ws
         .room(rid)
-        .map(|e| room_list::display_name(ws, e, real))
+        .map(|e| sanitize_bidi(&room_list::display_name(ws, e, real)).into_owned())
         .unwrap_or_default();
     match tmid {
         Some(_) => t!("later.thread_in", room = room.as_str()).into_owned(),

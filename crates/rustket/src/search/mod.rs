@@ -15,12 +15,13 @@ pub mod view;
 mod tests;
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
-use std::time::Duration;
+use std::collections::{BTreeSet, HashMap};
+use std::ops::Range;
+use std::time::{Duration, Instant};
 
 use rocketchat::models::{Message as RcMessage, SearchProvider};
 use rustket_core::Workspace;
-use rustket_core::search::{Has, SearchQuery, SearchRun, Target, parse_date};
+use rustket_core::search::{Has, Pacing, SearchQuery, SearchRun, Target, parse_date};
 
 use crate::error::Failure;
 
@@ -35,8 +36,11 @@ pub const QUERY_ID: &str = "global-search-query";
 /// Id of the picker fields.
 pub const PICKER_ID: &str = "global-search-picker";
 
+/// Suggestions shown by a picker.
+const SUGGESTIONS: usize = 8;
+
 /// What the account knows about the server's search, kept while the view
-/// is closed (per session).
+/// is closed (per session; cleared with the account's state).
 #[derive(Debug, Default)]
 pub struct SearchState {
     /// The session the state belongs to (its pointer).
@@ -45,19 +49,76 @@ pub struct SearchState {
     /// Id of the next run.
     pub next_run: u64,
     /// The pacing timer is armed for then.
-    pub timer: Option<std::time::Instant>,
-    /// The query of the view closed last (shown again when it reopens).
-    pub last_query: String,
+    pub timer: Option<Instant>,
+    /// When requests may start, across runs.
+    pub pacing: Pacing,
+    /// Requests in flight by `(run, target)`: dropping one aborts it
+    /// (a run replaced by the next edit).
+    pub requests: HashMap<(u64, Target), iced::task::Handle>,
+    /// The view closed last, with its run (results, progress): a result
+    /// opened and the view reopened shows them again instead of searching
+    /// every room anew.
+    pub stash: Option<Box<SearchView>>,
+}
+
+impl SearchState {
+    /// Aborts the requests of every run but `keep`.
+    pub fn abort_except(&mut self, keep: &[u64]) {
+        self.requests.retain(|(run, _), _| keep.contains(run));
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Provider {
     #[default]
     Unknown,
-    Loading,
+    /// The lookup is running; `failures`: lookups failed in a row before
+    /// it (a retry keeps counting for the back-off).
+    Loading {
+        failures: u32,
+    },
     Known(Option<SearchProvider>),
-    /// `rocketchatSearch.getProvider` failed: `chat.search` per room.
-    Failed,
+    /// `rocketchatSearch.getProvider` failed (`failures` times in a row):
+    /// `chat.search` per room meanwhile, asked again from `retry_at`.
+    Failed {
+        failures: u32,
+        retry_at: Instant,
+    },
+}
+
+impl Provider {
+    /// The lookup should be (re)started at `now`.
+    pub fn due(&self, now: Instant) -> bool {
+        match self {
+            Provider::Unknown => true,
+            Provider::Failed { retry_at, .. } => *retry_at <= now,
+            Provider::Loading { .. } | Provider::Known(_) => false,
+        }
+    }
+
+    /// The state while a lookup started from this one runs.
+    pub fn loading(&self) -> Provider {
+        let failures = match self {
+            Provider::Failed { failures, .. } | Provider::Loading { failures } => *failures,
+            Provider::Unknown | Provider::Known(_) => 0,
+        };
+        Provider::Loading { failures }
+    }
+
+    /// The state after a failed lookup: retried after a back-off (30 s
+    /// doubling up to 10 min), or the server's rate-limit wait if longer.
+    pub fn failed(&self, now: Instant, wait: Option<Duration>) -> Provider {
+        let failures = match self {
+            Provider::Failed { failures, .. } | Provider::Loading { failures } => failures + 1,
+            Provider::Unknown | Provider::Known(_) => 1,
+        };
+        let backoff = Duration::from_secs(30u64 << failures.saturating_sub(1).min(5))
+            .min(Duration::from_secs(600));
+        Provider::Failed {
+            failures,
+            retry_at: now + wait.map_or(backoff, |w| w.max(backoff)),
+        }
+    }
 }
 
 /// A filter picker of the builder.
@@ -129,17 +190,40 @@ pub struct SearchView {
     pub query: String,
     seq: u64,
     pub run: Option<SearchRun>,
-    /// The run was asked for before the provider was known.
-    pub pending_start: bool,
+    /// The query `run` was started for (the field may have been edited
+    /// since, its debounce not run out).
+    ran: SearchQuery,
     pub picker: Option<Picker>,
     pub picker_input: String,
+    /// The open picker's suggestions for its input (computed on input,
+    /// not per frame).
+    pub suggestions: Vec<(String, String)>,
     /// Rows shown (a multiple of [`PAGE`]).
     pub shown: usize,
     /// The local search is still reading the offline cache.
     pub cache_pending: bool,
     /// The run's grouped rows, rebuilt when its revision changes.
     groups: RefCell<Option<(u64, u64, Groups)>>,
+    /// Snippets with their highlights by message id, for the run in
+    /// `.0`, with the [`text_tag`] of the text they were made of (a
+    /// server copy may replace a stale cached one within a run).
+    snippets: RefCell<(u64, Snippets)>,
 }
+
+/// A hash of a message's text: what tells a server copy that replaced a
+/// stale cached hit from the text a snippet was made of.
+pub fn text_tag(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+/// A result's text: one line with its matches.
+pub type Snippet = std::sync::Arc<(String, Vec<Range<usize>>)>;
+
+/// Snippets by message id with the [`text_tag`] of their text.
+type Snippets = HashMap<String, (u64, Snippet)>;
 
 /// Hits grouped by room: `(rid, message ids)`.
 pub type Groups = std::sync::Arc<[(String, Vec<String>)]>;
@@ -150,13 +234,47 @@ impl SearchView {
             query,
             seq: 0,
             run: None,
-            pending_start: false,
+            ran: SearchQuery::default(),
             picker: None,
             picker_input: String::new(),
+            suggestions: Vec::new(),
             shown: PAGE,
             cache_pending: false,
             groups: RefCell::new(None),
+            snippets: RefCell::new((0, HashMap::new())),
         }
+    }
+
+    /// The snippet of `m` for `words`, computed once per run and text.
+    pub fn snippet(&self, m: &RcMessage, words: &[String], max: usize) -> Snippet {
+        let run = self.run.as_ref().map_or(0, |r| r.id);
+        let tag = text_tag(&m.msg);
+        let mut cache = self.snippets.borrow_mut();
+        if cache.0 != run {
+            *cache = (run, HashMap::new());
+        }
+        match cache.1.get(&m.id) {
+            Some((t, snip)) if *t == tag => snip.clone(),
+            _ => {
+                let snip: Snippet = std::sync::Arc::new(hit_snippet(&m.msg, words, max));
+                cache.1.insert(m.id.clone(), (tag, snip.clone()));
+                snip
+            }
+        }
+    }
+
+    /// Reopened, the view goes on with its run: it was started for the
+    /// query shown (not one edited before the view closed).
+    pub fn resumable(&self) -> bool {
+        self.run.is_some() && self.ran == self.parsed()
+    }
+
+    /// The view put away when it closes: the open picker closes with it.
+    pub fn stashed(mut self: Box<Self>) -> Box<Self> {
+        self.picker = None;
+        self.picker_input.clear();
+        self.suggestions.clear();
+        self
     }
 
     pub fn parsed(&self) -> SearchQuery {
@@ -221,6 +339,7 @@ impl SearchView {
             Msg::Pick(p) => {
                 self.picker = if self.picker == p { None } else { p };
                 self.picker_input.clear();
+                self.refresh_suggestions(ws);
                 match self.picker {
                     Some(_) => vec![Out::Focus(PICKER_ID)],
                     None => Vec::new(),
@@ -228,6 +347,7 @@ impl SearchView {
             }
             Msg::PickerInput(v) => {
                 self.picker_input = v;
+                self.refresh_suggestions(ws);
                 Vec::new()
             }
             Msg::PickerSubmit => self.picker_submit(ws),
@@ -295,6 +415,14 @@ impl SearchView {
         }
     }
 
+    fn refresh_suggestions(&mut self, ws: &Workspace) {
+        self.suggestions = match self.picker {
+            Some(Picker::From) => user_suggestions(ws, &self.picker_input),
+            Some(Picker::In) => room_suggestions(ws, &self.picker_input),
+            Some(Picker::After | Picker::Before) | None => Vec::new(),
+        };
+    }
+
     fn picker_submit(&mut self, ws: &Workspace) -> Vec<Out> {
         let Some(p) = self.picker else {
             return Vec::new();
@@ -341,11 +469,21 @@ impl SearchView {
 
     /// Starts showing a new run (rows from the top).
     pub fn set_run(&mut self, run: Option<SearchRun>) {
+        self.ran = match run {
+            Some(_) => self.parsed(),
+            None => SearchQuery::default(),
+        };
         self.run = run;
         self.shown = PAGE;
-        self.pending_start = false;
         *self.groups.borrow_mut() = None;
     }
+}
+
+/// The snippet of a result's text with its matches. Bidi controls go
+/// first, so the ranges index the text that is shown.
+pub fn hit_snippet(text: &str, words: &[String], max: usize) -> (String, Vec<Range<usize>>) {
+    let clean = rustket_ui::widget::sanitize_bidi(text);
+    rustket_core::search::snippet(&clean, words, max)
 }
 
 /// Usernames to offer in the From picker for `input`: the current user,
@@ -354,9 +492,13 @@ pub fn user_suggestions(ws: &Workspace, input: &str) -> Vec<(String, String)> {
     let needle = input.trim().trim_start_matches('@').to_lowercase();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut out: Vec<(String, String)> = Vec::new();
-    let mut push = |u: &str, name: Option<&str>| {
+    // Whether the list is full.
+    let mut push = |u: &str, name: Option<&str>| -> bool {
+        if out.len() >= SUGGESTIONS {
+            return true;
+        }
         if u.is_empty() || !seen.insert(u.to_lowercase()) {
-            return;
+            return false;
         }
         let name = name.unwrap_or_default();
         if needle.is_empty()
@@ -365,6 +507,7 @@ pub fn user_suggestions(ws: &Workspace, input: &str) -> Vec<(String, String)> {
         {
             out.push((u.to_owned(), name.to_owned()));
         }
+        out.len() >= SUGGESTIONS
     };
     if let Some(me) = ws.me() {
         push(
@@ -386,15 +529,18 @@ pub fn user_suggestions(ws: &Workspace, input: &str) -> Vec<(String, String)> {
         .collect();
     dms.sort_by_key(|e| std::cmp::Reverse(e.room.as_ref().and_then(|r| r.lm)));
     for e in dms {
-        push(e.name(), e.fname());
+        if push(e.name(), e.fname()) {
+            return out;
+        }
     }
     for m in ws.loaded_messages() {
-        push(
+        if push(
             m.u.username.as_deref().unwrap_or_default(),
             m.u.name.as_deref(),
-        );
+        ) {
+            break;
+        }
     }
-    out.truncate(8);
     out
 }
 
@@ -416,7 +562,7 @@ pub fn room_suggestions(ws: &Workspace, input: &str) -> Vec<(String, String)> {
     rooms.sort_by_key(|e| std::cmp::Reverse(e.room.as_ref().and_then(|r| r.lm)));
     rooms
         .into_iter()
-        .take(8)
+        .take(SUGGESTIONS)
         .map(|e| {
             (
                 e.name().to_owned(),

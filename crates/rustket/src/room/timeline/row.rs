@@ -596,7 +596,13 @@ pub(crate) fn build(
     let body: El = if ignored {
         ignored_body(&m.id)
     } else if let Some(card) = super::poll_card::card(env, m, can_vote) {
-        card
+        // The card replaces the text only: previews and the E2E plaintext
+        // note stay under it.
+        let mut col = column![card].spacing(SPACE_1);
+        for e in render::body_trailer(m, &rc) {
+            col = col.push(e.map(Message::render));
+        }
+        col.into()
     } else {
         render::message_body_with(m, &rc).map(Message::render)
     };

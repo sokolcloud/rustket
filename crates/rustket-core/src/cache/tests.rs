@@ -316,6 +316,7 @@ fn another_account_starts_empty() {
             error: None,
             send_at: None,
             scheduled: false,
+            reactions: Vec::new(),
         }]),
         ..Default::default()
     })
@@ -342,6 +343,7 @@ fn outbox_survives_a_restart() {
             error: None,
             send_at: None,
             scheduled: false,
+            reactions: Vec::new(),
         },
         OutboxEntry {
             message: reply,
@@ -350,6 +352,7 @@ fn outbox_survives_a_restart() {
             error: Some("boom".into()),
             send_at: None,
             scheduled: false,
+            reactions: Vec::new(),
         },
         OutboxEntry {
             message: msg("o3", "R1", 9, "u1"),
@@ -358,6 +361,8 @@ fn outbox_survives_a_restart() {
             error: None,
             send_at: None,
             scheduled: false,
+            // A poll queued offline keeps its option reactions.
+            reactions: vec![":one:".into(), ":two:".into()],
         },
     ];
     db.write(Batch {
@@ -380,6 +385,16 @@ fn outbox_survives_a_restart() {
     db.clear().unwrap();
     assert!(db.load_state().unwrap().is_empty());
     assert_eq!(db.load_outbox().unwrap().len(), 3);
+    assert_eq!(db.load_outbox().unwrap()[2].reactions, [":one:", ":two:"]);
+    // Rewritten without them: none are left behind.
+    let mut plain = entries.clone();
+    plain[2].reactions.clear();
+    db.write(Batch {
+        outbox: Some(plain),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(db.load_outbox().unwrap()[2].reactions.is_empty());
 }
 
 #[test]
@@ -431,6 +446,7 @@ fn e2e_plaintext_never_reaches_the_file() {
                 error: None,
                 send_at: None,
                 scheduled: false,
+                reactions: Vec::new(),
             },
             OutboxEntry {
                 message: shaped_pending,
@@ -439,6 +455,7 @@ fn e2e_plaintext_never_reaches_the_file() {
                 error: None,
                 send_at: None,
                 scheduled: false,
+                reactions: Vec::new(),
             },
         ]),
         ..Default::default()
@@ -1367,6 +1384,7 @@ fn scheduled_entries_keep_their_send_time() {
             error: None,
             send_at: None,
             scheduled: false,
+            reactions: Vec::new(),
         },
         OutboxEntry {
             message: msg("s1", "R1", 6, "u1"),
@@ -1375,6 +1393,7 @@ fn scheduled_entries_keep_their_send_time() {
             error: None,
             send_at: Some(1_900_000_000_000),
             scheduled: false,
+            reactions: Vec::new(),
         },
         // Fell due and queued: it stays known as a scheduled one.
         OutboxEntry {
@@ -1384,6 +1403,7 @@ fn scheduled_entries_keep_their_send_time() {
             error: None,
             send_at: None,
             scheduled: true,
+            reactions: Vec::new(),
         },
         OutboxEntry {
             message: msg("d2", "R1", 8, "u1"),
@@ -1392,6 +1412,7 @@ fn scheduled_entries_keep_their_send_time() {
             error: None,
             send_at: None,
             scheduled: true,
+            reactions: Vec::new(),
         },
     ];
     db.write(Batch {
@@ -1433,6 +1454,7 @@ fn scheduled_table_needs_no_schema_bump() {
                 error: None,
                 send_at: None,
                 scheduled: false,
+                reactions: Vec::new(),
             },
             OutboxEntry {
                 message: msg("s1", "R1", 6, "u1"),
@@ -1441,6 +1463,7 @@ fn scheduled_table_needs_no_schema_bump() {
                 error: None,
                 send_at: Some(9_000),
                 scheduled: false,
+                reactions: Vec::new(),
             },
         ]),
         ..Default::default()
@@ -1518,4 +1541,41 @@ async fn search_finds_plain_messages_once_and_never_ciphertext() {
     let found = h.search(m.clone(), Some(only), 10).await;
     assert_eq!(found.len(), 1);
     assert_eq!(h.search(m, None, 1).await.len(), 1);
+}
+
+#[test]
+fn search_stops_early_filters_in_sql_and_can_be_cancelled() {
+    use crate::search::{LocalMatcher, MatchCtx, SearchQuery};
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    let mut all = Vec::new();
+    for rid in ["R1", "R2", "R3"] {
+        let mut list = messages(rid, 100);
+        for m in &mut list {
+            m.msg = format!("Deploy note {}", m.id);
+        }
+        all.push(timeline(rid, list));
+    }
+    db.write(Batch {
+        timelines: all,
+        ..Default::default()
+    })
+    .unwrap();
+    let ctx = MatchCtx {
+        user_id: "u1".into(),
+        username: "u1".into(),
+        offset: chrono::FixedOffset::east_opt(0).unwrap(),
+    };
+    let m = LocalMatcher::new(&SearchQuery::parse("deploy"), &ctx).unwrap();
+    let never = || false;
+    // Newest first, stopped at the limit.
+    let found = db.search(&m, None, 5, &never).unwrap();
+    let ids: Vec<&str> = found.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["R1-m099", "R2-m099", "R3-m099", "R1-m098", "R2-m098"]);
+    // A word no message has: nothing decoded, nothing found.
+    let none = LocalMatcher::new(&SearchQuery::parse("kumquat"), &ctx).unwrap();
+    assert!(db.search(&none, None, 5, &never).unwrap().is_empty());
+    // A replaced search stops.
+    assert!(db.search(&m, None, 500, &|| true).unwrap().is_empty());
+    assert_eq!(db.search(&m, None, 500, &never).unwrap().len(), 300);
 }

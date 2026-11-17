@@ -314,6 +314,9 @@ pub struct OutboxEntry {
     /// A queued scheduled message that fell due (`send_at` is `None`): a
     /// final failure puts it back with the scheduled ones.
     pub scheduled: bool,
+    /// Reactions to add once it is sent (a poll's option reactions,
+    /// `crate::poll`), as shortcodes.
+    pub reactions: Vec<String>,
 }
 
 /// One set of changes, written in one transaction. `None` / empty fields

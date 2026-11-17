@@ -10,17 +10,19 @@
 
 use std::ops::Range;
 
-use chrono::{FixedOffset, NaiveDate, TimeZone};
+use chrono::{FixedOffset, NaiveDate};
 use regex::Regex;
 use rocketchat::models::Message;
 
 use super::query::{Has, SearchQuery};
 
-/// Who "me" is, and the day boundaries' time zone.
+/// Who "me" is, and the day boundaries' offset.
 #[derive(Debug, Clone)]
 pub struct MatchCtx {
     pub user_id: String,
     pub username: String,
+    /// The user's UTC offset as the server stores it (`utcOffset`, whole
+    /// hours): see [`day_start`].
     pub offset: FixedOffset,
 }
 
@@ -39,19 +41,26 @@ pub struct LocalMatcher {
     user_id: String,
 }
 
+/// Where the server starts day `d` for the date operators: it takes
+/// midnight in its own time zone and moves it by the user's offset in the
+/// direction of UTC (`setUTCHours(h + getTimezoneOffset()/60 + utcOffset)`),
+/// which on a server running in UTC (the usual deployment) is UTC midnight
+/// plus the offset. Local results use the same bounds, so they agree with
+/// the server's answer instead of adding hits it would never return.
 fn day_start(d: NaiveDate, offset: FixedOffset) -> Option<i64> {
-    let t = d.and_hms_opt(0, 0, 0)?;
-    offset
-        .from_local_datetime(&t)
-        .single()
-        .map(|t| t.timestamp_millis())
+    let t = d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis();
+    Some(t + i64::from(offset.local_minus_utc()) * 1000)
 }
 
 impl LocalMatcher {
     /// `None`: the query is empty, or has an operator that cannot be
     /// evaluated here, or an invalid regex.
     pub fn new(q: &SearchQuery, ctx: &MatchCtx) -> Option<Self> {
-        if q.is_empty() || q.has(Has::Location) || !q.other.iter().all(|o| is_order(o)) {
+        if q.is_empty()
+            || q.has(Has::Location)
+            || !q.other.iter().all(|o| is_order(o))
+            || q.regex_unsupported()
+        {
             return None;
         }
         let regex = match q.regex() {
@@ -102,6 +111,34 @@ impl LocalMatcher {
             below,
             user_id: ctx.user_id.clone(),
         })
+    }
+
+    /// `ts` bounds in ms, both inclusive: a cheap pre-filter (the stored
+    /// timestamp) before [`Self::matches`].
+    pub fn ts_bounds(&self) -> (Option<i64>, Option<i64>) {
+        let max = match (self.max, self.below) {
+            (Some(m), Some(b)) => Some(m.min(b - 1)),
+            (m, b) => m.or(b.map(|b| b - 1)),
+        };
+        (self.min, max)
+    }
+
+    /// Words every match contains as written in its stored JSON, for a
+    /// pre-filter on the JSON lowercased ASCII-only: ASCII words without
+    /// characters JSON escapes (none for a regex). Text where a non-ASCII
+    /// letter lowercases to ASCII (the Kelvin sign) slips through it.
+    pub fn json_words(&self) -> Vec<&str> {
+        if self.regex.is_some() {
+            return Vec::new();
+        }
+        self.words
+            .iter()
+            .filter(|w| {
+                w.bytes()
+                    .all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
+            })
+            .map(String::as_str)
+            .collect()
     }
 
     /// Whether `m` matches. System messages never do; the caller decides

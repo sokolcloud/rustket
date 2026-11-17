@@ -34,7 +34,10 @@ pub use self::cache::forget_commands;
 use self::cache::{
     commands_failed, outbox_in_flight, outbox_take_done, store_commands, store_members,
 };
-pub(crate) use self::cache::{outbox_forget, outbox_start};
+pub(crate) use self::cache::{
+    outbox_forget, outbox_start, poll_reactions_peek, poll_reactions_restore, poll_reactions_take,
+};
+pub(crate) use self::send::add_reactions;
 pub(crate) use self::send::expand_groups;
 pub use self::send::orphan_result;
 use self::send::{apply_send_result, commands_unavailable, error_toast, fetch, needs_join_code};
@@ -235,8 +238,8 @@ pub struct Composer {
     schedule_at: Option<i64>,
     /// The open "Create poll" dialog.
     poll: Option<poll::PollDraft>,
-    /// Polls being sent: local message id → option reactions to add.
-    poll_reactions: std::collections::HashMap<String, Vec<&'static str>>,
+    /// A poll waiting for the `@all` confirmation: its text and reactions.
+    broad_poll: Option<(String, Vec<&'static str>)>,
 }
 
 impl Composer {
@@ -278,7 +281,7 @@ impl Composer {
             schedule: None,
             schedule_at: None,
             poll: None,
-            poll_reactions: Default::default(),
+            broad_poll: None,
         }
     }
 
@@ -579,11 +582,13 @@ impl Composer {
             Message::Cancel => {
                 if self.schedule.is_some() {
                     self.schedule = None;
+                } else if self.confirm_broad.is_some() {
+                    // Over the poll dialog when a poll asked: back to it.
+                    self.confirm_broad = None;
+                    self.broad_poll = None;
+                    self.schedule_at = None;
                 } else if self.poll.is_some() {
                     self.poll = None;
-                } else if self.confirm_broad.is_some() {
-                    self.confirm_broad = None;
-                    self.schedule_at = None;
                 } else if self.confirm_delete.is_some() {
                     self.confirm_delete = None;
                 } else if self.popup_visible() {
@@ -732,16 +737,10 @@ impl Composer {
                 Err(e) => Action::effect(error_toast(e.user_text())),
             },
             Message::Sent(id, r) => {
+                // A poll's option reactions follow from `send_task`.
                 outbox_forget(ctx.server_id, &id);
-                let reactions = self.poll_reactions.remove(&id).filter(|_| r.is_ok());
                 self.apply_sent(&id, r, ctx.workspace);
-                match reactions {
-                    Some(list) if !list.is_empty() => Action::task(ctx.rest_task(
-                        move |rest| send::add_reactions(rest, id, list),
-                        Message::PollReacted,
-                    )),
-                    _ => Action::none(),
-                }
+                Action::none()
             }
             Message::OpenPoll => {
                 if self.editing.is_some() {
@@ -987,13 +986,17 @@ impl Composer {
                     return Action::none();
                 }
                 self.broad_ok = true;
-                let a = self.send(ctx);
+                let a = match self.broad_poll.take() {
+                    Some((text, reactions)) => self.send_poll(text, reactions, ctx),
+                    None => self.send(ctx),
+                };
                 self.broad_ok = false;
                 self.schedule_at = None;
                 a
             }
             Message::BroadCancelled => {
                 self.confirm_broad = None;
+                self.broad_poll = None;
                 self.schedule_at = None;
                 Action::task(self.focus())
             }

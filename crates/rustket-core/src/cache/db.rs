@@ -33,6 +33,15 @@ const SCHEDULED_TABLE: &str = "CREATE TABLE IF NOT EXISTS scheduled (
      json TEXT NOT NULL
  );";
 
+/// Reactions to add once an outbox or scheduled message is sent (a poll's
+/// option reactions), by message id: a table of its own for the same
+/// reasons as [`SCHEDULED_TABLE`]. `list` is a JSON array of shortcodes.
+const OUTBOX_REACTIONS_TABLE: &str = "CREATE TABLE IF NOT EXISTS outbox_reactions (
+     id TEXT PRIMARY KEY,
+     uid TEXT NOT NULL,
+     list TEXT NOT NULL
+ );";
+
 /// Migration `i` brings the schema from version `i` to `i + 1`.
 const MIGRATIONS: &[&str] = &[
     // 1: documents, timelines with their newest messages, outbox.
@@ -281,6 +290,7 @@ impl CacheDb {
         };
         db.migrate(version)?;
         db.conn.execute_batch(SCHEDULED_TABLE)?;
+        db.conn.execute_batch(OUTBOX_REACTIONS_TABLE)?;
         let stored: Option<String> = db.meta(META_USER)?;
         let changed = stored.as_deref().is_some_and(|u| u != user_id);
         if changed {
@@ -370,6 +380,7 @@ impl CacheDb {
         if outbox {
             tx.execute("DELETE FROM outbox", [])?;
             tx.execute("DELETE FROM scheduled", [])?;
+            tx.execute("DELETE FROM outbox_reactions", [])?;
         }
         tx.commit()?;
         Ok(())
@@ -582,6 +593,21 @@ impl CacheDb {
 
     /// The persisted outbox, oldest first.
     pub fn load_outbox(&self) -> Result<Vec<OutboxEntry>> {
+        let mut reactions: HashMap<String, Vec<String>> = HashMap::new();
+        {
+            let mut st = self
+                .conn
+                .prepare("SELECT id, list FROM outbox_reactions WHERE uid = ?1")?;
+            let rows = st.query_map([&self.user_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (id, list) = row?;
+                if let Some(list) = from_json::<Vec<String>>("outbox_reactions", &list) {
+                    reactions.insert(id, list);
+                }
+            }
+        }
         let mut st = self
             .conn
             .prepare("SELECT json, queued, error FROM outbox ORDER BY created, id")?;
@@ -598,6 +624,7 @@ impl CacheDb {
             if let Some(message) = from_json::<Message>("outbox", &json) {
                 let state = queued & !QUEUED_SCHEDULED;
                 out.push(OutboxEntry {
+                    reactions: reactions.remove(&message.id).unwrap_or_default(),
                     message,
                     queued: state != 0,
                     maybe_sent: state == QUEUED_MAYBE_SENT,
@@ -617,6 +644,7 @@ impl CacheDb {
             let (json, send_at) = row?;
             if let Some(message) = from_json::<Message>("scheduled", &json) {
                 out.push(OutboxEntry {
+                    reactions: reactions.remove(&message.id).unwrap_or_default(),
                     message,
                     queued: false,
                     maybe_sent: false,
@@ -660,23 +688,46 @@ impl CacheDb {
     /// Cached messages matching `matcher` (in `rooms` when set), newest
     /// first, at most `limit`, one per id (a reply can be cached in its
     /// room and its thread). Encrypted messages are stored as ciphertext
-    /// and never match.
+    /// and never match. The scan stops early once `limit` are found or
+    /// when `cancelled` says a newer search replaced this one.
     pub fn search(
         &self,
         matcher: &crate::search::LocalMatcher,
         rooms: Option<&HashSet<String>>,
         limit: usize,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<Message>> {
-        let mut st = self
-            .conn
-            .prepare("SELECT t.rid, m.json FROM messages m JOIN timelines t ON t.key = m.tl")?;
-        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let (min, max) = matcher.ts_bounds();
+        let words = matcher.json_words();
+        let mut sql = String::from(
+            "SELECT t.rid, m.json FROM messages m JOIN timelines t ON t.key = m.tl
+             WHERE m.ts >= ?1 AND m.ts <= ?2",
+        );
+        for i in 0..words.len() {
+            sql.push_str(&format!(" AND instr(lower(m.json), ?{}) > 0", i + 3));
+        }
+        sql.push_str(" ORDER BY m.ts DESC");
+        let mut st = self.conn.prepare(&sql)?;
+        let mut args: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(words.len() + 2);
+        let (min, max) = (min.unwrap_or(i64::MIN), max.unwrap_or(i64::MAX));
+        args.push(&min);
+        args.push(&max);
+        for w in &words {
+            args.push(w);
+        }
+        let mut rows = st.query(args.as_slice())?;
         let mut found: HashMap<String, Message> = HashMap::new();
-        for row in rows {
-            let (rid, json) = row?;
+        let mut scanned = 0usize;
+        while let Some(row) = rows.next()? {
+            scanned += 1;
+            if scanned.is_multiple_of(256) && cancelled() {
+                return Ok(Vec::new());
+            }
+            let rid: String = row.get(0)?;
             if rooms.is_some_and(|r| !r.contains(&rid)) {
                 continue;
             }
+            let json: String = row.get(1)?;
             let Some(m) = from_json::<Message>("message", &json) else {
                 continue;
             };
@@ -684,6 +735,9 @@ impl CacheDb {
                 continue;
             }
             found.insert(m.id.clone(), m);
+            if found.len() >= limit {
+                break;
+            }
         }
         let mut list: Vec<Message> = found.into_values().collect();
         list.sort_by(|a, b| ts_ms(b).cmp(&ts_ms(a)).then(a.id.cmp(&b.id)));
@@ -959,6 +1013,10 @@ fn write_timeline(tx: &Transaction<'_>, t: &CachedTimeline, stamp: i64) -> Resul
 fn write_outbox(tx: &Transaction<'_>, outbox: &[OutboxEntry], uid: &str) -> Result<()> {
     tx.execute("DELETE FROM outbox", [])?;
     tx.execute("DELETE FROM scheduled", [])?;
+    tx.execute("DELETE FROM outbox_reactions", [])?;
+    let mut reactions = tx.prepare_cached(
+        "INSERT OR REPLACE INTO outbox_reactions (id, uid, list) VALUES (?1, ?2, ?3)",
+    )?;
     let mut scheduled = tx.prepare_cached(
         "INSERT OR REPLACE INTO scheduled (id, uid, rid, send_at, json)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -978,6 +1036,9 @@ fn write_outbox(tx: &Transaction<'_>, outbox: &[OutboxEntry], uid: &str) -> Resu
         }
         if encrypted_room.exists(params![KIND_ROOM, m.rid])? {
             continue;
+        }
+        if !e.reactions.is_empty() {
+            reactions.execute(params![m.id, uid, to_json(&e.reactions)?])?;
         }
         if let Some(at) = e.send_at {
             scheduled.execute(params![m.id, uid, m.rid, at, to_json(m)?])?;
