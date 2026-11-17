@@ -311,6 +311,9 @@ pub struct OutboxEntry {
     /// A scheduled message (`crate::scheduled`): when to send it (UTC ms).
     /// It is not a pending message until then.
     pub send_at: Option<i64>,
+    /// Reactions to add once it is sent (a poll's option reactions,
+    /// `crate::poll`), as shortcodes.
+    pub reactions: Vec<String>,
 }
 
 /// One set of changes, written in one transaction. `None` / empty fields

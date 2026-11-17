@@ -156,6 +156,65 @@ pub(super) fn commands_recently_failed(server: &ServerId) -> bool {
     })
 }
 
+/// Option reactions of polls not sent yet, by (server, message id): kept
+/// through failed sends, retries and closed views, and added by whichever
+/// path delivers the message (the composer, a composer gone meanwhile,
+/// the offline queue).
+type PollReactions = HashMap<(String, String), Vec<&'static str>>;
+
+static POLL_REACTIONS: LazyLock<Mutex<PollReactions>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(super) fn poll_reactions_set(server: &ServerId, id: &str, reactions: Vec<&'static str>) {
+    if let Ok(mut map) = POLL_REACTIONS.lock() {
+        map.insert((server.as_str().to_owned(), id.to_owned()), reactions);
+    }
+}
+
+/// The reactions to add now that message `id` is sent (taken once).
+pub(crate) fn poll_reactions_take(server: &ServerId, id: &str) -> Option<Vec<&'static str>> {
+    POLL_REACTIONS
+        .lock()
+        .ok()?
+        .remove(&(server.as_str().to_owned(), id.to_owned()))
+        .filter(|l| !l.is_empty())
+}
+
+/// The reactions waiting for message `id`, as stored with the outbox.
+pub(crate) fn poll_reactions_peek(server: &ServerId, id: &str) -> Vec<String> {
+    POLL_REACTIONS
+        .lock()
+        .ok()
+        .and_then(|map| {
+            map.get(&(server.as_str().to_owned(), id.to_owned()))
+                .map(|l| l.iter().map(|r| (*r).to_owned()).collect())
+        })
+        .unwrap_or_default()
+}
+
+/// Puts back the reactions of a message restored from the persisted
+/// outbox; only a poll's option reactions are taken.
+pub(crate) fn poll_reactions_restore(server: &ServerId, id: &str, stored: &[String]) {
+    let list: Vec<&'static str> = stored
+        .iter()
+        .filter_map(|s| {
+            (0..rustket_core::poll::MAX_OPTIONS)
+                .filter_map(rustket_core::poll::reaction)
+                .find(|r| r == s)
+        })
+        .collect();
+    if !list.is_empty() {
+        poll_reactions_set(server, id, list);
+    }
+}
+
+/// The message will not be sent (discarded).
+pub(super) fn poll_reactions_forget(server: &ServerId, id: &str) {
+    if let Ok(mut map) = POLL_REACTIONS.lock() {
+        map.remove(&(server.as_str().to_owned(), id.to_owned()));
+    }
+}
+
 /// Outbox sends by (server, message id). Results are recorded here as soon as
 /// the request finishes, so a result that arrives while the room is closed
 /// (its message is then dropped) is applied when the room opens again.

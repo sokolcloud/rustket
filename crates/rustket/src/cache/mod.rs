@@ -78,8 +78,17 @@ const THREADS_WRITE_INTERVAL: Duration = Duration::from_secs(60);
 /// A timeline instance (see `Timeline::epoch`).
 type Epoch = (u64, u64);
 /// An outbox entry as last written: id, queued, maybe sent, error, send
-/// time and a hash of the text (scheduled texts can be edited).
-type OutboxSig = (String, bool, bool, Option<String>, Option<i64>, u64);
+/// time, a hash of the text (scheduled texts can be edited) and the
+/// reactions to add once sent.
+type OutboxSig = (
+    String,
+    bool,
+    bool,
+    Option<String>,
+    Option<i64>,
+    u64,
+    Vec<String>,
+);
 
 /// App-wide cache state.
 #[derive(Debug, Default)]
@@ -618,6 +627,7 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
                     _ => None,
                 },
                 send_at: None,
+                reactions: crate::room::composer::poll_reactions_peek(&s.id, &i.message.id),
             }
         })
         .collect();
@@ -633,6 +643,7 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
                 maybe_sent: false,
                 error: None,
                 send_at: Some(e.send_at),
+                reactions: crate::room::composer::poll_reactions_peek(&s.id, e.id()),
             }),
     );
     let sig: Vec<OutboxSig> = entries
@@ -648,6 +659,7 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
                 e.error.clone(),
                 e.send_at,
                 h.finish(),
+                e.reactions.clone(),
             )
         })
         .collect();
@@ -888,6 +900,20 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
                     s.cache.queued.remove(&id);
                     s.cache.unconfirmed.remove(&id);
                     s.workspace.apply_message(*m);
+                    // A poll queued offline: its option reactions now.
+                    if let Some(list) = crate::room::composer::poll_reactions_take(&sid, &id)
+                        && let Some(rest) = s.session.as_ref().map(|h| h.rest().clone())
+                    {
+                        return Task::perform(
+                            crate::room::composer::add_reactions(rest, id, list),
+                            |r| {
+                                if let Err(e) = r {
+                                    tracing::warn!(error = %e, "poll reactions not added");
+                                }
+                            },
+                        )
+                        .discard();
+                    }
                 }
                 Outcome::Deleted => {
                     s.cache.queued.remove(&id);
@@ -1032,6 +1058,9 @@ fn restore_outbox(s: &mut ServerState, outbox: Vec<OutboxEntry>) {
         if present.contains(&m.id) {
             continue;
         }
+        // A poll queued offline adds its option reactions once sent, after
+        // a restart too.
+        crate::room::composer::poll_reactions_restore(&s.id, &m.id, &e.reactions);
         if let Some(at) = e.send_at {
             s.cache.restored.insert(m.id.clone());
             s.workspace
@@ -1378,9 +1407,8 @@ mod tests {
         batch.threads
     }
 
-    #[test]
-    fn scheduled_messages_are_persisted_restored_and_queued_when_due() {
-        use rustket_core::scheduled::MISSED_GRACE_MS;
+    /// A signed-in server with unencrypted room `a`, its outbox restored.
+    fn room_a_server() -> ServerState {
         let mut s = thread_server();
         s.workspace.apply_initial(rustket_core::sync::InitialData {
             me: rocketchat::models::User {
@@ -1404,6 +1432,38 @@ mod tests {
             ..Default::default()
         });
         s.cache.outbox_restored = true;
+        s
+    }
+
+    #[test]
+    fn poll_reactions_survive_a_restart_with_the_outbox() {
+        use crate::room::composer::{poll_reactions_restore, poll_reactions_take};
+        let mut s = room_a_server();
+        let m = s.workspace.new_local_message("a", "poll", None, false);
+        let id = m.id.clone();
+        s.workspace.add_pending(m);
+        poll_reactions_restore(&s.id, &id, &[":one:".into(), ":two:".into()]);
+        let mut batch = Batch::default();
+        collect_outbox(&mut s, &mut batch);
+        let entries = batch.outbox.expect("written");
+        assert_eq!(entries[0].reactions, [":one:", ":two:"]);
+        // The process ends: the in-memory registry is gone.
+        assert!(poll_reactions_take(&s.id, &id).is_some());
+        let mut s2 = thread_server();
+        let mut stored = entries;
+        // Only option reactions come back from the file.
+        stored[0].reactions.push(":skull:".into());
+        restore_outbox(&mut s2, stored);
+        assert_eq!(
+            poll_reactions_take(&s2.id, &id),
+            Some(vec![":one:", ":two:"])
+        );
+    }
+
+    #[test]
+    fn scheduled_messages_are_persisted_restored_and_queued_when_due() {
+        use rustket_core::scheduled::MISSED_GRACE_MS;
+        let mut s = room_a_server();
         let m = s
             .workspace
             .new_local_message("a", "later text", None, false);

@@ -552,19 +552,14 @@ impl Header {
                 if d.saving || d.url.trim().is_empty() {
                     return Action::none();
                 }
-                let Some(description) =
-                    super::bookmarks::new_description(ctx.workspace, &self.rid, d)
-                else {
+                let Some(url) = super::bookmarks::normalize_url(&d.url) else {
                     d.error = Some(t!("bookmarks.invalid_url").into_owned());
                     return Action::none();
                 };
                 d.saving = true;
-                let body = serde_json::json!({
-                    "rid": self.rid,
-                    "roomDescription": description,
-                });
+                let (rid, title) = (self.rid.clone(), d.title.clone());
                 return Action::task(ctx.rest_task(
-                    move |rest| panel::api::save_room_settings(rest, body),
+                    move |rest| super::bookmarks::save(rest, rid, title, url),
                     Message::BookmarkSaved,
                 ));
             }

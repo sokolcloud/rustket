@@ -119,8 +119,7 @@ impl App {
                         s.later_state.last_tab.unwrap_or_default()
                     }
                 });
-                s.close_main_view();
-                s.main_view = Some(MainView::Later(LaterView::new(tab)));
+                s.show_main_view(MainView::Later(LaterView::new(tab)));
             }
         }
         Task::none()

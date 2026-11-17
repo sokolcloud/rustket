@@ -40,8 +40,7 @@ impl App {
         }
         s.omni.close_contact_center();
         s.status_menu.open = false;
-        s.close_main_view();
-        s.main_view = Some(MainView::Drafts(DraftsView::new()));
+        s.show_main_view(MainView::Drafts(DraftsView::new()));
         Task::none()
     }
 

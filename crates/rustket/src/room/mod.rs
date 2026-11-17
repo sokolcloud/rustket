@@ -155,6 +155,11 @@ pub fn orphan_result(m: Message, ws: &mut Workspace) -> Vec<Effect> {
         Message::Composer(composer::Message::Upload(u)) => {
             upload::orphan_result(u, ws).into_iter().collect()
         }
+        Message::Composer(composer::Message::PollReacted(Err(e))) => vec![Effect::Toast(
+            BannerKind::Error,
+            t!("poll.reactions_failed").into_owned(),
+            e.user_text(),
+        )],
         Message::Panel(panel::Message::Body(
             _,
             panel::BodyMsg::Thread(panel::thread::Msg::Composer(composer::Message::Upload(u))),

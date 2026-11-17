@@ -1729,15 +1729,28 @@ fn the_people_popup_offers_groups_and_their_settings() {
 #[test]
 fn ctrl_shift_enter_schedules() {
     let enter = Key::Named(key::Named::Enter);
+    let schedulable = Keys {
+        schedulable: true,
+        ..Keys::default()
+    };
     assert_eq!(
         custom(press(
             enter.clone(),
             Modifiers::COMMAND | Modifiers::SHIFT,
-            Keys::default()
+            schedulable
         ))
         .as_deref(),
         Some("Schedule")
     );
+    // Editing, an encrypted room, no offline cache: a line break as before.
+    assert!(matches!(
+        press(
+            enter.clone(),
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Keys::default()
+        ),
+        Some(Binding::Enter)
+    ));
     assert_eq!(
         custom(press(enter, Modifiers::COMMAND, Keys::default())).as_deref(),
         Some("Send")
@@ -1829,4 +1842,43 @@ fn encrypted_rooms_cannot_schedule() {
     r.encrypted = Some(true);
     env.ws.apply_room(rustket_core::Change::Updated, r);
     assert!(!c.can_schedule(&env.ws));
+}
+
+#[test]
+fn polls_ask_before_mentioning_everyone_and_keep_their_reactions() {
+    let mut env = broad_env("t-broad-poll", Some(11), &["mention-all"]);
+    let mut c = Composer::new("R1");
+    let _ = c.update(Message::OpenPoll, &mut env.ctx());
+    let text = "📊 @all lunch?\n1️⃣ Pizza\n2️⃣ Sushi".to_owned();
+    let _ = c.send_poll(text.clone(), vec![":one:", ":two:"], &mut env.ctx());
+    assert!(c.confirm_broad.is_some(), "typed @all asks as in a message");
+    assert!(env.ws.pending_messages("R1").is_empty());
+    assert!(c.poll.is_some(), "the dialog stays under the question");
+    // Cancel goes back to the dialog.
+    let _ = c.update(Message::Cancel, &mut env.ctx());
+    assert!(c.confirm_broad.is_none() && c.poll.is_some());
+    let _ = c.send_poll(text.clone(), vec![":one:", ":two:"], &mut env.ctx());
+    let _ = c.update(Message::BroadConfirmed, &mut env.ctx());
+    let p = env.ws.pending_messages("R1");
+    assert_eq!(p.len(), 1);
+    assert_eq!(p[0].message.msg, text);
+    assert!(c.poll.is_none());
+    // The reactions outlive a failed send (Retry, the offline queue) and
+    // are taken once by the successful one.
+    let id = p[0].message.id.clone();
+    let lost = rocketchat::Error::Unauthorized {
+        message: None,
+        code: None,
+    };
+    let failed = Message::Sent(id.clone(), Err(Failure::from(lost)));
+    assert!(send::reactions_after(&env.sid, &failed).is_none());
+    let ok = Message::Sent(
+        id.clone(),
+        Ok(Box::new(rocketchat::models::Message::default())),
+    );
+    assert_eq!(
+        send::reactions_after(&env.sid, &ok),
+        Some((id.clone(), vec![":one:", ":two:"]))
+    );
+    assert!(send::reactions_after(&env.sid, &ok).is_none());
 }

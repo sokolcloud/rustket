@@ -24,12 +24,10 @@ type El = Element<'static, Message>;
 const TOOLTIP_NAMES: usize = 15;
 
 /// The poll card of `m`, if its text is a poll. Messages with attachments
-/// (quotes, files) and undecrypted ones render normally.
+/// (quotes, files), UIKit blocks (an app's message: its blocks are the
+/// body) and undecrypted ones render normally.
 pub(crate) fn card(env: &Env<'_>, m: &RcMessage, can_vote: bool) -> Option<El> {
-    if m.attachments.as_ref().is_some_and(|a| !a.is_empty())
-        || m.file.is_some()
-        || crate::e2e::shown::undecrypted(m)
-    {
+    if !is_card(m) {
         return None;
     }
     let p = poll::parse(&m.msg)?;
@@ -100,6 +98,17 @@ pub(crate) fn card(env: &Env<'_>, m: &RcMessage, can_vote: bool) -> Option<El> {
     )
 }
 
+/// Whether `m` is drawn as a poll card.
+pub(crate) fn is_card(m: &RcMessage) -> bool {
+    m.attachments.as_ref().is_none_or(|a| a.is_empty())
+        && m.file.is_none()
+        && m.blocks
+            .as_ref()
+            .is_none_or(|b| b.is_null() || b.as_array().is_some_and(Vec::is_empty))
+        && !crate::e2e::shown::undecrypted(m)
+        && poll::parse(&m.msg).is_some()
+}
+
 /// "Alice, Bob and 3 more" for an option's tooltip.
 fn voters_line(env: &Env<'_>, v: &poll::OptionVotes) -> Option<String> {
     if v.voters.is_empty() {
@@ -127,4 +136,25 @@ fn voters_line(env: &Env<'_>, v: &poll::OptionVotes) -> Option<String> {
     } else {
         list
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn app_messages_with_blocks_are_not_cards() {
+        let mut m = RcMessage {
+            id: "m1".into(),
+            msg: "📊 Lunch?\n1️⃣ Pizza\n2️⃣ Sushi".into(),
+            ..Default::default()
+        };
+        assert!(is_card(&m));
+        m.blocks = Some(serde_json::json!([]));
+        assert!(is_card(&m));
+        m.blocks = Some(serde_json::json!([{"type": "section"}]));
+        assert!(!is_card(&m), "the blocks are the body");
+    }
 }

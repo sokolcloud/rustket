@@ -19,7 +19,7 @@ convention that every client can read and vote in, with reactions as votes.
   `:keycap_ten:` (`:ten:`).
 - Blank lines and CRLF line ends are ignored. Anything else (a line without a
   keycap, a gap or a wrong order in the numbers, an empty option, a message
-  with attachments) makes it an ordinary message.
+  with attachments or UIKit blocks) makes it an ordinary message.
 
 Parsing and generation: `crates/rustket-core/src/poll.rs`.
 
@@ -35,8 +35,9 @@ under these names (checked on 8.9.1):
 
 Rustket draws a poll card instead of the text: each option with its vote
 count, a bar relative to the leading option, a check on the user's own votes
-and the voters in a tooltip. A click toggles the user's reaction
-(`chat.react`). Nothing limits a user to one vote, as with reactions anywhere.
+and the voters in a tooltip. Link previews and the E2E note about plaintext
+stay under the card. A click toggles the user's reaction (`chat.react`).
+Nothing limits a user to one vote, as with reactions anywhere.
 
 ## Creating
 
@@ -44,6 +45,11 @@ The chart button in the composer opens "Create poll": the question, 2–10
 options and "Add the option reactions". With that on, once the message is
 sent Rustket adds every option's reaction as the sender (one `chat.react` per
 option, waiting out rate limits), so other clients show one-click vote
-buttons. The poll is sent like any message (encrypted in encrypted rooms).
+buttons. The reactions follow whichever send delivers the poll: a Retry
+after a failure, the offline queue (the list is stored with the queued
+message, so a restart before it goes out keeps it), or a send that finishes
+after the room or thread was closed. The poll is sent like any message: mention groups in
+the question and options expand, `@all` / `@here` ask first, and it is
+encrypted in encrypted rooms.
 Counts are the reactions as every client sees them, so with the option
 reactions added the author counts once on every option.

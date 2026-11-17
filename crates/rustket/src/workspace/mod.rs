@@ -273,6 +273,8 @@ impl ServerState {
         self.main_view = None;
         self.inbox.reset();
         self.later_state = Default::default();
+        // The last query and results belong to the account signed out.
+        self.search = Default::default();
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;
@@ -390,10 +392,17 @@ impl ServerState {
         self.main_view.as_ref().and_then(MainView::search)
     }
 
-    /// Closes the view in place of the room area (a room opens, Esc).
+    /// Shows `v` in place of the room area, closing the view there.
+    pub fn show_main_view(&mut self, v: MainView) {
+        self.close_main_view();
+        self.main_view = Some(v);
+    }
+
+    /// Closes the view in place of the room area (a room opens, Esc). The
+    /// search view is kept to show again.
     pub fn close_main_view(&mut self) {
-        if let Some(v) = self.main_view.as_ref().and_then(MainView::search) {
-            self.search.last_query = v.query.clone();
+        if let Some(MainView::Search(v)) = self.main_view.take() {
+            self.search.stash = Some(v.stashed());
         }
         self.main_view = None;
         self.workspace.keep_feeds(&[]);

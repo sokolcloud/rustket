@@ -19,7 +19,8 @@
 //!
 //! The free text is a MongoDB `$text` search (whole words, any of them),
 //! or a regex when written `/…/flags` (or when `Message_AlwaysSearchRegExp`
-//! is on). There is no `has:file` or `in:` on the server: `in:` is applied
+//! is on). The server splits a regex on every `/`, so a pattern with a `/`
+//! in it (even `\/`) is rejected and finds nothing: `\x2F` matches one. There is no `has:file` or `in:` on the server: `in:` is applied
 //! here by choosing the rooms searched.
 
 use chrono::NaiveDate;
@@ -218,7 +219,24 @@ impl SearchQuery {
 
     /// The string sent to the server: everything but `in:`.
     pub fn server_query(&self) -> String {
-        let mut parts = self.operator_parts();
+        self.server_query_as(None)
+    }
+
+    /// [`Self::server_query`] with `me` in `from:` and `mention:` written
+    /// as the username `me` stands for (the server only replaces a
+    /// lowercase `from:me`, and reads the rest as a regex on usernames).
+    pub fn server_query_as(&self, me: Option<&str>) -> String {
+        let me = me.filter(|m| !m.is_empty());
+        let mut parts: Vec<String> = Vec::new();
+        let user = |u: &String| -> String {
+            match me {
+                Some(me) if u.eq_ignore_ascii_case("me") => me.to_owned(),
+                _ => u.clone(),
+            }
+        };
+        parts.extend(self.from.iter().map(|u| format!("from:{}", user(u))));
+        parts.extend(self.mentions.iter().map(|u| format!("mention:{}", user(u))));
+        parts.extend(self.common_parts());
         if !self.text.trim().is_empty() {
             parts.push(self.text.trim().to_owned());
         }
@@ -229,6 +247,13 @@ impl SearchQuery {
         let mut parts: Vec<String> = Vec::new();
         parts.extend(self.from.iter().map(|u| format!("from:{u}")));
         parts.extend(self.mentions.iter().map(|u| format!("mention:{u}")));
+        parts.extend(self.common_parts());
+        parts
+    }
+
+    /// The operators after `from:` and `mention:`.
+    fn common_parts(&self) -> Vec<String> {
+        let mut parts: Vec<String> = Vec::new();
         parts.extend(self.has.iter().map(|h| h.operator().to_owned()));
         if let Some(d) = self.after {
             parts.push(format!("after:{}", format_date(d)));
@@ -255,14 +280,24 @@ impl SearchQuery {
             .collect()
     }
 
-    /// The free text's regex and flags when written `/…/flags`.
+    /// The free text's regex and flags when written `/…/flags`, as the
+    /// server reads it (`None` for a pattern with a `/`: see
+    /// [`Self::regex_unsupported`]).
     pub fn regex(&self) -> Option<(&str, &str)> {
         let t = self.text.trim();
         if !is_regex(t) {
             return None;
         }
         let end = t.rfind('/')?;
-        Some((&t[1..end], &t[end + 1..]))
+        let pattern = &t[1..end];
+        (!pattern.contains('/')).then(|| (pattern, &t[end + 1..]))
+    }
+
+    /// A `/…/` regex with a `/` inside, which the server cannot run (it
+    /// splits the text on `/`): no results anywhere.
+    pub fn regex_unsupported(&self) -> bool {
+        let t = self.text.trim();
+        is_regex(t) && self.regex().is_none()
     }
 
     pub fn has(&self, h: Has) -> bool {

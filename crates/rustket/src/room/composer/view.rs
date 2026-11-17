@@ -117,6 +117,18 @@ impl Composer {
         let body = container(col)
             .padding([SPACE_2, SPACE_4])
             .width(Length::Fill);
+        // A poll's `@all` confirmation shows over the poll dialog.
+        if let Some(c) = &self.confirm_broad {
+            return modal(
+                body,
+                Some(super::broad::dialog(
+                    c,
+                    Message::BroadCancelled,
+                    Message::BroadConfirmed,
+                )),
+                Some(Message::BroadCancelled),
+            );
+        }
         if let Some(p) = &self.poll {
             return modal(
                 body,
@@ -150,17 +162,6 @@ impl Composer {
                     Some(Message::ScheduleCancelled),
                 )),
                 Some(Message::ScheduleCancelled),
-            );
-        }
-        if let Some(c) = &self.confirm_broad {
-            return modal(
-                body,
-                Some(super::broad::dialog(
-                    c,
-                    Message::BroadCancelled,
-                    Message::BroadConfirmed,
-                )),
-                Some(Message::BroadCancelled),
             );
         }
         let dialog = self.uploads.dialog_view().map(|d| d.map(Message::Upload));
@@ -304,6 +305,7 @@ impl Composer {
             cancellable: self.editing.is_some()
                 || !self.quotes.is_empty()
                 || self.schedule.is_some(),
+            schedulable: self.can_send() && self.can_schedule(ctx.workspace),
         };
         iced::widget::text_editor(&self.content)
             .id(self.editor_id.clone())
@@ -568,6 +570,8 @@ pub(super) struct Keys {
     pub(super) empty: bool,
     /// Escape has something to cancel (edit, quotes).
     pub(super) cancellable: bool,
+    /// Ctrl/Cmd+Shift+Enter schedules (else it breaks the line).
+    pub(super) schedulable: bool,
 }
 
 /// Composer keys on top of the default text editor bindings.
@@ -592,7 +596,7 @@ pub(super) fn key_binding(kp: KeyPress, k: Keys) -> Option<Binding<Message>> {
     }
     if let keyboard::Key::Named(named) = kp.key.as_ref() {
         match named {
-            key::Named::Enter if m.command() && m.shift() && !m.alt() => {
+            key::Named::Enter if k.schedulable && m.command() && m.shift() && !m.alt() => {
                 return Some(Binding::Custom(Message::Schedule));
             }
             key::Named::Enter if !m.shift() && !m.alt() => {
