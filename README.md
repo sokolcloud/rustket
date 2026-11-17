@@ -37,15 +37,15 @@ CI runs formatting, clippy and the tests on Linux, Windows x64, Windows ARM64
 and macOS for every push and pull request; the release workflow builds and publishes the packages
 of every tag (badges above).
 
-Results for 0.2.7 on Linux (x86_64), on the release commit:
+Results for 0.2.8 on Linux (x86_64), on the release commit:
 
 | Check | Result |
 |---|---|
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | no warnings |
-| `cargo test --workspace` (unit, fixture, mock-server and packaging tests) | 1961 passed, 0 failed, 4 ignored |
-| Live tests against Rocket.Chat 8.9.1 in Docker (`dev/`; `RUSTKET_TEST_SERVER=… cargo test -p rocketchat -- --test-threads=1`, then `-p rustket-core`) | 64 live tests passed, 0 failed (914 tests of the two crates in that run) |
-| `cargo build --release -p rustket` | builds, `rustket --version` prints `rustket 0.2.7` |
+| `cargo test --workspace` (unit, fixture, mock-server and packaging tests) | 2049 passed, 0 failed, 4 ignored |
+| Live tests against Rocket.Chat 8.9.1 in Docker (`dev/`; `RUSTKET_TEST_SERVER=… cargo test -p rocketchat -- --test-threads=1`, then `-p rustket-core`) | 66 live tests passed, 0 failed (968 tests of the two crates in that run) |
+| `cargo build --release -p rustket` | builds, `rustket --version` prints `rustket 0.2.8` |
 | Release packages (deb, rpm, AppImage, Windows x64/ARM64 installer and zip, macOS universal dmg) | built by the release workflow, see the [release page](https://github.com/sokolcloud/rustket/releases/latest) |
 
 ## Install
@@ -57,7 +57,7 @@ Packages for every release are on the
 ### Debian / Ubuntu (.deb)
 
 ```sh
-sudo apt install ./rustket_0.2.7-1_amd64.deb
+sudo apt install ./rustket_0.2.8-1_amd64.deb
 ```
 
 The package installs `/usr/bin/rustket`, the desktop entry
@@ -72,8 +72,8 @@ Third-party licenses: `/usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz`.
 ### Fedora / openSUSE (.rpm)
 
 ```sh
-sudo dnf install ./rustket-0.2.7-1.x86_64.rpm       # Fedora
-sudo zypper install ./rustket-0.2.7-1.x86_64.rpm    # openSUSE
+sudo dnf install ./rustket-0.2.8-1.x86_64.rpm       # Fedora
+sudo zypper install ./rustket-0.2.8-1.x86_64.rpm    # openSUSE
 ```
 
 Same layout and runtime dependencies as the .deb (libraries are required by
@@ -85,8 +85,8 @@ soname, so both distributions resolve them); the license file is in
 ### AppImage
 
 ```sh
-chmod +x Rustket-0.2.7-x86_64.AppImage
-./Rustket-0.2.7-x86_64.AppImage
+chmod +x Rustket-0.2.8-x86_64.AppImage
+./Rustket-0.2.8-x86_64.AppImage
 ```
 
 To make `rocketchat://` links open the AppImage, use the "Open rocketchat:// links
@@ -102,12 +102,12 @@ building it yourself, build on the oldest distribution you want to support.
 
 Two downloads for x64 and ARM64 (Windows 10 or 11):
 
-- `Rustket-0.2.7-x64-setup.exe` / `Rustket-0.2.7-arm64-setup.exe`: installer.
+- `Rustket-0.2.8-x64-setup.exe` / `Rustket-0.2.8-arm64-setup.exe`: installer.
   It installs for the current user without administrator rights (the first page
   offers an all-users install), adds a Start menu shortcut, optionally a
   desktop icon, and registers `rocketchat://` links (a checked option, since it takes them over from the official Rocket.Chat app). Uninstall from Settings →
   Apps.
-- `rustket-0.2.7-windows-x64.zip` / `rustket-0.2.7-windows-arm64.zip`: portable.
+- `rustket-0.2.8-windows-x64.zip` / `rustket-0.2.8-windows-arm64.zip`: portable.
   Extract anywhere and run `rustket.exe`; use the "Open rocketchat:// links with
   Rustket" action in the app to register the links for that copy.
 
@@ -117,7 +117,7 @@ click **More info → Run anyway**. Third-party licenses:
 
 ### macOS
 
-`Rustket-0.2.7-macos-universal.dmg` runs natively on Apple Silicon and Intel
+`Rustket-0.2.8-macos-universal.dmg` runs natively on Apple Silicon and Intel
 Macs with macOS 11 or newer. Open it and drag Rustket to Applications.
 
 The app is not notarized, so Gatekeeper blocks the first start. Either
@@ -246,9 +246,12 @@ ICED_BACKEND=tiny-skia rustket
   goes on, → skips, ← goes back) and Ctrl+Shift+M opens Activity; the same
   shortcut closes them again.
 - Ctrl+Shift+S opens Later (↑/↓ select, Enter opens, E marks done).
+- Ctrl+Shift+D opens Drafts & scheduled and Ctrl+Shift+F the search across
+  rooms.
 - In the message field: Ctrl+B bold, Ctrl+I italic, Ctrl+Shift+X
   strikethrough, Ctrl+Shift+C inline code, Ctrl+Alt+Shift+C code block,
-  Ctrl+Shift+U link, Ctrl+Shift+9 quote.
+  Ctrl+Shift+U link, Ctrl+Shift+9 quote; Ctrl+Shift+Enter schedules the
+  message instead of sending it.
 - On macOS Cmd takes the place of Ctrl and Option the place of Alt.
 - Message text can be selected with the mouse (double-click: word,
   triple-click: paragraph); Ctrl+A selects the whole message last clicked and

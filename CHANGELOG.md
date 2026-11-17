@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-17
+
+### Added
+
+- Scheduled messages: the clock button next to Send (or Ctrl+Shift+Enter)
+  sends the message at a time you pick. Scheduled messages are kept on this
+  device and sent while Rustket runs; ones that could not be sent on time
+  (Rustket closed, offline, or refused by the server) are listed at the next
+  start to send now, reschedule or delete. Not available in encrypted rooms
+  or for slash commands.
+- Drafts & scheduled (Ctrl+Shift+D, a pinned row in the sidebar): unsent
+  composer text of every room and your scheduled messages in one place, to
+  open, edit, send now, reschedule or delete.
+- Pause notifications for 30 minutes, 1 or 2 hours, until tomorrow or a
+  custom time, from the status menu or the tray. Unread counters still
+  update. By default your status is set to Busy while paused (so the server
+  sends no phone pushes either) and the previous status comes back
+  afterwards, unless you changed it meanwhile.
+- Working hours (Settings → Notifications): notifications pause outside the
+  hours set per weekday; a range may end on the next day.
+- A custom status can clear itself after 30 minutes, 1 or 4 hours, today or
+  this week.
+- Search across rooms (Ctrl+Shift+F): words plus filters for author, room,
+  date range, links, starred, pinned and mentions, picked in the filter bar
+  or typed (`from:`, `mention:`, `in:`, `has:link`, `is:pinned`,
+  `after:`/`before:`, …). Uses the server-wide search when the server
+  allows it, otherwise searches your rooms one after another within the
+  server's rate limits; messages already on this device show up at once,
+  including decrypted messages of encrypted rooms.
+- Room bookmarks: links of the topic, announcement and description show as
+  chips under the room header; people who can edit the room can add one
+  (Settings → General can hide them).
+- Polls: "Create poll" in the composer sends a question with up to ten
+  numbered options and adds the option reactions, so people vote with one
+  click in any Rocket.Chat app; Rustket shows such messages as a poll card
+  with the counts. See `docs/polls.md`.
+
 ## [0.2.7] - 2026-11-16
 
 ### Added
@@ -301,7 +338,8 @@ First public release.
 - Auth tokens and end-to-end encryption keys are kept in the desktop keyring,
   with a warned-about private file fallback when no keyring is available.
 
-[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/sokolcloud/rustket/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/sokolcloud/rustket/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/sokolcloud/rustket/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/sokolcloud/rustket/compare/v0.2.4...v0.2.5
