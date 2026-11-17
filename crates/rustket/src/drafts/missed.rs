@@ -22,6 +22,8 @@ use crate::later::when::{self, WhenPicker};
 pub struct Missed {
     /// The message being rescheduled.
     pub reschedule: Option<(ServerId, String, WhenPicker)>,
+    /// "Delete all" asks first (the texts are only on this device).
+    pub confirm_delete_all: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +33,8 @@ pub enum MissedMsg {
     Delete(ServerId, String),
     SendAll,
     DeleteAll,
+    ConfirmDeleteAll,
+    CancelDeleteAll,
     Picker(when::Msg),
     CancelReschedule,
 }
@@ -43,6 +47,8 @@ pub struct Item {
     pub place: String,
     pub when: String,
     pub preview: String,
+    /// Open in a dialog of Drafts & scheduled: nothing here acts on it.
+    pub held: bool,
 }
 
 pub fn view<'a, M: Clone + 'a>(
@@ -65,33 +71,57 @@ pub fn view<'a, M: Clone + 'a>(
             Some(back),
         );
     }
+    if state.confirm_delete_all {
+        let back = wrap(MissedMsg::CancelDeleteAll);
+        return dialog(
+            t!("scheduled.delete_all_title").into_owned(),
+            text(t!("scheduled.delete_all_body").into_owned()).size(TEXT_BODY),
+            vec![
+                when::cancel(back.clone()),
+                danger_button(
+                    t!("scheduled.delete_all"),
+                    Some(wrap(MissedMsg::ConfirmDeleteAll)),
+                )
+                .into(),
+            ],
+            Some(back),
+        );
+    }
     let mut list = column![].spacing(SPACE_3);
     for it in items {
         let (sid, id) = (it.sid.clone(), it.id.clone());
-        let tools = row![
-            icon_button_with(
-                Icon::Send,
-                Some(wrap(MissedMsg::SendNow(sid.clone(), id.clone()))),
-                t!("scheduled.send_now"),
-                false,
-                28.0
-            ),
-            icon_button_with(
-                Icon::CalendarClock,
-                Some(wrap(MissedMsg::Reschedule(sid.clone(), id.clone()))),
-                t!("scheduled.reschedule"),
-                false,
-                28.0
-            ),
-            icon_button_with(
-                Icon::Trash2,
-                Some(wrap(MissedMsg::Delete(sid, id))),
-                t!("scheduled.delete"),
-                false,
-                28.0
-            ),
-        ]
-        .spacing(SPACE_1);
+        let tools: Element<'a, M> = if it.held {
+            text(t!("scheduled.being_edited").into_owned())
+                .size(TEXT_SMALL)
+                .style(style::text_secondary)
+                .into()
+        } else {
+            row![
+                icon_button_with(
+                    Icon::Send,
+                    Some(wrap(MissedMsg::SendNow(sid.clone(), id.clone()))),
+                    t!("scheduled.send_now"),
+                    false,
+                    28.0
+                ),
+                icon_button_with(
+                    Icon::CalendarClock,
+                    Some(wrap(MissedMsg::Reschedule(sid.clone(), id.clone()))),
+                    t!("scheduled.reschedule"),
+                    false,
+                    28.0
+                ),
+                icon_button_with(
+                    Icon::Trash2,
+                    Some(wrap(MissedMsg::Delete(sid, id))),
+                    t!("scheduled.delete"),
+                    false,
+                    28.0
+                ),
+            ]
+            .spacing(SPACE_1)
+            .into()
+        };
         list = list.push(
             row![
                 column![

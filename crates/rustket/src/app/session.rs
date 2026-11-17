@@ -404,7 +404,10 @@ impl App {
     /// The server rejected the token: drop it and show the login screen.
     pub(super) fn logged_out(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
         let mut e2e = Task::none();
+        let mut scheduled = 0;
         if let Some(s) = self.servers.get_mut(sid) {
+            // Scheduled messages live in the offline cache purged below.
+            scheduled = s.workspace.scheduled().len();
             // Any rejected token also drops the cached E2E key (an unsaved
             // generated passphrase is kept), as the web does on every logout:
             // an E2E key reset closes the connections before its
@@ -434,13 +437,33 @@ impl App {
             }
             _ => Task::none(),
         };
+        // A toast goes by unseen while the app runs unattended: the count
+        // also stays on the login screen until the user signs in again.
+        let mut login_reason = reason;
+        let discarded = match self.servers.get(sid) {
+            Some(s) if scheduled > 0 => {
+                let body = t!(
+                    "scheduled.discarded_body",
+                    server = s.name.clone(),
+                    count = scheduled
+                )
+                .into_owned();
+                login_reason = Some(match login_reason {
+                    Some(r) => format!("{r} {body}"),
+                    None => body.clone(),
+                });
+                self.toast(BannerKind::Warning, t!("scheduled.discarded_title"), body)
+            }
+            _ => Task::none(),
+        };
         Task::batch([
             e2e,
             delete,
             purge,
             page,
             notice,
-            self.show_login(sid, reason),
+            discarded,
+            self.show_login(sid, login_reason),
         ])
     }
 

@@ -191,27 +191,3 @@ quiet.keep_status:
   es: "Mantener este estado"
   th: "คงสถานะนี้ไว้"
   zh: "保留此状态"
-quiet.chip_30m:
-  en: "30 min"
-  ru: "30 мин"
-  es: "30 min"
-  th: "30 นาที"
-  zh: "30 分钟"
-quiet.chip_1h:
-  en: "1 h"
-  ru: "1 ч"
-  es: "1 h"
-  th: "1 ชม."
-  zh: "1 小时"
-quiet.chip_2h:
-  en: "2 h"
-  ru: "2 ч"
-  es: "2 h"
-  th: "2 ชม."
-  zh: "2 小时"
-quiet.chip_tomorrow:
-  en: "Tomorrow"
-  ru: "До завтра"
-  es: "Mañana"
-  th: "พรุ่งนี้"
-  zh: "明天"

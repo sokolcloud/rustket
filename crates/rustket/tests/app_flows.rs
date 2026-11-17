@@ -4118,6 +4118,205 @@ fn scheduled_messages_and_drafts_view() {
     assert_eq!(e.message.msg, "edited text");
 }
 
+/// A dialog of Drafts & scheduled holds its entry (delete too) and keeps
+/// the view: shortcuts and room switches wait for it to close. An edited
+/// text goes through the composer's checks and stays in the dialog when
+/// refused. The "not sent on time" dialog leaves held entries to their
+/// dialog and asks before "Delete all". A rejected token says how many
+/// scheduled messages went with the offline data, on the login screen too.
+#[test]
+fn drafts_dialogs_hold_their_entry_and_check_edits() {
+    use iced::widget::text_editor::{Action, Edit};
+    use rustket::drafts::Msg as Dm;
+    use rustket::drafts::missed::MissedMsg;
+    use rustket::keymap::Shortcut;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    app.offline = rustket::cache::Caches::new(Some(dir.path().join("offline")));
+    let _ = app.update(Message::Noop);
+    let now = chrono::Utc::now().timestamp_millis();
+    let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+    let m = ws.new_local_message("r2", "original", None, false);
+    let x = m.id.clone();
+    ws.schedule_message(m, now + 600_000);
+    let _ = app.update(Message::Shortcut(Shortcut::Drafts));
+    let epoch = app.servers[&sid].generation;
+    let drafts = |m: Dm| Message::Drafts(sid.clone(), epoch, m);
+    let held = |app: &App| {
+        app.servers[&sid]
+            .workspace
+            .scheduled()
+            .get(&x)
+            .unwrap()
+            .held
+    };
+    // "Delete this scheduled message?" holds it like edit and reschedule.
+    let _ = app.update(drafts(Dm::Delete(x.clone())));
+    assert!(held(&app));
+    let _ = app.update(drafts(Dm::CloseDialog));
+    assert!(!held(&app));
+    // An open edit keeps the view: shortcuts and room switches wait.
+    let _ = app.update(drafts(Dm::Edit(x.clone())));
+    for sc in [Shortcut::Search, Shortcut::Later, Shortcut::Drafts] {
+        let _ = app.update(Message::Shortcut(sc));
+    }
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Open("r1".into()),
+    ));
+    assert!(app.servers[&sid].drafts_dialog_open());
+    assert!(held(&app));
+    // A slash command or a text over the server's limit is refused; the
+    // dialog stays with the text.
+    let type_over = |app: &mut App, text: String| {
+        for a in [
+            Action::SelectAll,
+            Action::Edit(Edit::Paste(std::sync::Arc::new(text))),
+        ] {
+            let _ = app.update(Message::Drafts(sid.clone(), epoch, Dm::EditAction(a)));
+        }
+    };
+    for text in ["/kick @bob".to_owned(), "x".repeat(5_001)] {
+        type_over(&mut app, text);
+        let toasts = app.toasts.len();
+        let _ = app.update(drafts(Dm::SaveEdit));
+        assert_eq!(app.toasts.len(), toasts + 1);
+        assert!(app.servers[&sid].drafts_dialog_open(), "the text stays");
+    }
+    let e = app.servers[&sid].workspace.scheduled().get(&x).unwrap();
+    assert_eq!(e.message.msg, "original");
+    type_over(&mut app, "fixed".into());
+    let _ = app.update(drafts(Dm::SaveEdit));
+    assert!(!app.servers[&sid].drafts_dialog_open());
+    let e = app.servers[&sid].workspace.scheduled().get(&x).unwrap();
+    assert_eq!(e.message.msg, "fixed");
+    // Missed X is being edited when Y turns missed too: "Send all" and
+    // "Delete all" leave X to its dialog; "Delete all" asks first.
+    let past = chrono::Utc::now().timestamp_millis() - 3_600_000;
+    app.servers
+        .get_mut(&sid)
+        .unwrap()
+        .workspace
+        .reschedule(&x, past);
+    let _ = app.update(Message::Noop);
+    app.modals.clear();
+    let _ = app.update(drafts(Dm::Edit(x.clone())));
+    let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+    for text in ["y1", "y2"] {
+        let m = ws.new_local_message("r2", text, None, false);
+        ws.schedule_message(m, past);
+    }
+    let _ = app.update(Message::Noop);
+    assert!(matches!(app.modals.last(), Some(Modal::Missed(_))));
+    let _ = app.view();
+    let missed = |app: &App| app.servers[&sid].workspace.scheduled().missed().len();
+    assert_eq!(missed(&app), 3);
+    let _ = app.update(Message::Missed(MissedMsg::DeleteAll));
+    assert_eq!(missed(&app), 3, "asks first");
+    assert!(matches!(app.modals.last(), Some(Modal::Missed(m)) if m.confirm_delete_all));
+    let _ = app.view();
+    let _ = app.update(Message::Missed(MissedMsg::CancelDeleteAll));
+    let _ = app.update(Message::Missed(MissedMsg::SendAll));
+    assert_eq!(missed(&app), 1);
+    assert!(app.servers[&sid].workspace.scheduled().get(&x).is_some());
+    let _ = app.update(Message::Missed(MissedMsg::SendNow(sid.clone(), x.clone())));
+    let _ = app.update(Message::Missed(MissedMsg::Delete(sid.clone(), x.clone())));
+    assert!(app.servers[&sid].workspace.scheduled().get(&x).is_some());
+    assert!(matches!(app.modals.last(), Some(Modal::Missed(_))));
+    // A rejected token: the scheduled messages go with the cache, and the
+    // user hears of it.
+    let toasts = app.toasts.len();
+    let m = ev(
+        &app,
+        &sid,
+        SessionEvent::LoggedOut {
+            reason: "token expired".into(),
+        },
+    );
+    let _ = app.update(m);
+    assert!(
+        app.toasts[toasts..]
+            .iter()
+            .any(|t| t.title == "Scheduled messages deleted" && t.body.contains('1')),
+        "{:?}",
+        app.toasts
+    );
+    // The toast goes by: the login screen keeps saying it until sign-in.
+    let reason = app.servers[&sid]
+        .login
+        .as_ref()
+        .and_then(|l| l.reason.clone())
+        .unwrap_or_default();
+    assert!(
+        reason.contains("scheduled message(s) were deleted") && reason.contains('1'),
+        "{reason}"
+    );
+}
+
+/// A due scheduled message the server refuses for good goes back to
+/// Drafts & scheduled as a missed entry with the error (kept on disk, the
+/// "not sent" dialog lists it), not a failed row in a room that a user who
+/// was away never sees.
+#[test]
+fn scheduled_message_failing_for_good_returns_to_drafts() {
+    use rustket::cache::{Msg as CacheMsg, Outcome, Sent};
+    use rustket::drafts::Msg as Dm;
+    use rustket::keymap::Shortcut;
+    use rustket_core::workspace::ConnectionState;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    app.offline = rustket::cache::Caches::new(Some(dir.path().join("offline")));
+    let _ = app.update(Message::Noop);
+    let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+    let m = ws.new_local_message("r1", "read-only later", None, false);
+    let id = m.id.clone();
+    ws.schedule_message(m, chrono::Utc::now().timestamp_millis() + 3_600_000);
+    let epoch = app.servers[&sid].generation;
+    let _ = app.update(Message::Shortcut(Shortcut::Drafts));
+    assert!(app.servers[&sid].drafts_view().is_some());
+    let _ = app.update(Message::Drafts(sid.clone(), epoch, Dm::SendNow(id.clone())));
+    let s = app.servers.get_mut(&sid).unwrap();
+    assert!(s.cache.is_queued(&id));
+    s.workspace.apply_connection(ConnectionState::Connected);
+    let refused = rocketchat::Error::Api {
+        status: 400,
+        error: Some("error-not-allowed".into()),
+        error_type: None,
+        message: Some("read only".into()),
+        details: None,
+    };
+    let toasts = app.toasts.len();
+    let _ = app.update(Message::Cache(CacheMsg::Sent(
+        sid.clone(),
+        epoch,
+        Box::new(Sent {
+            id: id.clone(),
+            rid: "r1".into(),
+            tmid: None,
+            outcome: Outcome::Failed(Failure::from(refused)),
+        }),
+    )));
+    let s = &app.servers[&sid];
+    assert!(s.workspace.pending_messages("r1").is_empty());
+    assert!(!s.cache.is_queued(&id));
+    let e = s.workspace.scheduled().get(&id).expect("back in the queue");
+    assert!(e.missed && e.error.is_some());
+    assert_eq!(e.message.msg, "read-only later");
+    assert!(matches!(app.modals.last(), Some(Modal::Missed(_))));
+    assert!(
+        app.toasts[toasts..]
+            .iter()
+            .any(|t| t.title == "Scheduled message not sent"),
+        "{:?}",
+        app.toasts
+    );
+    let _ = app.view();
+}
+
 /// Pausing notifications from the menus is kept in the config (it survives
 /// a restart) until it ends or the user resumes; the custom dialog sets
 /// any later time.
@@ -4155,9 +4354,11 @@ fn notification_pause_is_persisted() {
 }
 
 /// A status the user picks releases a pause's busy hold (nothing is
-/// restored over it); signing out forgets the remembered statuses.
+/// restored over it); the remembered statuses outlive a sign-out (a
+/// rejected token, memory-only secrets: the next login of the account
+/// restores them).
 #[test]
-fn explicit_status_releases_the_hold_and_sign_out_forgets() {
+fn explicit_status_releases_the_hold_and_sign_out_keeps_it() {
     use rocketchat::models::UserStatus;
     use rustket::workspace::status_menu::Message as Sm;
     use rustket_core::quiet::{StatusExpiry, StatusHold};
@@ -4204,7 +4405,7 @@ fn explicit_status_releases_the_hold_and_sign_out_forgets() {
         app.servers[&sid].workspace.my_chosen_status(),
         Some(UserStatus::Busy)
     );
-    // Signed out: forgotten.
+    // Signed out (the login screen, `restoring` over): kept.
     app.config.server_mut(&sid).unwrap().status_expiry = Some(StatusExpiry {
         user_id: "A".into(),
         at: 1,
@@ -4212,8 +4413,10 @@ fn explicit_status_releases_the_hold_and_sign_out_forgets() {
         text: String::new(),
         restore: None,
     });
-    app.servers.get_mut(&sid).unwrap().credentials = None;
+    let s = app.servers.get_mut(&sid).unwrap();
+    s.credentials = None;
+    s.restoring = false;
     let _ = app.update(Message::Noop);
     let e = app.config.server(&sid).unwrap();
-    assert!(e.status_hold.is_none() && e.status_expiry.is_none());
+    assert!(e.status_hold.is_some() && e.status_expiry.is_some());
 }

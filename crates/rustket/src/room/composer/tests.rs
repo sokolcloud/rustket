@@ -1830,3 +1830,45 @@ fn encrypted_rooms_cannot_schedule() {
     env.ws.apply_room(rustket_core::Change::Updated, r);
     assert!(!c.can_schedule(&env.ws));
 }
+
+/// A room flagged encrypted on a server whose E2E was turned off sends in
+/// plain, but its scheduled text would never be written to disk: no
+/// scheduling there (nor in a room that kept its room key, or whose room
+/// object is not known).
+#[test]
+fn rooms_the_cache_keeps_off_disk_cannot_schedule() {
+    let mut env = Env::new("t-schedule-e2e-off");
+    env.ws.apply_setting(
+        rustket_core::Change::Updated,
+        rocketchat::models::Setting {
+            id: "E2E_Enable".into(),
+            value: serde_json::json!(false),
+            ..Default::default()
+        },
+    );
+    let mut r = room("R1", "general", RoomType::Private);
+    r.encrypted = Some(true);
+    env.ws.apply_room(rustket_core::Change::Updated, r);
+    assert!(matches!(
+        crate::e2e::outgoing::mode(&env.ws, "R1"),
+        crate::e2e::outgoing::Mode::Plain
+    ));
+    let c = Composer::new("R1");
+    assert!(!c.can_schedule(&env.ws));
+    // Encryption turned off, the room key still held.
+    env.ws.apply_room(
+        rustket_core::Change::Updated,
+        room("R1", "general", RoomType::Private),
+    );
+    assert!(c.can_schedule(&env.ws));
+    let mut s = sub("R1", "general", RoomType::Private);
+    s.e2e_key = Some("key".into());
+    env.ws.apply_subscription(rustket_core::Change::Updated, s);
+    assert!(!c.can_schedule(&env.ws));
+    // A subscription without its room object.
+    env.ws.apply_subscription(
+        rustket_core::Change::Inserted,
+        sub("R9", "nine", RoomType::Channel),
+    );
+    assert!(!Composer::new("R9").can_schedule(&env.ws));
+}

@@ -385,6 +385,15 @@ impl ServerState {
         self.main_view.as_ref().and_then(MainView::drafts)
     }
 
+    /// The Drafts & scheduled view has a dialog open: its scheduled message
+    /// is held and the dialog may hold typed text, so no other view or room
+    /// replaces it until the dialog closes (shortcuts reach the app while
+    /// its editor has the focus).
+    pub fn drafts_dialog_open(&self) -> bool {
+        self.drafts_view()
+            .is_some_and(crate::drafts::DraftsView::has_dialog)
+    }
+
     /// The open search view, if any.
     pub fn search_view(&self) -> Option<&crate::search::SearchView> {
         self.main_view.as_ref().and_then(MainView::search)

@@ -44,6 +44,9 @@ pub enum StatusCall {
     /// A status expired during a busy pause: the text is cleared and this
     /// status is restored when the pause ends.
     ExpireHold(UserStatus),
+    /// A status other than busy expired during a busy pause: busy is set
+    /// with the text cleared, the hold remembered once that succeeded.
+    ExpireBusy(StatusHold),
 }
 
 #[derive(Debug, Clone)]
@@ -67,17 +70,6 @@ pub fn preset_label(p: PausePreset) -> String {
         PausePreset::Hour1 => t!("quiet.for_1h"),
         PausePreset::Hour2 => t!("quiet.for_2h"),
         PausePreset::Tomorrow => t!("quiet.until_tomorrow"),
-    }
-    .into_owned()
-}
-
-/// The short label of a pause preset (the status menu's chips).
-pub fn chip_label(p: PausePreset) -> String {
-    match p {
-        PausePreset::Min30 => t!("quiet.chip_30m"),
-        PausePreset::Hour1 => t!("quiet.chip_1h"),
-        PausePreset::Hour2 => t!("quiet.chip_2h"),
-        PausePreset::Tomorrow => t!("quiet.chip_tomorrow"),
     }
     .into_owned()
 }

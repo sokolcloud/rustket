@@ -340,8 +340,9 @@ impl Composer {
 
     /// Whether the message may be scheduled: not an edit, the offline cache
     /// keeps scheduled messages, and a room whose messages go out
-    /// unencrypted (a scheduled text waits on disk, and plaintext of
-    /// encrypted rooms never goes there).
+    /// unencrypted (a scheduled text waits on disk, and plaintext of rooms
+    /// that are or were encrypted never goes there: the cache's own rule, so
+    /// a scheduled message is never kept in memory only).
     pub(crate) fn can_schedule(&self, ws: &Workspace) -> bool {
         self.editing.is_none()
             && ws.scheduled_storage()
@@ -349,6 +350,7 @@ impl Composer {
                 crate::e2e::outgoing::mode(ws, &self.rid),
                 crate::e2e::outgoing::Mode::Plain
             )
+            && crate::cache::room_plaintext_on_disk(ws, &self.rid) == Some(true)
     }
 
     /// Widget id of the editor (F6 target).

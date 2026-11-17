@@ -190,12 +190,13 @@ impl App {
         let mut tasks = Vec::new();
         let sids: Vec<ServerId> = self.servers.keys().cloned().collect();
         for sid in &sids {
-            if let Some(at) = self
-                .servers
-                .get(sid)
-                .and_then(|s| s.workspace.scheduled().next_at())
-            {
-                sooner(at);
+            if let Some(s) = self.servers.get(sid) {
+                for at in [s.workspace.scheduled().next_at(now), s.cache.retry_at()]
+                    .into_iter()
+                    .flatten()
+                {
+                    sooner(at);
+                }
             }
             if let Some(at) = self
                 .config
@@ -206,21 +207,10 @@ impl App {
                 sooner(at);
             }
         }
+        // The remembered statuses outlive a sign-out (a rejected token, a
+        // login on every start): they carry their account, and the steps
+        // ignore those of another one.
         for sid in sids {
-            // Signed out (not while the token is being looked up): the
-            // remembered statuses go with the account.
-            let signed_out = self
-                .servers
-                .get(&sid)
-                .is_some_and(|s| !s.is_logged_in() && !s.restoring);
-            if signed_out
-                && let Some(e) = self.config.server_mut(&sid)
-                && (e.status_hold.is_some() || e.status_expiry.is_some())
-            {
-                e.status_hold = None;
-                e.status_expiry = None;
-                save = true;
-            }
             let (task, changed) = self.settle_status(&sid, busy_wanted, now);
             save |= changed;
             tasks.push(task);
@@ -249,7 +239,7 @@ impl App {
         {
             return (Task::none(), false);
         }
-        let auto_away = self.desktop.idle.is_away(sid);
+        let idle_away = self.desktop.idle.is_away(sid);
         let Some(s) = self.servers.get(sid) else {
             return (Task::none(), false);
         };
@@ -260,6 +250,7 @@ impl App {
             return (Task::none(), false);
         };
         let uid = uid.to_owned();
+        let auto_away = quiet::idle_away(idle_away, me.status_default);
         let status = s.workspace.my_chosen_status();
         let text = me.status_text.clone().unwrap_or_default();
         let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
@@ -279,11 +270,25 @@ impl App {
                     changed = true;
                 }
                 ExpiryStep::Clear(restore) => {
+                    // A pause that set busy over the expiring status ends
+                    // on the status after it.
+                    if let Some(h) = quiet::hold_after_expiry(&e, entry.status_hold.as_ref()) {
+                        entry.status_hold = Some(h);
+                        changed = true;
+                    }
                     // A pause holding busy keeps it: only the text clears,
                     // and the status waits for the end of the pause.
-                    let call = match quiet::expiry_action(restore, busy_wanted) {
+                    let call = match quiet::expiry_action(restore, busy_wanted, status) {
                         ExpiryAction::Clear(st) => StatusCall::Expire(st),
                         ExpiryAction::ClearAndHold(st) => StatusCall::ExpireHold(st),
+                        ExpiryAction::ClearToBusy(st) => {
+                            StatusCall::ExpireBusy(rustket_core::quiet::StatusHold {
+                                user_id: uid.clone(),
+                                status: st,
+                                text: String::new(),
+                                released: false,
+                            })
+                        }
                     };
                     return (self.status_call(sid, epoch, rest, call), changed);
                 }
@@ -343,6 +348,9 @@ impl App {
                     StatusCall::Busy(_) => rest.users_set_status(UserStatus::Busy, None).await,
                     StatusCall::Restore(st) => rest.users_set_status(st, None).await,
                     StatusCall::Expire(Some(st)) => rest.users_set_status(st, Some("")).await,
+                    StatusCall::ExpireBusy(_) => {
+                        rest.users_set_status(UserStatus::Busy, Some("")).await
+                    }
                     StatusCall::Expire(None) | StatusCall::ExpireHold(_) => {
                         rest.users_set_status_message("").await
                     }
@@ -374,6 +382,7 @@ impl App {
                     StatusCall::Busy(_) => ws.apply_my_status(UserStatus::Busy, None),
                     StatusCall::Restore(st) => ws.apply_my_status(*st, None),
                     StatusCall::Expire(Some(st)) => ws.apply_my_status(*st, Some("")),
+                    StatusCall::ExpireBusy(_) => ws.apply_my_status(UserStatus::Busy, Some("")),
                     StatusCall::Expire(None) | StatusCall::ExpireHold(_) => {
                         let username = ws.username().map(str::to_owned);
                         let shown = ws.my_status();
@@ -422,6 +431,11 @@ impl App {
                 }
             }
             StatusCall::ExpireHold(_) if given_up => entry.status_expiry = None,
+            StatusCall::ExpireBusy(h) if !failed => {
+                entry.status_expiry = None;
+                entry.status_hold = Some(h);
+            }
+            StatusCall::ExpireBusy(_) if given_up => entry.status_expiry = None,
             _ => return Task::none(),
         }
         if given_up {

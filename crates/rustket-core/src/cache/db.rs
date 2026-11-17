@@ -101,8 +101,11 @@ const KIND_LATER_SCAN: &str = "later_scan";
 const META_USER: &str = "user_id";
 const META_SAVED_AT: &str = "saved_at";
 const META_UPLOADS: &str = "interrupted_uploads";
-/// `outbox.queued`: 0 failed, 1 queued, 2 queued and possibly delivered.
+/// `outbox.queued`: 0 failed, 1 queued, 2 queued and possibly delivered;
+/// plus [`QUEUED_SCHEDULED`] for a scheduled message that fell due (an
+/// older Rustket reads any non-zero value as queued).
 const QUEUED_MAYBE_SENT: i64 = 2;
+const QUEUED_SCHEDULED: i64 = 4;
 
 /// What happened while opening.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -593,12 +596,14 @@ impl CacheDb {
         for row in rows {
             let (json, queued, error) = row?;
             if let Some(message) = from_json::<Message>("outbox", &json) {
+                let state = queued & !QUEUED_SCHEDULED;
                 out.push(OutboxEntry {
                     message,
-                    queued: queued != 0,
-                    maybe_sent: queued == QUEUED_MAYBE_SENT,
+                    queued: state != 0,
+                    maybe_sent: state == QUEUED_MAYBE_SENT,
                     error,
                     send_at: None,
+                    scheduled: state != 0 && queued & QUEUED_SCHEDULED != 0,
                 });
             }
         }
@@ -617,6 +622,7 @@ impl CacheDb {
                     maybe_sent: false,
                     error: None,
                     send_at: Some(send_at),
+                    scheduled: false,
                 });
             }
         }
@@ -981,6 +987,11 @@ fn write_outbox(tx: &Transaction<'_>, outbox: &[OutboxEntry], uid: &str) -> Resu
             (false, _) => 0,
             (true, false) => 1,
             (true, true) => QUEUED_MAYBE_SENT,
+        };
+        let queued = if e.queued && e.scheduled {
+            queued | QUEUED_SCHEDULED
+        } else {
+            queued
         };
         st.execute(params![m.id, m.rid, ts_ms(m), to_json(m)?, queued, e.error])?;
     }

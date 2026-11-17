@@ -478,27 +478,64 @@ pub enum ExpiryAction {
     /// A pause holds busy: clear only the text, and restore this status
     /// when the pause ends (the hold's target, not released).
     ClearAndHold(UserStatus),
+    /// A pause wants busy over the status that expired (another one, which
+    /// the pause left alone): set busy and clear the text, restoring this
+    /// status when the pause ends.
+    ClearToBusy(UserStatus),
 }
 
 /// The action of [`ExpiryStep::Clear`]`(restore)` while `busy_wanted`
-/// (notifications paused with "Busy while paused"): the status to go back
-/// to waits for the end of the pause.
-pub fn expiry_action(restore: Option<UserStatus>, busy_wanted: bool) -> ExpiryAction {
+/// (notifications paused with "Busy while paused") with the chosen status
+/// `current`: the status to go back to waits for the end of the pause,
+/// under busy.
+pub fn expiry_action(
+    restore: Option<UserStatus>,
+    busy_wanted: bool,
+    current: Option<UserStatus>,
+) -> ExpiryAction {
     match restore {
-        Some(st) if busy_wanted => ExpiryAction::ClearAndHold(st),
+        Some(st) if busy_wanted && current == Some(UserStatus::Busy) => {
+            ExpiryAction::ClearAndHold(st)
+        }
+        Some(st) if busy_wanted => ExpiryAction::ClearToBusy(st),
         r => ExpiryAction::Clear(r),
     }
 }
 
 /// An expiry set while a pause holds busy goes back to the status before
-/// the pause (the hold's), not to the busy the pause set.
+/// the pause (the hold's), not to the busy the pause set; a status change
+/// never "restores" the status it sets (`restore: None`).
 pub fn expiry_for_hold(mut e: StatusExpiry, hold: Option<&StatusHold>) -> StatusExpiry {
     if let Some(h) = hold.filter(|h| !h.released && h.user_id == e.user_id)
         && e.restore.is_some()
     {
-        e.restore = Some(h.status).filter(|s| *s != e.status);
+        e.restore = Some(h.status);
     }
+    e.restore = e.restore.filter(|s| *s != e.status);
     e
+}
+
+/// The hold once `e` expires: a pause that set busy over the expiring
+/// status (the hold remembers it) ends on the status after the expiry.
+/// `None`: the hold does not change.
+pub fn hold_after_expiry(e: &StatusExpiry, hold: Option<&StatusHold>) -> Option<StatusHold> {
+    let h = hold.filter(|h| !h.released && h.user_id == e.user_id && h.status == e.status)?;
+    Some(StatusHold {
+        status: e.restore?,
+        text: String::new(),
+        ..h.clone()
+    })
+}
+
+/// Whether the app's idle away is what makes the chosen status away (for
+/// [`hold_step`]'s `auto_away`): only when the server sent no
+/// `statusDefault`, which an idle away never changes (an away there was
+/// chosen, possibly on another device).
+pub fn idle_away(app_idle_away: bool, status_default: Option<UserStatus>) -> bool {
+    app_idle_away
+        && status_default
+            .filter(|s| *s != UserStatus::Unknown)
+            .is_none()
 }
 
 /// The account's chosen status: `statusDefault` when the server sent it,
@@ -958,14 +995,24 @@ mod tests {
         // Busy with an expiry, then a pause: the expiry clears the text and
         // the status to go back to waits for the end of the pause.
         assert_eq!(
-            expiry_action(Some(Online), true),
+            expiry_action(Some(Online), true, Some(Busy)),
             ExpiryAction::ClearAndHold(Online)
         );
         assert_eq!(
-            expiry_action(Some(Online), false),
+            expiry_action(Some(Online), false, Some(Busy)),
             ExpiryAction::Clear(Some(Online))
         );
-        assert_eq!(expiry_action(None, true), ExpiryAction::Clear(None));
+        assert_eq!(
+            expiry_action(None, true, Some(Busy)),
+            ExpiryAction::Clear(None)
+        );
+        // Away for 30 min, then off hours (the app was off meanwhile, or the
+        // user chose Away during the pause): busy takes over, the status
+        // after the expiry comes back when the pause ends.
+        assert_eq!(
+            expiry_action(Some(Online), true, Some(Away)),
+            ExpiryAction::ClearToBusy(Online)
+        );
         // An expiry set during a busy pause goes back to the pre-pause status.
         let hold = StatusHold {
             user_id: "u".into(),
@@ -994,8 +1041,88 @@ mod tests {
             ..e.clone()
         };
         assert_eq!(expiry_for_hold(text_only, Some(&hold)).restore, None);
-        let same = StatusExpiry { status: Away, ..e };
+        let same = StatusExpiry {
+            status: Away,
+            ..e.clone()
+        };
         assert_eq!(expiry_for_hold(same, Some(&hold)).restore, None);
+        // Busy for an hour chosen during a busy pause (the status was busy
+        // already): it still goes back to the pre-pause status.
+        let busy = StatusExpiry {
+            status: Busy,
+            restore: Some(Busy),
+            ..e.clone()
+        };
+        let online = StatusHold {
+            status: Online,
+            ..hold.clone()
+        };
+        assert_eq!(
+            expiry_for_hold(busy.clone(), Some(&online)).restore,
+            Some(Online)
+        );
+        assert_eq!(
+            expiry_for_hold(busy, None).restore,
+            None,
+            "nothing to restore"
+        );
+    }
+
+    #[test]
+    fn an_expiry_under_a_busy_pause_moves_the_hold() {
+        use UserStatus::*;
+        // Away until 18:20 (back to online); the pause at 18:00 set busy
+        // over it: the pause ends on online, not on the expired away.
+        let e = StatusExpiry {
+            user_id: "u".into(),
+            at: 5,
+            status: Away,
+            text: "Lunch".into(),
+            restore: Some(Online),
+        };
+        let hold = StatusHold {
+            user_id: "u".into(),
+            status: Away,
+            text: "Lunch".into(),
+            released: false,
+        };
+        let h = hold_after_expiry(&e, Some(&hold)).unwrap();
+        assert_eq!((h.status, h.text.as_str(), h.released), (Online, "", false));
+        assert_eq!(
+            hold_step(false, Some(&h), "u", Some(Busy), "", false),
+            HoldStep::Restore(Online)
+        );
+        // Another status held, a released hold, a text-only expiry: unchanged.
+        let other = StatusHold {
+            status: Online,
+            ..hold.clone()
+        };
+        assert_eq!(hold_after_expiry(&e, Some(&other)), None);
+        let released = StatusHold {
+            released: true,
+            ..hold.clone()
+        };
+        assert_eq!(hold_after_expiry(&e, Some(&released)), None);
+        let text_only = StatusExpiry {
+            restore: None,
+            ..e.clone()
+        };
+        assert_eq!(hold_after_expiry(&text_only, Some(&hold)), None);
+        assert_eq!(hold_after_expiry(&e, None), None);
+    }
+
+    #[test]
+    fn a_chosen_away_is_not_the_idle_away() {
+        use UserStatus::*;
+        assert!(idle_away(true, None));
+        assert!(idle_away(true, Some(Unknown)));
+        // Away chosen on the phone while this desktop idles: kept.
+        assert!(!idle_away(true, Some(Away)));
+        assert!(!idle_away(false, None));
+        assert!(matches!(
+            hold_step(true, None, "u", Some(Away), "", idle_away(true, Some(Away))),
+            HoldStep::SetBusy(h) if h.status == Away
+        ));
     }
 
     #[test]

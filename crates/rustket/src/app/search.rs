@@ -46,7 +46,7 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
-        if s.login.is_some() || !s.is_logged_in() {
+        if s.login.is_some() || !s.is_logged_in() || s.drafts_dialog_open() {
             return Task::none();
         }
         if toggle && s.search_view().is_some() {

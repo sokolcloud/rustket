@@ -263,7 +263,7 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
-        if s.workspace.room(rid).is_none() {
+        if s.workspace.room(rid).is_none() || s.drafts_dialog_open() {
             return Task::none();
         }
         s.omni.close_contact_center();

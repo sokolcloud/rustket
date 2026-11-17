@@ -28,6 +28,9 @@ pub struct Scheduled {
     /// Being edited or rescheduled: it does not go out meanwhile (not
     /// persisted).
     pub held: bool,
+    /// Why it came back from the outbox (the server refused it, or kept
+    /// failing): shown with the missed entry (not persisted).
+    pub error: Option<String>,
 }
 
 impl Scheduled {
@@ -37,6 +40,17 @@ impl Scheduled {
             send_at,
             missed: false,
             held: false,
+            error: None,
+        }
+    }
+
+    /// A due message whose sending failed for good: back with the user as
+    /// a missed entry, with the error.
+    pub fn failed(message: Message, send_at: i64, error: String) -> Self {
+        Self {
+            missed: true,
+            error: Some(error),
+            ..Self::new(message, send_at)
         }
     }
 
@@ -88,6 +102,7 @@ impl ScheduledQueue {
             Some(s) => {
                 s.send_at = at_ms;
                 s.missed = false;
+                s.error = None;
                 true
             }
             None => false,
@@ -126,12 +141,23 @@ impl ScheduledQueue {
             .count()
     }
 
-    /// The earliest send time still waiting (missed ones wait for the user).
-    pub fn next_at(&self) -> Option<i64> {
+    /// When [`Self::take_due`] next has something to do after `now_ms`:
+    /// the earliest send time ahead, or the end of the grace time of an
+    /// overdue entry still waiting (not connected), when it turns missed.
+    /// Missed entries wait for the user, held ones for their dialog to
+    /// close (an update of its own).
+    pub fn next_at(&self, now_ms: i64) -> Option<i64> {
         self.items
             .values()
-            .filter(|s| !s.missed)
-            .map(|s| s.send_at)
+            .filter(|s| !s.missed && !s.held)
+            .map(|s| {
+                if s.send_at > now_ms {
+                    s.send_at
+                } else {
+                    s.send_at + MISSED_GRACE_MS + 1
+                }
+            })
+            .filter(|at| *at > now_ms)
             .min()
     }
 
@@ -213,14 +239,14 @@ mod tests {
         assert_eq!(q.count_in("R1", None), 1);
         assert_eq!(q.count_in("R1", Some("T1")), 1);
         assert_eq!(q.count_in("R3", None), 0);
-        assert_eq!(q.next_at(), Some(5_000));
+        assert_eq!(q.next_at(0), Some(5_000));
         assert!(q.set_text("a", "  new  "));
         assert_eq!(q.get("a").unwrap().message.msg, "new");
         assert!(!q.set_text("a", "new"), "unchanged");
         assert!(!q.set_text("a", "   "), "empty refused");
         assert!(!q.set_text("x", "y"));
         assert!(q.reschedule("c", 1_000));
-        assert_eq!(q.next_at(), Some(1_000));
+        assert_eq!(q.next_at(0), Some(1_000));
         assert!(!q.reschedule("x", 1));
         assert!(q.retain_rooms(|r| r != "R2"));
         assert_eq!(q.len(), 2);
@@ -245,7 +271,7 @@ mod tests {
         assert!(d.send.is_empty());
         assert_eq!(d.missed, ["c"]);
         assert!(q.get("c").unwrap().missed);
-        assert_eq!(q.next_at(), None, "missed entries wait for the user");
+        assert_eq!(q.next_at(400_000), None, "missed entries wait for the user");
         assert_eq!(q.missed().len(), 1);
         // Marked once.
         assert_eq!(q.take_due(400_000, true), Due::default());
@@ -266,6 +292,15 @@ mod tests {
         let ids: Vec<&str> = d.send.iter().map(|s| s.id()).collect();
         assert_eq!(ids, ["a"]);
         assert!(q.get("b").is_some());
+        // An overdue held entry does not hide a later one from the timer.
+        q.insert(Scheduled::new(msg("d", "R2", None), 20_000));
+        assert_eq!(q.next_at(10_000), Some(20_000));
+        // One waiting offline wakes the timer when it turns missed.
+        assert!(q.hold_only(Some("d")));
+        assert_eq!(q.take_due(20_000, false), Due::default());
+        assert!(q.hold_only(Some("b")));
+        assert_eq!(q.next_at(20_000), Some(20_000 + MISSED_GRACE_MS + 1));
+        q.remove("d");
         // Released after the grace time: missed, not sent.
         assert!(q.hold_only(None));
         let d = q.take_due(5_000 + MISSED_GRACE_MS + 1, true);

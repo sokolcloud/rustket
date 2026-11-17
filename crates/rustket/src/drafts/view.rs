@@ -121,7 +121,11 @@ impl DraftsView {
         let where_ = place(c.workspace, c.prefs, &m.rid, m.tmid.as_deref());
         let (when_line, when_style): (String, fn(&iced::Theme) -> text::Style) = if s.missed {
             (
-                t!("scheduled.missed_at", time = c.moment(s.send_at)).into_owned(),
+                t!(
+                    "scheduled.missed_at",
+                    time = missed_when(c.moment(s.send_at), s.error.as_deref())
+                )
+                .into_owned(),
                 style::text_danger,
             )
         } else {
@@ -219,6 +223,12 @@ impl DraftsView {
                     Some(close),
                 ),
             )),
+            Dialog::Edit {
+                confirm: Some(b), ..
+            } => Some((
+                4,
+                crate::room::composer::broad::dialog(b, Msg::BroadCancelled, Msg::BroadConfirmed),
+            )),
             Dialog::Edit { content, .. } => {
                 let editor = text_editor(content)
                     .on_action(Msg::EditAction)
@@ -283,4 +293,13 @@ fn draft_row(c: &Ctx<'_>, rid: &str, tmid: Option<&str>, text_: &str) -> Element
     )
     .width(Length::Fill)
     .into()
+}
+
+/// When a missed scheduled message was due, with why it was not sent when
+/// it came back from the outbox.
+pub fn missed_when(time: String, error: Option<&str>) -> String {
+    match error {
+        Some(e) => format!("{time} · {e}"),
+        None => time,
+    }
 }

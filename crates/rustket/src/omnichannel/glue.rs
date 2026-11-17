@@ -285,7 +285,11 @@ impl App {
         match m {
             sidebar::Msg::OpenQueued { rid, .. } => self.omni_open(&sid, &rid),
             sidebar::Msg::ContactCenter => {
-                let Some(s) = self.servers.get_mut(&sid) else {
+                let Some(s) = self
+                    .servers
+                    .get_mut(&sid)
+                    .filter(|s| !s.drafts_dialog_open())
+                else {
                     return Task::none();
                 };
                 s.status_menu.open = false;

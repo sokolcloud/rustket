@@ -9,7 +9,7 @@ use rustket_ui::widget::BannerKind;
 
 use super::{App, Modal, Screen};
 use crate::drafts::missed::{Item, Missed, MissedMsg};
-use crate::drafts::{DraftsView, Msg, Out};
+use crate::drafts::{DraftsView, Msg, Out, Refusal};
 use crate::later::when::{Kind, Picked, WhenPicker};
 use crate::message::{Go, Message};
 use crate::workspace::{MainView, ServerState};
@@ -25,7 +25,7 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
-        if s.login.is_some() || !s.is_logged_in() {
+        if s.login.is_some() || !s.is_logged_in() || s.drafts_dialog_open() {
             return Task::none();
         }
         if s.drafts_view().is_some() {
@@ -58,6 +58,7 @@ impl App {
 
     pub(super) fn on_drafts(&mut self, sid: ServerId, epoch: u64, m: Msg) -> Task<Message> {
         let morning = self.config.ui.morning_hour();
+        let confirm_broad = self.config.ui.confirm_broad_mentions;
         let Some(s) = self.servers.get_mut(&sid).filter(|s| s.is_current(epoch)) else {
             return Task::none();
         };
@@ -66,8 +67,10 @@ impl App {
         };
         let ctx = crate::drafts::UpdateCtx {
             workspace: &s.workspace,
+            server: &sid,
             now: chrono::Local::now(),
             morning,
+            confirm_broad,
         };
         let outs = view.update(m, &ctx);
         let mut tasks = Vec::new();
@@ -95,17 +98,19 @@ impl App {
                 Task::none()
             }
             Out::SetText(id, text) => {
-                let max = s.workspace.settings().max_message_size();
-                if crate::room::composer::text::too_long(&text, max) {
-                    return self.toast(
-                        BannerKind::Error,
-                        t!("room_composer.too_long_title"),
-                        t!("room_composer.too_long", max = max),
-                    );
-                }
                 s.workspace.set_scheduled_text(&id, &text);
                 Task::none()
             }
+            Out::Refused(Refusal::TooLong(max)) => self.toast(
+                BannerKind::Error,
+                t!("room_composer.too_long_title"),
+                t!("room_composer.too_long", max = max),
+            ),
+            Out::Refused(Refusal::Command) => self.toast(
+                BannerKind::Warning,
+                t!("scheduled.no_commands"),
+                String::new(),
+            ),
             Out::Delete(id) => {
                 s.workspace.remove_scheduled(&id);
                 Task::none()
@@ -135,7 +140,7 @@ impl App {
 
     /// Scheduled messages turned out missed: the dialog lists them (once
     /// per batch; closing it leaves them in the view).
-    pub(super) fn missed_scheduled(&mut self) {
+    pub(crate) fn missed_scheduled(&mut self) {
         if self.modals.iter().any(|m| matches!(m, Modal::Missed(_))) {
             return;
         }
@@ -163,8 +168,12 @@ impl App {
                     sid: s.id.clone(),
                     id: m.id.clone(),
                     place,
-                    when: crate::format::moment(e.send_at, now, self.config.ui.clock_24h),
+                    when: crate::drafts::view::missed_when(
+                        crate::format::moment(e.send_at, now, self.config.ui.clock_24h),
+                        e.error.as_deref(),
+                    ),
                     preview: crate::drafts::preview(&m.msg, 160),
+                    held: e.held,
                 });
             }
         }
@@ -176,14 +185,18 @@ impl App {
         let Some(Modal::Missed(state)) = self.modals.last_mut() else {
             return Task::none();
         };
+        // An entry open in a dialog of Drafts & scheduled (being edited,
+        // rescheduled or deleted there) is left to that dialog.
+        let free =
+            |s: &ServerState, id: &str| s.workspace.scheduled().get(id).is_some_and(|e| !e.held);
         match m {
             MissedMsg::SendNow(sid, id) => {
-                if let Some(s) = self.servers.get_mut(&sid) {
+                if let Some(s) = self.servers.get_mut(&sid).filter(|s| free(s, &id)) {
                     send_now(s, &id);
                 }
             }
             MissedMsg::Delete(sid, id) => {
-                if let Some(s) = self.servers.get_mut(&sid) {
+                if let Some(s) = self.servers.get_mut(&sid).filter(|s| free(s, &id)) {
                     s.workspace.remove_scheduled(&id);
                 }
             }
@@ -213,7 +226,16 @@ impl App {
                 state.reschedule = None;
                 return Task::none();
             }
-            MissedMsg::SendAll | MissedMsg::DeleteAll => {
+            MissedMsg::DeleteAll => {
+                state.confirm_delete_all = true;
+                return Task::none();
+            }
+            MissedMsg::CancelDeleteAll => {
+                state.confirm_delete_all = false;
+                return Task::none();
+            }
+            MissedMsg::SendAll | MissedMsg::ConfirmDeleteAll => {
+                state.confirm_delete_all = false;
                 let send = matches!(m, MissedMsg::SendAll);
                 for s in self.servers.values_mut() {
                     let ids: Vec<String> = s
@@ -221,6 +243,7 @@ impl App {
                         .scheduled()
                         .missed()
                         .iter()
+                        .filter(|e| !e.held)
                         .map(|e| e.id().to_owned())
                         .collect();
                     for id in ids {

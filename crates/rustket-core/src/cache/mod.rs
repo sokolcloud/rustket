@@ -311,6 +311,9 @@ pub struct OutboxEntry {
     /// A scheduled message (`crate::scheduled`): when to send it (UTC ms).
     /// It is not a pending message until then.
     pub send_at: Option<i64>,
+    /// A queued scheduled message that fell due (`send_at` is `None`): a
+    /// final failure puts it back with the scheduled ones.
+    pub scheduled: bool,
 }
 
 /// One set of changes, written in one transaction. `None` / empty fields

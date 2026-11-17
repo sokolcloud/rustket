@@ -96,6 +96,13 @@ impl ClearChoice {
             .chain([Self::Custom])
             .collect()
     }
+
+    /// The choice after this one in [`Self::all`] (the last wraps).
+    fn next(self) -> Self {
+        let all = Self::all();
+        let i = all.iter().position(|c| *c == self).map_or(0, |i| i + 1);
+        all.get(i).copied().unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -111,7 +118,8 @@ pub struct StatusMenu {
     pub busy: bool,
     /// The pause presets are shown.
     pub pause_open: bool,
-    /// "Clear after" of the next status set here.
+    /// "Clear after" of the next status set from the open menu (a status
+    /// set with the menu closed, from the tray, does not clear).
     pub clear: ClearChoice,
     pub clear_date: String,
     pub clear_time: String,
@@ -214,8 +222,16 @@ impl StatusMenu {
         }
     }
 
+    /// [`Self::clear_at`] of the open menu; a status set with the menu
+    /// closed (the tray) does not clear, whatever was picked there last.
+    fn menu_clear_at(&mut self) -> Result<Option<i64>, ()> {
+        if self.open { self.clear_at() } else { Ok(None) }
+    }
+
     /// The expiry of `status` with `text` set now; `None` when it does not
     /// clear (or there is nothing to clear: online without a text).
+    /// `restore` is the status before (the app maps it to a pause's held
+    /// status and drops it when it is `status`, `quiet::expiry_for_hold`).
     fn expiry(
         &self,
         at: Option<i64>,
@@ -233,7 +249,7 @@ impl StatusMenu {
             at,
             status,
             text: text.to_owned(),
-            restore: restore.filter(|r| *r != status),
+            restore,
         })
     }
 
@@ -251,7 +267,7 @@ impl StatusMenu {
                 t!("status_menu.not_allowed").into_owned(),
             ));
         }
-        let Ok(at) = self.clear_at() else {
+        let Ok(at) = self.menu_clear_at() else {
             return Action::none();
         };
         let text = text.filter(|_| text_allowed(ctx.workspace));
@@ -276,7 +292,7 @@ impl StatusMenu {
         if !text_allowed(ctx.workspace) {
             return Action::none();
         }
-        let Ok(at) = self.clear_at() else {
+        let Ok(at) = self.menu_clear_at() else {
             return Action::none();
         };
         let status = ctx.workspace.my_status();
@@ -652,7 +668,12 @@ impl StatusMenu {
                 ));
             }
             rows.plain(container(field).padding([SPACE_1, SPACE_2]));
-            rows.plain(self.clear_after_view(ctx));
+            // Enter on the row picks the next "Clear after" (the keyboard
+            // does not reach the pick list).
+            rows.keyed(
+                self.clear_after_view(ctx),
+                enabled.then(|| Message::ClearAfter(self.clear.next())),
+            );
             let current = my_text(ws);
             for r in self.recent.iter().filter(|r| **r != current) {
                 rows.item(
@@ -777,32 +798,39 @@ impl StatusMenu {
         if !self.pause_open {
             return;
         }
-        let chip = |label: String, tip: String, on: Message| -> Element<'a, Message> {
-            rustket_ui::widget::tooltip(
-                button(text(label).size(TEXT_CAPTION))
-                    .padding([3, 8])
-                    .style(style::button_reaction(false))
-                    .on_press(on),
-                tip,
-                rustket_ui::widget::TooltipPosition::Bottom,
-            )
+        // One entry per preset, so the keyboard reaches them (`menu_nav`).
+        let preset = |label: String, when: Option<String>| -> Element<'a, Message> {
+            let mut r = row![ellipsis(label).size(TEXT_BODY).width(Length::Fill)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+            if let Some(w) = when {
+                r = r.push(
+                    text(w)
+                        .size(TEXT_CAPTION)
+                        .style(style::text_secondary)
+                        .wrapping(text::Wrapping::None),
+                );
+            }
+            container(r)
+                .padding(iced::Padding::default().left(16.0 + SPACE_3))
+                .into()
         };
-        let mut chips = row![].spacing(SPACE_1).align_y(Alignment::Center);
         for p in PausePreset::ALL {
             let at = p.until(&local, ui.morning_hour()).timestamp_millis();
-            let tip = format!(
-                "{} · {}",
-                crate::quiet::preset_label(p),
-                crate::format::moment(at, local, ui.clock_24h)
+            rows.item(
+                preset(
+                    crate::quiet::preset_label(p),
+                    Some(crate::format::moment(at, local, ui.clock_24h)),
+                ),
+                Some(Message::Pause(p)),
+                false,
             );
-            chips = chips.push(chip(crate::quiet::chip_label(p), tip, Message::Pause(p)));
         }
-        chips = chips.push(chip(
-            "…".into(),
-            t!("later.preset_custom").into_owned(),
-            Message::PauseCustom,
-        ));
-        rows.plain(container(chips).padding(iced::Padding::from([0.0, SPACE_2]).bottom(SPACE_1)));
+        rows.item(
+            preset(format!("{}…", t!("later.preset_custom")), None),
+            Some(Message::PauseCustom),
+            false,
+        );
     }
 
     /// "Clear after" of the next status, and the current status's expiry.
@@ -899,6 +927,13 @@ impl<'a> Rows<'a> {
     fn plain(&mut self, el: impl Into<Element<'a, Message>>) {
         self.els.push(el.into());
         self.acts.push(None);
+    }
+
+    /// A row of its own widgets that `msg` (if any) selects with the
+    /// keyboard.
+    fn keyed(&mut self, el: impl Into<Element<'a, Message>>, msg: Option<Message>) {
+        self.els.push(el.into());
+        self.acts.push(msg);
     }
 
     /// A menu entry (disabled without `msg`).
@@ -1101,6 +1136,19 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_clear_after_cycles_its_choices() {
+        let all = ClearChoice::all();
+        let mut c = ClearChoice::default();
+        let mut seen = vec![c];
+        for _ in 1..all.len() {
+            c = c.next();
+            seen.push(c);
+        }
+        assert_eq!(seen, all);
+        assert_eq!(c.next(), ClearChoice::default(), "wraps");
+    }
+
+    #[test]
     fn clear_after_sets_and_clears_the_expiry() {
         use crate::quiet::Request;
         let mut fx = Fx::new();
@@ -1112,6 +1160,7 @@ mod tests {
             })
         };
         // A text for an hour: only the text clears.
+        m.update(Message::Toggle(true), &mut fx.ctx());
         m.update(
             Message::ClearAfter(ClearChoice::Preset(ClearAfter::Hour1)),
             &mut fx.ctx(),
@@ -1127,6 +1176,11 @@ mod tests {
         assert_eq!((e.text.as_str(), e.restore), ("Focus", None));
         assert!(e.at >= before + 3_590_000);
         // Busy for an hour: back to online afterwards.
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        m.update(
+            Message::ClearAfter(ClearChoice::Preset(ClearAfter::Hour1)),
+            &mut fx.ctx(),
+        );
         m.update(Message::SetStatus(UserStatus::Busy), &mut fx.ctx());
         let a = m.update(
             Message::StatusSet(Some(UserStatus::Busy), Some(String::new()), Ok(())),
@@ -1158,10 +1212,33 @@ mod tests {
         );
         assert_eq!(expiry(&a), None);
         // A custom time in the past is refused before any call.
+        m.update(Message::Toggle(true), &mut fx.ctx());
         m.update(Message::ClearAfter(ClearChoice::Custom), &mut fx.ctx());
         m.update(Message::ClearDate("2020-01-01".into()), &mut fx.ctx());
         m.update(Message::SetStatus(UserStatus::Busy), &mut fx.ctx());
         assert!(!m.busy && m.clear_error);
+        // The menu closed, a status from the tray neither reuses what was
+        // picked there nor is refused for it.
+        m.update(Message::Toggle(false), &mut fx.ctx());
+        m.update(Message::SetStatus(UserStatus::Busy), &mut fx.ctx());
+        assert!(m.busy);
+        let a = m.update(
+            Message::StatusSet(Some(UserStatus::Busy), Some(String::new()), Ok(())),
+            &mut fx.ctx(),
+        );
+        assert_eq!(expiry(&a), Some(None));
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        m.update(
+            Message::ClearAfter(ClearChoice::Preset(ClearAfter::Hour1)),
+            &mut fx.ctx(),
+        );
+        m.update(Message::Toggle(false), &mut fx.ctx());
+        m.update(Message::SetStatus(UserStatus::Away), &mut fx.ctx());
+        let a = m.update(
+            Message::StatusSet(Some(UserStatus::Away), Some(String::new()), Ok(())),
+            &mut fx.ctx(),
+        );
+        assert_eq!(expiry(&a), Some(None), "no stale \"Clear after\"");
         // Cancel and pause requests go to the app.
         let a = m.update(Message::CancelExpiry, &mut fx.ctx());
         assert_eq!(expiry(&a), Some(None));

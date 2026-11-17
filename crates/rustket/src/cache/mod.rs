@@ -74,6 +74,30 @@ const DELETED_LOOKBACK_MS: i64 = 15 * 60 * 1000;
 /// Minimum time between two writes of the sidebar's thread data (it changes
 /// with every thread parent update; quitting writes it too).
 const THREADS_WRITE_INTERVAL: Duration = Duration::from_secs(60);
+/// Tries of a queued message failing with a transient error (network,
+/// 5xx, rate limit) while connected before it is left failed: these go out
+/// with nobody watching (written offline, scheduled).
+const MAX_SEND_TRIES: u32 = 5;
+
+/// Wait before the next try of a queued message after `tries` transient
+/// failures: 15 s doubling, at most 5 min (at least what a rate limit asks).
+fn retry_delay_ms(tries: u32, e: &rocketchat::Error) -> i64 {
+    let backoff = (15_000_i64 << tries.saturating_sub(1).min(5)).min(300_000);
+    match e {
+        rocketchat::Error::RateLimited {
+            retry_after: Some(d),
+            ..
+        } => backoff.max(i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+        _ => backoff,
+    }
+}
+
+/// Whether a queued message that failed (`tried`: it was sent and failed,
+/// not skipped after an earlier one of its room) with `e` while connected
+/// waits for another try, after `tries` failed tries.
+fn retries(e: &rocketchat::Error, tried: bool, tries: u32) -> bool {
+    e.is_transient() && (!tried || tries < MAX_SEND_TRIES)
+}
 
 /// A timeline instance (see `Timeline::epoch`).
 type Epoch = (u64, u64);
@@ -149,6 +173,14 @@ pub struct ServerCache {
     queued: HashSet<String>,
     /// Outbox ids being sent by this module.
     sending: HashSet<String>,
+    /// Queued ids that came from the scheduled queue (a final failure is
+    /// announced: nobody watches them go out).
+    scheduled: HashSet<String>,
+    /// Transient failures per queued id.
+    tries: HashMap<String, u32>,
+    /// No queued message is sent before this (UTC ms; after a transient
+    /// failure).
+    retry_at: Option<i64>,
     /// The `THREAD_INDEX` revision last written.
     threads_rev: Option<u64>,
     /// When the thread data was last written.
@@ -163,6 +195,13 @@ pub struct ServerCache {
 }
 
 impl ServerCache {
+    /// A queued message was sent, dropped or given up.
+    fn forget_queued(&mut self, id: &str) {
+        self.queued.remove(id);
+        self.scheduled.remove(id);
+        self.tries.remove(id);
+    }
+
     /// The next pass writes everything shown, as if nothing was written.
     fn write_all_again(&mut self) {
         self.captured.clear();
@@ -189,6 +228,12 @@ impl ServerCache {
     /// Whether a message waits to be sent automatically.
     pub fn is_queued(&self, id: &str) -> bool {
         self.queued.contains(id)
+    }
+
+    /// When queued messages are tried again after a transient failure
+    /// (UTC ms), for the app's timer.
+    pub fn retry_at(&self) -> Option<i64> {
+        self.retry_at.filter(|_| !self.queued.is_empty())
     }
 }
 
@@ -258,10 +303,17 @@ fn persistable(ws: &Workspace, m: &RcMessage, from_disk: bool) -> bool {
     if m.is_encrypted() || m.e2e.is_some() {
         return false;
     }
-    match ws.room(&m.rid) {
-        Some(e) if e.sub.as_ref().is_some_and(|s| s.e2e_key.is_some()) => false,
-        Some(e) if e.room.is_some() => e.sub.is_some() && !e.is_encrypted(),
-        _ => from_disk && !live(ws),
+    room_plaintext_on_disk(ws, &m.rid).unwrap_or(from_disk && !live(ws))
+}
+
+/// Whether plaintext of room `rid` may be written to disk: its room and
+/// subscription are known, it is not encrypted and holds no room key (it is
+/// not, and was not, an E2E room). `None`: its room object is not known.
+pub(crate) fn room_plaintext_on_disk(ws: &Workspace, rid: &str) -> Option<bool> {
+    match ws.room(rid) {
+        Some(e) if e.sub.as_ref().is_some_and(|s| s.e2e_key.is_some()) => Some(false),
+        Some(e) if e.room.is_some() => Some(e.sub.is_some() && !e.is_encrypted()),
+        _ => None,
     }
 }
 
@@ -618,6 +670,7 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
                     _ => None,
                 },
                 send_at: None,
+                scheduled: c.scheduled.contains(&i.message.id),
             }
         })
         .collect();
@@ -633,6 +686,7 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
                 maybe_sent: false,
                 error: None,
                 send_at: Some(e.send_at),
+                scheduled: false,
             }),
     );
     let sig: Vec<OutboxSig> = entries
@@ -704,6 +758,12 @@ fn ask_seeds(s: &mut ServerState, handle: &CacheHandle) -> Task<Message> {
 /// encryption wait until the E2E manager can encrypt for them.
 fn send_queued(s: &mut ServerState) -> Task<Message> {
     if s.cache.queued.is_empty() || !s.cache.sending.is_empty() || !online(s) {
+        return Task::none();
+    }
+    if s.cache
+        .retry_at
+        .is_some_and(|at| at > chrono::Utc::now().timestamp_millis())
+    {
         return Task::none();
     }
     let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
@@ -883,26 +943,67 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
                 outcome,
             } = *r;
             let tmid = tmid.as_deref();
+            let tried = matches!(outcome, Outcome::Failed(_));
             match outcome {
                 Outcome::Sent(m) => {
-                    s.cache.queued.remove(&id);
+                    s.cache.forget_queued(&id);
                     s.cache.unconfirmed.remove(&id);
                     s.workspace.apply_message(*m);
                 }
                 Outcome::Deleted => {
-                    s.cache.queued.remove(&id);
+                    s.cache.forget_queued(&id);
                     s.workspace.discard_pending(&rid, tmid, &id);
                 }
                 Outcome::Failed(e) | Outcome::Skipped(e) => {
                     tracing::warn!(error = %e, "queued message not sent");
-                    if *s.workspace.connection() == ConnectionState::Connected {
-                        s.cache.queued.remove(&id);
-                        s.workspace
-                            .mark_pending_failed(&rid, tmid, &id, &e.user_text());
-                    } else {
+                    let tries = s.cache.tries.get(&id).copied().unwrap_or(0);
+                    if *s.workspace.connection() != ConnectionState::Connected {
                         // The connection went away meanwhile: it waits.
                         s.workspace
                             .mark_pending_failed(&rid, tmid, &id, &t!("cache.waiting"));
+                    } else if retries(e.error(), tried, tries) {
+                        // A blip (network, server overloaded): tried again
+                        // later, as it goes out with nobody watching.
+                        if tried {
+                            s.cache.tries.insert(id.clone(), tries + 1);
+                            let at = chrono::Utc::now().timestamp_millis()
+                                + retry_delay_ms(tries + 1, e.error());
+                            s.cache.retry_at = Some(s.cache.retry_at.map_or(at, |r| r.max(at)));
+                        }
+                        s.workspace
+                            .mark_pending_failed(&rid, tmid, &id, &t!("cache.waiting"));
+                    } else {
+                        let scheduled = s.cache.scheduled.contains(&id);
+                        s.cache.forget_queued(&id);
+                        let error = e.user_text();
+                        let pending = scheduled
+                            .then(|| {
+                                s.workspace
+                                    .outbox_items()
+                                    .find(|i| i.message.id == id)
+                                    .map(|i| i.message.clone())
+                            })
+                            .flatten();
+                        let Some(m) = pending else {
+                            s.workspace.mark_pending_failed(&rid, tmid, &id, &error);
+                            return Task::none();
+                        };
+                        // Nobody may be watching it go out: it goes back to
+                        // Drafts & scheduled as a missed entry (kept on disk,
+                        // listed by the "not sent" dialog until the user
+                        // decides), not a failed row in a room.
+                        s.workspace.return_failed_scheduled(m, &error);
+                        let room = s
+                            .workspace
+                            .room(&rid)
+                            .map(|r| r.fname().unwrap_or(r.name()).to_owned())
+                            .unwrap_or_default();
+                        app.missed_scheduled();
+                        return app.toast(
+                            BannerKind::Error,
+                            t!("scheduled.failed_title"),
+                            t!("scheduled.failed_body", room = room, error = error),
+                        );
                     }
                 }
             }
@@ -1051,6 +1152,9 @@ fn restore_outbox(s: &mut ServerState, outbox: Vec<OutboxEntry>) {
         if e.queued && e.maybe_sent {
             s.cache.unconfirmed.insert(id.clone());
         }
+        if e.queued && e.scheduled {
+            s.cache.scheduled.insert(id.clone());
+        }
         if e.queued {
             s.cache.queued.insert(id);
         }
@@ -1068,6 +1172,7 @@ pub fn enqueue_scheduled(s: &mut ServerState, m: RcMessage) {
     s.workspace
         .mark_pending_failed(&rid, tmid.as_deref(), &id, &t!("cache.waiting"));
     s.cache.known.insert(id.clone());
+    s.cache.scheduled.insert(id.clone());
     s.cache.queued.insert(id);
 }
 
@@ -1224,6 +1329,34 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+
+    /// A blip at the due time of an unattended message (scheduled, written
+    /// offline) is tried again with a growing wait; a refusal is not.
+    #[test]
+    fn transient_send_failures_are_tried_again() {
+        let blip = rocketchat::Error::Timeout("chat.sendMessage");
+        let refused = rocketchat::Error::Api {
+            status: 400,
+            error: Some("error-not-allowed".into()),
+            error_type: None,
+            message: None,
+            details: None,
+        };
+        assert!(retries(&blip, true, 0));
+        assert!(retries(&blip, true, MAX_SEND_TRIES - 1));
+        assert!(!retries(&blip, true, MAX_SEND_TRIES), "given up");
+        assert!(retries(&blip, false, MAX_SEND_TRIES), "skipped: not a try");
+        assert!(!retries(&refused, true, 0));
+        assert!(!retries(&refused, false, 0));
+        assert_eq!(retry_delay_ms(1, &blip), 15_000);
+        assert_eq!(retry_delay_ms(2, &blip), 30_000);
+        assert_eq!(retry_delay_ms(30, &blip), 300_000);
+        let limited = rocketchat::Error::RateLimited {
+            retry_after: Some(Duration::from_secs(600)),
+            message: None,
+        };
+        assert_eq!(retry_delay_ms(1, &limited), 600_000);
+    }
 
     type Log = Arc<Mutex<Vec<(String, String)>>>;
 
@@ -1444,6 +1577,16 @@ mod tests {
         assert!(s2.workspace.scheduled().is_empty());
         let item = s2.workspace.outbox_items().next().unwrap();
         assert!(matches!(item.state, DeliveryState::Failed { .. }));
+        // Queued, it stays known as a scheduled one across a restart (its
+        // final failure goes back to the scheduled ones).
+        s2.cache.outbox_restored = true;
+        let mut batch = Batch::default();
+        collect_outbox(&mut s2, &mut batch);
+        let entries = batch.outbox.expect("written");
+        assert!(entries[0].queued && entries[0].scheduled && entries[0].send_at.is_none());
+        let mut s3 = thread_server();
+        restore_outbox(&mut s3, entries);
+        assert!(s3.cache.is_queued(&id) && s3.cache.scheduled.contains(&id));
     }
 
     #[test]

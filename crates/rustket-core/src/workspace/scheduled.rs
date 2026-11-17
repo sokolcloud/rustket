@@ -29,6 +29,26 @@ impl Workspace {
         self.mark(Dirty::SCHEDULED);
     }
 
+    /// A due message (its pending entry `message`) failed for good: it
+    /// leaves the outbox and its timeline and waits again with the
+    /// scheduled ones as missed, for the user to send, reschedule or
+    /// delete. Its send time is its local time (when it fell due).
+    pub fn return_failed_scheduled(&mut self, message: rocketchat::models::Message, error: &str) {
+        let (rid, tmid, id) = (
+            message.rid.clone(),
+            message.tmid.clone(),
+            message.id.clone(),
+        );
+        self.discard_pending(&rid, tmid.as_deref(), &id);
+        let send_at = message
+            .ts
+            .map(|t| t.timestamp_millis())
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        self.scheduled
+            .insert(Scheduled::failed(message, send_at, error.to_owned()));
+        self.mark(Dirty::SCHEDULED);
+    }
+
     pub fn reschedule(&mut self, id: &str, at_ms: i64) -> bool {
         let done = self.scheduled.reschedule(id, at_ms);
         if done {
@@ -166,6 +186,41 @@ mod tests {
         assert_eq!(ws.scheduled().len(), 1);
         assert_eq!(ws.take_dropped_scheduled(), [("general".to_owned(), 2)]);
         assert!(ws.take_dropped_scheduled().is_empty());
+    }
+
+    /// A room gone from a later initial load (left while the app was off)
+    /// is reported by its name, not its id.
+    #[test]
+    fn a_room_gone_from_the_initial_load_is_reported_by_name() {
+        let me = rocketchat::models::User {
+            id: "me".into(),
+            username: Some("me".into()),
+            ..Default::default()
+        };
+        let mut ws = Workspace::new();
+        ws.apply_initial(InitialData {
+            me: me.clone(),
+            subscriptions: vec![Subscription {
+                id: "s1".into(),
+                rid: "R1".into(),
+                name: "general".into(),
+                ..Default::default()
+            }],
+            rooms: vec![Room {
+                id: "R1".into(),
+                name: Some("general".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let m = ws.new_local_message("R1", "a", None, false);
+        ws.schedule_message(m, 1_000);
+        ws.apply_initial(InitialData {
+            me,
+            ..Default::default()
+        });
+        assert!(ws.scheduled().is_empty());
+        assert_eq!(ws.take_dropped_scheduled(), [("general".to_owned(), 1)]);
     }
 
     #[test]

@@ -395,6 +395,17 @@ impl Workspace {
 
     pub(super) fn remove_room(&mut self, rid: &str) {
         let name = self.room_label(rid);
+        self.remove_room_labelled(rid, name);
+    }
+
+    /// [`Self::remove_room`] of a room whose entry no longer holds its name
+    /// (`name`: as it was shown; empty for its id).
+    pub(super) fn remove_room_labelled(&mut self, rid: &str, name: String) {
+        let name = if name.is_empty() {
+            rid.to_owned()
+        } else {
+            name
+        };
         if self.rooms.remove(rid).is_some() {
             self.mark_room(rid);
         }

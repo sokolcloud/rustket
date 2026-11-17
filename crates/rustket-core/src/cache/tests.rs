@@ -315,6 +315,7 @@ fn another_account_starts_empty() {
             maybe_sent: false,
             error: None,
             send_at: None,
+            scheduled: false,
         }]),
         ..Default::default()
     })
@@ -340,6 +341,7 @@ fn outbox_survives_a_restart() {
             maybe_sent: false,
             error: None,
             send_at: None,
+            scheduled: false,
         },
         OutboxEntry {
             message: reply,
@@ -347,6 +349,7 @@ fn outbox_survives_a_restart() {
             maybe_sent: false,
             error: Some("boom".into()),
             send_at: None,
+            scheduled: false,
         },
         OutboxEntry {
             message: msg("o3", "R1", 9, "u1"),
@@ -354,6 +357,7 @@ fn outbox_survives_a_restart() {
             maybe_sent: true,
             error: None,
             send_at: None,
+            scheduled: false,
         },
     ];
     db.write(Batch {
@@ -426,6 +430,7 @@ fn e2e_plaintext_never_reaches_the_file() {
                 maybe_sent: false,
                 error: None,
                 send_at: None,
+                scheduled: false,
             },
             OutboxEntry {
                 message: shaped_pending,
@@ -433,6 +438,7 @@ fn e2e_plaintext_never_reaches_the_file() {
                 maybe_sent: false,
                 error: None,
                 send_at: None,
+                scheduled: false,
             },
         ]),
         ..Default::default()
@@ -1360,6 +1366,7 @@ fn scheduled_entries_keep_their_send_time() {
             maybe_sent: false,
             error: None,
             send_at: None,
+            scheduled: false,
         },
         OutboxEntry {
             message: msg("s1", "R1", 6, "u1"),
@@ -1367,6 +1374,24 @@ fn scheduled_entries_keep_their_send_time() {
             maybe_sent: false,
             error: None,
             send_at: Some(1_900_000_000_000),
+            scheduled: false,
+        },
+        // Fell due and queued: it stays known as a scheduled one.
+        OutboxEntry {
+            message: msg("d1", "R1", 7, "u1"),
+            queued: true,
+            maybe_sent: false,
+            error: None,
+            send_at: None,
+            scheduled: true,
+        },
+        OutboxEntry {
+            message: msg("d2", "R1", 8, "u1"),
+            queued: true,
+            maybe_sent: true,
+            error: None,
+            send_at: None,
+            scheduled: true,
         },
     ];
     db.write(Batch {
@@ -1376,7 +1401,22 @@ fn scheduled_entries_keep_their_send_time() {
     .unwrap();
     drop(db);
     let db = open(tmp.path(), "u1");
-    assert_eq!(db.load_outbox().unwrap(), entries);
+    // Outbox rows first, then the scheduled table.
+    let mut expected = entries.clone();
+    let s1 = expected.remove(1);
+    expected.push(s1);
+    assert_eq!(db.load_outbox().unwrap(), expected);
+    // An older Rustket reads any non-zero `queued` as queued.
+    let mut st = db
+        .conn_ref()
+        .prepare("SELECT queued FROM outbox ORDER BY id")
+        .unwrap();
+    let v: Vec<i64> = st
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(v, [5, 6, 1]);
 }
 
 #[test]
@@ -1392,6 +1432,7 @@ fn scheduled_table_needs_no_schema_bump() {
                 maybe_sent: false,
                 error: None,
                 send_at: None,
+                scheduled: false,
             },
             OutboxEntry {
                 message: msg("s1", "R1", 6, "u1"),
@@ -1399,6 +1440,7 @@ fn scheduled_table_needs_no_schema_bump() {
                 maybe_sent: false,
                 error: None,
                 send_at: Some(9_000),
+                scheduled: false,
             },
         ]),
         ..Default::default()
