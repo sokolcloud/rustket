@@ -14,6 +14,7 @@ mod actions;
 mod dialogs;
 pub mod interact;
 pub(crate) mod list;
+mod poll_card;
 pub(crate) mod row;
 pub(crate) mod select;
 pub(crate) mod transfer;

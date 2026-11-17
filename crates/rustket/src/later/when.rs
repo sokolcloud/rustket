@@ -1,6 +1,8 @@
-//! The time picker of reminders and due dates: preset buttons with the time
-//! they resolve to, and a custom date and time. Used by the message menu's
-//! "Remind me…" dialog (`room::timeline`) and the Later view's dialogs.
+//! The time picker of reminders, due dates, scheduled messages and pauses:
+//! preset buttons with the time they resolve to, and a custom date and
+//! time. Used by the message menu's "Remind me…" dialog (`room::timeline`),
+//! the Later view's dialogs, the composer's "Schedule message" and the
+//! Drafts view (`crate::drafts`), and the custom pause (`crate::quiet`).
 
 use chrono::{DateTime, Datelike, Local, NaiveDate};
 use iced::widget::{button, column, row, text, text_input};
@@ -19,7 +21,14 @@ pub const DUE_HOUR: u32 = 18;
 pub enum Kind {
     Reminder,
     Due,
+    /// A scheduled message's send time.
+    Schedule,
+    /// The end of a notification pause.
+    Pause,
 }
+
+/// The presets of a scheduled message.
+const SCHEDULE_PRESETS: [Preset; 3] = [Preset::In20Min, Preset::In1Hour, Preset::Tomorrow];
 
 /// A due-date preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +42,7 @@ pub enum DuePreset {
 pub enum Msg {
     Preset(Preset),
     Due(DuePreset),
+    Pause(rustket_core::quiet::PausePreset),
     /// Show the custom date and time fields.
     Custom,
     Date(String),
@@ -81,6 +91,11 @@ impl WhenPicker {
         }
     }
 
+    /// The custom date and time fields are shown.
+    pub fn is_custom(&self) -> bool {
+        self.custom
+    }
+
     /// Today, tomorrow or next week's Friday (the end of the next work
     /// week) at [`DUE_HOUR`].
     fn due_at(p: DuePreset, now: &DateTime<Local>) -> DateTime<Local> {
@@ -101,6 +116,7 @@ impl WhenPicker {
                 reminders::preset_at(p, &now, morning).timestamp_millis(),
             )),
             Msg::Due(p) => Some(Picked::At(Self::due_at(p, &now).timestamp_millis())),
+            Msg::Pause(p) => Some(Picked::At(p.until(&now, morning).timestamp_millis())),
             Msg::Custom => {
                 self.custom = true;
                 if self.date.is_empty() {
@@ -142,7 +158,7 @@ impl WhenPicker {
             .ok_or(CustomError::Invalid)?;
         let (h, m) = crate::uikit::elements::parse_time(&self.time).ok_or(CustomError::Invalid)?;
         let at = reminders::custom_at(date, h, m, &Local).ok_or(CustomError::Invalid)?;
-        if self.kind == Kind::Reminder && at <= *now {
+        if self.kind != Kind::Due && at <= *now {
             return Err(CustomError::Past);
         }
         Ok(at.timestamp_millis())
@@ -173,15 +189,18 @@ impl WhenPicker {
             .into()
         };
         let mut col = column![].spacing(SPACE_1);
-        if let Some(cur) = self.current {
+        let current = self
+            .current
+            .filter(|_| matches!(self.kind, Kind::Reminder | Kind::Due));
+        if let Some(cur) = current {
             let key = match self.kind {
-                Kind::Reminder => "room_timeline.remind_set",
                 Kind::Due => "later.due_on",
+                _ => "room_timeline.remind_set",
             };
             let line = t!(key, time = crate::format::moment(cur, now, clock_24h)).into_owned();
             let remove = match self.kind {
-                Kind::Reminder => t!("later.act_remove_reminder"),
                 Kind::Due => t!("later.due_none"),
+                _ => t!("later.act_remove_reminder"),
             };
             col = col.push(
                 row![
@@ -195,9 +214,23 @@ impl WhenPicker {
                 .align_y(Alignment::Center),
             );
         }
+        let presets: &[Preset] = match self.kind {
+            Kind::Schedule => &SCHEDULE_PRESETS,
+            _ => &Preset::ALL,
+        };
         match self.kind {
-            Kind::Reminder => {
-                for p in Preset::ALL {
+            Kind::Pause => {
+                for p in rustket_core::quiet::PausePreset::ALL {
+                    let at = p.until(&now, morning);
+                    col = col.push(option(
+                        crate::quiet::preset_label(p),
+                        when(at),
+                        Msg::Pause(p),
+                    ));
+                }
+            }
+            Kind::Reminder | Kind::Schedule => {
+                for &p in presets {
                     let key = match p {
                         Preset::In20Min => "later.preset_20m",
                         Preset::In1Hour => "later.preset_1h",

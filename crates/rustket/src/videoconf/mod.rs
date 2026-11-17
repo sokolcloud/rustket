@@ -655,10 +655,15 @@ pub struct Alerts {
 
 /// Call sounds and notifications follow the desktop preferences (sound,
 /// notifications), the account's sound and volume preferences, and stay
-/// silent while the user is Busy (the popup still shows).
-pub fn alerts_for(ws: &rustket_core::Workspace, prefs: &rustket_core::config::UiPrefs) -> Alerts {
+/// silent while the user is Busy or notifications are `paused`
+/// (`crate::quiet`; the popup still shows).
+pub fn alerts_for(
+    ws: &rustket_core::Workspace,
+    prefs: &rustket_core::config::UiPrefs,
+    paused: bool,
+) -> Alerts {
     use rocketchat::models::UserStatus;
-    if ws.my_status() == UserStatus::Busy {
+    if paused || ws.my_status() == UserStatus::Busy {
         return Alerts {
             sound: false,
             notify: false,
@@ -677,7 +682,7 @@ pub fn alerts_for(ws: &rustket_core::Workspace, prefs: &rustket_core::config::Ui
 
 fn alerts(app: &App, sid: &ServerId) -> Alerts {
     match app.servers.get(sid) {
-        Some(s) => alerts_for(&s.workspace, &app.config.ui),
+        Some(s) => alerts_for(&s.workspace, &app.config.ui, app.quiet_now().paused),
         None => Alerts {
             sound: false,
             notify: false,
@@ -976,14 +981,22 @@ mod tests {
             sound: true,
             notify: true,
         };
-        assert_eq!(alerts_for(&ws, &prefs), on);
+        assert_eq!(alerts_for(&ws, &prefs, false), on);
+        // A notification pause silences calls too.
+        assert_eq!(
+            alerts_for(&ws, &prefs, true),
+            Alerts {
+                sound: false,
+                notify: false
+            }
+        );
         let quiet = UiPrefs {
             sound: false,
             desktop_notifications: false,
             ..UiPrefs::default()
         };
         assert_eq!(
-            alerts_for(&ws, &quiet),
+            alerts_for(&ws, &quiet, false),
             Alerts {
                 sound: false,
                 notify: false
@@ -996,9 +1009,9 @@ mod tests {
             }))
             .unwrap(),
         );
-        assert!(!alerts_for(&ws, &prefs).sound);
+        assert!(!alerts_for(&ws, &prefs, false).sound);
         ws.apply_user_status("me", Some("me"), UserStatus::Busy, None);
-        assert!(!alerts_for(&ws, &prefs).notify);
+        assert!(!alerts_for(&ws, &prefs, false).notify);
     }
 
     #[test]

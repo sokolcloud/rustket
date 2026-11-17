@@ -8,6 +8,7 @@
 pub mod autocomplete;
 pub(crate) mod broad;
 mod cache;
+pub(crate) mod poll;
 mod popup;
 mod send;
 pub mod text;
@@ -33,7 +34,10 @@ pub use self::cache::forget_commands;
 use self::cache::{
     commands_failed, outbox_in_flight, outbox_take_done, store_commands, store_members,
 };
-pub(crate) use self::cache::{outbox_forget, outbox_start};
+pub(crate) use self::cache::{
+    outbox_forget, outbox_start, poll_reactions_peek, poll_reactions_restore, poll_reactions_take,
+};
+pub(crate) use self::send::add_reactions;
 pub(crate) use self::send::expand_groups;
 pub use self::send::orphan_result;
 use self::send::{apply_send_result, commands_unavailable, error_toast, fetch, needs_join_code};
@@ -137,6 +141,19 @@ pub enum Message {
     PeerLoaded(String, Res<Box<rocketchat::models::User>>),
     /// Redraws the DM partner's local time.
     ClockTick,
+    /// Ctrl/Cmd+Shift+Enter or the clock button: pick a time to send the
+    /// message at instead of now.
+    Schedule,
+    SchedulePicker(crate::later::when::Msg),
+    ScheduleCancelled,
+    /// The "N scheduled" hint: open the Drafts & scheduled view.
+    OpenScheduled,
+    /// Toolbar: open the "Create poll" dialog.
+    OpenPoll,
+    /// The "Create poll" dialog.
+    Poll(poll::Msg),
+    /// The option reactions of a sent poll were added (or failed).
+    PollReacted(Res<()>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +231,15 @@ pub struct Composer {
     peer: Option<(String, Option<cache::PeerInfo>)>,
     /// Thread composer: replies are also sent to the channel (`tshow`).
     tshow: bool,
+    /// The "Schedule message" picker is open.
+    schedule: Option<crate::later::when::WhenPicker>,
+    /// The send running now schedules the message for this time (UTC ms)
+    /// instead (kept through the `@all` confirmation).
+    schedule_at: Option<i64>,
+    /// The open "Create poll" dialog.
+    poll: Option<poll::PollDraft>,
+    /// A poll waiting for the `@all` confirmation: its text and reactions.
+    broad_poll: Option<(String, Vec<&'static str>)>,
 }
 
 impl Composer {
@@ -252,6 +278,10 @@ impl Composer {
             broad_seq: 0,
             peer: None,
             tshow: false,
+            schedule: None,
+            schedule_at: None,
+            poll: None,
+            broad_poll: None,
         }
     }
 
@@ -305,7 +335,25 @@ impl Composer {
     /// A confirmation dialog of the composer is open (delete an emptied
     /// edit, `@all`/`@here`).
     pub fn is_confirm_open(&self) -> bool {
-        self.confirm_delete.is_some() || self.confirm_broad.is_some()
+        self.confirm_delete.is_some()
+            || self.confirm_broad.is_some()
+            || self.schedule.is_some()
+            || self.poll.is_some()
+    }
+
+    /// Whether the message may be scheduled: not an edit, the offline cache
+    /// keeps scheduled messages, and a room whose messages go out
+    /// unencrypted (a scheduled text waits on disk, and plaintext of rooms
+    /// that are or were encrypted never goes there: the cache's own rule, so
+    /// a scheduled message is never kept in memory only).
+    pub(crate) fn can_schedule(&self, ws: &Workspace) -> bool {
+        self.editing.is_none()
+            && ws.scheduled_storage()
+            && matches!(
+                crate::e2e::outgoing::mode(ws, &self.rid),
+                crate::e2e::outgoing::Mode::Plain
+            )
+            && crate::cache::room_plaintext_on_disk(ws, &self.rid) == Some(true)
     }
 
     /// Widget id of the editor (F6 target).
@@ -532,8 +580,15 @@ impl Composer {
                 ))
             }
             Message::Cancel => {
-                if self.confirm_broad.is_some() {
+                if self.schedule.is_some() {
+                    self.schedule = None;
+                } else if self.confirm_broad.is_some() {
+                    // Over the poll dialog when a poll asked: back to it.
                     self.confirm_broad = None;
+                    self.broad_poll = None;
+                    self.schedule_at = None;
+                } else if self.poll.is_some() {
+                    self.poll = None;
                 } else if self.confirm_delete.is_some() {
                     self.confirm_delete = None;
                 } else if self.popup_visible() {
@@ -682,10 +737,43 @@ impl Composer {
                 Err(e) => Action::effect(error_toast(e.user_text())),
             },
             Message::Sent(id, r) => {
+                // A poll's option reactions follow from `send_task`.
                 outbox_forget(ctx.server_id, &id);
                 self.apply_sent(&id, r, ctx.workspace);
                 Action::none()
             }
+            Message::OpenPoll => {
+                if self.editing.is_some() {
+                    return Action::none();
+                }
+                self.picker = None;
+                self.popup = None;
+                self.poll = Some(poll::PollDraft::default());
+                Action::task(iced::widget::operation::focus(iced::widget::Id::new(
+                    poll::QUESTION_ID,
+                )))
+            }
+            Message::Poll(m) => {
+                let Some(draft) = self.poll.as_mut() else {
+                    return Action::none();
+                };
+                match draft.update(m) {
+                    poll::Done::Keep => Action::none(),
+                    poll::Done::Close => {
+                        self.poll = None;
+                        Action::task(self.focus())
+                    }
+                    poll::Done::Send { text, reactions } => self.send_poll(text, reactions, ctx),
+                }
+            }
+            Message::PollReacted(r) => match r {
+                Ok(()) => Action::none(),
+                Err(e) => Action::effect(Effect::Toast(
+                    BannerKind::Error,
+                    t!("poll.reactions_failed").into_owned(),
+                    e.user_text(),
+                )),
+            },
             Message::Updated(r) => match r {
                 Ok(m) => {
                     ctx.workspace.apply_message(*m);
@@ -898,14 +986,60 @@ impl Composer {
                     return Action::none();
                 }
                 self.broad_ok = true;
-                let a = self.send(ctx);
+                let a = match self.broad_poll.take() {
+                    Some((text, reactions)) => self.send_poll(text, reactions, ctx),
+                    None => self.send(ctx),
+                };
                 self.broad_ok = false;
+                self.schedule_at = None;
                 a
             }
             Message::BroadCancelled => {
                 self.confirm_broad = None;
+                self.broad_poll = None;
+                self.schedule_at = None;
                 Action::task(self.focus())
             }
+            Message::Schedule => {
+                if !self.can_send() || !self.can_schedule(ctx.workspace) {
+                    return Action::none();
+                }
+                self.popup = None;
+                self.schedule = Some(crate::later::when::WhenPicker::new(
+                    crate::later::when::Kind::Schedule,
+                    None,
+                ));
+                Action::none()
+            }
+            Message::SchedulePicker(m) => {
+                let Some(p) = self.schedule.as_mut() else {
+                    return Action::none();
+                };
+                let picked = p.update(m, chrono::Local::now(), ctx.prefs.morning_hour());
+                let Some(crate::later::when::Picked::At(at)) = picked else {
+                    if p.is_custom() {
+                        return Action::task(iced::widget::operation::focus(
+                            crate::later::when::DATE_INPUT_ID,
+                        ));
+                    }
+                    return Action::none();
+                };
+                self.schedule = None;
+                if !self.can_schedule(ctx.workspace) {
+                    return Action::none();
+                }
+                self.schedule_at = Some(at);
+                let a = self.send(ctx);
+                if self.confirm_broad.is_none() {
+                    self.schedule_at = None;
+                }
+                a
+            }
+            Message::ScheduleCancelled => {
+                self.schedule = None;
+                Action::task(self.focus())
+            }
+            Message::OpenScheduled => Action::effect(Effect::OpenDrafts),
             Message::PeerLoaded(u, r) => {
                 match r {
                     Ok(user) => {

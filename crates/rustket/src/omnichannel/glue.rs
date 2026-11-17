@@ -89,8 +89,9 @@ impl App {
         let Some(s) = self.servers.get(sid) else {
             return;
         };
-        // Busy users get no new-room sound (`useNotifyUser`).
-        if s.workspace.my_status() == UserStatus::Busy {
+        // Busy users get no new-room sound (`useNotifyUser`), nor do paused
+        // notifications.
+        if s.workspace.my_status() == UserStatus::Busy || self.quiet_now().paused {
             return;
         }
         if let Some(name) = super::new_room_sound(&s.workspace, self.config.ui.sound) {
@@ -284,7 +285,11 @@ impl App {
         match m {
             sidebar::Msg::OpenQueued { rid, .. } => self.omni_open(&sid, &rid),
             sidebar::Msg::ContactCenter => {
-                let Some(s) = self.servers.get_mut(&sid) else {
+                let Some(s) = self
+                    .servers
+                    .get_mut(&sid)
+                    .filter(|s| !s.drafts_dialog_open())
+                else {
                     return Task::none();
                 };
                 s.status_menu.open = false;

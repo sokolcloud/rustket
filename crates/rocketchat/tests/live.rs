@@ -1554,3 +1554,82 @@ async fn later_stars_and_service_keys() {
     assert_eq!(in_sub.get(LATER_KEY), Some(&later));
     a.rooms_delete(&rid).await.unwrap();
 }
+
+/// Per-room search through the provider (the global search fan-out), with
+/// the operators the default provider parses; the provider's settings are
+/// readable by a plain user.
+#[tokio::test]
+async fn provider_search_in_room() {
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let provider = a.search_provider().await.unwrap().unwrap();
+    assert!(provider.is_default());
+    let room = a
+        .groups_create(&CreateRoom::new(unique("provider-search")))
+        .await
+        .unwrap();
+    let word = format!("zq{}", rocketchat::ids::random_id_len(8).to_lowercase());
+    let plain = a
+        .send_message(&OutgoingMessage::new(&room.id, format!("{word} plain")))
+        .await
+        .unwrap();
+    let linked = a
+        .send_message(&OutgoingMessage::new(
+            &room.id,
+            format!("{word} with https://example.com/x"),
+        ))
+        .await
+        .unwrap();
+    a.send_message(&OutgoingMessage::new(&room.id, "nothing here"))
+        .await
+        .unwrap();
+    let all = a.provider_search(&word, Some(&room.id), 20).await.unwrap();
+    let ids: Vec<&str> = all.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, [linked.id.as_str(), plain.id.as_str()], "newest first");
+    let links = a
+        .provider_search(&format!("{word} has:link"), Some(&room.id), 20)
+        .await
+        .unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].id, linked.id);
+    let mine = a
+        .provider_search(&format!("from:me {word}"), Some(&room.id), 20)
+        .await
+        .unwrap();
+    assert_eq!(mine.len(), 2);
+    let none = a
+        .provider_search(&format!("from:bob {word}"), Some(&room.id), 20)
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+    let limited = a.provider_search(&word, Some(&room.id), 1).await.unwrap();
+    assert_eq!(limited.len(), 1);
+    // Without GlobalSearchEnabled (the dev server's default) a server-wide
+    // search answers nothing rather than failing.
+    if !provider.global_search() {
+        assert!(a.provider_search(&word, None, 20).await.unwrap().is_empty());
+    }
+    a.rooms_delete(&room.id).await.unwrap();
+}
+
+/// Reaction names of the poll convention's keycaps.
+#[tokio::test]
+async fn keycap_reactions() {
+    let Some(s) = server() else { return };
+    let a = login(&s, "alice").await;
+    let room = a
+        .groups_create(&CreateRoom::new(unique("keycaps")))
+        .await
+        .unwrap();
+    let m = a
+        .send_message(&OutgoingMessage::new(&room.id, "📊 Q?\n1️⃣ a\n🔟 b"))
+        .await
+        .unwrap();
+    for e in [":one:", ":keycap_ten:"] {
+        a.react(&m.id, e, Some(true)).await.unwrap();
+    }
+    let got = a.get_message(&m.id).await.unwrap();
+    let keys: Vec<&String> = got.reactions.as_ref().unwrap().keys().collect();
+    assert_eq!(keys, [":keycap_ten:", ":one:"]);
+    a.rooms_delete(&room.id).await.unwrap();
+}

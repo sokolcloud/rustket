@@ -27,7 +27,7 @@ use crate::workspace::{MainView, ServerState};
 const MENTIONS_COUNT: u64 = 50;
 
 /// How a failed fetch counts for the loader's pacing.
-fn load_failure(f: &Failure) -> LoadFailure {
+pub(super) fn load_failure(f: &Failure) -> LoadFailure {
     match classify(f) {
         Class::RateLimited(d) => LoadFailure::RateLimited(d),
         Class::Transient => LoadFailure::Transient,
@@ -65,7 +65,7 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
-        if s.login.is_some() || !s.is_logged_in() {
+        if s.login.is_some() || !s.is_logged_in() || s.drafts_dialog_open() {
             return Task::none();
         }
         if toggle && s.inbox_view().is_some_and(|i| i.shows(kind)) {
@@ -79,7 +79,7 @@ impl App {
         }
         let online = s.session.is_some();
         if !matches!(s.main_view, Some(MainView::Inbox(_))) {
-            s.main_view = Some(MainView::Inbox(InboxScreen::new(InboxKind::Unreads)));
+            s.show_main_view(MainView::Inbox(InboxScreen::new(InboxKind::Unreads)));
         }
         // What the loader wants changes with the view: plan afresh.
         s.inbox.plan_key = None;

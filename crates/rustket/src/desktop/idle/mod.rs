@@ -144,6 +144,11 @@ impl Idle {
         }
     }
 
+    /// Whether this app marked server `sid`'s connection away (idle).
+    pub fn is_away(&self, sid: &ServerId) -> bool {
+        self.away.contains(sid)
+    }
+
     /// The server's connection was re-established (back to online): mark
     /// it away again on the next idle sample.
     pub fn reconnected(&mut self, sid: &ServerId) {

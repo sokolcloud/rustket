@@ -1,5 +1,6 @@
 //! System tray: the app icon (with a red dot while something is unread), a
-//! tooltip with the counts and a menu: open, status, quit. Clicking the icon
+//! tooltip with the counts (and a notification pause) and a menu: open,
+//! status, pause notifications, quit. Clicking the icon
 //! toggles the window.
 //!
 //! Backends: a StatusNotifierItem (ksni) on Linux and the BSDs, `tray-icon`
@@ -31,6 +32,8 @@ pub enum Message {
     Activate,
     Show,
     SetStatus(UserStatus),
+    Pause(rustket_core::quiet::PausePreset),
+    Resume,
     Quit,
 }
 
@@ -43,6 +46,10 @@ pub struct TrayState {
     pub status: Option<UserStatus>,
     /// Statuses the active server allows, in menu order.
     pub offered: Vec<UserStatus>,
+    /// Notifications are paused: the line saying until when.
+    pub paused: Option<String>,
+    /// Labels of the pause presets (`PausePreset::ALL` order).
+    pub pause_labels: Vec<String>,
     /// Bumped to rebuild labels (language change).
     pub revision: u64,
 }
@@ -57,13 +64,31 @@ pub fn status_label(s: UserStatus) -> String {
     .into_owned()
 }
 
-/// Tooltip text for the counts.
+/// Tooltip text for the counts (and the pause).
 pub fn tooltip(state: &TrayState) -> String {
-    match (state.unread, state.mentions) {
+    let counts = match (state.unread, state.mentions) {
         (0, 0) => t!("desktop.tray_no_unread").into_owned(),
         (u, 0) => t!("desktop.tray_unread", count = u).into_owned(),
         (u, m) => t!("desktop.tray_unread_mentions", count = u, mentions = m).into_owned(),
+    };
+    match &state.paused {
+        Some(p) => format!("{counts}\n{p}"),
+        None => counts,
     }
+}
+
+/// The pause entries of the tray menus: `(label, message)`; "Resume" while
+/// paused.
+pub fn pause_entries(state: &TrayState) -> Vec<(String, Message)> {
+    let mut v: Vec<(String, Message)> = rustket_core::quiet::PausePreset::ALL
+        .iter()
+        .zip(&state.pause_labels)
+        .map(|(p, l)| (l.clone(), Message::Pause(*p)))
+        .collect();
+    if state.paused.is_some() {
+        v.push((t!("quiet.resume").into_owned(), Message::Resume));
+    }
+    v
 }
 
 /// The subscription's identity: one tray per app.
@@ -145,6 +170,17 @@ impl Tray {
         self.apply();
     }
 
+    /// The pause line (`None`: not paused) and the preset labels.
+    pub fn set_pause(&mut self, paused: Option<String>, labels: Vec<String>) {
+        self.state.send_if_modified(|s| {
+            let changed = s.paused != paused || s.pause_labels != labels;
+            s.paused = paused;
+            s.pause_labels = labels;
+            changed
+        });
+        self.apply();
+    }
+
     /// Rebuilds the labels (after a language change).
     pub fn refresh(&mut self) {
         self.state.send_modify(|s| s.revision += 1);
@@ -179,6 +215,8 @@ impl Tray {
             }
             Message::Activate | Message::Show => (Task::none(), vec![Request::ShowWindow]),
             Message::SetStatus(s) => (Task::none(), vec![Request::SetStatus(s)]),
+            Message::Pause(p) => (Task::none(), vec![Request::Pause(p)]),
+            Message::Resume => (Task::none(), vec![Request::Resume]),
             Message::Quit => (Task::none(), vec![Request::Quit]),
         }
     }
@@ -235,5 +273,29 @@ mod tests {
         assert_eq!(tooltip(&s), "Unread rooms: 2");
         s.mentions = 1;
         assert_eq!(tooltip(&s), "Unread rooms: 2, mentions: 1");
+        s.paused = Some("Notifications paused until 14:30".into());
+        assert_eq!(
+            tooltip(&s),
+            "Unread rooms: 2, mentions: 1\nNotifications paused until 14:30"
+        );
+    }
+
+    #[test]
+    fn pause_entries_and_requests() {
+        rust_i18n::set_locale("en");
+        let mut tray = Tray::default();
+        tray.set_pause(None, vec!["a".into(), "b".into(), "c".into(), "d".into()]);
+        let entries = pause_entries(&tray.state());
+        assert_eq!(entries.len(), 4);
+        tray.set_pause(Some("paused".into()), tray.state().pause_labels);
+        let entries = pause_entries(&tray.state());
+        assert!(matches!(entries.last(), Some((_, Message::Resume))));
+        let (_, r) = tray.update(Message::Pause(rustket_core::quiet::PausePreset::Hour1));
+        assert!(matches!(
+            r.as_slice(),
+            [Request::Pause(rustket_core::quiet::PausePreset::Hour1)]
+        ));
+        let (_, r) = tray.update(Message::Resume);
+        assert!(matches!(r.as_slice(), [Request::Resume]));
     }
 }

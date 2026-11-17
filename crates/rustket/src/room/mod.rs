@@ -3,6 +3,7 @@
 //! right contextual [`panel`]. See `crates/rustket/COMPONENTS.md` for the
 //! component contract.
 
+pub mod bookmarks;
 pub mod composer;
 pub mod emoji_picker;
 pub mod header;
@@ -154,6 +155,11 @@ pub fn orphan_result(m: Message, ws: &mut Workspace) -> Vec<Effect> {
         Message::Composer(composer::Message::Upload(u)) => {
             upload::orphan_result(u, ws).into_iter().collect()
         }
+        Message::Composer(composer::Message::PollReacted(Err(e))) => vec![Effect::Toast(
+            BannerKind::Error,
+            t!("poll.reactions_failed").into_owned(),
+            e.user_text(),
+        )],
         Message::Panel(panel::Message::Body(
             _,
             panel::BodyMsg::Thread(panel::thread::Msg::Composer(composer::Message::Upload(u))),
@@ -248,6 +254,8 @@ pub enum Effect {
     Later(rustket_core::later::LaterEdit),
     /// A reminder edit (the app's reminder sync stores it).
     Reminder(rustket_core::reminders::ReminderEdit),
+    /// Open the Drafts & scheduled view (the composer's "N scheduled").
+    OpenDrafts,
 }
 
 /// Requests other room components make to the composer.
@@ -497,6 +505,13 @@ impl RoomView {
         // A previewed room (never joined) leaves no trace in the workspace.
         ws.forget_preview(&self.rid);
         Task::batch([typing, panel])
+    }
+
+    /// Stores the composers' texts as drafts now (the Drafts view lists
+    /// them).
+    pub fn store_drafts(&self, ws: &mut Workspace) {
+        self.composer.on_close(ws);
+        self.panel.store_draft(ws);
     }
 
     /// The room stays open but is no longer shown (another server became

@@ -67,6 +67,9 @@ impl Composer {
         {
             bars.push(t.map(Message::Upload));
         }
+        if let Some(h) = self.scheduled_bar(ctx) {
+            bars.push(h);
+        }
         if let Some(e) = &self.editing {
             bars.push(bar(
                 Icon::Pencil,
@@ -114,13 +117,7 @@ impl Composer {
         let body = container(col)
             .padding([SPACE_2, SPACE_4])
             .width(Length::Fill);
-        if self.confirm_delete.is_some() {
-            return modal(
-                body,
-                Some(self.delete_dialog()),
-                Some(Message::DeleteCancelled),
-            );
-        }
+        // A poll's `@all` confirmation shows over the poll dialog.
         if let Some(c) = &self.confirm_broad {
             return modal(
                 body,
@@ -130,6 +127,41 @@ impl Composer {
                     Message::BroadConfirmed,
                 )),
                 Some(Message::BroadCancelled),
+            );
+        }
+        if let Some(p) = &self.poll {
+            return modal(
+                body,
+                Some(p.view(Message::Poll)),
+                Some(Message::Poll(super::poll::Msg::Cancel)),
+            );
+        }
+        if self.confirm_delete.is_some() {
+            return modal(
+                body,
+                Some(self.delete_dialog()),
+                Some(Message::DeleteCancelled),
+            );
+        }
+        if let Some(p) = &self.schedule {
+            let content = column![
+                p.view(
+                    chrono::Local::now(),
+                    ctx.prefs.morning_hour(),
+                    ctx.prefs.clock_24h
+                )
+                .map(Message::SchedulePicker)
+            ]
+            .spacing(SPACE_3);
+            return modal(
+                body,
+                Some(rustket_ui::widget::dialog(
+                    t!("scheduled.dialog_title").into_owned(),
+                    content,
+                    vec![crate::later::when::cancel(Message::ScheduleCancelled)],
+                    Some(Message::ScheduleCancelled),
+                )),
+                Some(Message::ScheduleCancelled),
             );
         }
         let dialog = self.uploads.dialog_view().map(|d| d.map(Message::Upload));
@@ -202,6 +234,37 @@ impl Composer {
         )
     }
 
+    /// "2 scheduled messages" above the composer of a room (or thread) with
+    /// scheduled messages; a click opens the Drafts & scheduled view.
+    fn scheduled_bar<'a>(&'a self, ctx: &ViewCtx<'a>) -> Option<Element<'a, Message>> {
+        let n = ctx
+            .workspace
+            .scheduled()
+            .count_in(&self.rid, self.tmid.as_deref());
+        if n == 0 {
+            return None;
+        }
+        let line = t!(
+            format!("scheduled.hint_{}", crate::room::render::plural(n as u64)),
+            count = n
+        )
+        .into_owned();
+        Some(
+            button(
+                row![
+                    icon::sized(Icon::ClockArrowUp, 12.0).style(style::text_link),
+                    label(line).size(TEXT_CAPTION).style(style::text_link),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+            )
+            .padding(0)
+            .style(style::button_ghost)
+            .on_press(Message::OpenScheduled)
+            .into(),
+        )
+    }
+
     fn delete_dialog<'a>(&'a self) -> Element<'a, Message> {
         rustket_ui::widget::dialog(
             t!("room_composer.delete.title").into_owned(),
@@ -239,7 +302,10 @@ impl Composer {
         let keys = Keys {
             popup: self.popup_visible(),
             empty: self.content.is_empty(),
-            cancellable: self.editing.is_some() || !self.quotes.is_empty(),
+            cancellable: self.editing.is_some()
+                || !self.quotes.is_empty()
+                || self.schedule.is_some(),
+            schedulable: self.can_send() && self.can_schedule(ctx.workspace),
         };
         iced::widget::text_editor(&self.content)
             .id(self.editor_id.clone())
@@ -317,6 +383,13 @@ impl Composer {
         if let Some(apps) = self.apps_menu(ctx) {
             bar = bar.push(apps);
         }
+        bar = bar.push(icon_button_with(
+            Icon::ChartColumn,
+            self.editing.is_none().then_some(Message::OpenPoll),
+            t!("poll.create"),
+            self.poll.is_some(),
+            30.0,
+        ));
         if permissions::can_upload(ctx.workspace, &self.rid) {
             // Files cannot be added to an edited message.
             bar = bar.push(icon_button_with(
@@ -330,6 +403,26 @@ impl Composer {
             ));
         }
         let can_send = self.can_send();
+        if self.editing.is_none() {
+            let allowed = self.can_schedule(ctx.workspace);
+            let tip = if allowed {
+                match keymap::schedule_chord() {
+                    Some(chord) => format!("{} · {chord}", t!("scheduled.button")),
+                    None => t!("scheduled.button").into_owned(),
+                }
+            } else if !ctx.workspace.scheduled_storage() {
+                t!("scheduled.no_storage").into_owned()
+            } else {
+                t!("scheduled.e2e_unavailable").into_owned()
+            };
+            bar = bar.push(icon_button_with(
+                Icon::ClockArrowUp,
+                (allowed && can_send).then_some(Message::Schedule),
+                tip,
+                self.schedule.is_some(),
+                30.0,
+            ));
+        }
         let send_tip = if self.editing.is_some() {
             t!("room_composer.save")
         } else {
@@ -477,6 +570,8 @@ pub(super) struct Keys {
     pub(super) empty: bool,
     /// Escape has something to cancel (edit, quotes).
     pub(super) cancellable: bool,
+    /// Ctrl/Cmd+Shift+Enter schedules (else it breaks the line).
+    pub(super) schedulable: bool,
 }
 
 /// Composer keys on top of the default text editor bindings.
@@ -501,6 +596,9 @@ pub(super) fn key_binding(kp: KeyPress, k: Keys) -> Option<Binding<Message>> {
     }
     if let keyboard::Key::Named(named) = kp.key.as_ref() {
         match named {
+            key::Named::Enter if k.schedulable && m.command() && m.shift() && !m.alt() => {
+                return Some(Binding::Custom(Message::Schedule));
+            }
             key::Named::Enter if !m.shift() && !m.alt() => {
                 return Some(Binding::Custom(if k.popup {
                     Message::AcConfirm

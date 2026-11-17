@@ -41,6 +41,7 @@ impl Env {
             ..Default::default()
         });
         ws.open_room("R1");
+        ws.set_scheduled_storage(true);
         Self {
             sid: ServerId(sid.into()),
             server: ServerUrl::parse("http://chat.test").unwrap(),
@@ -1229,8 +1230,8 @@ fn app_wide_chords_are_swallowed_by_the_composer() {
         .as_deref(),
         Some("ReactLast")
     );
-    // All unreads, Activity and Later work from the composer too.
-    for c in ["a", "m", "s"] {
+    // All unreads, Activity, Later and Drafts work from the composer too.
+    for c in ["a", "m", "s", "d"] {
         assert!(swallowed(press(
             Key::Character(c.into()),
             Modifiers::COMMAND | Modifiers::SHIFT,
@@ -1239,7 +1240,7 @@ fn app_wide_chords_are_swallowed_by_the_composer() {
     }
     // Other chords still reach the editor.
     assert!(!swallowed(press(
-        Key::Character("d".into()),
+        Key::Character("y".into()),
         Modifiers::COMMAND | Modifiers::SHIFT,
         Keys::default()
     )));
@@ -1723,4 +1724,203 @@ fn the_people_popup_offers_groups_and_their_settings() {
     ));
     assert!(c.popup.is_none());
     assert_eq!(c.text(), "hi @backend @b", "nothing inserted");
+}
+
+#[test]
+fn ctrl_shift_enter_schedules() {
+    let enter = Key::Named(key::Named::Enter);
+    let schedulable = Keys {
+        schedulable: true,
+        ..Keys::default()
+    };
+    assert_eq!(
+        custom(press(
+            enter.clone(),
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            schedulable
+        ))
+        .as_deref(),
+        Some("Schedule")
+    );
+    // Editing, an encrypted room, no offline cache: a line break as before.
+    assert!(matches!(
+        press(
+            enter.clone(),
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Keys::default()
+        ),
+        Some(Binding::Enter)
+    ));
+    assert_eq!(
+        custom(press(enter, Modifiers::COMMAND, Keys::default())).as_deref(),
+        Some("Send")
+    );
+    assert!(crate::keymap::schedule_chord().is_some());
+}
+
+#[test]
+fn scheduled_messages_wait_outside_the_timeline() {
+    use crate::later::when::Msg as When;
+    use rustket_core::reminders::Preset;
+    let mut env = Env::new("t-schedule");
+    let mut c = Composer::new("R1");
+    // Nothing to schedule yet.
+    let _ = c.update(Message::Schedule, &mut env.ctx());
+    assert!(!c.is_confirm_open());
+    type_text(&mut c, &mut env, "see you later");
+    let _ = c.update(Message::Schedule, &mut env.ctx());
+    assert!(c.is_confirm_open(), "the picker is open");
+    let before = chrono::Utc::now().timestamp_millis();
+    let a = c.update(
+        Message::SchedulePicker(When::Preset(Preset::In1Hour)),
+        &mut env.ctx(),
+    );
+    assert!(!c.is_confirm_open());
+    assert_eq!(c.text().trim(), "", "the composer is cleared");
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::Toast(BannerKind::Success, ..)]
+    ));
+    // Not a pending message of the timeline: only in the queue.
+    assert!(env.ws.pending_messages("R1").is_empty());
+    let q = env.ws.scheduled().sorted();
+    assert_eq!(q.len(), 1);
+    assert_eq!(q[0].message.msg, "see you later");
+    assert_eq!(q[0].message.rid, "R1");
+    assert!(q[0].send_at >= before + 3_600_000 - 1_000);
+    assert_eq!(env.ws.scheduled().count_in("R1", None), 1);
+    // The hint opens the Drafts & scheduled view.
+    let a = c.update(Message::OpenScheduled, &mut env.ctx());
+    assert!(matches!(a.effects.as_slice(), [Effect::OpenDrafts]));
+}
+
+#[test]
+fn slash_commands_and_edits_are_not_scheduled() {
+    use crate::later::when::Msg as When;
+    use rustket_core::reminders::Preset;
+    let mut env = Env::new("t-schedule-cmd");
+    store_commands(
+        &env.sid,
+        vec![SlashCommand {
+            command: "me".into(),
+            ..Default::default()
+        }],
+    );
+    let mut c = Composer::new("R1");
+    type_text(&mut c, &mut env, "/me waves");
+    let _ = c.update(Message::Schedule, &mut env.ctx());
+    let a = c.update(
+        Message::SchedulePicker(When::Preset(Preset::In20Min)),
+        &mut env.ctx(),
+    );
+    assert!(matches!(
+        a.effects.as_slice(),
+        [Effect::Toast(BannerKind::Warning, ..)]
+    ));
+    assert_eq!(c.text(), "/me waves", "the text stays");
+    assert!(env.ws.scheduled().is_empty());
+    // An edit offers no scheduling.
+    env.ws.apply_message(msg("M1", "me", "mine"));
+    let mut c = Composer::new("R1");
+    let _ = c.update(Message::EditLast, &mut env.ctx());
+    assert!(c.is_editing());
+    assert!(!c.can_schedule(&env.ws));
+    let _ = c.update(Message::Schedule, &mut env.ctx());
+    assert!(!c.is_confirm_open());
+}
+
+#[test]
+fn encrypted_rooms_cannot_schedule() {
+    let mut env = Env::new("t-schedule-e2e");
+    let c = Composer::new("R1");
+    assert!(c.can_schedule(&env.ws));
+    // Without the offline cache a scheduled text would be lost on quitting.
+    env.ws.set_scheduled_storage(false);
+    assert!(!c.can_schedule(&env.ws));
+    env.ws.set_scheduled_storage(true);
+    let mut r = room("R1", "general", RoomType::Private);
+    r.encrypted = Some(true);
+    env.ws.apply_room(rustket_core::Change::Updated, r);
+    assert!(!c.can_schedule(&env.ws));
+}
+
+/// A room flagged encrypted on a server whose E2E was turned off sends in
+/// plain, but its scheduled text would never be written to disk: no
+/// scheduling there (nor in a room that kept its room key, or whose room
+/// object is not known).
+#[test]
+fn rooms_the_cache_keeps_off_disk_cannot_schedule() {
+    let mut env = Env::new("t-schedule-e2e-off");
+    env.ws.apply_setting(
+        rustket_core::Change::Updated,
+        rocketchat::models::Setting {
+            id: "E2E_Enable".into(),
+            value: serde_json::json!(false),
+            ..Default::default()
+        },
+    );
+    let mut r = room("R1", "general", RoomType::Private);
+    r.encrypted = Some(true);
+    env.ws.apply_room(rustket_core::Change::Updated, r);
+    assert!(matches!(
+        crate::e2e::outgoing::mode(&env.ws, "R1"),
+        crate::e2e::outgoing::Mode::Plain
+    ));
+    let c = Composer::new("R1");
+    assert!(!c.can_schedule(&env.ws));
+    // Encryption turned off, the room key still held.
+    env.ws.apply_room(
+        rustket_core::Change::Updated,
+        room("R1", "general", RoomType::Private),
+    );
+    assert!(c.can_schedule(&env.ws));
+    let mut s = sub("R1", "general", RoomType::Private);
+    s.e2e_key = Some("key".into());
+    env.ws.apply_subscription(rustket_core::Change::Updated, s);
+    assert!(!c.can_schedule(&env.ws));
+    // A subscription without its room object.
+    env.ws.apply_subscription(
+        rustket_core::Change::Inserted,
+        sub("R9", "nine", RoomType::Channel),
+    );
+    assert!(!Composer::new("R9").can_schedule(&env.ws));
+}
+
+#[test]
+fn polls_ask_before_mentioning_everyone_and_keep_their_reactions() {
+    let mut env = broad_env("t-broad-poll", Some(11), &["mention-all"]);
+    let mut c = Composer::new("R1");
+    let _ = c.update(Message::OpenPoll, &mut env.ctx());
+    let text = "📊 @all lunch?\n1️⃣ Pizza\n2️⃣ Sushi".to_owned();
+    let _ = c.send_poll(text.clone(), vec![":one:", ":two:"], &mut env.ctx());
+    assert!(c.confirm_broad.is_some(), "typed @all asks as in a message");
+    assert!(env.ws.pending_messages("R1").is_empty());
+    assert!(c.poll.is_some(), "the dialog stays under the question");
+    // Cancel goes back to the dialog.
+    let _ = c.update(Message::Cancel, &mut env.ctx());
+    assert!(c.confirm_broad.is_none() && c.poll.is_some());
+    let _ = c.send_poll(text.clone(), vec![":one:", ":two:"], &mut env.ctx());
+    let _ = c.update(Message::BroadConfirmed, &mut env.ctx());
+    let p = env.ws.pending_messages("R1");
+    assert_eq!(p.len(), 1);
+    assert_eq!(p[0].message.msg, text);
+    assert!(c.poll.is_none());
+    // The reactions outlive a failed send (Retry, the offline queue) and
+    // are taken once by the successful one.
+    let id = p[0].message.id.clone();
+    let lost = rocketchat::Error::Unauthorized {
+        message: None,
+        code: None,
+    };
+    let failed = Message::Sent(id.clone(), Err(Failure::from(lost)));
+    assert!(send::reactions_after(&env.sid, &failed).is_none());
+    let ok = Message::Sent(
+        id.clone(),
+        Ok(Box::new(rocketchat::models::Message::default())),
+    );
+    assert_eq!(
+        send::reactions_after(&env.sid, &ok),
+        Some((id.clone(), vec![":one:", ":two:"]))
+    );
+    assert!(send::reactions_after(&env.sid, &ok).is_none());
 }

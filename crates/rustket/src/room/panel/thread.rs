@@ -245,6 +245,14 @@ impl Thread {
         self.composer.leave(session).map(Msg::Composer)
     }
 
+    /// Stores the composer's text as the thread's draft now (an activated
+    /// view only).
+    pub fn store_draft(&self, ws: &mut Workspace) {
+        if self.opened {
+            self.composer.on_close(ws);
+        }
+    }
+
     /// The view goes away: keep the draft, forget the thread timeline. A
     /// view that never activated leaves both alone (its composer never
     /// loaded the draft).

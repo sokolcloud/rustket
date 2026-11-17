@@ -181,6 +181,12 @@ pub enum Message {
     SetReminderNotifications(bool),
     SetReminderSound(bool),
     SetReminderMorningHour(u8),
+    /// `UiPrefs::pause_sets_busy`.
+    SetPauseBusy(bool),
+    /// `UiPrefs::working_hours.enabled`.
+    SetWorkingHours(bool),
+    /// A weekday's working hours (Monday 0): on, start and end minutes.
+    SetWorkDay(u8, rustket_core::quiet::DayHours),
     /// Shows a tab (scrolled to its top).
     Tab(Tab),
     SetCloseToTray(bool),
@@ -190,6 +196,8 @@ pub enum Message {
     SetEscapeMarksRead(bool),
     /// `UiPrefs::confirm_broad_mentions`.
     SetConfirmBroadMentions(bool),
+    /// `UiPrefs::room_bookmarks`.
+    SetRoomBookmarks(bool),
     /// `UiPrefs::share_utc_offset`.
     SetShareUtcOffset(bool),
     /// Open the keyboard shortcuts cheat sheet.
@@ -389,6 +397,13 @@ impl Settings {
             }
             Message::SetReminderSound(v) => Self::pref(ctx, |p| p.reminder_sound = v),
             Message::SetReminderMorningHour(h) => Self::pref(ctx, |p| p.reminder_morning_hour = h),
+            Message::SetPauseBusy(v) => Self::pref(ctx, |p| p.pause_sets_busy = v),
+            Message::SetWorkingHours(v) => Self::pref(ctx, |p| p.working_hours.enabled = v),
+            Message::SetWorkDay(day, hours) => Self::pref(ctx, |p| {
+                if let Ok(wd) = chrono::Weekday::try_from(day) {
+                    p.working_hours.set_day(wd, hours);
+                }
+            }),
             Message::TestNotification => Action::effect(Effect::TestNotification),
             Message::Tab(tab) => {
                 self.tab = tab;
@@ -401,6 +416,7 @@ impl Settings {
             Message::SetMinimizeToTray(v) => Self::pref(ctx, |p| p.minimize_to_tray = v),
             Message::SetStartMinimized(v) => Self::pref(ctx, |p| p.start_minimized = v),
             Message::SetEscapeMarksRead(v) => Self::pref(ctx, |p| p.escape_marks_read = v),
+            Message::SetRoomBookmarks(v) => Self::pref(ctx, |p| p.room_bookmarks = v),
             Message::SetConfirmBroadMentions(v) => {
                 Self::pref(ctx, |p| p.confirm_broad_mentions = v)
             }
@@ -574,11 +590,32 @@ mod tests {
             (Message::SetReminderMorningHour(7), |c| {
                 c.reminder_morning_hour == 7
             }),
+            (Message::SetPauseBusy(false), |c| !c.pause_sets_busy),
+            (Message::SetWorkingHours(true), |c| c.working_hours.enabled),
+            (
+                Message::SetWorkDay(
+                    5,
+                    rustket_core::quiet::DayHours {
+                        on: true,
+                        start: 600,
+                        end: 120,
+                    },
+                ),
+                |c| {
+                    c.working_hours.day(chrono::Weekday::Sat)
+                        == rustket_core::quiet::DayHours {
+                            on: true,
+                            start: 600,
+                            end: 120,
+                        }
+                },
+            ),
             (Message::SetCloseToTray(false), |c| !c.close_to_tray),
             (Message::SetMinimizeToTray(true), |c| c.minimize_to_tray),
             (Message::SetStartMinimized(true), |c| c.start_minimized),
             (Message::SetEscapeMarksRead(false), |c| !c.escape_marks_read),
             (Message::SetEscapeMarksRead(true), |c| c.escape_marks_read),
+            (Message::SetRoomBookmarks(false), |c| !c.room_bookmarks),
             (Message::SetConfirmBroadMentions(false), |c| {
                 !c.confirm_broad_mentions
             }),

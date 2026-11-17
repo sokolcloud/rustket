@@ -314,6 +314,9 @@ fn another_account_starts_empty() {
             queued: true,
             maybe_sent: false,
             error: None,
+            send_at: None,
+            scheduled: false,
+            reactions: Vec::new(),
         }]),
         ..Default::default()
     })
@@ -338,18 +341,28 @@ fn outbox_survives_a_restart() {
             queued: true,
             maybe_sent: false,
             error: None,
+            send_at: None,
+            scheduled: false,
+            reactions: Vec::new(),
         },
         OutboxEntry {
             message: reply,
             queued: false,
             maybe_sent: false,
             error: Some("boom".into()),
+            send_at: None,
+            scheduled: false,
+            reactions: Vec::new(),
         },
         OutboxEntry {
             message: msg("o3", "R1", 9, "u1"),
             queued: true,
             maybe_sent: true,
             error: None,
+            send_at: None,
+            scheduled: false,
+            // A poll queued offline keeps its option reactions.
+            reactions: vec![":one:".into(), ":two:".into()],
         },
     ];
     db.write(Batch {
@@ -372,6 +385,16 @@ fn outbox_survives_a_restart() {
     db.clear().unwrap();
     assert!(db.load_state().unwrap().is_empty());
     assert_eq!(db.load_outbox().unwrap().len(), 3);
+    assert_eq!(db.load_outbox().unwrap()[2].reactions, [":one:", ":two:"]);
+    // Rewritten without them: none are left behind.
+    let mut plain = entries.clone();
+    plain[2].reactions.clear();
+    db.write(Batch {
+        outbox: Some(plain),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(db.load_outbox().unwrap()[2].reactions.is_empty());
 }
 
 #[test]
@@ -421,12 +444,18 @@ fn e2e_plaintext_never_reaches_the_file() {
                 queued: true,
                 maybe_sent: false,
                 error: None,
+                send_at: None,
+                scheduled: false,
+                reactions: Vec::new(),
             },
             OutboxEntry {
                 message: shaped_pending,
                 queued: true,
                 maybe_sent: false,
                 error: None,
+                send_at: None,
+                scheduled: false,
+                reactions: Vec::new(),
             },
         ]),
         ..Default::default()
@@ -1341,4 +1370,212 @@ fn later_delta_writes() {
     assert_eq!(ids, ["b"]);
     assert_eq!(l.messages[0].msg, "edited");
     assert_eq!(l.scans.len(), 2);
+}
+
+#[test]
+fn scheduled_entries_keep_their_send_time() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    let entries = vec![
+        OutboxEntry {
+            message: msg("o1", "R1", 5, "u1"),
+            queued: true,
+            maybe_sent: false,
+            error: None,
+            send_at: None,
+            scheduled: false,
+            reactions: Vec::new(),
+        },
+        OutboxEntry {
+            message: msg("s1", "R1", 6, "u1"),
+            queued: false,
+            maybe_sent: false,
+            error: None,
+            send_at: Some(1_900_000_000_000),
+            scheduled: false,
+            reactions: Vec::new(),
+        },
+        // Fell due and queued: it stays known as a scheduled one.
+        OutboxEntry {
+            message: msg("d1", "R1", 7, "u1"),
+            queued: true,
+            maybe_sent: false,
+            error: None,
+            send_at: None,
+            scheduled: true,
+            reactions: Vec::new(),
+        },
+        OutboxEntry {
+            message: msg("d2", "R1", 8, "u1"),
+            queued: true,
+            maybe_sent: true,
+            error: None,
+            send_at: None,
+            scheduled: true,
+            reactions: Vec::new(),
+        },
+    ];
+    db.write(Batch {
+        outbox: Some(entries.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    drop(db);
+    let db = open(tmp.path(), "u1");
+    // Outbox rows first, then the scheduled table.
+    let mut expected = entries.clone();
+    let s1 = expected.remove(1);
+    expected.push(s1);
+    assert_eq!(db.load_outbox().unwrap(), expected);
+    // An older Rustket reads any non-zero `queued` as queued.
+    let mut st = db
+        .conn_ref()
+        .prepare("SELECT queued FROM outbox ORDER BY id")
+        .unwrap();
+    let v: Vec<i64> = st
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(v, [5, 6, 1]);
+}
+
+#[test]
+fn scheduled_table_needs_no_schema_bump() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("srv");
+    let mut db = open(&dir, "u1");
+    db.write(Batch {
+        outbox: Some(vec![
+            OutboxEntry {
+                message: msg("o1", "R1", 5, "u1"),
+                queued: true,
+                maybe_sent: false,
+                error: None,
+                send_at: None,
+                scheduled: false,
+                reactions: Vec::new(),
+            },
+            OutboxEntry {
+                message: msg("s1", "R1", 6, "u1"),
+                queued: false,
+                maybe_sent: false,
+                error: None,
+                send_at: Some(9_000),
+                scheduled: false,
+                reactions: Vec::new(),
+            },
+        ]),
+        ..Default::default()
+    })
+    .unwrap();
+    let v: i64 = db
+        .conn_ref()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 2, "an older Rustket still opens the cache");
+    drop(db);
+    // What v0.2.7 does with the file: rewrite the outbox, switch account.
+    let conn = Connection::open(dir.join(FILE_NAME)).unwrap();
+    conn.execute_batch("DELETE FROM outbox; UPDATE meta SET value = 'u2' WHERE key = 'user_id';")
+        .unwrap();
+    drop(conn);
+    // The scheduled row survived the old outbox rewrite, but belongs to u1.
+    let (db, _) = CacheDb::open(&dir, "u2").unwrap();
+    assert!(db.load_outbox().unwrap().is_empty());
+    drop(db);
+    let (db, report) = CacheDb::open(&dir, "u1").unwrap();
+    assert!(report.user_changed, "the account switch empties everything");
+    assert!(db.load_outbox().unwrap().is_empty());
+    // A database without the table (made by an older version) gets it.
+    let dir2 = tmp.path().join("old");
+    drop(open(&dir2, "u1"));
+    let conn = Connection::open(dir2.join(FILE_NAME)).unwrap();
+    conn.execute_batch("DROP TABLE scheduled;").unwrap();
+    drop(conn);
+    let db = open(&dir2, "u1");
+    assert!(db.load_outbox().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn search_finds_plain_messages_once_and_never_ciphertext() {
+    use crate::search::{LocalMatcher, MatchCtx, SearchQuery};
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("srv");
+    let h = CacheHandle::open(dir, "u1".into(), None)
+        .await
+        .unwrap()
+        .handle;
+    let mut plain = messages("R1", 3);
+    plain[0].msg = "the kumquat harvest".into();
+    plain[2].msg = "another Kumquat".into();
+    let mut reply = plain[2].clone();
+    reply.tmid = Some("R1-m000".into());
+    let thread = CachedTimeline {
+        key: TimelineKey::thread("R1", "R1-m000"),
+        parent: None,
+        messages: vec![reply],
+    };
+    let mut other = messages("R2", 1);
+    other[0].msg = "kumquat elsewhere".into();
+    h.write(Batch {
+        timelines: vec![
+            timeline("R1", plain),
+            thread,
+            timeline("R2", other),
+            timeline("R3", vec![decrypted("e1", "R3", "secret kumquat")]),
+        ],
+        ..Default::default()
+    });
+    assert!(h.flush_blocking(std::time::Duration::from_secs(5)));
+    let ctx = MatchCtx {
+        user_id: "u1".into(),
+        username: "u1".into(),
+        offset: chrono::FixedOffset::east_opt(0).unwrap(),
+    };
+    let m = LocalMatcher::new(&SearchQuery::parse("kumquat"), &ctx).unwrap();
+    let found = h.search(m.clone(), None, 10).await;
+    let ids: Vec<&str> = found.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["R1-m002", "R1-m000", "R2-m000"]);
+    let only = std::collections::HashSet::from(["R2".to_owned()]);
+    let found = h.search(m.clone(), Some(only), 10).await;
+    assert_eq!(found.len(), 1);
+    assert_eq!(h.search(m, None, 1).await.len(), 1);
+}
+
+#[test]
+fn search_stops_early_filters_in_sql_and_can_be_cancelled() {
+    use crate::search::{LocalMatcher, MatchCtx, SearchQuery};
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = open(tmp.path(), "u1");
+    let mut all = Vec::new();
+    for rid in ["R1", "R2", "R3"] {
+        let mut list = messages(rid, 100);
+        for m in &mut list {
+            m.msg = format!("Deploy note {}", m.id);
+        }
+        all.push(timeline(rid, list));
+    }
+    db.write(Batch {
+        timelines: all,
+        ..Default::default()
+    })
+    .unwrap();
+    let ctx = MatchCtx {
+        user_id: "u1".into(),
+        username: "u1".into(),
+        offset: chrono::FixedOffset::east_opt(0).unwrap(),
+    };
+    let m = LocalMatcher::new(&SearchQuery::parse("deploy"), &ctx).unwrap();
+    let never = || false;
+    // Newest first, stopped at the limit.
+    let found = db.search(&m, None, 5, &never).unwrap();
+    let ids: Vec<&str> = found.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["R1-m099", "R2-m099", "R3-m099", "R1-m098", "R2-m098"]);
+    // A word no message has: nothing decoded, nothing found.
+    let none = LocalMatcher::new(&SearchQuery::parse("kumquat"), &ctx).unwrap();
+    assert!(db.search(&none, None, 5, &never).unwrap().is_empty());
+    // A replaced search stops.
+    assert!(db.search(&m, None, 500, &|| true).unwrap().is_empty());
+    assert_eq!(db.search(&m, None, 500, &never).unwrap().len(), 300);
 }

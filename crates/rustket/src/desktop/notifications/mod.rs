@@ -218,6 +218,9 @@ pub struct NotifyEnv<'a> {
     pub window_active: bool,
     /// More than one server is configured (the title names the server).
     pub multi_server: bool,
+    /// Notifications are paused (`rustket_core::quiet`): none is shown and
+    /// no sound plays; counters still update.
+    pub paused: bool,
 }
 
 #[derive(Debug)]
@@ -416,6 +419,7 @@ impl Notifications {
             window_active: env.window_active,
             server_active: env.server_active,
             prefs: NotificationPrefs::from(prefs),
+            paused: env.paused,
         };
         let Some(spec) = evaluate(&n, &ctx) else {
             return Task::none();
@@ -751,6 +755,7 @@ mod tests {
                 focused_tmid: None,
                 window_active,
                 multi_server: false,
+                paused: false,
             }
         }
     }

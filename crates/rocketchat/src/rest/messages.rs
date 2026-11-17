@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 use super::{Query, RestClient, field, paginated};
 use crate::RcDate;
 use crate::error::Result;
-use crate::models::{History, Message, OutgoingMessage, Paginated, SyncMessages};
+use crate::models::{
+    History, Message, OutgoingMessage, Paginated, SearchProvider, SearchResult, SyncMessages,
+};
 
 /// Options of [`RestClient::load_history_with`].
 #[derive(Debug, Clone)]
@@ -275,6 +277,40 @@ impl RestClient {
             )
             .await?;
         field(v, "messages")
+    }
+
+    /// The active search provider (`rocketchatSearch.getProvider` over
+    /// `method.call`); `None` when the server has none active.
+    pub async fn search_provider(&self) -> Result<Option<SearchProvider>> {
+        let v: Value = self
+            .method_call("rocketchatSearch.getProvider", json!([]))
+            .await?;
+        if v.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_value(v)?))
+    }
+
+    /// Search through the active provider (`rocketchatSearch.search`): in
+    /// room `rid`, or (`rid: None`) in every room of the user, which the
+    /// default provider only answers with `GlobalSearchEnabled` (else no
+    /// docs). The default provider takes a `limit` and no offset; results
+    /// are newest first. Rate limited like any DDP method (by default 10
+    /// per 10 s per connection), unlike `chat.search`, which has the REST
+    /// default of 10 a minute.
+    pub async fn provider_search(
+        &self,
+        text: &str,
+        rid: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Message>> {
+        let context = json!({ "rid": rid.unwrap_or_default() });
+        let payload = json!({ "searchAll": rid.is_none(), "limit": limit.max(1) });
+        let v: Value = self
+            .method_call("rocketchatSearch.search", json!([text, context, payload]))
+            .await?;
+        let r: SearchResult = serde_json::from_value(v)?;
+        Ok(r.message.map(|m| m.docs).unwrap_or_default())
     }
 
     async fn room_message_list(

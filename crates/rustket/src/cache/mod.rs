@@ -31,6 +31,10 @@
 //!   manager can encrypt them (never sent as plaintext). Failed ones stay
 //!   for retry or discard. Uploads are not persisted: one interrupted by
 //!   quitting is reported on the next start.
+//! - Scheduled messages (`rustket_core::scheduled`) are outbox entries with a
+//!   send time, persisted like pending ones (same rooms only) but kept out
+//!   of the timelines; once due they become queued entries
+//!   ([`enqueue_scheduled`]) and go out on the path above.
 //! - Cleanup: logout, a rejected token and server removal delete the
 //!   server's cache; Settings → Storage clears every cache (unsent messages
 //!   stay).
@@ -70,11 +74,45 @@ const DELETED_LOOKBACK_MS: i64 = 15 * 60 * 1000;
 /// Minimum time between two writes of the sidebar's thread data (it changes
 /// with every thread parent update; quitting writes it too).
 const THREADS_WRITE_INTERVAL: Duration = Duration::from_secs(60);
+/// Tries of a queued message failing with a transient error (network,
+/// 5xx, rate limit) while connected before it is left failed: these go out
+/// with nobody watching (written offline, scheduled).
+const MAX_SEND_TRIES: u32 = 5;
+
+/// Wait before the next try of a queued message after `tries` transient
+/// failures: 15 s doubling, at most 5 min (at least what a rate limit asks).
+fn retry_delay_ms(tries: u32, e: &rocketchat::Error) -> i64 {
+    let backoff = (15_000_i64 << tries.saturating_sub(1).min(5)).min(300_000);
+    match e {
+        rocketchat::Error::RateLimited {
+            retry_after: Some(d),
+            ..
+        } => backoff.max(i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+        _ => backoff,
+    }
+}
+
+/// Whether a queued message that failed (`tried`: it was sent and failed,
+/// not skipped after an earlier one of its room) with `e` while connected
+/// waits for another try, after `tries` failed tries.
+fn retries(e: &rocketchat::Error, tried: bool, tries: u32) -> bool {
+    e.is_transient() && (!tried || tries < MAX_SEND_TRIES)
+}
 
 /// A timeline instance (see `Timeline::epoch`).
 type Epoch = (u64, u64);
-/// An outbox entry as last written: id, queued, maybe sent, error.
-type OutboxSig = (String, bool, bool, Option<String>);
+/// An outbox entry as last written: id, queued, maybe sent, error, send
+/// time, a hash of the text (scheduled texts can be edited) and the
+/// reactions to add once sent.
+type OutboxSig = (
+    String,
+    bool,
+    bool,
+    Option<String>,
+    Option<i64>,
+    u64,
+    Vec<String>,
+);
 
 /// App-wide cache state.
 #[derive(Debug, Default)]
@@ -144,6 +182,14 @@ pub struct ServerCache {
     queued: HashSet<String>,
     /// Outbox ids being sent by this module.
     sending: HashSet<String>,
+    /// Queued ids that came from the scheduled queue (a final failure is
+    /// announced: nobody watches them go out).
+    scheduled: HashSet<String>,
+    /// Transient failures per queued id.
+    tries: HashMap<String, u32>,
+    /// No queued message is sent before this (UTC ms; after a transient
+    /// failure).
+    retry_at: Option<i64>,
     /// The `THREAD_INDEX` revision last written.
     threads_rev: Option<u64>,
     /// When the thread data was last written.
@@ -158,6 +204,13 @@ pub struct ServerCache {
 }
 
 impl ServerCache {
+    /// A queued message was sent, dropped or given up.
+    fn forget_queued(&mut self, id: &str) {
+        self.queued.remove(id);
+        self.scheduled.remove(id);
+        self.tries.remove(id);
+    }
+
     /// The next pass writes everything shown, as if nothing was written.
     fn write_all_again(&mut self) {
         self.captured.clear();
@@ -166,13 +219,30 @@ impl ServerCache {
         self.later_keys.clear();
     }
 
+    /// The open cache (searches read it).
+    pub fn handle(&self) -> Option<&CacheHandle> {
+        self.handle.as_ref()
+    }
+
     pub fn is_open(&self) -> bool {
         self.handle.is_some()
+    }
+
+    /// Whether the outbox (and scheduled messages) of this account are kept
+    /// on disk: caching is on and opening did not fail.
+    pub fn persists(&self, caches: &Caches) -> bool {
+        caches.enabled() && self.failed_for.is_none()
     }
 
     /// Whether a message waits to be sent automatically.
     pub fn is_queued(&self, id: &str) -> bool {
         self.queued.contains(id)
+    }
+
+    /// When queued messages are tried again after a transient failure
+    /// (UTC ms), for the app's timer.
+    pub fn retry_at(&self) -> Option<i64> {
+        self.retry_at.filter(|_| !self.queued.is_empty())
     }
 }
 
@@ -221,7 +291,7 @@ fn wrap(m: Msg) -> Message {
 }
 
 /// The server answers (realtime up, initial load in).
-fn online(s: &ServerState) -> bool {
+pub(crate) fn online(s: &ServerState) -> bool {
     s.session.is_some()
         && s.workspace.last_sync().is_some()
         && !s.workspace.from_cache()
@@ -242,10 +312,17 @@ fn persistable(ws: &Workspace, m: &RcMessage, from_disk: bool) -> bool {
     if m.is_encrypted() || m.e2e.is_some() {
         return false;
     }
-    match ws.room(&m.rid) {
-        Some(e) if e.sub.as_ref().is_some_and(|s| s.e2e_key.is_some()) => false,
-        Some(e) if e.room.is_some() => e.sub.is_some() && !e.is_encrypted(),
-        _ => from_disk && !live(ws),
+    room_plaintext_on_disk(ws, &m.rid).unwrap_or(from_disk && !live(ws))
+}
+
+/// Whether plaintext of room `rid` may be written to disk: its room and
+/// subscription are known, it is not encrypted and holds no room key (it is
+/// not, and was not, an E2E room). `None`: its room object is not known.
+pub(crate) fn room_plaintext_on_disk(ws: &Workspace, rid: &str) -> Option<bool> {
+    match ws.room(rid) {
+        Some(e) if e.sub.as_ref().is_some_and(|s| s.e2e_key.is_some()) => Some(false),
+        Some(e) if e.room.is_some() => Some(e.sub.is_some() && !e.is_encrypted()),
+        _ => None,
     }
 }
 
@@ -258,16 +335,18 @@ pub fn after_update(
     last_room: Option<&str>,
 ) -> Task<Message> {
     let Some(base) = caches.base.as_ref() else {
-        return Task::none();
+        // No cache: queued messages (due scheduled ones) still go out.
+        return send_queued(s);
     };
     let Some(user) = s.credentials.as_ref().map(|c| c.user_id.clone()) else {
         return Task::none();
     };
     if s.cache.user.as_deref() != Some(user.as_str()) {
-        if s.cache.opening.as_deref() == Some(user.as_str())
-            || s.cache.failed_for.as_deref() == Some(user.as_str())
-        {
+        if s.cache.opening.as_deref() == Some(user.as_str()) {
             return Task::none();
+        }
+        if s.cache.failed_for.as_deref() == Some(user.as_str()) {
+            return send_queued(s);
         }
         s.cache = ServerCache {
             opening: Some(user.clone()),
@@ -579,9 +658,14 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
             c.queued.insert(i.message.id.clone());
         }
     }
-    c.restored.retain(|id| ids.contains(id.as_str()));
     c.unconfirmed.retain(|id| ids.contains(id.as_str()));
-    let entries: Vec<OutboxEntry> = items
+    let scheduled = ws.scheduled().sorted();
+    let ids: HashSet<&str> = ids
+        .into_iter()
+        .chain(scheduled.iter().map(|s| s.id()))
+        .collect();
+    c.restored.retain(|id| ids.contains(id.as_str()));
+    let mut entries: Vec<OutboxEntry> = items
         .iter()
         .filter(|i| persistable(ws, &i.message, c.restored.contains(&i.message.id)))
         .map(|i| {
@@ -594,17 +678,42 @@ fn collect_outbox(s: &mut ServerState, batch: &mut Batch) {
                     DeliveryState::Failed { error } => Some(error.clone()),
                     _ => None,
                 },
+                send_at: None,
+                scheduled: c.scheduled.contains(&i.message.id),
+                reactions: crate::room::composer::poll_reactions_peek(&s.id, &i.message.id),
             }
         })
         .collect();
+    // Scheduled messages: only those of rooms known to be unencrypted, like
+    // pending ones (the text is never logged nor synced).
+    entries.extend(
+        scheduled
+            .iter()
+            .filter(|e| persistable(ws, &e.message, c.restored.contains(e.id())))
+            .map(|e| OutboxEntry {
+                message: e.message.clone(),
+                queued: false,
+                maybe_sent: false,
+                error: None,
+                send_at: Some(e.send_at),
+                scheduled: false,
+                reactions: crate::room::composer::poll_reactions_peek(&s.id, e.id()),
+            }),
+    );
     let sig: Vec<OutboxSig> = entries
         .iter()
         .map(|e| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            e.message.msg.hash(&mut h);
             (
                 e.message.id.clone(),
                 e.queued,
                 e.maybe_sent,
                 e.error.clone(),
+                e.send_at,
+                h.finish(),
+                e.reactions.clone(),
             )
         })
         .collect();
@@ -661,6 +770,12 @@ fn ask_seeds(s: &mut ServerState, handle: &CacheHandle) -> Task<Message> {
 /// encryption wait until the E2E manager can encrypt for them.
 fn send_queued(s: &mut ServerState) -> Task<Message> {
     if s.cache.queued.is_empty() || !s.cache.sending.is_empty() || !online(s) {
+        return Task::none();
+    }
+    if s.cache
+        .retry_at
+        .is_some_and(|at| at > chrono::Utc::now().timestamp_millis())
+    {
         return Task::none();
     }
     let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
@@ -840,26 +955,81 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
                 outcome,
             } = *r;
             let tmid = tmid.as_deref();
+            let tried = matches!(outcome, Outcome::Failed(_));
             match outcome {
                 Outcome::Sent(m) => {
-                    s.cache.queued.remove(&id);
+                    s.cache.forget_queued(&id);
                     s.cache.unconfirmed.remove(&id);
                     s.workspace.apply_message(*m);
+                    // A poll queued offline: its option reactions now.
+                    if let Some(list) = crate::room::composer::poll_reactions_take(&sid, &id)
+                        && let Some(rest) = s.session.as_ref().map(|h| h.rest().clone())
+                    {
+                        return Task::perform(
+                            crate::room::composer::add_reactions(rest, id, list),
+                            |r| {
+                                if let Err(e) = r {
+                                    tracing::warn!(error = %e, "poll reactions not added");
+                                }
+                            },
+                        )
+                        .discard();
+                    }
                 }
                 Outcome::Deleted => {
-                    s.cache.queued.remove(&id);
+                    s.cache.forget_queued(&id);
                     s.workspace.discard_pending(&rid, tmid, &id);
                 }
                 Outcome::Failed(e) | Outcome::Skipped(e) => {
                     tracing::warn!(error = %e, "queued message not sent");
-                    if *s.workspace.connection() == ConnectionState::Connected {
-                        s.cache.queued.remove(&id);
-                        s.workspace
-                            .mark_pending_failed(&rid, tmid, &id, &e.user_text());
-                    } else {
+                    let tries = s.cache.tries.get(&id).copied().unwrap_or(0);
+                    if *s.workspace.connection() != ConnectionState::Connected {
                         // The connection went away meanwhile: it waits.
                         s.workspace
                             .mark_pending_failed(&rid, tmid, &id, &t!("cache.waiting"));
+                    } else if retries(e.error(), tried, tries) {
+                        // A blip (network, server overloaded): tried again
+                        // later, as it goes out with nobody watching.
+                        if tried {
+                            s.cache.tries.insert(id.clone(), tries + 1);
+                            let at = chrono::Utc::now().timestamp_millis()
+                                + retry_delay_ms(tries + 1, e.error());
+                            s.cache.retry_at = Some(s.cache.retry_at.map_or(at, |r| r.max(at)));
+                        }
+                        s.workspace
+                            .mark_pending_failed(&rid, tmid, &id, &t!("cache.waiting"));
+                    } else {
+                        let scheduled = s.cache.scheduled.contains(&id);
+                        s.cache.forget_queued(&id);
+                        let error = e.user_text();
+                        let pending = scheduled
+                            .then(|| {
+                                s.workspace
+                                    .outbox_items()
+                                    .find(|i| i.message.id == id)
+                                    .map(|i| i.message.clone())
+                            })
+                            .flatten();
+                        let Some(m) = pending else {
+                            s.workspace.mark_pending_failed(&rid, tmid, &id, &error);
+                            return Task::none();
+                        };
+                        // Nobody may be watching it go out: it goes back to
+                        // Drafts & scheduled as a missed entry (kept on disk,
+                        // listed by the "not sent" dialog until the user
+                        // decides), not a failed row in a room.
+                        s.workspace.return_failed_scheduled(m, &error);
+                        let room = s
+                            .workspace
+                            .room(&rid)
+                            .map(|r| r.fname().unwrap_or(r.name()).to_owned())
+                            .unwrap_or_default();
+                        app.missed_scheduled();
+                        return app.toast(
+                            BannerKind::Error,
+                            t!("scheduled.failed_title"),
+                            t!("scheduled.failed_body", room = room, error = error),
+                        );
                     }
                 }
             }
@@ -989,6 +1159,15 @@ fn restore_outbox(s: &mut ServerState, outbox: Vec<OutboxEntry>) {
         if present.contains(&m.id) {
             continue;
         }
+        // A poll queued offline adds its option reactions once sent, after
+        // a restart too.
+        crate::room::composer::poll_reactions_restore(&s.id, &m.id, &e.reactions);
+        if let Some(at) = e.send_at {
+            s.cache.restored.insert(m.id.clone());
+            s.workspace
+                .restore_scheduled(rustket_core::scheduled::Scheduled::new(m, at));
+            continue;
+        }
         let (id, rid, tmid) = (m.id.clone(), m.rid.clone(), m.tmid.clone());
         s.workspace.add_pending(m);
         let error = match (e.queued, e.error) {
@@ -1002,11 +1181,43 @@ fn restore_outbox(s: &mut ServerState, outbox: Vec<OutboxEntry>) {
         if e.queued && e.maybe_sent {
             s.cache.unconfirmed.insert(id.clone());
         }
+        if e.queued && e.scheduled {
+            s.cache.scheduled.insert(id.clone());
+        }
         if e.queued {
             s.cache.queued.insert(id);
         }
     }
     s.cache.outbox_restored = true;
+}
+
+/// Puts a scheduled message whose time came (or that the user sends now)
+/// into the outbox as a queued entry: it goes out like a message written
+/// offline (`send_queued`), and a failure leaves a failed entry to retry or
+/// discard.
+pub fn enqueue_scheduled(s: &mut ServerState, m: RcMessage) {
+    let (id, rid, tmid) = (m.id.clone(), m.rid.clone(), m.tmid.clone());
+    s.workspace.add_pending(m);
+    s.workspace
+        .mark_pending_failed(&rid, tmid.as_deref(), &id, &t!("cache.waiting"));
+    s.cache.known.insert(id.clone());
+    s.cache.scheduled.insert(id.clone());
+    s.cache.queued.insert(id);
+}
+
+/// Scheduled messages of server `s` whose time came go into the outbox
+/// while the server answers; returns the ones that turned out missed (their
+/// time passed while they could not be sent).
+pub fn tick_scheduled(s: &mut ServerState, now_ms: i64) -> Vec<String> {
+    if s.workspace.scheduled().is_empty() || !s.is_logged_in() {
+        return Vec::new();
+    }
+    let up = online(s);
+    let due = s.workspace.take_due_scheduled(now_ms, up);
+    for e in due.send {
+        enqueue_scheduled(s, e.message);
+    }
+    due.missed
 }
 
 /// Deletes a server's cache (logout, rejected token, server removal).
@@ -1147,6 +1358,34 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+
+    /// A blip at the due time of an unattended message (scheduled, written
+    /// offline) is tried again with a growing wait; a refusal is not.
+    #[test]
+    fn transient_send_failures_are_tried_again() {
+        let blip = rocketchat::Error::Timeout("chat.sendMessage");
+        let refused = rocketchat::Error::Api {
+            status: 400,
+            error: Some("error-not-allowed".into()),
+            error_type: None,
+            message: None,
+            details: None,
+        };
+        assert!(retries(&blip, true, 0));
+        assert!(retries(&blip, true, MAX_SEND_TRIES - 1));
+        assert!(!retries(&blip, true, MAX_SEND_TRIES), "given up");
+        assert!(retries(&blip, false, MAX_SEND_TRIES), "skipped: not a try");
+        assert!(!retries(&refused, true, 0));
+        assert!(!retries(&refused, false, 0));
+        assert_eq!(retry_delay_ms(1, &blip), 15_000);
+        assert_eq!(retry_delay_ms(2, &blip), 30_000);
+        assert_eq!(retry_delay_ms(30, &blip), 300_000);
+        let limited = rocketchat::Error::RateLimited {
+            retry_after: Some(Duration::from_secs(600)),
+            message: None,
+        };
+        assert_eq!(retry_delay_ms(1, &limited), 600_000);
+    }
 
     type Log = Arc<Mutex<Vec<(String, String)>>>;
 
@@ -1299,6 +1538,115 @@ mod tests {
         let mut batch = Batch::default();
         collect_threads(s, full, at, &mut batch);
         batch.threads
+    }
+
+    /// A signed-in server with unencrypted room `a`, its outbox restored.
+    fn room_a_server() -> ServerState {
+        let mut s = thread_server();
+        s.workspace.apply_initial(rustket_core::sync::InitialData {
+            me: rocketchat::models::User {
+                id: "me".into(),
+                username: Some("me".into()),
+                ..Default::default()
+            },
+            subscriptions: vec![rocketchat::models::Subscription {
+                id: "sub-a".into(),
+                rid: "a".into(),
+                name: "a".into(),
+                open: true,
+                ..Default::default()
+            }],
+            rooms: vec![rocketchat::models::Room {
+                id: "a".into(),
+                name: Some("a".into()),
+                ..Default::default()
+            }],
+            next_since: RcDate::from_millis(1),
+            ..Default::default()
+        });
+        s.cache.outbox_restored = true;
+        s
+    }
+
+    #[test]
+    fn poll_reactions_survive_a_restart_with_the_outbox() {
+        use crate::room::composer::{poll_reactions_restore, poll_reactions_take};
+        let mut s = room_a_server();
+        let m = s.workspace.new_local_message("a", "poll", None, false);
+        let id = m.id.clone();
+        s.workspace.add_pending(m);
+        poll_reactions_restore(&s.id, &id, &[":one:".into(), ":two:".into()]);
+        let mut batch = Batch::default();
+        collect_outbox(&mut s, &mut batch);
+        let entries = batch.outbox.expect("written");
+        assert_eq!(entries[0].reactions, [":one:", ":two:"]);
+        // The process ends: the in-memory registry is gone.
+        assert!(poll_reactions_take(&s.id, &id).is_some());
+        let mut s2 = thread_server();
+        let mut stored = entries;
+        // Only option reactions come back from the file.
+        stored[0].reactions.push(":skull:".into());
+        restore_outbox(&mut s2, stored);
+        assert_eq!(
+            poll_reactions_take(&s2.id, &id),
+            Some(vec![":one:", ":two:"])
+        );
+    }
+
+    #[test]
+    fn scheduled_messages_are_persisted_restored_and_queued_when_due() {
+        use rustket_core::scheduled::MISSED_GRACE_MS;
+        let mut s = room_a_server();
+        let m = s
+            .workspace
+            .new_local_message("a", "later text", None, false);
+        let id = m.id.clone();
+        s.workspace.schedule_message(m, 5_000);
+        let mut batch = Batch::default();
+        collect_outbox(&mut s, &mut batch);
+        let entries = batch.outbox.expect("written");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].send_at, Some(5_000));
+        assert!(!entries[0].queued);
+        // Unchanged: not written again; an edited text is.
+        let mut batch = Batch::default();
+        collect_outbox(&mut s, &mut batch);
+        assert!(batch.outbox.is_none());
+        s.workspace.set_scheduled_text(&id, "edited");
+        let mut batch = Batch::default();
+        collect_outbox(&mut s, &mut batch);
+        assert_eq!(batch.outbox.unwrap()[0].message.msg, "edited");
+        // A restart puts it back in the queue, not in the timeline.
+        let mut s2 = thread_server();
+        restore_outbox(&mut s2, entries);
+        assert_eq!(s2.workspace.scheduled().len(), 1);
+        assert_eq!(s2.workspace.outbox_items().count(), 0);
+        assert!(!s2.cache.is_queued(&id));
+        // Not connected: within the grace time it waits, later it is missed.
+        assert!(tick_scheduled(&mut s2, 5_000).is_empty());
+        assert_eq!(s2.workspace.scheduled().len(), 1);
+        assert_eq!(
+            tick_scheduled(&mut s2, 5_001 + MISSED_GRACE_MS),
+            Vec::<String>::new(),
+            "signed out: nothing happens"
+        );
+        // Sent now: a queued outbox entry, waiting for the connection.
+        let e = s2.workspace.take_scheduled_now(&id, 9_000).unwrap();
+        enqueue_scheduled(&mut s2, e.message);
+        assert!(s2.cache.is_queued(&id));
+        assert!(s2.workspace.scheduled().is_empty());
+        let item = s2.workspace.outbox_items().next().unwrap();
+        assert!(matches!(item.state, DeliveryState::Failed { .. }));
+        // Queued, it stays known as a scheduled one across a restart (its
+        // final failure goes back to the scheduled ones).
+        s2.cache.outbox_restored = true;
+        let mut batch = Batch::default();
+        collect_outbox(&mut s2, &mut batch);
+        let entries = batch.outbox.expect("written");
+        assert!(entries[0].queued && entries[0].scheduled && entries[0].send_at.is_none());
+        let mut s3 = thread_server();
+        restore_outbox(&mut s3, entries);
+        assert!(s3.cache.is_queued(&id) && s3.cache.scheduled.contains(&id));
     }
 
     #[test]

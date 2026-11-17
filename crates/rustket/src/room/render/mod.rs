@@ -256,6 +256,15 @@ pub fn message_body<'a>(msg: &'a Message, ctx: &ViewCtx<'a>) -> Element<'a, Rend
     message_body_with(msg, &rc)
 }
 
+/// What follows a message's body whatever draws the body (the markdown
+/// text, a poll card): link previews and the E2E note about plaintext the
+/// server copy also carried.
+pub fn body_trailer(msg: &Message, rc: &RenderCtx<'_>) -> Vec<Element<'static, RenderMsg>> {
+    let mut out = attachments::link_previews(msg, rc);
+    out.extend(crate::e2e::view::plaintext_note(msg));
+    out
+}
+
 /// Like [`message_body`] with interaction state (spoilers, collapsed
 /// attachments, downloads).
 pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, RenderMsg> {
@@ -285,11 +294,8 @@ pub fn message_body_with(msg: &Message, rc: &RenderCtx<'_>) -> Element<'static, 
     if let Some(b) = blocks {
         col = col.push(b);
     }
-    for p in attachments::link_previews(msg, rc) {
-        col = col.push(p);
-    }
-    if let Some(n) = crate::e2e::view::plaintext_note(msg) {
-        col = col.push(n);
+    for e in body_trailer(msg, rc) {
+        col = col.push(e);
     }
     // One text selection over the whole body (text, attachments, blocks).
     rustket_ui::widget::selectable::scope(col)

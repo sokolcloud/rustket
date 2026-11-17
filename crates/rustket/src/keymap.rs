@@ -38,6 +38,10 @@ pub enum Shortcut {
     Activity,
     /// Ctrl/Cmd+Shift+S: "Later" (toggles).
     Later,
+    /// Ctrl/Cmd+Shift+D: "Drafts & scheduled" (toggles).
+    Drafts,
+    /// Ctrl/Cmd+Shift+F: message search across rooms (toggles).
+    Search,
 }
 
 impl Shortcut {
@@ -88,6 +92,8 @@ pub fn global(key: &Key, physical: Physical, m: Modifiers) -> Option<Shortcut> {
             true if is('a') => Shortcut::AllUnreads,
             true if is('m') => Shortcut::Activity,
             true if is('s') => Shortcut::Later,
+            true if is('d') => Shortcut::Drafts,
+            true if is('f') => Shortcut::Search,
             _ => return None,
         }
     };
@@ -257,6 +263,16 @@ pub const GROUPS: &[Group] = &[
                 bound: Bound::Global(Shortcut::Later),
             },
             Entry {
+                label: "scheduled.title",
+                chords: &[&[Cmd, Shift, Token::Char('d')]],
+                bound: Bound::Global(Shortcut::Drafts),
+            },
+            Entry {
+                label: "shortcuts.search",
+                chords: &[&[Cmd, Shift, Token::Char('f')]],
+                bound: Bound::Global(Shortcut::Search),
+            },
+            Entry {
                 label: "shortcuts.regions",
                 chords: &[&[Token::F6], &[Shift, Token::F6]],
                 bound: Bound::Other,
@@ -352,6 +368,11 @@ pub const GROUPS: &[Group] = &[
                 bound: Bound::Other,
             },
             Entry {
+                label: SCHEDULE_LABEL,
+                chords: &[&[Cmd, Shift, Token::Enter]],
+                bound: Bound::Other,
+            },
+            Entry {
                 label: "shortcuts.edit_last",
                 chords: &[&[Token::Up]],
                 bound: Bound::Other,
@@ -435,6 +456,19 @@ pub fn chord_of(s: Shortcut) -> Option<String> {
         .iter()
         .flat_map(|g| g.entries)
         .find(|e| e.bound == Bound::Global(s))
+        .and_then(|e| e.chords.first())
+        .map(|c| display(c))
+}
+
+/// Label key of the composer's "Schedule message" row.
+const SCHEDULE_LABEL: &str = "scheduled.button";
+
+/// The composer's "Schedule message" chord, as printed.
+pub fn schedule_chord() -> Option<String> {
+    GROUPS
+        .iter()
+        .flat_map(|g| g.entries)
+        .find(|e| e.label == SCHEDULE_LABEL)
         .and_then(|e| e.chords.first())
         .map(|c| display(c))
 }

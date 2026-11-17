@@ -293,6 +293,13 @@ impl Panel {
     }
 
     /// The open thread, if the panel shows one.
+    /// Stores the open thread composer's text as its draft now.
+    pub fn store_draft(&self, ws: &mut Workspace) {
+        if let Some(Body::Thread(t)) = &self.body {
+            t.store_draft(ws);
+        }
+    }
+
     pub fn thread_tmid(&self) -> Option<&str> {
         match &self.body {
             Some(Body::Thread(t)) => Some(t.tmid()),

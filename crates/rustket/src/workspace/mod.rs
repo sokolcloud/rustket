@@ -39,34 +39,66 @@ pub enum MainView {
     Inbox(crate::inbox::InboxScreen),
     /// Starred messages and reminders (`crate::later`).
     Later(crate::later::LaterView),
+    /// Scheduled messages and drafts (`crate::drafts`).
+    Drafts(crate::drafts::DraftsView),
+    /// Message search across the rooms (`crate::search`).
+    Search(Box<crate::search::SearchView>),
 }
 
 impl MainView {
     pub fn inbox(&self) -> Option<&crate::inbox::InboxScreen> {
         match self {
             MainView::Inbox(i) => Some(i),
-            MainView::Later(_) => None,
+            _ => None,
         }
     }
 
     pub fn inbox_mut(&mut self) -> Option<&mut crate::inbox::InboxScreen> {
         match self {
             MainView::Inbox(i) => Some(i),
-            MainView::Later(_) => None,
+            _ => None,
         }
     }
 
     pub fn later(&self) -> Option<&crate::later::LaterView> {
         match self {
             MainView::Later(l) => Some(l),
-            MainView::Inbox(_) => None,
+            _ => None,
         }
     }
 
     pub fn later_mut(&mut self) -> Option<&mut crate::later::LaterView> {
         match self {
             MainView::Later(l) => Some(l),
-            MainView::Inbox(_) => None,
+            _ => None,
+        }
+    }
+
+    pub fn drafts(&self) -> Option<&crate::drafts::DraftsView> {
+        match self {
+            MainView::Drafts(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    pub fn search(&self) -> Option<&crate::search::SearchView> {
+        match self {
+            MainView::Search(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn drafts_mut(&mut self) -> Option<&mut crate::drafts::DraftsView> {
+        match self {
+            MainView::Drafts(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    pub fn search_mut(&mut self) -> Option<&mut crate::search::SearchView> {
+        match self {
+            MainView::Search(v) => Some(v),
+            _ => None,
         }
     }
 }
@@ -132,6 +164,8 @@ pub struct ServerState {
     pub inbox: crate::inbox::InboxState,
     /// What Later keeps while closed (the fetch of reminder copies).
     pub later_state: crate::later::LaterState,
+    /// What the search keeps while closed (provider, last query).
+    pub search: crate::search::SearchState,
 }
 
 impl ServerState {
@@ -189,6 +223,7 @@ impl ServerState {
             main_view: None,
             inbox: Default::default(),
             later_state: Default::default(),
+            search: Default::default(),
         })
     }
 
@@ -238,6 +273,8 @@ impl ServerState {
         self.main_view = None;
         self.inbox.reset();
         self.later_state = Default::default();
+        // The last query and results belong to the account signed out.
+        self.search = Default::default();
         self.syncing = false;
         self.resync_pending = false;
         self.sync_attempt = 0;
@@ -345,8 +382,37 @@ impl ServerState {
         self.main_view.as_ref().and_then(MainView::later)
     }
 
-    /// Closes the view in place of the room area (a room opens, Esc).
+    /// The open Drafts & scheduled view, if any.
+    pub fn drafts_view(&self) -> Option<&crate::drafts::DraftsView> {
+        self.main_view.as_ref().and_then(MainView::drafts)
+    }
+
+    /// The Drafts & scheduled view has a dialog open: its scheduled message
+    /// is held and the dialog may hold typed text, so no other view or room
+    /// replaces it until the dialog closes (shortcuts reach the app while
+    /// its editor has the focus).
+    pub fn drafts_dialog_open(&self) -> bool {
+        self.drafts_view()
+            .is_some_and(crate::drafts::DraftsView::has_dialog)
+    }
+
+    /// The open search view, if any.
+    pub fn search_view(&self) -> Option<&crate::search::SearchView> {
+        self.main_view.as_ref().and_then(MainView::search)
+    }
+
+    /// Shows `v` in place of the room area, closing the view there.
+    pub fn show_main_view(&mut self, v: MainView) {
+        self.close_main_view();
+        self.main_view = Some(v);
+    }
+
+    /// Closes the view in place of the room area (a room opens, Esc). The
+    /// search view is kept to show again.
     pub fn close_main_view(&mut self) {
+        if let Some(MainView::Search(v)) = self.main_view.take() {
+            self.search.stash = Some(v.stashed());
+        }
         self.main_view = None;
         self.workspace.keep_feeds(&[]);
         // A view opened next starts at the same revision: the loader must

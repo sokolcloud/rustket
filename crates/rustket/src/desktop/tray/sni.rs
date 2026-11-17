@@ -3,7 +3,7 @@
 
 use rust_i18n::t;
 
-use super::{Message, Slot, TrayState, status_label, tooltip};
+use super::{Message, Slot, TrayState, pause_entries, status_label, tooltip};
 
 struct RustketTray {
     state: TrayState,
@@ -91,6 +91,33 @@ impl ksni::Tray for RustketTray {
                         }
                         .into(),
                     ],
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+        let pause = pause_entries(&self.state);
+        if self.state.status.is_some() && !pause.is_empty() {
+            let label = self
+                .state
+                .paused
+                .clone()
+                .unwrap_or_else(|| t!("quiet.pause").into_owned());
+            items.push(
+                SubMenu {
+                    label,
+                    icon_name: "notifications-disabled".into(),
+                    submenu: pause
+                        .into_iter()
+                        .map(|(label, m)| {
+                            StandardItem {
+                                label,
+                                activate: Box::new(move |t: &mut Self| t.send(m.clone())),
+                                ..Default::default()
+                            }
+                            .into()
+                        })
+                        .collect(),
                     ..Default::default()
                 }
                 .into(),

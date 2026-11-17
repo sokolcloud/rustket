@@ -66,6 +66,9 @@ impl Workspace {
         };
         let mut gone = Vec::new();
         for (rid, e) in &mut self.rooms {
+            // Its name before it is cleared (scheduled messages dropped with
+            // the room are reported by name).
+            let label = e.fname().unwrap_or(e.name()).to_owned();
             if !snapshot_subs.contains(rid)
                 && e.sub
                     .as_ref()
@@ -81,11 +84,11 @@ impl Workspace {
                 e.room = None;
             }
             if e.sub.is_none() && e.room.is_none() {
-                gone.push(rid.clone());
+                gone.push((rid.clone(), label));
             }
         }
-        for rid in gone {
-            self.remove_room(&rid);
+        for (rid, label) in gone {
+            self.remove_room_labelled(&rid, label);
         }
         self.emoji.set_all(custom_emoji);
         self.custom_statuses = custom_statuses

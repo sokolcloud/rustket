@@ -123,6 +123,11 @@ pub const APP_ICONS: &[Icon] = &[
     Icon::ArrowUpRight,
     Icon::BookmarkCheck,
     Icon::StarOff,
+    Icon::ChartColumn,
+    Icon::TextSearch,
+    Icon::BookmarkPlus,
+    Icon::Link2,
+    Icon::SlidersHorizontal,
 ];
 
 #[cfg(test)]

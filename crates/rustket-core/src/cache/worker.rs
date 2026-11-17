@@ -2,12 +2,14 @@
 //! sends it batches (fire and forget, coalesced while it is busy) and awaits
 //! reads through oneshot channels.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use rocketchat::models::Message;
 use tokio::sync::oneshot;
 
 use super::db::{destroy, is_corruption};
@@ -19,11 +21,21 @@ use super::{
 enum Cmd {
     Write(Box<Batch>),
     Timeline(TimelineKey, oneshot::Sender<Option<CachedTimeline>>),
+    Search(Box<SearchReq>, oneshot::Sender<Vec<Message>>),
     Clear(oneshot::Sender<Result<()>>),
     Size(oneshot::Sender<u64>),
     /// Answered once everything sent before it is written.
     Flush(mpsc::Sender<()>),
     Destroy(oneshot::Sender<std::io::Result<()>>),
+}
+
+/// A search of the cached messages ([`CacheDb::search`]).
+struct SearchReq {
+    matcher: crate::search::LocalMatcher,
+    rooms: Option<HashSet<String>>,
+    limit: usize,
+    /// Its number: a later search replaces it ([`CacheHandle::search`]).
+    seq: u64,
 }
 
 /// A cache running on its worker thread. Cloning shares the worker; it
@@ -35,6 +47,9 @@ pub struct CacheHandle {
     /// A write failed (its batch was dropped) since the last
     /// [`Self::take_write_failed`].
     write_failed: Arc<AtomicBool>,
+    /// The number of the latest search: older ones still queued or
+    /// running stop and find nothing.
+    search_seq: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for CacheHandle {
@@ -95,6 +110,29 @@ impl CacheHandle {
         let (reply, rx) = oneshot::channel();
         self.tx.send(Cmd::Timeline(key, reply)).ok()?;
         rx.await.ok().flatten()
+    }
+
+    /// Cached messages matching `matcher` (see [`CacheDb::search`]); empty
+    /// when the cache is unavailable or a later search replaced this one
+    /// (one search at a time: each query edit starts a new one).
+    pub async fn search(
+        &self,
+        matcher: crate::search::LocalMatcher,
+        rooms: Option<HashSet<String>>,
+        limit: usize,
+    ) -> Vec<Message> {
+        let (reply, rx) = oneshot::channel();
+        let seq = self.search_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        let req = Box::new(SearchReq {
+            matcher,
+            rooms,
+            limit,
+            seq,
+        });
+        if self.tx.send(Cmd::Search(req, reply)).is_err() {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
     }
 
     /// Drops every cached document and message (the outbox stays).
@@ -177,11 +215,13 @@ fn run(
         };
     let (tx, rx) = mpsc::channel();
     let write_failed = Arc::new(AtomicBool::new(false));
+    let search_seq = Arc::new(AtomicU64::new(0));
     let opened = Opened {
         handle: CacheHandle {
             tx,
             dir: dir.clone(),
             write_failed: write_failed.clone(),
+            search_seq: search_seq.clone(),
         },
         state,
         outbox,
@@ -244,6 +284,19 @@ fn run(
                         .flatten()
                 });
                 let _ = reply.send(t);
+            }
+            Cmd::Search(req, reply) => {
+                let cancelled = || search_seq.load(Ordering::Acquire) != req.seq;
+                if cancelled() {
+                    let _ = reply.send(Vec::new());
+                    continue;
+                }
+                let found = db.as_ref().map_or_else(Vec::new, |d| {
+                    d.search(&req.matcher, req.rooms.as_ref(), req.limit, &cancelled)
+                        .inspect_err(|e| tracing::warn!(error = %e, "offline cache search failed"))
+                        .unwrap_or_default()
+                });
+                let _ = reply.send(found);
             }
             Cmd::Clear(reply) => {
                 let _ = reply.send(match db.as_mut() {

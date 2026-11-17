@@ -44,10 +44,39 @@ impl App {
         let sids: Vec<ServerId> = self.servers.keys().cloned().collect();
         let mut effects = Vec::new();
         let mut save_synced = false;
+        let mut missed = false;
+        let mut dropped: Vec<(String, usize)> = Vec::new();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        // The missed message being rescheduled in the dialog.
+        let missed_held: Option<(ServerId, String)> = self.modals.iter().find_map(|m| match m {
+            super::Modal::Missed(state) => state
+                .reschedule
+                .as_ref()
+                .map(|(sid, id, _)| (sid.clone(), id.clone())),
+            _ => None,
+        });
         for sid in sids {
             let Some(s) = self.servers.get_mut(&sid) else {
                 continue;
             };
+            // Scheduled messages whose time came join the outbox (sent
+            // below with the queued ones); late ones wait for the user.
+            // One with an open edit or reschedule dialog does not go out.
+            let held = s
+                .drafts_view()
+                .and_then(crate::drafts::DraftsView::held_id)
+                .map(str::to_owned)
+                .or_else(|| {
+                    missed_held
+                        .as_ref()
+                        .filter(|(h, _)| *h == sid)
+                        .map(|(_, id)| id.clone())
+                });
+            s.workspace.hold_scheduled(held.as_deref());
+            s.workspace
+                .set_scheduled_storage(s.cache.persists(&self.offline));
+            missed |= !crate::cache::tick_scheduled(s, now_ms).is_empty();
+            dropped.extend(s.workspace.take_dropped_scheduled());
             // E2E: start/feed the manager and decrypt what is shown.
             tasks.push(crate::e2e::after_update(s, self.secrets.as_ref()));
             // Offline cache: open, write changes, outbox, offline reading.
@@ -194,6 +223,7 @@ impl App {
             );
             tasks.push(self.tick_inbox(&sid));
             tasks.push(self.tick_later(&sid));
+            tasks.push(self.tick_search(&sid));
             tasks.push(self.tick_hosted_user(&sid, super::hosted_user::Host::Inbox));
             tasks.push(self.tick_hosted_user(&sid, super::hosted_user::Host::Later));
             let Some(s) = self.servers.get_mut(&sid) else {
@@ -276,6 +306,27 @@ impl App {
         tasks.push(self.fetch_images());
         tasks.push(crate::videoconf::fetch_wanted(self));
         tasks.push(self.reminders_tick());
+        if missed {
+            self.missed_scheduled();
+        }
+        // Removed elsewhere (sent, deleted, rescheduled): nothing to ask.
+        if self
+            .modals
+            .iter()
+            .any(|m| matches!(m, super::Modal::Missed(_)))
+            && self.missed_items().is_empty()
+        {
+            self.modals
+                .retain(|m| !matches!(m, super::Modal::Missed(_)));
+        }
+        for (room, count) in dropped {
+            tasks.push(self.toast(
+                rustket_ui::widget::BannerKind::Warning,
+                rust_i18n::t!("scheduled.dropped_title"),
+                rust_i18n::t!("scheduled.dropped_body", room = room, count = count),
+            ));
+        }
+        tasks.push(self.quiet_tick());
         if save_synced {
             tasks.push(self.save_config());
         }

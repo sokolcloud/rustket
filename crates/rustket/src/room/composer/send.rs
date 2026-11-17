@@ -10,7 +10,7 @@ use rustket_ui::widget::BannerKind;
 
 use super::cache::{
     cached_commands, cached_members, commands_recently_failed, outbox_finish, outbox_forget,
-    outbox_start,
+    outbox_start, poll_reactions_forget, poll_reactions_set, poll_reactions_take,
 };
 use super::text;
 use super::{Composer, FetchFor, Message, PendingItem};
@@ -103,6 +103,15 @@ impl Composer {
         let is_command = self.quotes.is_empty()
             && text::parse_slash(&text).is_some()
             && !crate::e2e::outgoing::slash_commands_blocked(ctx.workspace, &self.rid);
+        if is_command && self.schedule_at.is_some() {
+            // A command runs now or not at all; the text stays.
+            self.schedule_at = None;
+            return Action::effect(Effect::Toast(
+                BannerKind::Warning,
+                t!("scheduled.no_commands").into_owned(),
+                String::new(),
+            ));
+        }
         if is_command
             && let Some((name, _)) = text::parse_slash(&text)
             && let Some(list) = cached_commands(ctx.server_id)
@@ -155,7 +164,9 @@ impl Composer {
         let stop = self.typing.on_send();
         let typing = self.typing_task(stop, ctx);
         let capped = added && encrypted_mentions_capped(ctx.workspace, &self.rid, &full);
-        let mut action = if is_command {
+        let mut action = if let Some(at) = self.schedule_at.take() {
+            self.schedule_text(full, at, ctx)
+        } else if is_command {
             self.dispatch_text(full, ctx)
         } else {
             Action::task(self.send_text(full, ctx))
@@ -200,6 +211,45 @@ impl Composer {
         )))
     }
 
+    /// Sends a poll from the "Create poll" dialog. The question and options
+    /// are typed text: mention groups expand and `@all` / `@here` ask
+    /// first, as for a message. `reactions` are added once it is sent.
+    pub(super) fn send_poll(
+        &mut self,
+        text: String,
+        reactions: Vec<&'static str>,
+        ctx: &mut UpdateCtx<'_>,
+    ) -> Action<Message> {
+        if matches!(
+            crate::e2e::outgoing::mode(ctx.workspace, &self.rid),
+            crate::e2e::outgoing::Mode::Blocked
+        ) {
+            return Action::effect(error_toast(crate::e2e::outgoing::blocked_text(
+                ctx.workspace,
+                &self.rid,
+            )));
+        }
+        let text =
+            expand_groups(ctx.workspace, ctx.server_id, &self.rid, &text).map_or(text, |e| e.text);
+        let max = ctx.workspace.settings().max_message_size();
+        if text::too_long(&text, max) {
+            return Action::effect(too_long(max));
+        }
+        if let Some(ask) = self.ask_broad(&text, ctx) {
+            self.broad_poll = Some((text, reactions));
+            return ask;
+        }
+        self.poll = None;
+        let m = ctx
+            .workspace
+            .new_local_message(&self.rid, &text, self.tmid.as_deref(), self.tshow);
+        if !reactions.is_empty() {
+            poll_reactions_set(ctx.server_id, &m.id, reactions);
+        }
+        ctx.workspace.add_pending(m.clone());
+        Action::task(Task::batch([send_task(ctx, m), self.focus()]))
+    }
+
     /// Adds a pending message to the outbox and sends it with `chat.sendMessage`.
     fn send_text(&mut self, text: String, ctx: &mut UpdateCtx<'_>) -> Task<Message> {
         let m = ctx
@@ -207,6 +257,25 @@ impl Composer {
             .new_local_message(&self.rid, &text, self.tmid.as_deref(), self.tshow);
         ctx.workspace.add_pending(m.clone());
         send_task(ctx, m)
+    }
+
+    /// Keeps the message to send at `at` (UTC ms) instead of now
+    /// (`rustket_core::scheduled`); it is not shown in the timeline until it
+    /// goes out.
+    fn schedule_text(&mut self, text: String, at: i64, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        let m = ctx
+            .workspace
+            .new_local_message(&self.rid, &text, self.tmid.as_deref(), self.tshow);
+        ctx.workspace.schedule_message(m, at);
+        let time = crate::format::moment(at, chrono::Local::now(), ctx.prefs.clock_24h);
+        Action {
+            task: self.focus(),
+            effects: vec![Effect::Toast(
+                BannerKind::Success,
+                t!("scheduled.toast", time = time).into_owned(),
+                String::new(),
+            )],
+        }
     }
 
     /// Pending message `id` this composer owns: the thread composer only
@@ -244,6 +313,7 @@ impl Composer {
         if let Some((m, _)) = self.owned_pending(ctx.workspace, id) {
             ctx.workspace
                 .discard_pending(&self.rid, m.tmid.as_deref(), id);
+            poll_reactions_forget(ctx.server_id, id);
         }
         Action::none()
     }
@@ -398,16 +468,24 @@ pub fn orphan_result(m: Message, server: &ServerId, rid: &str, ws: &mut Workspac
             Vec::new()
         }
         Message::Upload(u) => upload::orphan_result(u, ws).into_iter().collect(),
+        Message::PollReacted(Err(e)) => vec![Effect::Toast(
+            BannerKind::Error,
+            t!("poll.reactions_failed").into_owned(),
+            e.user_text(),
+        )],
         _ => Vec::new(),
     }
 }
 
 /// Sends an outbox message. The result is recorded in `OUTBOX` when the
-/// request finishes, even if the room was closed meanwhile.
+/// request finishes, even if the room was closed meanwhile; a poll's option
+/// reactions are added after a successful send, also without the view.
 fn send_task(ctx: &UpdateCtx<'_>, m: rocketchat::models::Message) -> Task<Message> {
     let id = m.id.clone();
     outbox_start(ctx.server_id, &m.rid, &id);
     let server = ctx.server_id.as_str().to_owned();
+    let sid = ctx.server_id.clone();
+    let rest = ctx.session.map(|h| h.rest().clone());
     // Encrypted rooms: encrypted at send time with the current room key.
     let enc = crate::e2e::outgoing::prepare_send(ctx.workspace, &m);
     let out = OutgoingMessage {
@@ -426,4 +504,56 @@ fn send_task(ctx: &UpdateCtx<'_>, m: rocketchat::models::Message) -> Task<Messag
             Message::Sent(id, r)
         },
     )
+    .then(move |sent| {
+        let react = rest
+            .clone()
+            .and_then(|rest| reactions_after(&sid, &sent).map(|(id, l)| (rest, id, l)));
+        match react {
+            Some((rest, id, list)) => Task::batch([
+                Task::done(sent),
+                Task::perform(add_reactions(rest, id, list), |r| {
+                    Message::PollReacted(r.map_err(crate::error::Failure::from))
+                }),
+            ]),
+            None => Task::done(sent),
+        }
+    })
+}
+
+/// The option reactions to add after `sent`, a successful send of a poll
+/// (taken: added once). A failed send keeps them for the retry.
+pub(super) fn reactions_after(
+    server: &ServerId,
+    sent: &Message,
+) -> Option<(String, Vec<&'static str>)> {
+    match sent {
+        Message::Sent(id, Ok(_)) => poll_reactions_take(server, id).map(|l| (id.clone(), l)),
+        _ => None,
+    }
+}
+
+/// Adds `reactions` to message `mid` one by one (a poll's options), waiting
+/// out rate limits (`chat.react` allows 10 a minute by default).
+pub(crate) async fn add_reactions(
+    rest: rocketchat::RestClient,
+    mid: String,
+    reactions: Vec<&'static str>,
+) -> rocketchat::Result<()> {
+    for emoji in reactions {
+        let mut waits = 0;
+        loop {
+            match rest.react(&mid, emoji, Some(true)).await {
+                Ok(()) => break,
+                Err(rocketchat::Error::RateLimited { retry_after, .. }) if waits < 3 => {
+                    waits += 1;
+                    let d = retry_after
+                        .unwrap_or(std::time::Duration::from_secs(10))
+                        .min(std::time::Duration::from_secs(60));
+                    tokio::time::sleep(d).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
 }

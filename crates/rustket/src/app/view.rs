@@ -220,6 +220,8 @@ impl App {
                 .and_then(|rv| rv.panel.thread_tmid()),
             inbox_open: s.inbox_view().map(crate::inbox::InboxScreen::kind),
             later_open: s.later_view().is_some(),
+            drafts_open: s.drafts_view().is_some(),
+            search_open: s.search_view().is_some(),
             now,
         };
         // The cached workspace is shown instead of the placeholder.
@@ -269,6 +271,8 @@ impl App {
         let room_area = self
             .inbox_screen(s)
             .or_else(|| self.later_screen(s))
+            .or_else(|| self.drafts_screen(s))
+            .or_else(|| self.search_screen(s))
             .or_else(|| self.omni_screen(s))
             .unwrap_or(room_area);
         // Strips above the room (connection, E2E banner, app banners) come
@@ -560,6 +564,24 @@ impl App {
                 )
             }
             Modal::Shortcuts => crate::dialogs::shortcuts::view(self.config.ui.escape_marks_read),
+            Modal::Missed(state) => crate::drafts::missed::view(
+                state,
+                self.missed_items(),
+                chrono::Local::now(),
+                self.config.ui.morning_hour(),
+                self.config.ui.clock_24h,
+                Message::Missed,
+                Message::CloseModal,
+            ),
+            Modal::PauseCustom(picker) => crate::quiet::custom_dialog(
+                picker,
+                self.config.ui.pause_sets_busy,
+                chrono::Local::now(),
+                self.config.ui.morning_hour(),
+                self.config.ui.clock_24h,
+                Message::CloseModal,
+                Message::Quiet,
+            ),
             Modal::ReadAll {
                 server_id,
                 rids,

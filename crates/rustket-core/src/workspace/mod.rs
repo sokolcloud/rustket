@@ -35,6 +35,7 @@ mod load;
 pub use later::{LaterRow, LaterTab};
 mod mention_groups;
 mod realtime;
+mod scheduled;
 mod thread_parents;
 mod timelines;
 
@@ -85,8 +86,10 @@ impl Dirty {
     pub const MENTION_GROUPS: Self = Self(1 << 19);
     /// All unreads / Activity feeds (see [`Workspace::feeds`]).
     pub const FEEDS: Self = Self(1 << 20);
-    pub const ALL: Self = Self((1 << 21) - 1);
-    const BITS: usize = 21;
+    /// Scheduled messages (see [`Workspace::scheduled`]).
+    pub const SCHEDULED: Self = Self(1 << 21);
+    pub const ALL: Self = Self((1 << 22) - 1);
+    const BITS: usize = 22;
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -275,6 +278,13 @@ pub struct Workspace {
     /// Local messages not yet confirmed by the server, by `_id`; kept while their
     /// timelines are closed and merged back on open.
     outbox: HashMap<String, TimelineItem>,
+    /// Messages to send later (local only, see [`crate::scheduled`]).
+    scheduled: crate::scheduled::ScheduledQueue,
+    /// Scheduled messages dropped with their room: (room name, count).
+    dropped_scheduled: Vec<(String, usize)>,
+    /// Scheduled messages are kept on disk (the app's offline cache works):
+    /// only then may new ones be scheduled.
+    scheduled_storage: bool,
     /// Realtime activity, so REST snapshots read earlier do not undo it.
     realtime: RealtimeMarks,
     connection: ConnectionState,
@@ -567,6 +577,16 @@ impl Workspace {
 
     pub fn thread(&self, tmid: &str) -> Option<&Timeline> {
         self.threads.get(tmid)
+    }
+
+    /// Every message of the loaded room and thread timelines (thread
+    /// parents too; a reply shown in both comes twice). Memory only:
+    /// encrypted rooms' messages here may be decrypted.
+    pub fn loaded_messages(&self) -> impl Iterator<Item = &Message> + '_ {
+        self.timelines
+            .values()
+            .chain(self.threads.values())
+            .flat_map(|t| t.parent().into_iter().chain(t.messages()))
     }
 
     pub fn presence(&self) -> &Presence {

@@ -311,19 +311,36 @@ impl Workspace {
     /// The user left or was removed: drops the room, its timelines, typing and
     /// pending messages.
     pub(super) fn remove_subscription(&mut self, rid: &str) {
+        let name = self.room_label(rid);
         if self.rooms.remove(rid).is_some() {
             self.mark_room(rid);
         }
-        self.drop_room_timelines(rid);
+        self.drop_room_timelines(rid, name);
         self.index_remove_room(rid);
     }
 
-    fn drop_room_timelines(&mut self, rid: &str) {
+    /// The room's shown name (its id when unknown).
+    fn room_label(&self, rid: &str) -> String {
+        self.rooms
+            .get(rid)
+            .map(|e| e.fname().unwrap_or(e.name()).to_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| rid.to_owned())
+    }
+
+    fn drop_room_timelines(&mut self, rid: &str, name: String) {
         if self.feeds.drop_room(rid) {
             self.mark(Dirty::FEEDS);
         }
         self.later_forget_room(rid);
         self.outbox.retain(|_, i| i.message.rid != rid);
+        let before = self.scheduled.len();
+        if self.scheduled.retain_rooms(|r| r != rid) {
+            // The app tells the user (`take_dropped_scheduled`).
+            self.dropped_scheduled
+                .push((name, before - self.scheduled.len()));
+            self.mark(Dirty::SCHEDULED);
+        }
         self.ephemeral.remove(rid);
         if self.timelines.remove(rid).is_some() {
             self.mark_timeline(rid);
@@ -377,10 +394,22 @@ impl Workspace {
     }
 
     pub(super) fn remove_room(&mut self, rid: &str) {
+        let name = self.room_label(rid);
+        self.remove_room_labelled(rid, name);
+    }
+
+    /// [`Self::remove_room`] of a room whose entry no longer holds its name
+    /// (`name`: as it was shown; empty for its id).
+    pub(super) fn remove_room_labelled(&mut self, rid: &str, name: String) {
+        let name = if name.is_empty() {
+            rid.to_owned()
+        } else {
+            name
+        };
         if self.rooms.remove(rid).is_some() {
             self.mark_room(rid);
         }
-        self.drop_room_timelines(rid);
+        self.drop_room_timelines(rid, name);
         self.index_remove_room(rid);
     }
 

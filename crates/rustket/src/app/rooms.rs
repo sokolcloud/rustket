@@ -184,6 +184,8 @@ impl App {
             sidebar::Out::Omni(m) => self.on_omni_sidebar(sid, m),
             sidebar::Out::Inbox(kind) => self.open_inbox(&sid, kind, false),
             sidebar::Out::Later => self.open_later(&sid, None, false),
+            sidebar::Out::Drafts => self.open_drafts(&sid, false),
+            sidebar::Out::Search => self.open_search(&sid, false),
             sidebar::Out::Directory => self.navigate(component::Nav::Directory),
             sidebar::Out::Create => self.navigate(component::Nav::CreateRoom(
                 crate::dialogs::create_room::Kind::Channel,
@@ -261,7 +263,7 @@ impl App {
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
         };
-        if s.workspace.room(rid).is_none() {
+        if s.workspace.room(rid).is_none() || s.drafts_dialog_open() {
             return Task::none();
         }
         s.omni.close_contact_center();
@@ -421,6 +423,7 @@ impl App {
                 room::Effect::ManageMentionGroups => {
                     self.navigate(component::Nav::MentionGroupSettings)
                 }
+                room::Effect::OpenDrafts => self.open_drafts(sid, false),
                 room::Effect::Call(a) => {
                     self.on_calls(crate::videoconf::Message::Action(sid.clone(), a))
                 }

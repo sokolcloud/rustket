@@ -2,14 +2,17 @@
 
 mod after_update;
 mod components;
+mod drafts;
 mod hosted_user;
 mod inbox;
 mod keys;
 mod later;
 mod links;
 mod mention_groups;
+mod quiet;
 mod reminders;
 mod rooms;
+mod search;
 mod secrets;
 mod session;
 mod star_kept;
@@ -155,6 +158,10 @@ pub enum Modal {
         /// Identifies this run in the read queue (`reads::Origin::ReadAll`).
         stamp: u64,
     },
+    /// Scheduled messages that were not sent on time (`crate::drafts::missed`).
+    Missed(crate::drafts::missed::Missed),
+    /// Pause notifications until a custom time (`crate::quiet`).
+    PauseCustom(crate::later::when::WhenPicker),
 }
 
 pub struct App {
@@ -213,6 +220,9 @@ pub struct App {
     star_kept: star_kept::StarKept,
     /// Reminder firing and notifications (`app::reminders`).
     reminder_timer: reminders::ReminderTimer,
+    /// Pauses, status calls and the timer of scheduled messages
+    /// (`app::quiet`).
+    quiet: quiet::QuietRuntime,
     /// In-app updates (`crate::updater`).
     #[cfg(feature = "self-update")]
     pub updater: crate::updater::Updater,
@@ -311,6 +321,7 @@ impl App {
             offline: crate::cache::Caches::new(flags.offline_cache.clone()),
             star_kept: Default::default(),
             reminder_timer: Default::default(),
+            quiet: Default::default(),
             #[cfg(feature = "self-update")]
             updater: crate::updater::Updater::new(flags.desktop),
         };
@@ -643,10 +654,14 @@ impl App {
             Message::CatchUpKey(k) => self.on_catch_up_key(k),
             Message::Later(sid, epoch, m) => self.on_later(sid, epoch, m),
             Message::LaterKey(k) => self.on_later_key(k),
+            Message::Search(sid, epoch, m) => self.on_search(sid, epoch, m),
             Message::LaterCopy(sid, epoch, r) => self.on_later_copy(sid, epoch, r),
             Message::LaterSync(sid, epoch, m) => self.on_later_sync(sid, epoch, m),
             Message::ReminderSync(sid, epoch, m) => self.on_reminder_sync(sid, epoch, m),
             Message::RemindersDue(at) => self.on_reminders_due(at),
+            Message::Drafts(sid, epoch, m) => self.on_drafts(sid, epoch, m),
+            Message::Missed(m) => self.on_missed(m),
+            Message::Quiet(m) => self.on_quiet(m),
             Message::ReminderNotify(m) => self.on_reminder_notify(m),
             Message::ReminderAction(a) => self.on_reminder_action(a),
             Message::ReminderFetched(sid, epoch, mid, at, r) => {

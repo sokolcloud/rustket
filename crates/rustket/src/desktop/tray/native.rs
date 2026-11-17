@@ -19,11 +19,13 @@ use rust_i18n::t;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use super::{Message, TrayState, status_label, tooltip};
+use super::{Message, TrayState, pause_entries, status_label, tooltip};
 
 const ID_OPEN: &str = "open";
 const ID_QUIT: &str = "quit";
 const STATUS_PREFIX: &str = "status:";
+const PAUSE_PREFIX: &str = "pause:";
+const ID_RESUME: &str = "resume";
 
 /// Icon size in pixels (the menu bar scales it to its height).
 #[cfg(windows)]
@@ -115,6 +117,24 @@ fn menu(state: &TrayState) -> Menu {
         }
         items.push(Box::new(sub));
     }
+    let pause = pause_entries(state);
+    if state.status.is_some() && !pause.is_empty() {
+        let label = state
+            .paused
+            .clone()
+            .unwrap_or_else(|| t!("quiet.pause").into_owned());
+        let sub = Submenu::new(label, true);
+        for (i, (label, m)) in pause.into_iter().enumerate() {
+            let id = match m {
+                Message::Resume => ID_RESUME.to_owned(),
+                _ => format!("{PAUSE_PREFIX}{i}"),
+            };
+            if let Err(e) = sub.append(&MenuItem::with_id(id, label, true, None)) {
+                tracing::debug!(error = %e, "tray menu");
+            }
+        }
+        items.push(Box::new(sub));
+    }
     items.push(Box::new(PredefinedMenuItem::separator()));
     items.push(Box::new(MenuItem::with_id(
         ID_QUIT,
@@ -150,7 +170,13 @@ fn set_handlers() {
         let m = match id {
             ID_OPEN => Some(Message::Show),
             ID_QUIT => Some(Message::Quit),
-            _ => status_from_id(id).map(Message::SetStatus),
+            ID_RESUME => Some(Message::Resume),
+            _ => status_from_id(id).map(Message::SetStatus).or_else(|| {
+                let i: usize = id.strip_prefix(PAUSE_PREFIX)?.parse().ok()?;
+                rustket_core::quiet::PausePreset::ALL
+                    .get(i)
+                    .map(|p| Message::Pause(*p))
+            }),
         };
         if let Some(m) = m {
             send(m);
@@ -217,7 +243,17 @@ pub fn apply(state: &TrayState) {
         {
             tracing::debug!(error = %e, "tray tooltip");
         }
-        if relabel || state.status != n.shown.status || state.offered != n.shown.offered {
+        if (state.paused != n.shown.paused)
+            && let Err(e) = n.icon.set_tooltip(Some(tooltip_text(state)))
+        {
+            tracing::debug!(error = %e, "tray tooltip");
+        }
+        if relabel
+            || state.status != n.shown.status
+            || state.offered != n.shown.offered
+            || state.paused != n.shown.paused
+            || state.pause_labels != n.shown.pause_labels
+        {
             n.icon.set_menu(Some(Box::new(menu(state))));
         }
         n.shown = state.clone();

@@ -8,7 +8,8 @@
 //! newest [`MESSAGES_PER_TIMELINE`] messages of recently opened rooms and
 //! threads (least recently used ones are evicted beyond a total size), the
 //! sidebar's thread data ([`CachedThreads`]) and the persistent outbox
-//! (pending text messages with their client ids).
+//! (pending text messages with their client ids, and scheduled messages
+//! with their send time).
 //!
 //! Tokens and secrets never go here (they stay in the secret store).
 //! End-to-end encrypted messages are stored as the server sent them
@@ -307,6 +308,15 @@ pub struct OutboxEntry {
     pub maybe_sent: bool,
     /// The last error of a failed send.
     pub error: Option<String>,
+    /// A scheduled message (`crate::scheduled`): when to send it (UTC ms).
+    /// It is not a pending message until then.
+    pub send_at: Option<i64>,
+    /// A queued scheduled message that fell due (`send_at` is `None`): a
+    /// final failure puts it back with the scheduled ones.
+    pub scheduled: bool,
+    /// Reactions to add once it is sent (a poll's option reactions,
+    /// `crate::poll`), as shortcodes.
+    pub reactions: Vec<String>,
 }
 
 /// One set of changes, written in one transaction. `None` / empty fields
