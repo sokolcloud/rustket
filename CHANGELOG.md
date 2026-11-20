@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-11-20
+
+### Added
+
+- Settings → Help, "Indicators and notifications": every kind of signal
+  (mention, DM, @all/@here, highlight word, thread reply, reminder, call,
+  room settings, pause, Busy, …) has a short code and live samples of how the
+  sidebar, collapsed sections, workspace icon, window title, tray, toast,
+  sound and feed show it, computed from your current settings. Also opened
+  from the status menu and from Settings → Notifications.
+- Rocket.Chat's own notification sounds are bundled and replace the system
+  message sound: the room's sound wins, otherwise your account's New message
+  sound (new omnichannel chats use the New room sound), at your account's
+  volumes; picking a sound in Account → Preferences plays it. When the
+  system shows the notification, it plays the sound itself so Do Not Disturb
+  applies: GNOME gets the sound file, the macOS app a copy in
+  `~/Library/Sounds` (files named `rustket-*`, old ones removed again), and
+  Windows plays its own notification sound with the toast. When Rustket plays
+  a sound itself, on Linux it first checks KDE Plasma's and GNOME's Do Not
+  Disturb.
+- Highlighted words (Account → Preferences) mark the message row and the word
+  in rooms and threads, matched like Rocket.Chat does.
+- The room's Threads button shows a dot when the room has unread threads (red
+  or orange for mentions), and the Threads panel marks them.
+- Mentions in rooms larger than the server's `Notifications_Max_Room_Members`
+  now notify: the server sends no notification there, so Rustket shows it
+  itself from the room's last message.
+
+### Changed
+
+- One unread ranking everywhere: mentions and unread direct messages (red) >
+  @all/@here (orange) > new messages (muted blue) > thread replies only
+  (slate) > muted rooms (grey). A room that only gets an unread dot for plain
+  messages shows a blue dot, and room names are bold where Rocket.Chat makes
+  them bold.
+- Room notification settings apply in every view: with "Receive
+  notifications" off the room is grey (direct mentions stay red; Activity
+  lists only its direct mentions), "Mute @all and @here mentions" removes
+  the orange and the feed highlight, and with "Show mention badges" off
+  there is no red or orange (Rocket.Chat web keeps red there).
+- The workspace icon and window title (`Rustket (N)` / `Rustket •`) count
+  mentions (direct messages included) only, and the tray dot is red only for
+  them; other unread shows as a dot (orange, blue or slate on the workspace
+  icon; orange or a quiet dot in the tray). The tray tooltip starts with the
+  mentions: "Mentions: N · unread rooms: M".
+- The tooltip of a collapsed section counts the unread rows you see, thread
+  rows included and muted rooms excluded.
+- The account preference "Mute the conversation you are looking at"
+  (Rocket.Chat's muteFocusedConversations) is honoured: turned off, messages
+  of the conversation on screen notify too. A thread reply counts as on
+  screen only when its thread is open (or the reply is also shown in the
+  room), so other replies in the open room now notify; such a toast may come
+  about half a second later.
+- Reminders play your account's New message sound instead of the system alarm
+  sound. They follow "Play a sound", the account's "None" and volumes, and
+  Busy: the reminder still shows, silently.
+- "Play a sound" (Settings → Notifications) works without desktop
+  notifications. **Upgrade note:** if you had desktop notifications off and
+  "Play a sound" on (the default; it was greyed out), message sounds now play;
+  switch "Play a sound" off to keep the old behaviour (this also silences
+  reminder sounds).
+
 ## [0.2.8] - 2026-11-17
 
 ### Added
@@ -338,7 +400,8 @@ First public release.
 - Auth tokens and end-to-end encryption keys are kept in the desktop keyring,
   with a warned-about private file fallback when no keyring is available.
 
-[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/sokolcloud/rustket/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/sokolcloud/rustket/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/sokolcloud/rustket/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/sokolcloud/rustket/compare/v0.2.5...v0.2.6

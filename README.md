@@ -37,15 +37,15 @@ CI runs formatting, clippy and the tests on Linux, Windows x64, Windows ARM64
 and macOS for every push and pull request; the release workflow builds and publishes the packages
 of every tag (badges above).
 
-Results for 0.2.8 on Linux (x86_64), on the release commit:
+Results for 0.2.9 on Linux (x86_64), on the release commit:
 
 | Check | Result |
 |---|---|
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | no warnings |
-| `cargo test --workspace` (unit, fixture, mock-server and packaging tests) | 2049 passed, 0 failed, 4 ignored |
-| Live tests against Rocket.Chat 8.9.1 in Docker (`dev/`; `RUSTKET_TEST_SERVER=… cargo test -p rocketchat -- --test-threads=1`, then `-p rustket-core`) | 66 live tests passed, 0 failed (968 tests of the two crates in that run) |
-| `cargo build --release -p rustket` | builds, `rustket --version` prints `rustket 0.2.8` |
+| `cargo test --workspace` (unit, fixture, mock-server and packaging tests) | 2160 passed, 0 failed, 6 ignored |
+| Live tests against Rocket.Chat 8.9.1 in Docker (`dev/`; `RUSTKET_TEST_SERVER=… cargo test -p rocketchat -- --test-threads=1`, then `-p rustket-core`) | 66 live tests passed, 0 failed (994 tests of the two crates in that run) |
+| `cargo build --release -p rustket` | builds, `rustket --version` prints `rustket 0.2.9` |
 | Release packages (deb, rpm, AppImage, Windows x64/ARM64 installer and zip, macOS universal dmg) | built by the release workflow, see the [release page](https://github.com/sokolcloud/rustket/releases/latest) |
 
 ## Install
@@ -57,7 +57,7 @@ Packages for every release are on the
 ### Debian / Ubuntu (.deb)
 
 ```sh
-sudo apt install ./rustket_0.2.8-1_amd64.deb
+sudo apt install ./rustket_0.2.9-1_amd64.deb
 ```
 
 The package installs `/usr/bin/rustket`, the desktop entry
@@ -72,8 +72,8 @@ Third-party licenses: `/usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz`.
 ### Fedora / openSUSE (.rpm)
 
 ```sh
-sudo dnf install ./rustket-0.2.8-1.x86_64.rpm       # Fedora
-sudo zypper install ./rustket-0.2.8-1.x86_64.rpm    # openSUSE
+sudo dnf install ./rustket-0.2.9-1.x86_64.rpm       # Fedora
+sudo zypper install ./rustket-0.2.9-1.x86_64.rpm    # openSUSE
 ```
 
 Same layout and runtime dependencies as the .deb (libraries are required by
@@ -85,8 +85,8 @@ soname, so both distributions resolve them); the license file is in
 ### AppImage
 
 ```sh
-chmod +x Rustket-0.2.8-x86_64.AppImage
-./Rustket-0.2.8-x86_64.AppImage
+chmod +x Rustket-0.2.9-x86_64.AppImage
+./Rustket-0.2.9-x86_64.AppImage
 ```
 
 To make `rocketchat://` links open the AppImage, use the "Open rocketchat:// links
@@ -102,12 +102,12 @@ building it yourself, build on the oldest distribution you want to support.
 
 Two downloads for x64 and ARM64 (Windows 10 or 11):
 
-- `Rustket-0.2.8-x64-setup.exe` / `Rustket-0.2.8-arm64-setup.exe`: installer.
+- `Rustket-0.2.9-x64-setup.exe` / `Rustket-0.2.9-arm64-setup.exe`: installer.
   It installs for the current user without administrator rights (the first page
   offers an all-users install), adds a Start menu shortcut, optionally a
   desktop icon, and registers `rocketchat://` links (a checked option, since it takes them over from the official Rocket.Chat app). Uninstall from Settings →
   Apps.
-- `rustket-0.2.8-windows-x64.zip` / `rustket-0.2.8-windows-arm64.zip`: portable.
+- `rustket-0.2.9-windows-x64.zip` / `rustket-0.2.9-windows-arm64.zip`: portable.
   Extract anywhere and run `rustket.exe`; use the "Open rocketchat:// links with
   Rustket" action in the app to register the links for that copy.
 
@@ -117,7 +117,7 @@ click **More info → Run anyway**. Third-party licenses:
 
 ### macOS
 
-`Rustket-0.2.8-macos-universal.dmg` runs natively on Apple Silicon and Intel
+`Rustket-0.2.9-macos-universal.dmg` runs natively on Apple Silicon and Intel
 Macs with macOS 11 or newer. Open it and drag Rustket to Applications.
 
 The app is not notarized, so Gatekeeper blocks the first start. Either
@@ -212,6 +212,27 @@ If you prefer your window manager's decorations, turn on **Settings → Appearan
 → Use system window title bar**: the window gets the system title bar right
 away and the workspaces move back to a column on the left.
 
+### Indicators, notifications and sounds
+
+Unread signals are ranked the same way everywhere: mentions and direct
+messages (red), `@all`/`@here` (orange), new messages (muted blue), thread
+replies only (slate), rooms with notifications turned off (grey); a room's
+"Show mention badges" and "Mute @all and @here mentions" settings apply in
+every view.
+The workspace icon and the window title (`Rustket (N)`, or `Rustket •` when
+there is unread but no mention) count mentions only, and the tray icon's dot
+is red only for them.
+**Settings → Help** explains every signal with a short code and samples
+computed from your current settings.
+
+Message sounds are Rocket.Chat's own: the room's sound, otherwise the account's
+New message sound, at the account's volume. **Play a sound** (Settings →
+Notifications) also works with desktop notifications off. When the system shows
+the notification it plays the sound, so its Do Not Disturb applies (GNOME,
+macOS app, Windows, where the toast uses the Windows notification sound); when
+Rustket plays a sound itself, KDE Plasma's and GNOME's Do Not Disturb silence
+it, and on other desktops, Windows and macOS pausing notifications does.
+
 ### Hardware acceleration
 
 Rendering uses the GPU (wgpu: Vulkan or OpenGL/EGL) by default. If the window is
@@ -265,6 +286,7 @@ ICED_BACKEND=tiny-skia rustket
 | Servers and preferences | `~/.config/rustket/config.toml` (`$XDG_CONFIG_HOME`) |
 | Offline cache: rooms, settings and the newest messages per room, plus messages not sent yet | `~/.local/share/rustket/<server id>/cache.sqlite` (`$XDG_DATA_HOME`), private to the user; one per server, deleted when you log out of or remove that server. **Settings → Storage → Offline cache → Clear** empties it but keeps unsent messages. Encrypted rooms are stored as ciphertext only and their unsent messages are not kept |
 | Downloaded images | `~/.cache/rustket/images/` (`$XDG_CACHE_HOME`); the oldest files are removed past the limit in **Settings → Storage** (500 MB by default); safe to delete while the app is closed |
+| Notification sounds decoded at your volume | `~/.cache/rustket/sounds/`; on macOS the app also keeps copies named `rustket-*` in `~/Library/Sounds` so notifications can play them (unused ones are removed) |
 | Media opened in another app (video, audio, files) | `~/.cache/rustket/media/`, removed after 24 hours |
 | Decrypted E2E attachments opened in another app | `~/.cache/rustket/media/e2e/`, private to the user, removed after 24 hours |
 | Auth tokens and E2E keys | the desktop keyring (Secret Service: GNOME Keyring, KWallet, KeePassXC) |
@@ -314,6 +336,6 @@ views into `docs/screenshots/` (X11 with `wmctrl`, `xwd` and Python PIL).
 ## License
 
 Rustket is licensed under the MIT License; see `LICENSE`. The bundled
-third-party crates, fonts, icons and data tables keep their own licenses
+third-party crates, fonts, icons, sounds and data tables keep their own licenses
 (collected in `THIRD-PARTY-NOTICES` in the packages, generated by
 `packaging/notices.py`).
