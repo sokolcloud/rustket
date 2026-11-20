@@ -192,7 +192,9 @@ impl App {
         subs.push(self.desktop.subscription().map(Message::Desktop));
         subs.push(self.calls.subscription().map(Message::Calls));
         match &self.screen {
-            Screen::Settings(c) => subs.push(c.subscription().map(Message::Settings)),
+            Screen::Settings(c) => {
+                subs.push(c.subscription(!self.desktop.hidden).map(Message::Settings))
+            }
             Screen::Account(sid, c) => subs.push(
                 c.subscription()
                     .with(sid.clone())

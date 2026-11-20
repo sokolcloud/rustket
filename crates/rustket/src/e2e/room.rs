@@ -174,6 +174,7 @@ pub fn menu_entries_with<M>(ws: &Workspace, rid: &str, f: fn(Msg) -> M) -> Vec<M
                 disabled: i.disabled,
                 checked: i.checked,
                 swatch: i.swatch,
+                dot: i.dot,
                 on_select: f(i.on_select),
             }),
             MenuEntry::Header(h) => MenuEntry::Header(h),

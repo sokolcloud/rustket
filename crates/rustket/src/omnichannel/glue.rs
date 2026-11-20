@@ -89,13 +89,14 @@ impl App {
         let Some(s) = self.servers.get(sid) else {
             return;
         };
-        // Busy users get no new-room sound (`useNotifyUser`), nor do paused
-        // notifications.
-        if s.workspace.my_status() == UserStatus::Busy || self.quiet_now().paused {
-            return;
-        }
-        if let Some(name) = super::new_room_sound(&s.workspace, self.config.ui.sound) {
-            self.desktop.sound.play(Some(&name));
+        let sound = super::new_chat_sound(
+            &crate::desktop::AccountSound::of(&s.workspace),
+            self.config.ui.sound,
+            s.workspace.my_status() == UserStatus::Busy,
+            self.quiet_now().paused,
+        );
+        if let Some(sound) = sound {
+            self.desktop.sound.play_alone(&sound);
         }
     }
 

@@ -33,6 +33,11 @@
 //! The center exists only for an app bundle with a bundle id: unbundled
 //! development builds log once and show no notifications.
 //!
+//! Sound: the notification plays [`Outgoing::sound`] (so Focus applies),
+//! as a copy of the Rocket.Chat sound in `~/Library/Sounds` named by its
+//! stem ([`sound::notification_sound`], prepared on the worker), else the
+//! default notification sound.
+//!
 //! Parity with the native API: the timeout and urgency of [`Outgoing`] have
 //! no `NSUserNotification` counterpart (banner or alert is the user's choice
 //! in System Settings), and whether buttons show depends on that style.
@@ -57,6 +62,7 @@ use objc2_foundation::{
     NSUserNotificationCenterDelegate, NSUserNotificationDefaultSoundName, ns_string,
 };
 
+use super::super::sound::{self, OsSound, Platform, Route, Toast};
 use super::{Event, Notifier, Outgoing, Signal, native, text};
 
 /// `userInfo` key of the action button's action key.
@@ -251,8 +257,9 @@ fn delegate() -> Option<&'static Delegate> {
     DELEGATE.get().and_then(|d| d.as_deref())
 }
 
-/// Builds `n` as notification `id` and hands it to the main thread.
-fn post(delegate: &Delegate, id: u32, n: &Outgoing) {
+/// Builds `n` as notification `id`, playing its sound as `route` says, and
+/// hands it to the main thread.
+fn post(delegate: &Delegate, id: u32, n: &Outgoing, route: &Route) {
     let image = n
         .image
         .as_ref()
@@ -262,10 +269,18 @@ fn post(delegate: &Delegate, id: u32, n: &Outgoing) {
         note.setIdentifier(Some(&NSString::from_str(&text::mac_identifier(&NONCE, id))));
         note.setTitle(Some(&NSString::from_str(&n.title)));
         note.setInformativeText(Some(&NSString::from_str(&n.body)));
-        if n.sound {
-            // SAFETY: an immutable `NSString` constant of Foundation.
-            let sound = unsafe { NSUserNotificationDefaultSoundName };
-            note.setSoundName(Some(sound));
+        let named = match route {
+            Route::Os(OsSound::File(f)) => f.file_stem().and_then(|s| s.to_str()),
+            _ => None,
+        };
+        match (route.by_os(), named) {
+            (true, Some(name)) => note.setSoundName(Some(&NSString::from_str(name))),
+            (true, None) => {
+                // SAFETY: an immutable `NSString` constant of Foundation.
+                let sound = unsafe { NSUserNotificationDefaultSoundName };
+                note.setSoundName(Some(sound));
+            }
+            (false, _) => {}
         }
         if let Some(path) = image
             && let Some(img) = NSImage::initWithContentsOfFile(
@@ -331,15 +346,22 @@ impl Notifier for MacNotifier {
             if delegate().is_none() {
                 return Event::Failed("no notification center".into());
             }
-            let server_sound = n.sound;
             let posted = tokio::task::spawn_blocking(move || {
+                let file = n.sound.as_ref().and_then(sound::notification_sound);
+                let route = sound::route(
+                    Platform::MacOs,
+                    Toast::Shown { plays_sound: true },
+                    n.sound.as_ref(),
+                    file.as_deref(),
+                );
                 if let Some(d) = delegate() {
-                    post(d, id, &n);
+                    post(d, id, &n, &route);
                 }
+                route.by_os()
             })
             .await;
             match posted {
-                Ok(()) => Event::Shown { id, server_sound },
+                Ok(server_sound) => Event::Shown { id, server_sound },
                 Err(e) => Event::Failed(e.to_string()),
             }
         }

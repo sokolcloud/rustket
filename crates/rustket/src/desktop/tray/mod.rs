@@ -1,4 +1,5 @@
-//! System tray: the app icon (with a red dot while something is unread), a
+//! System tray: the app icon (with a dot while something is unread: red for
+//! mentions, orange for `@all`, a quiet one otherwise; see [`TrayLevel`]), a
 //! tooltip with the counts (and a notification pause) and a menu: open,
 //! status, pause notifications, quit. Clicking the icon
 //! toggles the window.
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use iced::{Subscription, Task};
 use rocketchat::models::UserStatus;
 use rust_i18n::t;
+use rustket_core::room_list::{BadgeVariant, WorkspaceSignal};
 use tokio::sync::watch;
 
 use super::Request;
@@ -37,11 +39,41 @@ pub enum Message {
     Quit,
 }
 
+/// The dot on the tray icon, weakest first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TrayLevel {
+    /// The plain icon: nothing counted is unread.
+    #[default]
+    None,
+    /// A quiet dot (the unread colour): plain or thread unread only.
+    Unread,
+    /// An orange dot: `@all` / `@here`, no mentions.
+    GroupMention,
+    /// A red dot: mentions (a DM included).
+    Mention,
+}
+
+impl TrayLevel {
+    /// The dot for the unread signal over all accounts.
+    pub fn of(signal: &WorkspaceSignal) -> Self {
+        match signal.strongest {
+            _ if signal.mentions > 0 => TrayLevel::Mention,
+            Some(BadgeVariant::Mention) => TrayLevel::Mention,
+            Some(BadgeVariant::GroupMention) => TrayLevel::GroupMention,
+            Some(_) => TrayLevel::Unread,
+            None => TrayLevel::None,
+        }
+    }
+}
+
 /// What the tray shows.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrayState {
+    /// Counted unread rooms over all accounts.
     pub unread: u64,
     pub mentions: u64,
+    /// The icon's dot.
+    pub level: TrayLevel,
     /// The user's status on the active server (`None`: not logged in).
     pub status: Option<UserStatus>,
     /// Statuses the active server allows, in menu order.
@@ -69,7 +101,7 @@ pub fn tooltip(state: &TrayState) -> String {
     let counts = match (state.unread, state.mentions) {
         (0, 0) => t!("desktop.tray_no_unread").into_owned(),
         (u, 0) => t!("desktop.tray_unread", count = u).into_owned(),
-        (u, m) => t!("desktop.tray_unread_mentions", count = u, mentions = m).into_owned(),
+        (u, m) => t!("desktop.tray_unread_mentions", mentions = m, count = u).into_owned(),
     };
     match &state.paused {
         Some(p) => format!("{counts}\n{p}"),
@@ -145,11 +177,14 @@ impl Tray {
         self.state.borrow().clone()
     }
 
-    pub fn set_unread(&mut self, unread: u64, mentions: u64) {
+    /// The unread signal over all accounts: the counts and the icon's dot.
+    pub fn set_unread(&mut self, signal: &WorkspaceSignal) {
+        let (unread, mentions, level) = (signal.rooms, signal.mentions, TrayLevel::of(signal));
         self.state.send_if_modified(|s| {
-            let changed = (s.unread, s.mentions) != (unread, mentions);
+            let changed = (s.unread, s.mentions, s.level) != (unread, mentions, level);
             s.unread = unread;
             s.mentions = mentions;
+            s.level = level;
             changed
         });
         self.apply();
@@ -243,15 +278,19 @@ mod tests {
     fn state_updates_and_requests() {
         let mut tray = Tray::default();
         assert!(!tray.enabled);
-        tray.set_unread(3, 1);
+        tray.set_unread(&WorkspaceSignal {
+            mentions: 1,
+            strongest: Some(BadgeVariant::Mention),
+            rooms: 3,
+        });
         tray.set_status(Some((
             UserStatus::Busy,
             vec![UserStatus::Online, UserStatus::Busy],
         )));
         let s = tray.state();
         assert_eq!(
-            (s.unread, s.mentions, s.status),
-            (3, 1, Some(UserStatus::Busy))
+            (s.unread, s.mentions, s.level, s.status),
+            (3, 1, TrayLevel::Mention, Some(UserStatus::Busy))
         );
         let (_, r) = tray.update(Message::SetStatus(UserStatus::Away));
         assert!(matches!(
@@ -272,12 +311,41 @@ mod tests {
         s.unread = 2;
         assert_eq!(tooltip(&s), "Unread rooms: 2");
         s.mentions = 1;
-        assert_eq!(tooltip(&s), "Unread rooms: 2, mentions: 1");
+        assert_eq!(tooltip(&s), "Mentions: 1 · unread rooms: 2");
         s.paused = Some("Notifications paused until 14:30".into());
         assert_eq!(
             tooltip(&s),
-            "Unread rooms: 2, mentions: 1\nNotifications paused until 14:30"
+            "Mentions: 1 · unread rooms: 2\nNotifications paused until 14:30"
         );
+    }
+
+    /// Items 3/4/7: red for mentions, orange for `@all` without mentions, a
+    /// quiet dot for any other counted unread, nothing otherwise.
+    #[test]
+    fn tray_levels() {
+        let sig = |mentions, strongest, rooms| WorkspaceSignal {
+            mentions,
+            strongest,
+            rooms,
+        };
+        use BadgeVariant::*;
+        assert_eq!(TrayLevel::of(&sig(0, None, 0)), TrayLevel::None);
+        assert_eq!(TrayLevel::of(&sig(2, Some(Mention), 1)), TrayLevel::Mention);
+        assert_eq!(
+            TrayLevel::of(&sig(0, Some(GroupMention), 2)),
+            TrayLevel::GroupMention
+        );
+        assert_eq!(TrayLevel::of(&sig(0, Some(Unread), 1)), TrayLevel::Unread);
+        assert_eq!(TrayLevel::of(&sig(0, Some(Thread), 1)), TrayLevel::Unread);
+        let mut tray = Tray::default();
+        tray.set_unread(&sig(0, Some(GroupMention), 4));
+        let s = tray.state();
+        assert_eq!(
+            (s.unread, s.mentions, s.level),
+            (4, 0, TrayLevel::GroupMention)
+        );
+        tray.set_unread(&sig(0, Some(Thread), 4));
+        assert_eq!(tray.state().level, TrayLevel::Unread);
     }
 
     #[test]

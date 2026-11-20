@@ -53,6 +53,8 @@ pub(super) struct Cx<'r, 'a> {
     code: Cell<usize>,
     /// A dropped quote link left whitespace behind: trim the next text.
     trim_next: Cell<bool>,
+    /// Highlight words marked in plain text ([`Cx::with_highlights`]).
+    words: rustket_core::highlight::Highlights,
 }
 
 impl<'r, 'a> Cx<'r, 'a> {
@@ -66,7 +68,24 @@ impl<'r, 'a> Cx<'r, 'a> {
             spoiler: Cell::new(0),
             code: Cell::new(0),
             trim_next: Cell::new(false),
+            words: Default::default(),
         }
+    }
+
+    /// Marks the user's highlight words in the text of `msg` when someone
+    /// else sent it (the row gets the mention highlight too,
+    /// `crate::room::timeline::row::highlights_row`). Only words the raw
+    /// text matches, as the server and the row see it: `_word_` (italic)
+    /// does not count there, so it is not marked either.
+    pub fn with_highlights(mut self, msg: &Message) -> Self {
+        let own = self.rc.workspace.user_id().is_some_and(|id| id == msg.u.id);
+        if !own && !msg.is_system() {
+            let words = super::highlight_words(self.rc.workspace);
+            if !words.is_empty() {
+                self.words = rustket_core::highlight::Highlights::cached(&words).matching(&msg.msg);
+            }
+        }
+        self
     }
 
     /// Spoiler and code block indices start at `base` (attachments use
@@ -152,7 +171,7 @@ impl Fmt {
 
 /// Renders a whole `md` root.
 pub(super) fn blocks(root: &[Block], mid: &str, msg: &Message, rc: &RenderCtx<'_>) -> El {
-    let cx = Cx::new(rc, mid, Some(msg));
+    let cx = Cx::new(rc, mid, Some(msg)).with_highlights(msg);
     block_list(root, &cx, 0)
 }
 
@@ -170,11 +189,11 @@ pub(super) fn inline_paragraph(value: &[Inline], cx: &Cx<'_, '_>, size: f32) -> 
         .into()
 }
 
-/// Plain text with clickable URLs (messages without `md`).
-pub(super) fn plain_paragraph(text: &str, mid: &str, rc: &RenderCtx<'_>) -> El {
-    let cx = Cx::new(rc, mid, None);
+/// The text of `msg` with clickable URLs (messages without `md`).
+pub(super) fn plain_paragraph(msg: &Message, rc: &RenderCtx<'_>) -> El {
+    let cx = Cx::new(rc, &msg.id, None).with_highlights(msg);
     let mut spans = Vec::new();
-    push_linkified(&mut spans, text, &Fmt::default(), &cx);
+    push_linkified(&mut spans, &msg.msg, &Fmt::default(), &cx);
     paragraph(spans, TEXT_BODY)
 }
 
@@ -608,7 +627,7 @@ fn push_linkified(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>) {
     let mut last = 0;
     for (a, b) in find_links(text) {
         if a > last {
-            push_text(out, &text[last..a], fmt);
+            push_marked(out, &text[last..a], fmt, cx);
         }
         let url = &text[a..b];
         match safe_url(url) {
@@ -625,8 +644,37 @@ fn push_linkified(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>) {
         last = b;
     }
     if last < text.len() {
-        push_text(out, &text[last..], fmt);
+        push_marked(out, &text[last..], fmt, cx);
     }
+}
+
+/// Text with the highlight words of `cx` marked like a mention of the user
+/// (link text stays a link).
+fn push_marked(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>) {
+    if cx.words.is_empty() || fmt.link.is_some() {
+        return push_text(out, text, fmt);
+    }
+    let mut last = 0;
+    for r in cx.words.ranges(text) {
+        push_text(out, &text[last..r.start], fmt);
+        out.push(highlight_word(&text[r.clone()], cx.t, fmt));
+        last = r.end;
+    }
+    push_text(out, &text[last..], fmt);
+}
+
+/// A matched highlight word: the colours of a mention of the user.
+fn highlight_word(word: &str, t: &Tokens, fmt: &Fmt) -> Sp {
+    let mut s = span(word.to_owned())
+        .font(fmt.semibold())
+        .color(t.mention_me_fg)
+        .background(t.mention_me_bg)
+        .border(border::rounded(radius_sm()))
+        .strikethrough(fmt.strike);
+    if let Some(size) = fmt.size {
+        s = s.size(size);
+    }
+    s
 }
 
 fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
@@ -634,9 +682,9 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
     match node {
         Inline::PlainText { value } => {
             if cx.trim_next.replace(false) {
-                push_text(out, value.trim_start(), fmt);
+                push_marked(out, value.trim_start(), fmt, cx);
             } else {
-                push_text(out, value, fmt);
+                push_marked(out, value, fmt, cx);
             }
         }
         Inline::Bold { value } => {
@@ -820,10 +868,16 @@ fn code_span(code: &str, t: &Tokens, fmt: &Fmt) -> Sp {
     s
 }
 
+/// A mention chip of `name` takes the "me" colours: the user `me`, `@all`
+/// or `@here`.
+pub(crate) fn mention_is_mine(name: &str, me: Option<&str>) -> bool {
+    name == "all" || name == "here" || me == Some(name)
+}
+
 fn mention_user(name: &str, cx: &Cx<'_, '_>, fmt: &Fmt) -> Sp {
     let t = cx.t;
     let special = name == "all" || name == "here";
-    let me = special || cx.me == Some(name);
+    let me = mention_is_mine(name, cx.me);
     let shown = if cx.rc.use_real_names && !special {
         cx.msg
             .and_then(|m| m.mentions.as_ref())
@@ -1307,6 +1361,106 @@ mod tests {
 
     fn plain(v: &str) -> serde_json::Value {
         serde_json::json!({"type": "PLAIN_TEXT", "value": v})
+    }
+
+    /// Someone else's message marks the user's highlight words (not in
+    /// links); the user's own message does not.
+    #[test]
+    fn highlight_words_are_marked() {
+        let mut fx = Fx::new();
+        fx.ws.apply_me(
+            serde_json::from_value(serde_json::json!({
+                "_id": "me", "username": "me",
+                "settings": {"preferences": {"highlights": ["deploy", " "]}}
+            }))
+            .unwrap(),
+        );
+        let rc = fx.rc();
+        let msg = |uid: &str| Message {
+            id: "m1".into(),
+            msg: "Deploy now, no deployment [deploy](https://x.org)".into(),
+            u: rocketchat::models::UserRef {
+                id: uid.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let value = para(serde_json::json!([
+            plain("Deploy now, no deployment "),
+            {"type": "LINK", "value": {"src": {"type": "PLAIN_TEXT", "value": "https://x.org"}, "label": [plain("deploy")]}},
+        ]));
+        let bob = msg("bob");
+        let cx = Cx::new(&rc, "m1", Some(&bob)).with_highlights(&bob);
+        let spans = inline_spans(&value, &cx);
+        let texts: Vec<&str> = spans.iter().map(|s| s.text.as_ref()).collect();
+        assert_eq!(texts, ["Deploy", " now, no deployment ", "deploy"]);
+        let t = tokens();
+        assert_eq!(
+            spans[0].highlight.map(|h| h.background),
+            Some(t.mention_me_bg.into())
+        );
+        assert_eq!(spans[0].color, Some(t.mention_me_fg));
+        assert!(spans[1].highlight.is_none());
+        assert!(spans[2].link.is_some() && spans[2].highlight.is_none());
+        let own = msg("me");
+        let cx = Cx::new(&rc, "m1", Some(&own)).with_highlights(&own);
+        let spans = inline_spans(&value, &cx);
+        assert!(spans.iter().all(|s| s.highlight.is_none()));
+        // `_deploy_` is italic text: the raw text has `_` around the word,
+        // which the server does not count, so it is not marked.
+        let italic = Message {
+            msg: "_deploy_ is tomorrow".into(),
+            ..msg("bob")
+        };
+        let value = para(serde_json::json!([
+            {"type": "ITALIC", "value": [plain("deploy")]},
+            plain(" is tomorrow"),
+        ]));
+        let cx = Cx::new(&rc, "m1", Some(&italic)).with_highlights(&italic);
+        let spans = inline_spans(&value, &cx);
+        assert!(spans.iter().all(|s| s.highlight.is_none()), "{spans:?}");
+    }
+
+    /// Messages without `md` (`plain_paragraph`) mark exactly when the Help
+    /// page says so (`help::model`'s `word_marked`: someone else's,
+    /// non-system text that `rustket_core::highlight` matches).
+    #[test]
+    fn plain_messages_mark_like_the_help_page() {
+        let mut fx = Fx::new();
+        fx.ws.apply_me(
+            serde_json::from_value(serde_json::json!({
+                "_id": "me", "username": "me",
+                "settings": {"preferences": {"highlights": ["deploy"]}}
+            }))
+            .unwrap(),
+        );
+        let rc = fx.rc();
+        let words = vec!["deploy".to_owned()];
+        for (uid, t, text) in [
+            ("bob", None, "Hello deploy"),
+            ("bob", None, "Hello deployment"),
+            ("bob", None, "see https://x.org/deploy and deploy"),
+            ("me", None, "Hello deploy"),
+            ("bob", Some("uj"), "deploy"),
+        ] {
+            let m = Message {
+                id: "m1".into(),
+                msg: text.into(),
+                t: t.map(str::to_owned),
+                u: rocketchat::models::UserRef {
+                    id: uid.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let cx = Cx::new(&rc, "m1", None).with_highlights(&m);
+            let mut spans = Vec::new();
+            push_linkified(&mut spans, &m.msg, &Fmt::default(), &cx);
+            let marked = spans.iter().any(|s| s.highlight.is_some());
+            let help =
+                uid != "me" && !m.is_system() && rustket_core::highlight::contains(&m.msg, &words);
+            assert_eq!(marked, help, "{uid} {t:?} {text}");
+        }
     }
 
     #[test]

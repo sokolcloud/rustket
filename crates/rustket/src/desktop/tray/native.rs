@@ -19,7 +19,7 @@ use rust_i18n::t;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use super::{Message, TrayState, pause_entries, status_label, tooltip};
+use super::{Message, TrayLevel, TrayState, pause_entries, status_label, tooltip};
 
 const ID_OPEN: &str = "open";
 const ID_QUIT: &str = "quit";
@@ -68,12 +68,8 @@ pub fn events() -> impl futures::Stream<Item = Message> {
     futures::stream::once(async { Message::Init }).chain(rx)
 }
 
-fn unread(state: &TrayState) -> bool {
-    state.unread > 0 || state.mentions > 0
-}
-
-fn icon(unread: bool) -> Option<Icon> {
-    let (w, h, px) = super::super::icon::rgba(ICON_SIZE, unread)?;
+fn icon(level: TrayLevel) -> Option<Icon> {
+    let (w, h, px) = super::super::icon::rgba(ICON_SIZE, level)?;
     Icon::from_rgba(px, w, h)
         .inspect_err(|e| tracing::debug!(error = %e, "bad tray icon"))
         .ok()
@@ -207,7 +203,7 @@ pub fn create(state: &TrayState) -> bool {
             .with_tooltip(tooltip_text(state))
             .with_menu(Box::new(menu(state)))
             .with_menu_on_left_click(false);
-        if let Some(i) = icon(unread(state)) {
+        if let Some(i) = icon(state.level) {
             builder = builder.with_icon(i);
         }
         match builder.build() {
@@ -232,8 +228,8 @@ pub fn apply(state: &TrayState) {
         let Some(n) = slot else {
             return;
         };
-        if unread(state) != unread(&n.shown)
-            && let Err(e) = n.icon.set_icon(icon(unread(state)))
+        if state.level != n.shown.level
+            && let Err(e) = n.icon.set_icon(icon(state.level))
         {
             tracing::debug!(error = %e, "tray icon");
         }

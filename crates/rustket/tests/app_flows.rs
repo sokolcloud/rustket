@@ -1308,6 +1308,157 @@ fn unread_elsewhere_wants_read(app: &mut App, sid: &ServerId, at: i64) -> bool {
     s.rooms["r1"].wants_auto_read(&s.workspace)
 }
 
+/// Item 15: a plain @mention in a room above `Notifications_Max_Room_Members`
+/// (100 by default) gets the client's own notification after the delay,
+/// unless a server notification of the same message came, or the room's
+/// last message is not the mention.
+#[tokio::test]
+async fn large_room_mentions_notify_once() {
+    use rustket::desktop::notifications::{MockNotifier, Notifications};
+    use rustket_core::notify::large_room;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let mock = MockNotifier::default();
+    app.desktop.notifications = Notifications::with_backend(Arc::new(mock.clone()));
+    let now = T0 + 600_000;
+    let mention = |id: &str, rid: &str| rocketchat::models::Message {
+        mentions: Some(vec![rocketchat::models::Mention {
+            id: "A".into(),
+            username: Some("alice".into()),
+            ..Default::default()
+        }]),
+        ..rc_msg(id, rid, now, "B")
+    };
+    // r7: the last message is not the mention; r8: the server notifies
+    // too; r9: only the fallback.
+    for (rid, last) in [
+        ("r7", rc_msg("m7", "r7", now, "B")),
+        ("r8", mention("m8", "r8")),
+        ("r9", mention("m9", "r9")),
+    ] {
+        let e = ev(
+            &app,
+            &sid,
+            SessionEvent::RoomChanged {
+                kind: ChangeKind::Inserted,
+                room: Box::new(Room {
+                    users_count: Some(150),
+                    last_message: Some(Box::new(last)),
+                    ..room(rid, now)
+                }),
+            },
+        );
+        let _ = app.update(e);
+        let e = ev(
+            &app,
+            &sid,
+            SessionEvent::SubscriptionChanged {
+                kind: ChangeKind::Inserted,
+                sub: Box::new(sub(rid, "A", 0, T0)),
+            },
+        );
+        let _ = app.update(e);
+        // The update carries the `_updatedAt` read before counting.
+        let counted = Sub {
+            user_mentions: 1,
+            ..sub(rid, "A", 1, T0)
+        };
+        let e = ev(
+            &app,
+            &sid,
+            SessionEvent::SubscriptionChanged {
+                kind: ChangeKind::Updated,
+                sub: Box::new(counted),
+            },
+        );
+        let _ = app.update(e);
+    }
+    let server: rocketchat::session::DesktopNotification =
+        serde_json::from_value(serde_json::json!({
+            "title": "#r8", "text": "B: text m8",
+            "payload": {"_id": "m8", "rid": "r8", "type": "c",
+                "sender": {"_id": "B", "username": "b"}, "message": {"msg": "text m8"}}
+        }))
+        .unwrap();
+    let e = ev(&app, &sid, SessionEvent::Notification(Box::new(server)));
+    let _ = app.update(e);
+    assert_eq!(mock.shown.lock().unwrap().len(), 1);
+    // Nothing before the delay.
+    let _ = app.update(Message::LargeRoomDue);
+    assert_eq!(mock.shown.lock().unwrap().len(), 1);
+    tokio::time::sleep(large_room::DELAY + std::time::Duration::from_millis(100)).await;
+    let _ = app.update(Message::LargeRoomDue);
+    let shown = mock.shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert_eq!(shown[1].title, "#r9");
+    assert_eq!(shown[1].body, "b: text m9");
+    // Checked once.
+    let _ = app.update(Message::LargeRoomDue);
+    assert_eq!(mock.shown.lock().unwrap().len(), 2);
+    // A server notification of m9 arriving after the fallback: not again.
+    let late: rocketchat::session::DesktopNotification =
+        serde_json::from_value(serde_json::json!({
+            "title": "#r9", "text": "B: text m9",
+            "payload": {"_id": "m9", "rid": "r9", "type": "c",
+                "sender": {"_id": "B", "username": "b"}, "message": {"msg": "text m9"}}
+        }))
+        .unwrap();
+    let e = ev(&app, &sid, SessionEvent::Notification(Box::new(late)));
+    let _ = app.update(e);
+    assert_eq!(mock.shown.lock().unwrap().len(), 2);
+}
+
+/// Q4: the server sends a thread reply's notification before the reply.
+/// For the open room it is decided once the reply arrived: a reply also
+/// sent to the channel (`tshow`) is on screen, a thread-only one notifies.
+#[tokio::test]
+async fn thread_reply_notification_waits_for_the_reply() {
+    use rustket::desktop::notifications::{MockNotifier, Notifications};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let mock = MockNotifier::default();
+    app.desktop.notifications = Notifications::with_backend(Arc::new(mock.clone()));
+    app.focused = true;
+    let now = T0 + 600_000;
+    let notification = |mid: &str| -> rocketchat::session::DesktopNotification {
+        serde_json::from_value(serde_json::json!({
+            "title": "#r1", "text": "b: reply",
+            "payload": {"_id": mid, "rid": "r1", "tmid": "t1", "type": "c",
+                "sender": {"_id": "B", "username": "b"}, "message": {"msg": "reply"}}
+        }))
+        .unwrap()
+    };
+    let reply = |mid: &str, tshow: bool| rocketchat::models::Message {
+        tmid: Some("t1".into()),
+        tshow: tshow.then_some(true),
+        ..rc_msg(mid, "r1", now, "B")
+    };
+    for (mid, tshow) in [("m1", true), ("m2", false)] {
+        // Notification first, as the server sends it: held.
+        let n = notification(mid);
+        let e = ev(&app, &sid, SessionEvent::Notification(Box::new(n.clone())));
+        let _ = app.update(e);
+        assert_eq!(mock.shown.lock().unwrap().len(), 0, "{mid}: held");
+        // Then the room's lastMessage and the message itself.
+        let e = ev(
+            &app,
+            &sid,
+            SessionEvent::RoomChanged {
+                kind: ChangeKind::Updated,
+                room: Box::new(Room {
+                    last_message: Some(Box::new(reply(mid, tshow))),
+                    ..room("r1", now)
+                }),
+            },
+        );
+        let _ = app.update(e);
+        deliver(&mut app, &sid, reply(mid, tshow));
+        let _ = app.update(Message::NotificationRecheck(sid.clone(), Box::new(n)));
+    }
+    let shown = mock.shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 1, "only the thread-only reply: {shown:?}");
+}
+
 /// "Mark unread" leaves the room (like the web client) and nothing marks it
 /// read again; the automatic read mark only follows new messages.
 #[tokio::test]
@@ -2712,6 +2863,44 @@ async fn settings_remember_the_last_tab() {
         Some(Tab::Sidebar),
         "the deep link's tab is remembered"
     );
+    // The status menu's Help item opens the Help tab, built for the account.
+    let _ = app.update(Message::Settings(Sm::Close));
+    let _ = app.update(Message::Sidebar(
+        sid.clone(),
+        sidebar::Message::Status(rustket::workspace::status_menu::Message::Help),
+    ));
+    assert_eq!(tab(&app), Some(Tab::Help));
+    let texts = view_texts(&app);
+    assert!(
+        texts.iter().any(|t| t.starts_with("Computed for ")),
+        "{texts:?}"
+    );
+    assert!(!texts.iter().any(|t| t.contains("No account is signed in")));
+}
+
+/// The texts of the app's view laid out at 1280x800.
+fn view_texts(app: &App) -> Vec<String> {
+    use iced::advanced::widget::{Id, Operation};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    struct Texts(Vec<String>);
+    impl Operation for Texts {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn text(&mut self, _: Option<&Id>, _: iced::Rectangle, text: &str) {
+            self.0.push(text.to_owned());
+        }
+    }
+    let mut renderer = test_renderer();
+    let mut ui = UserInterface::build(
+        app.view(),
+        iced::Size::new(1280.0, 800.0),
+        Cache::default(),
+        &mut renderer,
+    );
+    let mut texts = Texts(Vec::new());
+    ui.operate(&renderer, &mut texts);
+    texts.0
 }
 
 /// "Ungroup…" scrolls to the group's row, where its deletion is confirmed

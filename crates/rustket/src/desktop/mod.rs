@@ -85,6 +85,83 @@ pub(crate) fn user_pref<'a>(ws: &'a Workspace, key: &str) -> Option<&'a serde_js
         .and_then(|p| p.get(key))
 }
 
+/// The account's sound preferences (`me.settings.preferences`; `None`: not
+/// set).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AccountSound {
+    /// `newMessageNotification` (a sound name, `none` = off).
+    pub new_message: Option<String>,
+    /// `newRoomNotification` (a sound name, `none` = off).
+    pub new_room: Option<String>,
+    pub notifications_volume: Option<f64>,
+    pub master_volume: Option<f64>,
+}
+
+impl AccountSound {
+    pub fn of(ws: &Workspace) -> Self {
+        let text = |k: &str| user_pref(ws, k).and_then(|v| v.as_str()).map(str::to_owned);
+        let num = |k: &str| user_pref(ws, k).and_then(|v| v.as_f64());
+        Self {
+            new_message: text("newMessageNotification"),
+            new_room: text("newRoomNotification"),
+            notifications_volume: num("notificationsSoundVolume"),
+            master_volume: num("masterVolume"),
+        }
+    }
+
+    /// The volume of notification sounds in percent, as Rocket.Chat web
+    /// plays them: `notificationsSoundVolume` × `masterVolume` (each 0..=100,
+    /// 100 when not set).
+    pub fn volume(&self) -> u8 {
+        let pct = |v: Option<f64>| {
+            v.filter(|v| v.is_finite())
+                .unwrap_or(100.0)
+                .clamp(0.0, 100.0)
+        };
+        (pct(self.notifications_volume) * pct(self.master_volume) / 100.0).round() as u8
+    }
+
+    /// The notification or master volume is zero: no sound.
+    pub fn volume_muted(&self) -> bool {
+        self.volume() == 0
+    }
+
+    /// The new-message sound is "None".
+    pub fn new_message_off(&self) -> bool {
+        self.new_message.as_deref() == Some("none")
+    }
+
+    /// The account's new-message sound (`chime` when not set); `None` when
+    /// it is "None".
+    pub fn message_sound(&self) -> Option<&str> {
+        match sound_choice(self.new_message.as_deref()) {
+            Some("none") => None,
+            Some(name) => Some(name),
+            None => Some(DEFAULT_MESSAGE_SOUND),
+        }
+    }
+
+    /// The account's new-room sound (`door` when not set); `None` when it is
+    /// "None".
+    pub fn room_sound(&self) -> Option<&str> {
+        match sound_choice(self.new_room.as_deref()) {
+            Some("none") => None,
+            Some(name) => Some(name),
+            None => Some(DEFAULT_ROOM_SOUND),
+        }
+    }
+}
+
+/// Rocket.Chat's default `newMessageNotification`.
+pub const DEFAULT_MESSAGE_SOUND: &str = "chime";
+/// Rocket.Chat's default `newRoomNotification`.
+pub const DEFAULT_ROOM_SOUND: &str = "door";
+
+/// A sound preference's own choice: `None` for unset, empty and "default".
+pub fn sound_choice(v: Option<&str>) -> Option<&str> {
+    v.filter(|v| !v.is_empty() && *v != "default")
+}
+
 /// Whether winit will use Wayland (it prefers Wayland whenever a Wayland
 /// display is set), where windows can be neither hidden nor queried for
 /// being minimized. Never on Windows and macOS.
@@ -170,9 +247,9 @@ impl Desktop {
     pub fn update(&mut self, msg: Message) -> (Task<Message>, Vec<Request>) {
         match msg {
             Message::Notifications(m) => {
-                let (task, requests, play) = self.notifications.update(m);
-                if play {
-                    self.sound.play(None);
+                let (task, requests, sound) = self.notifications.update(m);
+                if let Some(sound) = sound {
+                    self.sound.play_alone(&sound);
                 }
                 (task, requests)
             }
@@ -281,13 +358,21 @@ impl Desktop {
             window_active: env.window_active && self.focused && !self.hidden,
             ..*env
         };
-        self.notifications
-            .notify(server_id, server_name, notification, workspace, prefs, &env)
+        let (task, sound) =
+            self.notifications
+                .notify(server_id, server_name, notification, workspace, prefs, &env);
+        if let Some(sound) = sound {
+            self.sound.play_alone(&sound);
+        }
+        task
     }
 
-    /// The total unread count (rooms) or mention count over all servers changed.
-    pub fn on_unread_changed(&mut self, unread: u64, mentions: u64) -> Task<Message> {
-        self.tray.set_unread(unread, mentions);
+    /// The unread signal over all servers changed.
+    pub fn on_unread_changed(
+        &mut self,
+        signal: rustket_core::room_list::WorkspaceSignal,
+    ) -> Task<Message> {
+        self.tray.set_unread(&signal);
         Task::none()
     }
 
@@ -356,9 +441,32 @@ impl Desktop {
             .collect()
     }
 
-    /// "Send test notification" (settings).
-    pub fn test_notification(&mut self, prefs: &UiPrefs) -> Task<Message> {
-        self.notifications.test(prefs)
+    /// "Send test notification" (settings), with the message sound of
+    /// `account` (the active account's preferences).
+    pub fn test_notification(&mut self, prefs: &UiPrefs, account: &AccountSound) -> Task<Message> {
+        let sound = notifications::message_sound(prefs.sound, None, account).ok();
+        if !prefs.desktop_notifications {
+            if let Some(sound) = sound {
+                self.sound.play_alone(&sound);
+            }
+            return Task::none();
+        }
+        self.notifications.test(sound)
+    }
+
+    /// Plays Rocket.Chat sound `name` at the volume of `account` (a sound
+    /// picked in Account → Preferences).
+    pub fn preview_sound(&self, name: &str, account: &AccountSound) {
+        let volume = account.volume();
+        if volume > 0 && name != "none" {
+            self.sound.play_rc(
+                &sound::RcSound {
+                    name: name.to_owned(),
+                    volume,
+                },
+                false,
+            );
+        }
     }
 }
 
@@ -366,6 +474,37 @@ impl Desktop {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_sound_volume_and_names() {
+        let a = AccountSound::default();
+        assert_eq!(a.volume(), 100);
+        assert_eq!(a.message_sound(), Some("chime"));
+        assert_eq!(a.room_sound(), Some("door"));
+        let a = AccountSound {
+            new_message: Some("default".into()),
+            new_room: Some("none".into()),
+            notifications_volume: Some(70.0),
+            master_volume: Some(50.0),
+        };
+        assert_eq!(a.volume(), 35);
+        assert!(!a.volume_muted());
+        assert_eq!(a.message_sound(), Some("chime"));
+        assert_eq!(a.room_sound(), None);
+        let loud = AccountSound {
+            notifications_volume: Some(250.0),
+            master_volume: Some(f64::NAN),
+            ..AccountSound::default()
+        };
+        assert_eq!(loud.volume(), 100);
+        let off = AccountSound {
+            notifications_volume: Some(-5.0),
+            ..AccountSound::default()
+        };
+        assert!(off.volume_muted());
+        assert_eq!(sound_choice(Some("")), None);
+        assert_eq!(sound_choice(Some("ding")), Some("ding"));
+    }
 
     #[test]
     fn inert_desktop_never_hides_the_window() {
@@ -433,7 +572,11 @@ mod tests {
         );
         let _ = d.on_state(&[(&sid, &ws)], Some(&sid));
         assert_eq!(d.tray.state().status, Some(UserStatus::Busy));
-        let _ = d.on_unread_changed(4, 2);
+        let _ = d.on_unread_changed(rustket_core::room_list::WorkspaceSignal {
+            mentions: 2,
+            strongest: Some(rustket_core::room_list::BadgeVariant::Mention),
+            rooms: 4,
+        });
         assert_eq!((d.tray.state().unread, d.tray.state().mentions), (4, 2));
     }
 }

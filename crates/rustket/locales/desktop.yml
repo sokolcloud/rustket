@@ -66,11 +66,11 @@ desktop.tray_unread:
   th: "ห้องที่ยังไม่ได้อ่าน: %{count}"
   zh: "未读聊天室：%{count}"
 desktop.tray_unread_mentions:
-  en: "Unread rooms: %{count}, mentions: %{mentions}"
-  ru: "Непрочитанных комнат: %{count}, упоминаний: %{mentions}"
-  es: "Salas no leídas: %{count}, menciones: %{mentions}"
-  th: "ห้องที่ยังไม่ได้อ่าน: %{count}, การกล่าวถึง: %{mentions}"
-  zh: "未读聊天室：%{count}，提及：%{mentions}"
+  en: "Mentions: %{mentions} · unread rooms: %{count}"
+  ru: "Упоминаний: %{mentions} · непрочитанных комнат: %{count}"
+  es: "Menciones: %{mentions} · salas no leídas: %{count}"
+  th: "การกล่าวถึง: %{mentions} · ห้องที่ยังไม่ได้อ่าน: %{count}"
+  zh: "提及：%{mentions} · 未读聊天室：%{count}"
 desktop.status_online:
   en: "Online"
   ru: "В сети"

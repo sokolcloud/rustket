@@ -443,6 +443,30 @@ settings.notifications_sound:
   es: "Reproducir un sonido"
   th: "เล่นเสียง"
   zh: "播放提示音"
+settings.notifications_sound_help:
+  en: "Rocket.Chat's sounds: the room's own sound, else your account's New message sound, at your account's volume. It also plays when desktop notifications are off. %{dnd}"
+  ru: "Звуки Rocket.Chat: собственный звук комнаты, иначе «Звук нового сообщения» из аккаунта, с громкостью из аккаунта. Звучит и при выключенных уведомлениях на рабочем столе. %{dnd}"
+  es: "Sonidos de Rocket.Chat: el sonido propio de la sala o, si no tiene, el Sonido de mensaje nuevo de tu cuenta, con el volumen de tu cuenta. También suena con las notificaciones de escritorio desactivadas. %{dnd}"
+  th: "เสียงของ Rocket.Chat: เสียงของห้องเอง หากไม่มีจะใช้เสียงข้อความใหม่ของบัญชี ตามระดับเสียงของบัญชี เล่นแม้ปิดการแจ้งเตือนบนเดสก์ท็อป %{dnd}"
+  zh: "Rocket.Chat 的提示音：聊天室自己的提示音，否则为账户的“新消息提示音”，音量取自账户设置。关闭桌面通知时也会播放。%{dnd}"
+settings.sound_dnd_linux:
+  en: "With KDE Plasma or GNOME, the system's Do Not Disturb also silences message, new-chat and reminder sounds, with or without a notification. For call rings, and on other desktops, pause notifications instead."
+  ru: "В KDE Plasma и GNOME системный режим «Не беспокоить» глушит и звуки сообщений, новых чатов и напоминаний — с уведомлением и без него. Для звонков и в других окружениях приостановите уведомления."
+  es: "En KDE Plasma y GNOME, el modo No molestar del sistema también silencia los sonidos de mensajes, chats nuevos y recordatorios, con o sin notificación. Para los tonos de llamada y en otros escritorios, pausa las notificaciones."
+  th: "ใน KDE Plasma และ GNOME โหมดห้ามรบกวนของระบบจะปิดเสียงข้อความ แชทใหม่ และการเตือนความจำด้วย ทั้งเมื่อมีและไม่มีการแจ้งเตือน สำหรับเสียงสายเรียกเข้าและในเดสก์ท็อปอื่น ให้หยุดการแจ้งเตือนชั่วคราวแทน"
+  zh: "在 KDE Plasma 和 GNOME 中，无论是否显示通知，系统的勿扰模式也会使消息、新聊天和提醒的声音静音。来电铃声以及其他桌面环境中，请改用暂停通知。"
+settings.sound_dnd_windows:
+  en: "When Windows shows a message or reminder notification, it plays the Windows notification sound in place of the Rocket.Chat sound, and Do Not Disturb (Focus Assist) silences it. Sounds without a notification and call rings are not silenced by it: pause notifications instead."
+  ru: "Когда Windows показывает уведомление о сообщении или напоминании, вместо звука Rocket.Chat звучит звук уведомления Windows, и режим «Не беспокоить» (фокусировка внимания) его глушит. Звуки без уведомления и звонки этот режим не глушит: приостановите уведомления."
+  es: "Cuando Windows muestra una notificación de mensaje o de recordatorio, suena el sonido de notificación de Windows en lugar del sonido de Rocket.Chat, y No molestar (Asistente de concentración) lo silencia. Los sonidos sin notificación y los tonos de llamada no se silencian: pausa las notificaciones."
+  th: "เมื่อ Windows แสดงการแจ้งเตือนข้อความหรือการเตือนความจำ จะเล่นเสียงการแจ้งเตือนของ Windows แทนเสียงของ Rocket.Chat และโหมดห้ามรบกวน (ตัวช่วยโฟกัส) จะปิดเสียงนี้ เสียงที่ไม่มีการแจ้งเตือนและเสียงสายเรียกเข้าจะไม่ถูกปิด ให้หยุดการแจ้งเตือนชั่วคราวแทน"
+  zh: "Windows 显示消息或提醒通知时，会播放 Windows 通知提示音代替 Rocket.Chat 提示音，勿扰模式（专注助手）会使其静音。没有通知的声音和来电铃声不受其影响：请改用暂停通知。"
+settings.sound_dnd_macos:
+  en: "When macOS shows a message or reminder notification, it plays the sound itself, and Focus silences it. Sounds without a notification and call rings are not silenced by Focus: pause notifications instead."
+  ru: "Когда macOS показывает уведомление о сообщении или напоминании, звук воспроизводит она сама, и режим фокусирования его глушит. Звуки без уведомления и звонки режим фокусирования не глушит: приостановите уведомления."
+  es: "Cuando macOS muestra una notificación de mensaje o de recordatorio, reproduce el sonido por sí mismo, y el modo Concentración lo silencia. Los sonidos sin notificación y los tonos de llamada no se silencian con Concentración: pausa las notificaciones."
+  th: "เมื่อ macOS แสดงการแจ้งเตือนข้อความหรือการเตือนความจำ ระบบจะเล่นเสียงเอง และโหมดโฟกัสจะปิดเสียงนี้ เสียงที่ไม่มีการแจ้งเตือนและเสียงสายเรียกเข้าจะไม่ถูกโหมดโฟกัสปิด ให้หยุดการแจ้งเตือนชั่วคราวแทน"
+  zh: "macOS 显示消息或提醒通知时由系统自己播放声音，专注模式会使其静音。没有通知的声音和来电铃声不受专注模式影响：请改用暂停通知。"
 settings.notifications_test:
   en: "Send test notification"
   ru: "Отправить тестовое уведомление"
@@ -1049,6 +1073,12 @@ settings.tab_mentions:
   es: "Menciones"
   th: "การกล่าวถึง"
   zh: "提及"
+settings.tab_help:
+  en: "Help"
+  ru: "Справка"
+  es: "Ayuda"
+  th: "ความช่วยเหลือ"
+  zh: "帮助"
 settings.tab_privacy:
   en: "Privacy & storage"
   ru: "Приватность"

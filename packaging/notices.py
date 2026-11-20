@@ -33,6 +33,7 @@ ASSETS = [
     ("Lucide icons", "packaging/licenses/Lucide.txt"),
     ("Emoji table", "packaging/licenses/emoji-data.txt"),
     ("BIP-39 word list", "packaging/licenses/bip39.txt"),
+    ("Rocket.Chat notification sounds", "crates/rustket/assets/sounds/LICENSE"),
 ]
 
 MIT = """Permission is hereby granted, free of charge, to any person obtaining a copy

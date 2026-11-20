@@ -36,6 +36,9 @@ pub struct MenuItem<Message> {
     /// Flag colour (palette index of [`Tokens::flag`](crate::theme::Tokens::flag))
     /// drawn as a swatch before the label, after the check slot.
     pub swatch: Option<usize>,
+    /// Unread dot after the label (e.g. a header button moved into the
+    /// menu that shows one).
+    pub dot: Option<super::BadgeKind>,
     pub on_select: Message,
 }
 
@@ -49,6 +52,7 @@ impl<Message> MenuItem<Message> {
             disabled: false,
             checked: None,
             swatch: None,
+            dot: None,
             on_select,
         }
     }
@@ -82,7 +86,15 @@ impl<Message> MenuItem<Message> {
         self.swatch = Some(index);
         self
     }
+
+    pub fn dot(mut self, kind: Option<super::BadgeKind>) -> Self {
+        self.dot = kind;
+        self
+    }
 }
+
+/// Size of a menu item's unread dot.
+const DOT: f32 = 8.0;
 
 /// Size of a menu item's flag swatch.
 const SWATCH: f32 = 10.0;
@@ -122,10 +134,16 @@ pub fn menu_width<Message>(entries: &[MenuEntry<Message>]) -> f32 {
                 } else {
                     0.0
                 };
+                let dot = if item.dot.is_some() {
+                    DOT + SPACE_3
+                } else {
+                    0.0
+                };
                 Some(
                     super::ellipsis::natural_width(&item.label, TEXT_BODY, font_regular())
                         + hint
-                        + swatch,
+                        + swatch
+                        + dot,
                 )
             }
             MenuEntry::Header(h) => Some(super::ellipsis::natural_width(
@@ -180,6 +198,9 @@ pub fn menu_panel<'a, Message: Clone + 'a>(entries: &[MenuEntry<Message>]) -> El
                     content = content.push(super::flag::flag_swatch(index, SWATCH));
                 }
                 content = content.push(ellipsis(item.label.clone()).size(TEXT_BODY));
+                if let Some(kind) = item.dot {
+                    content = content.push(super::dot(kind, DOT));
+                }
                 if let Some(hint) = &item.hint {
                     content = content.push(
                         text(hint.clone())

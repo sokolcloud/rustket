@@ -1,10 +1,14 @@
 //! Desktop notifications.
 //!
 //! Rocket.Chat decides server-side which messages notify a user (DMs, mentions,
-//! per-room preferences, `disableNotifications`, the user's own messages…) and
-//! pushes the result on the `stream-notify-user` stream as `{uid}/notification`
-//! (verified live on 8.9: a DM and an `@mention` arrive, a plain channel message
-//! does not). The client only applies local suppression rules here.
+//! per-room and account desktop preferences, the server default
+//! `Accounts_Default_User_Preferences_desktopNotifications`,
+//! `disableNotifications`, the user's own messages…) and pushes the result on
+//! the `stream-notify-user` stream as `{uid}/notification`. Whether a plain
+//! channel message notifies depends on those preferences (Rocket.Chat's
+//! default "all" notifies it). The client only applies local suppression
+//! rules here, plus a fallback for mentions in large rooms, where the server
+//! sends nothing ([`large_room`]).
 //!
 //! Payload (8.9):
 //! `{title, text, duration?, payload: {_id, rid, tmid?, sender: {_id, username, name},
@@ -12,6 +16,8 @@
 
 use rocketchat::models::{RoomType, UserRef, UserStatus};
 use serde::{Deserialize, Serialize};
+
+pub mod large_room;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -107,6 +113,12 @@ pub struct NotifyContext<'a> {
     /// Notifications are paused (by hand or outside working hours,
     /// [`crate::quiet`]).
     pub paused: bool,
+    /// The account's `muteFocusedConversations`: no notification for the
+    /// conversation on screen.
+    pub mute_focused: bool,
+    /// The notified thread reply is also shown in the room's main timeline
+    /// (sent to the channel, `tshow`).
+    pub reply_in_room: bool,
 }
 
 /// A notification to show.
@@ -119,17 +131,25 @@ pub struct NotificationSpec {
     pub rid: String,
     pub mid: String,
     pub tmid: Option<String>,
+    /// Show the notification (desktop notifications are on).
+    pub toast: bool,
+    /// Play the message sound (with or without the notification).
     pub sound: bool,
 }
 
 /// i18n key for the body when previews are disabled.
 pub const HIDDEN_BODY_KEY: &str = "notification.new_message";
 
-/// Applies local suppression rules: own messages, disabled or paused
-/// notifications, busy (do not disturb), and the room/thread being on screen
-/// in an active window.
+/// Applies local suppression rules: own messages, paused notifications,
+/// busy (do not disturb), and, with
+/// [`NotifyContext::mute_focused`], the conversation being on screen in an
+/// active window: the open room for its messages, the open thread panel for
+/// its replies (a reply also counts in the open room when it is shown in the
+/// main timeline). What passes shows a notification when desktop
+/// notifications are on and plays the sound when sound is on, each without
+/// the other; `None` when neither is on.
 pub fn evaluate(n: &IncomingNotification, ctx: &NotifyContext<'_>) -> Option<NotificationSpec> {
-    if !ctx.prefs.enabled || ctx.paused {
+    if ctx.paused || !(ctx.prefs.enabled || ctx.prefs.sound) {
         return None;
     }
     if n.sender_id() == Some(ctx.my_user_id) {
@@ -139,13 +159,10 @@ pub fn evaluate(n: &IncomingNotification, ctx: &NotifyContext<'_>) -> Option<Not
         return None;
     }
     let p = &n.payload;
-    if ctx.window_active && ctx.server_active {
+    if ctx.mute_focused && ctx.window_active && ctx.server_active {
         let in_room = ctx.focused_rid == Some(p.rid.as_str());
         let visible = match p.tmid.as_deref() {
-            // A thread reply is visible when its thread is open, or in the room
-            // when it was also sent to the channel (we can't tell: treat the room
-            // as showing it only if no thread filter applies).
-            Some(tmid) => ctx.focused_tmid == Some(tmid) || (in_room && ctx.focused_tmid.is_none()),
+            Some(tmid) => ctx.focused_tmid == Some(tmid) || (in_room && ctx.reply_in_room),
             None => in_room,
         };
         if visible {
@@ -176,6 +193,7 @@ pub fn evaluate(n: &IncomingNotification, ctx: &NotifyContext<'_>) -> Option<Not
         rid: p.rid.clone(),
         mid: p.id.clone(),
         tmid: p.tmid.clone(),
+        toast: ctx.prefs.enabled,
         sound: ctx.prefs.sound,
     })
 }
@@ -216,6 +234,8 @@ mod tests {
                 sound: true,
             },
             paused: false,
+            mute_focused: true,
+            reply_in_room: false,
         }
     }
 
@@ -239,7 +259,7 @@ mod tests {
         assert_eq!(s.title, "@bob");
         assert_eq!(s.body.as_deref(), Some("hello there"));
         assert_eq!((s.rid.as_str(), s.mid.as_str()), ("rid1", "mid1"));
-        assert!(s.sound);
+        assert!(s.toast && s.sound);
     }
 
     #[test]
@@ -247,7 +267,22 @@ mod tests {
         let n = sample();
         let mut c = ctx();
         c.prefs.enabled = false;
+        // Sound without notifications: the sound alone.
+        let s = evaluate(&n, &c).unwrap();
+        assert!(!s.toast && s.sound);
+        c.prefs.sound = false;
         assert!(evaluate(&n, &c).is_none());
+        let mut c = ctx();
+        c.prefs.sound = false;
+        let s = evaluate(&n, &c).unwrap();
+        assert!(s.toast && !s.sound);
+        c.prefs.enabled = false;
+        c.prefs.sound = true;
+        c.my_status = UserStatus::Busy;
+        assert!(
+            evaluate(&n, &c).is_none(),
+            "the sound alone follows the gates"
+        );
 
         let mut c = ctx();
         c.my_user_id = "bobid";
@@ -285,11 +320,49 @@ mod tests {
         n.payload.tmid = Some("t1".into());
         let mut c = ctx();
         c.focused_rid = Some("rid1");
+        assert!(
+            evaluate(&n, &c).is_some(),
+            "room open, no thread panel: the reply is not on screen"
+        );
+        c.reply_in_room = true;
+        assert!(evaluate(&n, &c).is_none(), "sent to the channel too");
+        c.reply_in_room = false;
         c.focused_tmid = Some("other");
         assert!(evaluate(&n, &c).is_some(), "different thread open");
+        c.reply_in_room = true;
+        assert!(
+            evaluate(&n, &c).is_none(),
+            "shown in the room beside another thread"
+        );
+        c.reply_in_room = false;
         c.focused_tmid = Some("t1");
         assert!(evaluate(&n, &c).is_none());
         c.focused_rid = Some("x");
         assert!(evaluate(&n, &c).is_none(), "thread panel shows it");
+        c.window_active = false;
+        assert!(evaluate(&n, &c).is_some(), "window inactive");
+    }
+
+    /// `muteFocusedConversations` off: the conversation on screen notifies
+    /// too, own messages still do not.
+    #[test]
+    fn focused_conversations_not_muted() {
+        let n = sample();
+        let mut c = ctx();
+        c.focused_rid = Some("rid1");
+        c.mute_focused = false;
+        let s = evaluate(&n, &c).unwrap();
+        assert!(s.sound);
+        let mut t = sample();
+        t.payload.tmid = Some("t1".into());
+        c.focused_tmid = Some("t1");
+        assert!(evaluate(&t, &c).is_some());
+        c.my_user_id = "bobid";
+        assert!(evaluate(&n, &c).is_none(), "own message");
+        let mut c = ctx();
+        c.focused_rid = Some("rid1");
+        c.mute_focused = false;
+        c.my_status = UserStatus::Busy;
+        assert!(evaluate(&n, &c).is_none(), "Busy still applies");
     }
 }

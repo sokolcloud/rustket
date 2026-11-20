@@ -115,6 +115,8 @@ pub enum Nav {
     /// App preferences on the Mentions tab (the composer's "Manage mention
     /// groups…").
     MentionGroupSettings,
+    /// App preferences on the Help tab (the indicators reference).
+    HelpSettings,
     /// Account of the active server (`screens/account.rs`).
     Account,
     /// Directory of the active server (`screens/directory.rs`).
@@ -170,6 +172,9 @@ pub enum Effect {
     ClearOfflineCache,
     /// Show a test desktop notification.
     TestNotification,
+    /// Play Rocket.Chat sound `name` at the volume of the component's
+    /// account (a sound picked in Account → Preferences).
+    PreviewSound(String),
     /// `UiPrefs::theme_name` changed: activate it (`rescan`: read the theme
     /// files again first).
     ApplyTheme {

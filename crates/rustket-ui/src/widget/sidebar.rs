@@ -35,13 +35,13 @@ pub struct RoomListItemProps<Message> {
     pub subtitle: Option<String>,
     /// Formatted time of the last message.
     pub time: Option<String>,
-    pub unread: u32,
-    /// The part of `unread` that is thread replies: a room with nothing else
-    /// unread gets the quiet thread colour.
-    pub thread_count: u32,
-    pub user_mentions: u32,
-    pub group_mentions: u32,
-    pub thread_unread: bool,
+    /// The badge drawn (`None`: no badge); its kind is decided by the
+    /// caller (`rustket_core::room_list::badge` for room rows).
+    pub badge: Option<BadgeKind>,
+    /// The number on the badge; 0 draws a dot.
+    pub count: u32,
+    /// Bold title (unread rows).
+    pub bold: bool,
     pub is_muted: bool,
     pub is_selected: bool,
     /// Presence of the DM peer.
@@ -52,9 +52,6 @@ pub struct RoomListItemProps<Message> {
     pub typing: bool,
     pub typing_label: String,
     pub density: Density,
-    /// A dot of this kind instead of the counters, and a bold title (thread
-    /// rows: unread replies, a mention, without a count).
-    pub badge_dot: Option<BadgeKind>,
     /// Flag mark after the title.
     pub flag: Option<FlagMark>,
     pub on_press: Message,
@@ -67,11 +64,9 @@ impl<Message> RoomListItemProps<Message> {
             title: title.into(),
             subtitle: None,
             time: None,
-            unread: 0,
-            thread_count: 0,
-            user_mentions: 0,
-            group_mentions: 0,
-            thread_unread: false,
+            badge: None,
+            count: 0,
+            bold: false,
             is_muted: false,
             is_selected: false,
             presence: None,
@@ -79,35 +74,29 @@ impl<Message> RoomListItemProps<Message> {
             typing: false,
             typing_label: String::new(),
             density: Density::Extended,
-            badge_dot: None,
             flag: None,
             on_press,
         }
     }
 
     pub fn badge_kind(&self) -> Option<BadgeKind> {
-        if self.badge_dot.is_some() {
-            return self.badge_dot;
-        }
-        BadgeKind::for_room(
-            self.user_mentions,
-            self.group_mentions,
-            self.unread.saturating_sub(self.thread_count),
-            self.thread_unread,
-            self.is_muted,
-        )
+        self.badge
+    }
+
+    /// The number the badge shows; 0 draws a dot (when [`Self::badge_kind`]
+    /// gives one).
+    pub fn badge_count(&self) -> u32 {
+        if self.badge.is_some() { self.count } else { 0 }
+    }
+
+    pub fn is_bold(&self) -> bool {
+        self.bold
     }
 }
 
 fn room_badge<'a, Message: 'a>(p: &RoomListItemProps<Message>) -> Option<Element<'a, Message>> {
     let kind = p.badge_kind()?;
-    let count = if p.badge_dot.is_some() {
-        0
-    } else if p.unread > 0 {
-        p.unread
-    } else {
-        p.user_mentions.max(p.group_mentions)
-    };
+    let count = p.badge_count();
     Some(if count == 0 {
         dot(kind, 8.0)
     } else {
@@ -119,7 +108,7 @@ fn room_badge<'a, Message: 'a>(p: &RoomListItemProps<Message>) -> Option<Element
 pub fn room_list_item<'a, Message: Clone + 'a>(
     p: RoomListItemProps<Message>,
 ) -> Element<'a, Message> {
-    let bold = p.unread > 0 || p.user_mentions > 0 || p.group_mentions > 0 || p.badge_dot.is_some();
+    let bold = p.is_bold();
     let dim = p.is_muted && !bold;
     let condensed = p.density == Density::Condensed;
     let avatar_size = if condensed { 20.0 } else { 36.0 };
@@ -416,4 +405,39 @@ pub fn add_server_button<'a, Message: Clone + 'a>(
     let tile = focus_ring(tile, Some(on_press)).radius(radius_lg());
     let content = row![space().width(13), tile, space().width(13)];
     tooltip(content, label, TooltipPosition::Right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn props() -> RoomListItemProps<()> {
+        RoomListItemProps::new(AvatarSource::initials("Room", "room"), "room", ())
+    }
+
+    #[test]
+    fn badge_and_bold_are_drawn_as_given() {
+        let p = props();
+        assert!(!p.is_bold());
+        assert_eq!((p.badge_kind(), p.badge_count()), (None, 0));
+        // A count without a kind draws nothing.
+        let mut p = props();
+        p.count = 3;
+        assert_eq!((p.badge_kind(), p.badge_count()), (None, 0));
+        // A dot: a kind with no count.
+        p.count = 0;
+        p.badge = Some(BadgeKind::Unread);
+        p.bold = true;
+        assert!(p.is_bold());
+        assert_eq!(
+            (p.badge_kind(), p.badge_count()),
+            (Some(BadgeKind::Unread), 0)
+        );
+        p.count = 4;
+        p.badge = Some(BadgeKind::Mention);
+        assert_eq!(
+            (p.badge_kind(), p.badge_count()),
+            (Some(BadgeKind::Mention), 4)
+        );
+    }
 }

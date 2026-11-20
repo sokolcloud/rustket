@@ -82,6 +82,7 @@ impl App {
                 | Nav::SidebarSettings { .. }
                 | Nav::SecretStoreSettings
                 | Nav::MentionGroupSettings
+                | Nav::HelpSettings
                 | Nav::Workspace
                 | Nav::Account
                 | Nav::Directory
@@ -128,7 +129,8 @@ impl App {
                 nav @ (Nav::Settings
                 | Nav::SidebarSettings { .. }
                 | Nav::SecretStoreSettings
-                | Nav::MentionGroupSettings),
+                | Nav::MentionGroupSettings
+                | Nav::HelpSettings),
                 _,
             ) => {
                 // The real autostart location only with real desktop integration.
@@ -143,6 +145,7 @@ impl App {
                     Nav::SidebarSettings { .. } => settings::Tab::Sidebar,
                     Nav::SecretStoreSettings => settings::Tab::Privacy,
                     Nav::MentionGroupSettings => settings::Tab::Mentions,
+                    Nav::HelpSettings => settings::Tab::Help,
                     _ => self.settings_tab,
                 };
                 self.settings_tab = tab;
@@ -312,10 +315,24 @@ impl App {
                 Effect::RegisterUrlHandler => self.open_register_handler(),
                 Effect::ClearImageCache => self.clear_image_cache(),
                 Effect::ClearOfflineCache => crate::cache::clear_all(self),
-                Effect::TestNotification => self
-                    .desktop
-                    .test_notification(&self.config.ui)
-                    .map(Message::Desktop),
+                Effect::TestNotification => {
+                    let account = self
+                        .active
+                        .as_ref()
+                        .and_then(|sid| self.servers.get(sid))
+                        .map(|s| crate::desktop::AccountSound::of(&s.workspace))
+                        .unwrap_or_default();
+                    self.desktop
+                        .test_notification(&self.config.ui, &account)
+                        .map(Message::Desktop)
+                }
+                Effect::PreviewSound(name) => {
+                    if let Some(s) = sid.and_then(|sid| self.servers.get(sid)) {
+                        self.desktop
+                            .preview_sound(&name, &crate::desktop::AccountSound::of(&s.workspace));
+                    }
+                    Task::none()
+                }
                 Effect::ApplyTheme { rescan } => {
                     if rescan {
                         self.themes.rescan();
@@ -841,13 +858,9 @@ impl App {
         Task::batch([images, media])
     }
 
-    /// Unread totals over all servers changed: tell the desktop layer.
+    /// The unread signal over all servers changed: tell the desktop layer.
     pub(super) fn unread_hook(&mut self) -> Task<Message> {
-        let totals = self
-            .servers
-            .values()
-            .map(|s| rustket_core::room_list::unread_totals(&s.workspace))
-            .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
+        let totals = self.unread_signal();
         let logged_in: Vec<_> = self
             .servers
             .values()
@@ -864,9 +877,7 @@ impl App {
         self.last_unread = totals;
         Task::batch([
             state,
-            self.desktop
-                .on_unread_changed(totals.0, totals.1)
-                .map(Message::Desktop),
+            self.desktop.on_unread_changed(totals).map(Message::Desktop),
         ])
     }
 
@@ -889,6 +900,8 @@ impl App {
                 .star_kept
                 .has_job(super::star_kept::StarJob::KeptThread),
             mention_groups: self.mention_accounts(),
+            mode: self.mode(),
+            help: self.help_env(),
             #[cfg(feature = "self-update")]
             updater: crate::updater::view::settings_data(
                 &self.updater,
@@ -896,6 +909,51 @@ impl App {
                 self.ui_state.update_skipped.as_deref(),
             ),
         }
+    }
+
+    /// What the Settings' Help tab is computed from: only while it is shown.
+    fn help_env(&self) -> Option<crate::help::model::HelpEnv> {
+        if !matches!(&self.screen, Screen::Settings(s) if s.tab == settings::Tab::Help) {
+            return None;
+        }
+        let now = chrono::Local::now();
+        // The account the other account cards use (the active one, else the
+        // first signed in); else an account still signing in, with the
+        // server's facts and Rocket.Chat's defaults for its preferences.
+        let account = match self.signed_in().first() {
+            Some(s) => {
+                let label = t!(
+                    "settings.flags_account",
+                    user = s.workspace.username().unwrap_or_default(),
+                    server = s.name
+                )
+                .into_owned();
+                Some(crate::help::model::AccountEnv::of(
+                    label,
+                    &s.workspace,
+                    s.workspace.from_cache(),
+                ))
+            }
+            None => self
+                .active
+                .as_ref()
+                .and_then(|sid| self.servers.get(sid))
+                .filter(|s| s.is_logged_in())
+                .map(|s| {
+                    crate::help::model::AccountEnv::pending(
+                        t!("help.pending_account", server = s.name).into_owned(),
+                        &s.workspace,
+                        s.workspace.from_cache(),
+                    )
+                }),
+        };
+        Some(crate::help::model::HelpEnv::new(
+            &self.config,
+            &now,
+            self.desktop.tray_support().available,
+            self.custom_chrome(),
+            account,
+        ))
     }
 
     /// The signed-in accounts, the active server's first.

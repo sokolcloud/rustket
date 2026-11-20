@@ -11,7 +11,7 @@ use rocketchat::models::Message as RcMessage;
 use rust_i18n::t;
 use rustket_core::config::UiPrefs;
 use rustket_core::inbox::feeds::FeedState;
-use rustket_core::inbox::{self, ActivityFilter, ActivityItem, PendingMentions, Tier, UnreadRoom};
+use rustket_core::inbox::{ActivityFilter, ActivityItem, PendingMentions, Tier, UnreadRoom};
 use rustket_core::room_list::{self, Avatar, ThreadListItem};
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::{self, Icon};
@@ -124,8 +124,7 @@ impl<'a> Ctx<'a> {
 
 /// The room's badge as its sidebar row shows it.
 fn room_badge(r: &UnreadRoom) -> Option<Element<'static, Msg>> {
-    let muted = r.tier == Tier::Muted;
-    let kind = crate::workspace::sidebar::badge_kind(&r.badge, muted)?;
+    let kind = crate::workspace::sidebar::badge_kind(&r.badge)?;
     let count = crate::format::count_u32(r.badge.count);
     Some(if count > 0 {
         badge(count, kind)
@@ -473,12 +472,7 @@ impl InboxScreen {
             m: v,
         });
         let mut p = MessageRowProps::new(c.user_avatar(&username, &name, 36.0), name, time, body);
-        let me = (
-            ws.username().unwrap_or_default(),
-            ws.user_id().unwrap_or_default(),
-        );
-        p.is_mention_highlight =
-            (!me.0.is_empty() && inbox::mentions_me(m, me.0, me.1)) || inbox::is_group_mention(m);
+        p.is_mention_highlight = crate::room::timeline::row::highlights_in(ws, m);
         p.edited = m.edited_at.is_some();
         p.edited_label = t!("room_timeline.edited").into_owned();
         p.actions_toolbar = Some(message_toolbar(toolbar));
@@ -846,7 +840,7 @@ impl InboxScreen {
                 .map(|k| t!(k).into_owned())
                 .unwrap_or_default(),
         };
-        let kind = crate::workspace::sidebar::thread_badge_kind(t).unwrap_or(BadgeKind::Muted);
+        let kind = crate::workspace::sidebar::thread_badge_kind(t).unwrap_or(BadgeKind::Thread);
         let vc = c.room_ctx(&t.rid);
         let mut meta = format!(
             "{} · {}",

@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashSet};
 use rocketchat::RcDate;
 use rocketchat::models::{Message, RoomType};
 
-use crate::room_list::{self, Badge, RoomKind, ThreadListItem};
+use crate::room_list::{self, Badge, BadgeVariant, RoomKind, ThreadListItem};
 use crate::workspace::{RoomEntry, Workspace};
 use feeds::FeedState;
 
@@ -101,37 +101,33 @@ fn shown(ws: &Workspace, e: &RoomEntry) -> bool {
     room_list::is_listed(ws, e.rid()) && room_list::room_kind(e) != RoomKind::Omnichannel
 }
 
-/// The room's newest main-timeline message (thread replies do not move it).
-fn main_lm(e: &RoomEntry) -> Option<RcDate> {
-    let r = e.room.as_ref()?;
-    r.lm.or(r.last_message.as_ref().and_then(|m| m.ts))
-}
-
 /// The "All unreads" entry of room `e`, if it is listed there: unread
 /// (`room_list::room_is_unread`) in the main timeline (a room with only
 /// unread threads belongs to Activity), muted rooms only with
 /// `include_muted`.
 fn unread_room(ws: &Workspace, e: &RoomEntry, include_muted: bool) -> Option<UnreadRoom> {
+    if !shown(ws, e) {
+        return None;
+    }
+    unread_room_of(e, include_muted)
+}
+
+/// [`unread_room`] of a room the views show.
+fn unread_room_of(e: &RoomEntry, include_muted: bool) -> Option<UnreadRoom> {
     let s = e.sub.as_ref()?;
-    if !shown(ws, e) || !room_list::room_is_unread(e) {
+    if !room_list::room_is_unread(e) {
         return None;
     }
-    let main_unread = s.unread > 0
-        || (s.alert && !matches!((main_lm(e), s.ls), (Some(lm), Some(ls)) if lm <= ls));
-    if !main_unread {
+    if !room_list::main_unread(e) {
         return None;
     }
-    let hide_mention = s.hide_mention_status == Some(true);
-    let muted = s.disable_notifications == Some(true);
-    let dm = e.room_type() == RoomType::Direct;
-    let tier = if (s.user_mentions > 0 && !hide_mention) || (dm && !muted) {
-        Tier::Mention
-    } else if muted {
-        Tier::Muted
-    } else if s.group_mentions > 0 && !hide_mention && s.mute_group_mentions != Some(true) {
-        Tier::GroupMention
-    } else {
-        Tier::Unread
+    // The row's own kind, so the list order matches the badge drawn.
+    let badge = room_list::badge(e);
+    let tier = match badge.variant {
+        BadgeVariant::Mention => Tier::Mention,
+        BadgeVariant::GroupMention => Tier::GroupMention,
+        BadgeVariant::Unread | BadgeVariant::Thread => Tier::Unread,
+        BadgeVariant::Muted => Tier::Muted,
     };
     if tier == Tier::Muted && !include_muted {
         return None;
@@ -141,7 +137,7 @@ fn unread_room(ws: &Workspace, e: &RoomEntry, include_muted: bool) -> Option<Unr
         tier,
         ls: s.ls,
         lm: e.last_activity(),
-        badge: room_list::badge(e),
+        badge,
     })
 }
 
@@ -165,36 +161,63 @@ pub fn unread_rooms(ws: &Workspace, prefs: &InboxPrefs, skipped: &Skipped) -> Ve
 
 /// The sidebar rows' counters.
 pub fn counts(ws: &Workspace) -> InboxCounts {
+    ws.rooms()
+        .values()
+        .filter(|e| shown(ws, e))
+        .map(entry_counts)
+        .fold(InboxCounts::default(), |a, b| InboxCounts {
+            unread_rooms: a.unread_rooms + b.unread_rooms,
+            mentions: a.mentions + b.mentions,
+            group_mentions: a.group_mentions + b.group_mentions,
+            threads: a.threads + b.threads,
+        })
+}
+
+/// One room's part of [`counts`], for a room the views show (listed by the
+/// sidebar, not omnichannel).
+pub fn entry_counts(e: &RoomEntry) -> InboxCounts {
     let mut c = InboxCounts::default();
-    for e in ws.rooms().values() {
-        let Some(s) = e.sub.as_ref().filter(|_| shown(ws, e)) else {
-            continue;
-        };
-        if unread_room(ws, e, false).is_some() {
-            c.unread_rooms += 1;
-        }
-        c.threads += s
-            .tunread
-            .iter()
-            .chain(&s.tunread_user)
-            .chain(&s.tunread_group)
-            .flatten()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .filter(|t| room_list::thread_unread(s, t).is_some())
-            .count() as u64;
-        if s.hide_mention_status == Some(true) {
-            continue;
-        }
-        c.mentions += s.tunread_user.as_ref().map_or(0, |v| v.len() as u64);
-        if e.room_type() != RoomType::Direct {
-            c.mentions += s.user_mentions;
-            if s.mute_group_mentions != Some(true) {
-                c.group_mentions += s.group_mentions;
-            }
+    let Some(s) = e.sub.as_ref() else {
+        return c;
+    };
+    if unread_room_of(e, false).is_some() {
+        c.unread_rooms += 1;
+    }
+    c.threads += s
+        .tunread
+        .iter()
+        .chain(&s.tunread_user)
+        .chain(&s.tunread_group)
+        .flatten()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter_map(|t| room_list::thread_unread(s, t))
+        .filter(|k| k.counted())
+        .count() as u64;
+    if s.hide_mention_status == Some(true) {
+        return c;
+    }
+    c.mentions += s.tunread_user.as_ref().map_or(0, |v| v.len() as u64);
+    // Thread @all (not a direct mention, not under R4) is orange like the row.
+    c.group_mentions += s
+        .tunread_group
+        .iter()
+        .flatten()
+        .filter(|t| room_list::thread_unread(s, t) == Some(BadgeVariant::GroupMention))
+        .count() as u64;
+    if e.room_type() != RoomType::Direct {
+        c.mentions += s.user_mentions;
+        if group_mentions_count(s) {
+            c.group_mentions += s.group_mentions;
         }
     }
     c
+}
+
+/// The room's `@all` / `@here` mentions count (orange): not muted, and the
+/// room's notifications are not disabled (an R1 room's row is grey).
+fn group_mentions_count(s: &rocketchat::models::Subscription) -> bool {
+    s.mute_group_mentions != Some(true) && s.disable_notifications != Some(true)
 }
 
 /// `m` mentions the user (`username` / user id `uid`) by name; `@all` and
@@ -287,7 +310,7 @@ impl ActivityItem {
 
 /// Rooms whose unread mentions Activity lists from their feed: shown,
 /// not DMs (those are "All unreads"' first tier), with direct mentions or
-/// group mentions that are not muted. `(rid, direct, group)`.
+/// group mentions that count ([`group_mentions_count`]). `(rid, direct, group)`.
 pub fn mention_rooms(ws: &Workspace) -> Vec<(String, bool, bool)> {
     let mut out: Vec<(String, bool, bool, Option<RcDate>)> = ws
         .rooms()
@@ -299,7 +322,7 @@ pub fn mention_rooms(ws: &Workspace) -> Vec<(String, bool, bool)> {
                 return None;
             }
             let direct = s.user_mentions > 0;
-            let group = s.group_mentions > 0 && s.mute_group_mentions != Some(true);
+            let group = s.group_mentions > 0 && group_mentions_count(s);
             (direct || group).then(|| (s.rid.clone(), direct, group, e.last_activity()))
         })
         .collect();
@@ -326,7 +349,7 @@ pub fn thread_mention_rooms(ws: &Workspace) -> Vec<String> {
 
 /// Activity: the mentions (newest first; rooms whose mentions are not
 /// loaded after them), then the unread threads (newest first). A thread
-/// with a mention row is not listed again.
+/// with a mention row is not listed again; muted threads are not listed.
 pub fn activity_items(
     ws: &Workspace,
     filter: ActivityFilter,
@@ -397,6 +420,10 @@ pub fn activity_items(
     }
     let mut threads = Vec::new();
     for t in room_list::unread_thread_items(ws, use_real_names) {
+        // Plain replies of a room with notifications disabled (grey rows).
+        if t.unread == Some(BadgeVariant::Muted) {
+            continue;
+        }
         if mentioned.contains(&t.tmid) {
             mentions.push(ActivityItem::MentionedThread(t));
         } else if !covered.contains(&t.tmid) {

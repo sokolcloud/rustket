@@ -17,8 +17,8 @@ use rustket_ui::theme::{
     font_semibold, tokens,
 };
 use rustket_ui::widget::{
-    ChipKind, MenuEntry, MenuItem, Placement, chip, divider, ellipsis, icon_button_with, popover,
-    popover_menu, presence_dot,
+    BadgeKind, ChipKind, MenuEntry, MenuItem, Placement, chip, divider, ellipsis, icon_button_with,
+    popover, popover_menu, presence_dot,
 };
 
 use super::panel::common::{self, RoomAction};
@@ -76,6 +76,8 @@ pub struct Header {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buttons {
     pub threads: bool,
+    /// The dot of the Threads button ([`threads_badge`]).
+    pub threads_unread: Option<BadgeKind>,
     pub discussions: bool,
     pub members: bool,
     pub team_channels: bool,
@@ -84,6 +86,14 @@ pub struct Buttons {
     pub team_members: bool,
     /// Info opens the user profile in 1:1 DMs.
     pub info: panel::Kind,
+}
+
+/// The dot of the room header's Threads button: the strongest unread
+/// thread of the room (`room_list::threads_unread`), whatever the sidebar's
+/// Threads section mode, so unread threads stay findable with it off.
+pub fn threads_badge(sub: Option<&rocketchat::models::Subscription>) -> Option<BadgeKind> {
+    sub.and_then(room_list::threads_unread)
+        .map(crate::workspace::sidebar::widget_kind)
 }
 
 /// 1:1 direct message partner (username), if `rid` is one.
@@ -110,6 +120,7 @@ pub fn buttons(ws: &Workspace, rid: &str) -> Buttons {
     if entry.is_some_and(|e| e.room_type() == RoomType::Livechat) {
         return Buttons {
             threads: false,
+            threads_unread: None,
             discussions: false,
             members: false,
             team_channels: false,
@@ -117,8 +128,12 @@ pub fn buttons(ws: &Workspace, rid: &str) -> Buttons {
             info: panel::Kind::Omnichannel(crate::omnichannel::panel::PanelKind::Info),
         };
     }
+    let threads = ws.settings().threads_enabled();
     Buttons {
-        threads: ws.settings().threads_enabled(),
+        threads,
+        threads_unread: threads
+            .then(|| threads_badge(ws.subscription(rid)))
+            .flatten(),
         // Discussions cannot be nested (the web hides it inside one too).
         discussions: ws.settings().discussions_enabled()
             && !entry.is_some_and(|e| e.is_discussion()),
@@ -146,7 +161,12 @@ pub fn menu_entries(
             .into()
     };
     for b in overflow {
-        v.push(item(b.icon, b.key, b.kind.clone()));
+        v.push(
+            MenuItem::new(t!(b.key).into_owned(), Message::MenuPanel(b.kind.clone()))
+                .icon(b.icon)
+                .dot(b.dot)
+                .into(),
+        );
     }
     if !overflow.is_empty() {
         v.push(MenuEntry::Separator);
@@ -299,6 +319,27 @@ fn omni_entries(
     v
 }
 
+/// `button` with an unread dot on its top-right corner. Always a stack, so
+/// the button keeps its widget state when the dot comes and goes.
+fn with_dot<'a>(button: Element<'a, Message>, dot: Option<BadgeKind>) -> Element<'a, Message> {
+    let layer: Element<'a, Message> = match dot {
+        Some(kind) => container(rustket_ui::widget::dot(kind, 8.0))
+            .width(Length::Fill)
+            .align_x(Alignment::End)
+            .padding(iced::Padding::ZERO.top(3.0).right(3.0))
+            .into(),
+        None => iced::widget::space().into(),
+    };
+    iced::widget::stack![button, layer].into()
+}
+
+/// The strongest of the dots of header buttons moved into the menu (the
+/// menu trigger shows it).
+fn strongest_dot(dots: impl Iterator<Item = BadgeKind>) -> Option<BadgeKind> {
+    room_list::strongest(dots.map(crate::workspace::sidebar::core_kind))
+        .map(crate::workspace::sidebar::widget_kind)
+}
+
 /// Narrow headers drop the call button: "Video call" moves to the menu top.
 fn with_call_entry(
     mut entries: Vec<MenuEntry<Message>>,
@@ -324,6 +365,8 @@ pub struct HeaderButton {
     pub icon: Icon,
     pub key: &'static str,
     pub kind: panel::Kind,
+    /// Unread dot on the button (or after its menu entry).
+    pub dot: Option<BadgeKind>,
 }
 
 const BUTTON_SLOT: f32 = 32.0 + SPACE_1;
@@ -343,7 +386,20 @@ pub fn layout_buttons(b: &Buttons, width: f32) -> (Vec<HeaderButton>, Vec<Header
     // Display order with a drop priority (lower drops first).
     let mut all: Vec<(u8, HeaderButton)> = Vec::new();
     let mut push = |prio: u8, icon: Icon, key: &'static str, kind: panel::Kind| {
-        all.push((prio, HeaderButton { icon, key, kind }));
+        let dot = if kind == panel::Kind::Threads {
+            b.threads_unread
+        } else {
+            None
+        };
+        all.push((
+            prio,
+            HeaderButton {
+                icon,
+                key,
+                kind,
+                dot,
+            },
+        ));
     };
     if b.threads {
         push(
@@ -875,21 +931,28 @@ impl Header {
         }
         for hb in inline {
             let active = ctx.panel == Some(&hb.kind);
-            actions = actions.push(icon_button_with(
-                hb.icon,
-                Some(Message::TogglePanel(hb.kind)),
-                t!(hb.key).into_owned(),
-                active,
-                32.0,
+            let dot = hb.dot;
+            actions = actions.push(with_dot(
+                icon_button_with(
+                    hb.icon,
+                    Some(Message::TogglePanel(hb.kind)),
+                    t!(hb.key).into_owned(),
+                    active,
+                    32.0,
+                ),
+                dot,
             ));
         }
 
-        let trigger = icon_button_with(
-            Icon::EllipsisVertical,
-            Some(Message::ToggleMenu),
-            t!("room_header.more").into_owned(),
-            self.menu_open,
-            32.0,
+        let trigger = with_dot(
+            icon_button_with(
+                Icon::EllipsisVertical,
+                Some(Message::ToggleMenu),
+                t!("room_header.more").into_owned(),
+                self.menu_open,
+                32.0,
+            ),
+            strongest_dot(overflow.iter().filter_map(|b| b.dot)),
         );
         let kebab: Element<'a, Message> = match self.confirm {
             Some(a) => popover(
@@ -1258,6 +1321,7 @@ mod tests {
     fn narrow_headers_move_buttons_into_the_menu() {
         let b = Buttons {
             threads: true,
+            threads_unread: None,
             discussions: true,
             members: true,
             team_channels: true,
@@ -1293,5 +1357,66 @@ mod tests {
         let (inline, _, _) = layout_buttons(&b, 100.0);
         assert_eq!(inline.len(), 1);
         assert_eq!(inline[0].kind, panel::Kind::Info);
+    }
+
+    /// Unread threads light the Threads button (inline or in the menu,
+    /// whose trigger then shows the dot), in every sidebar Threads mode.
+    #[test]
+    fn threads_button_shows_unread_threads() {
+        let mut w = ws("c", json!({}));
+        assert_eq!(buttons(&w, "r").threads_unread, None);
+        let mut sub = w.subscription("r").unwrap().clone();
+        sub.tunread = Some(vec!["t1".into(), "t2".into()]);
+        w.apply_subscription(Change::Updated, sub.clone());
+        let b = buttons(&w, "r");
+        assert_eq!(b.threads_unread, Some(BadgeKind::Thread));
+        sub.tunread_group = Some(vec!["t2".into()]);
+        w.apply_subscription(Change::Updated, sub.clone());
+        assert_eq!(
+            buttons(&w, "r").threads_unread,
+            Some(BadgeKind::GroupMention)
+        );
+        sub.tunread_user = Some(vec!["t1".into()]);
+        w.apply_subscription(Change::Updated, sub.clone());
+        let b = buttons(&w, "r");
+        assert_eq!(b.threads_unread, Some(BadgeKind::Mention));
+        let (inline, _, _) = layout_buttons(&b, 1200.0);
+        let threads = inline
+            .iter()
+            .find(|h| h.kind == panel::Kind::Threads)
+            .unwrap();
+        assert_eq!(threads.dot, Some(BadgeKind::Mention));
+        assert!(
+            inline
+                .iter()
+                .filter(|h| h.kind != panel::Kind::Threads)
+                .all(|h| h.dot.is_none())
+        );
+        let w_narrow = 2.0 * SPACE_4 + 32.0 + 2.0 * SPACE_3 + MIN_TITLE_WIDTH + 2.0 * BUTTON_SLOT;
+        let (_, over, _) = layout_buttons(&b, w_narrow);
+        assert!(over.iter().any(|h| h.kind == panel::Kind::Threads));
+        assert_eq!(
+            strongest_dot(over.iter().filter_map(|h| h.dot)),
+            Some(BadgeKind::Mention)
+        );
+        let entries = menu_entries(&w, "r", &over);
+        assert!(entries.iter().any(|e| matches!(e, MenuEntry::Item(i)
+            if matches!(i.on_select, Message::MenuPanel(panel::Kind::Threads))
+                && i.dot == Some(BadgeKind::Mention))));
+        // R3: no red or orange.
+        sub.hide_mention_status = Some(true);
+        w.apply_subscription(Change::Updated, sub.clone());
+        assert_eq!(buttons(&w, "r").threads_unread, Some(BadgeKind::Thread));
+        // Threads off on the server: no button, no dot.
+        w.apply_setting(
+            Change::Updated,
+            Setting {
+                id: "Threads_enabled".into(),
+                value: json!(false),
+                ..Default::default()
+            },
+        );
+        let b = buttons(&w, "r");
+        assert!(!b.threads && b.threads_unread.is_none());
     }
 }

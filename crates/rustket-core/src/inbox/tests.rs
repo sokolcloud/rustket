@@ -81,6 +81,31 @@ fn thread_only_rooms_are_not_listed() {
     assert_eq!(counts(&ws).threads, 2);
 }
 
+/// M2: DMs are in the mention tier, unless mention status is hidden (R3:
+/// plain unread) or notifications are off (R1: muted).
+#[test]
+fn dm_tier_follows_r1_and_r3() {
+    let dm = unread_sub("dm", RoomType::Direct, 1);
+    let mut r3 = unread_sub("r3", RoomType::Direct, 1);
+    r3.hide_mention_status = Some(true);
+    let mut r1 = unread_sub("r1", RoomType::Direct, 1);
+    r1.disable_notifications = Some(true);
+    let ws = ws_with(vec![(dm, Some(5)), (r3, Some(6)), (r1, Some(7))]);
+    let all = InboxPrefs {
+        include_muted: true,
+    };
+    let v = unread_rooms(&ws, &all, &Skipped::default());
+    let tiers: Vec<(&str, Tier)> = v.iter().map(|r| (r.rid.as_str(), r.tier)).collect();
+    assert_eq!(
+        tiers,
+        [
+            ("dm", Tier::Mention),
+            ("r3", Tier::Unread),
+            ("r1", Tier::Muted)
+        ]
+    );
+}
+
 #[test]
 fn tiers_order_mentions_dm_group_plain_muted() {
     let mut mention_s = unread_sub("mention", RoomType::Channel, 1);
@@ -182,6 +207,31 @@ fn counts_follow_the_mention_rules() {
     assert_eq!(c.threads, 1);
     // a, h, d, g; the muted room aside.
     assert_eq!(c.unread_rooms, 4);
+    let per = |rid: &str| entry_counts(ws.room(rid).unwrap());
+    assert_eq!(
+        per("a"),
+        InboxCounts {
+            unread_rooms: 1,
+            mentions: 3,
+            group_mentions: 1,
+            threads: 1,
+        }
+    );
+    assert_eq!(per("h").mentions, 0);
+    assert_eq!(per("d").mentions, 0);
+    assert_eq!(per("g").group_mentions, 0);
+    assert_eq!(per("m").unread_rooms, 0);
+    let sum =
+        ["a", "h", "d", "g", "m"]
+            .iter()
+            .map(|r| per(r))
+            .fold(InboxCounts::default(), |x, y| InboxCounts {
+                unread_rooms: x.unread_rooms + y.unread_rooms,
+                mentions: x.mentions + y.mentions,
+                group_mentions: x.group_mentions + y.group_mentions,
+                threads: x.threads + y.threads,
+            });
+    assert_eq!(sum, c);
 }
 
 #[test]
@@ -749,4 +799,75 @@ fn plan_reloads_stale_feeds_and_idles_from_cache() {
     cached.apply_connection(ConnectionState::Connected);
     assert!(cached.from_cache());
     assert_eq!(load::plan(&cached, &wanted, &st, t0), Next::Idle);
+}
+
+/// T3 is orange in Activity and in the All unreads order like the row; an
+/// R1 room's plain thread replies are not counted.
+#[test]
+fn thread_group_mentions_and_muted_threads() {
+    let mut t3 = unread_sub("t3", RoomType::Channel, 100);
+    t3.tunread = Some(vec!["t1".into()]);
+    t3.tunread_group = Some(vec!["t1".into()]);
+    let mut r4 = t3.clone();
+    r4.rid = "r4".into();
+    r4.name = "r4".into();
+    r4.mute_group_mentions = Some(true);
+    let mut r1 = sub("r1", "r1", RoomType::Channel);
+    r1.tunread = Some(vec!["t9".into()]);
+    r1.disable_notifications = Some(true);
+    // Plain main unread (lm past ls) besides the thread @all.
+    let ws = ws_with(vec![(t3, Some(200)), (r4, Some(200)), (r1, Some(200))]);
+    let per = |rid: &str| entry_counts(ws.room(rid).unwrap());
+    assert_eq!((per("t3").group_mentions, per("t3").threads), (1, 1));
+    assert_eq!((per("r4").group_mentions, per("r4").threads), (0, 1));
+    assert_eq!(per("r1").threads, 0);
+    let v = unread_rooms(&ws, &InboxPrefs::default(), &Skipped::default());
+    let tiers: Vec<(&str, Tier)> = v.iter().map(|r| (r.rid.as_str(), r.tier)).collect();
+    assert_eq!(tiers, [("t3", Tier::GroupMention), ("r4", Tier::Unread)]);
+}
+
+/// R1 in Activity: plain thread replies are neither listed nor counted,
+/// the room's `@all` neither counts nor is listed (the row is grey), while
+/// mentions of me (in the room and in its threads) stay.
+#[test]
+fn r1_rooms_in_activity() {
+    let mut r1 = unread_sub("r1", RoomType::Channel, 100);
+    r1.disable_notifications = Some(true);
+    r1.group_mentions = 2;
+    r1.tunread = Some(vec!["plain".into(), "mine".into()]);
+    r1.tunread_user = Some(vec!["mine".into()]);
+    let mut quiet = unread_sub("q", RoomType::Channel, 100);
+    quiet.disable_notifications = Some(true);
+    quiet.group_mentions = 1;
+    quiet.tunread = Some(vec!["other".into()]);
+    let ws = ws_with(vec![(r1.clone(), Some(500)), (quiet, Some(500))]);
+    let per = |ws: &Workspace, rid: &str| entry_counts(ws.room(rid).unwrap());
+    assert_eq!(
+        per(&ws, "r1"),
+        InboxCounts {
+            // Red through the thread mention.
+            unread_rooms: 1,
+            mentions: 1,
+            group_mentions: 0,
+            threads: 1,
+        }
+    );
+    assert_eq!(per(&ws, "q"), InboxCounts::default());
+    assert_eq!(counts(&ws).group_mentions, 0);
+    assert!(mention_rooms(&ws).is_empty());
+    let tmids: Vec<String> = activity_items(&ws, ActivityFilter::All, false)
+        .iter()
+        .map(|i| match i {
+            ActivityItem::MentionedThread(t) => format!("mt:{}", t.tmid),
+            ActivityItem::Thread(t) => format!("t:{}", t.tmid),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(tmids, ["mt:mine"]);
+    assert!(activity_items(&ws, ActivityFilter::Threads, false).is_empty());
+    // A direct mention in the R1 room's main timeline still counts.
+    r1.user_mentions = 1;
+    let ws = ws_with(vec![(r1, Some(500))]);
+    assert_eq!(per(&ws, "r1").mentions, 2);
+    assert_eq!(mention_rooms(&ws), [("r1".to_owned(), true, false)]);
 }

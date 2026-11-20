@@ -63,7 +63,8 @@ impl CallNotifier {
             title,
             body: t!("videoconf.incoming_body").into_owned(),
             image: None,
-            sound: false,
+            // The ring plays apart (`videoconf::alerts_for`).
+            sound: None,
             actions: vec![
                 (ACTION_DEFAULT.to_owned(), t!("videoconf.open").into_owned()),
                 (

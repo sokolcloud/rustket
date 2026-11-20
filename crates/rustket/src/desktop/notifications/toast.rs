@@ -57,7 +57,7 @@ fn register_aumid() -> Result<(), String> {
     let icon = directories::ProjectDirs::from("", "", "rustket").and_then(|d| {
         let dir = d.data_local_dir().to_owned();
         let path = dir.join("rustket.png");
-        let png = crate::desktop::icon::png(256, false)?;
+        let png = crate::desktop::icon::png(256, crate::desktop::tray::TrayLevel::None)?;
         let current = std::fs::read(&path).is_ok_and(|b| b == png);
         if !current {
             std::fs::create_dir_all(&dir).ok()?;
@@ -223,7 +223,7 @@ impl Notifier for ToastNotifier {
             let shown = tokio::task::spawn_blocking(move || {
                 inner.show(&n).map(|id| Event::Shown {
                     id,
-                    server_sound: n.sound,
+                    server_sound: text::toast_route(&n).by_os(),
                 })
             })
             .await;

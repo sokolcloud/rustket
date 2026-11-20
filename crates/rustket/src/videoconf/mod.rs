@@ -663,17 +663,28 @@ pub fn alerts_for(
     paused: bool,
 ) -> Alerts {
     use rocketchat::models::UserStatus;
-    if paused || ws.my_status() == UserStatus::Busy {
+    alerts_with(
+        prefs,
+        paused,
+        ws.my_status() == UserStatus::Busy,
+        &crate::desktop::AccountSound::of(ws),
+    )
+}
+
+/// [`alerts_for`] from plain values: `busy` is the user's status.
+pub fn alerts_with(
+    prefs: &rustket_core::config::UiPrefs,
+    paused: bool,
+    busy: bool,
+    account: &crate::desktop::AccountSound,
+) -> Alerts {
+    if paused || busy {
         return Alerts {
             sound: false,
             notify: false,
         };
     }
-    let pref = |k: &str| crate::desktop::user_pref(ws, k);
-    let muted = pref("newMessageNotification").and_then(|v| v.as_str()) == Some("none")
-        || ["notificationsSoundVolume", "masterVolume"]
-            .iter()
-            .any(|k| pref(k).and_then(|v| v.as_f64()).is_some_and(|v| v <= 0.0));
+    let muted = account.new_message_off() || account.volume_muted();
     Alerts {
         sound: prefs.sound && !muted,
         notify: prefs.desktop_notifications,

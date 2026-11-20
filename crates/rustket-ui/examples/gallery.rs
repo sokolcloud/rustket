@@ -109,10 +109,8 @@ struct Room {
     name: &'static str,
     preview: &'static str,
     time: &'static str,
-    unread: u32,
-    mentions: u32,
-    group: u32,
-    threads: bool,
+    /// The badge: its number (0: a dot) and kind.
+    badge: Option<(u32, BadgeKind)>,
     muted: bool,
     presence: Option<Presence>,
     icon: Option<Icon>,
@@ -152,10 +150,7 @@ const fn room(
         name,
         preview,
         time,
-        unread: 0,
-        mentions: 0,
-        group: 0,
-        threads: false,
+        badge: None,
         muted: false,
         presence: None,
         icon: Some(Icon::Hash),
@@ -168,8 +163,7 @@ const fn room(
 fn rooms() -> Vec<Room> {
     vec![
         Room {
-            unread: 3,
-            mentions: 1,
+            badge: Some((3, BadgeKind::Mention)),
             ..room(
                 "general",
                 "Иван: Привет всем! 👋 Релиз в пятницу",
@@ -179,7 +173,7 @@ fn rooms() -> Vec<Room> {
         },
         Room {
             icon: Some(Icon::Lock),
-            unread: 12,
+            badge: Some((12, BadgeKind::Unread)),
             flag: Some(0),
             ..room(
                 "release-planning",
@@ -201,8 +195,7 @@ fn rooms() -> Vec<Room> {
         },
         Room {
             icon: Some(Icon::Users),
-            unread: 128,
-            group: 1,
+            badge: Some((128, BadgeKind::GroupMention)),
             ..room(
                 "Platform Team",
                 "@all standup moved to 11:00",
@@ -212,7 +205,7 @@ fn rooms() -> Vec<Room> {
         },
         Room {
             icon: Some(Icon::MessagesSquare),
-            threads: true,
+            badge: Some((2, BadgeKind::Thread)),
             ..room(
                 "Q3 roadmap discussion",
                 "Bob: Added the KPIs section 📊",
@@ -222,7 +215,7 @@ fn rooms() -> Vec<Room> {
         },
         Room {
             muted: true,
-            unread: 5,
+            badge: Some((5, BadgeKind::Muted)),
             ..room(
                 "random",
                 "Cat pictures incoming 🐱🔥",
@@ -237,7 +230,7 @@ fn rooms() -> Vec<Room> {
             "Channels",
         ),
         Room {
-            unread: 2,
+            badge: Some((2, BadgeKind::Unread)),
             ..room("design", "Новые иконки в Figma 🎨", "Mon", "Channels")
         },
         Room {
@@ -263,8 +256,7 @@ fn rooms() -> Vec<Room> {
         Room {
             icon: None,
             presence: Some(Presence::Busy),
-            unread: 1,
-            mentions: 1,
+            badge: Some((1, BadgeKind::Mention)),
             flag: Some(4),
             ..room(
                 "Carol Danvers",
@@ -785,10 +777,9 @@ impl Gallery {
                 );
                 p.subtitle = Some(r.preview.into());
                 p.time = Some(r.time.into());
-                p.unread = r.unread;
-                p.user_mentions = r.mentions;
-                p.group_mentions = r.group;
-                p.thread_unread = r.threads;
+                if let Some((count, kind)) = r.badge {
+                    (p.badge, p.count, p.bold) = (Some(kind), count, true);
+                }
                 p.is_muted = r.muted;
                 p.is_selected = i == self.selected;
                 p.presence = r.presence;
@@ -908,7 +899,8 @@ impl Gallery {
         p.subtitle = Some("general · 12 replies".into());
         p.time = Some("10:41".into());
         p.icon = Some(Icon::MessageCircle);
-        p.badge_dot = Some(BadgeKind::Thread);
+        p.badge = Some(BadgeKind::Thread);
+        p.bold = true;
         p.flag = flag.map(|f| FlagMark::new(f, FLAG_NAMES[f]));
         p.density = if self.condensed {
             Density::Condensed

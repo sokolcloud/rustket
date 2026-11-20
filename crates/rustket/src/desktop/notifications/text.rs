@@ -13,6 +13,20 @@ use super::{ACTION_DEFAULT, Outgoing, TIMEOUT_NEVER, URGENCY_CRITICAL};
 pub const TOAST_SOUND: &str = "ms-winsoundevent:Notification.IM";
 
 #[cfg(any(windows, test))]
+/// Who plays the sound of toast `n`: Windows plays its message sound
+/// ([`TOAST_SOUND`]) with every toast that has a sound, so Focus Assist
+/// applies (unpackaged apps cannot play their own files in toasts).
+pub fn toast_route(n: &Outgoing) -> crate::desktop::sound::Route {
+    use crate::desktop::sound::{Platform, Toast, route};
+    route(
+        Platform::Windows,
+        Toast::Shown { plays_sound: true },
+        n.sound.as_ref(),
+        None,
+    )
+}
+
+#[cfg(any(windows, test))]
 /// Text as XML character data / attribute value: markup is escaped and
 /// characters XML 1.0 forbids are dropped.
 pub fn escape_xml(s: &str) -> String {
@@ -81,7 +95,7 @@ pub fn toast_xml(n: &Outgoing, image: Option<&Path>) -> String {
         }
         x.push_str("</actions>");
     }
-    if n.sound {
+    if toast_route(n).by_os() {
         x.push_str(&format!(r#"<audio src="{TOAST_SOUND}"/>"#));
     } else {
         x.push_str(r#"<audio silent="true"/>"#);
@@ -182,7 +196,7 @@ mod tests {
             title: "bob <b>".into(),
             body: "a & b \"c\" 'd'\u{1}\u{7}<script>".into(),
             image: None,
-            sound: false,
+            sound: None,
             actions: vec![(ACTION_DEFAULT.into(), "Open".into())],
             timeout: TIMEOUT_DEFAULT,
             urgency: URGENCY_NORMAL,
@@ -205,7 +219,11 @@ mod tests {
     #[test]
     fn buttons_sound_image_and_scenarios() {
         let mut n = out();
-        n.sound = true;
+        n.sound = Some(crate::desktop::sound::RcSound {
+            name: "highbell".into(),
+            volume: 50,
+        });
+        assert!(toast_route(&n).by_os());
         n.actions.push((ACTION_JOIN.into(), "Join \"now\"".into()));
         n.timeout = TIMEOUT_NEVER;
         n.urgency = URGENCY_CRITICAL;
@@ -217,6 +235,8 @@ mod tests {
         assert!(!x.contains(r#"arguments="default""#));
         assert!(x.contains(r#"src="file:///C:/Users/me/a b.png""#));
         assert!(x.contains(r#"<audio src="ms-winsoundevent:Notification.IM"/>"#));
+        // The Windows message sound, never the Rocket.Chat sound's file.
+        assert!(!x.contains("highbell") && !x.contains(".wav"));
         n.urgency = URGENCY_NORMAL;
         assert!(toast_xml(&n, None).starts_with(r#"<toast launch="default" duration="long">"#));
     }

@@ -403,6 +403,7 @@ impl App {
 
     /// The server rejected the token: drop it and show the login screen.
     pub(super) fn logged_out(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
+        self.large_rooms.forget(sid);
         let mut e2e = Task::none();
         let mut scheduled = 0;
         if let Some(s) = self.servers.get_mut(sid) {

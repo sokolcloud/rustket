@@ -1,5 +1,7 @@
 //! Renders the app icons (`assets/icons/*.png`) with tiny-skia: a blue chat
-//! bubble with a white spark, and an "unread" variant with a red dot. Also
+//! bubble with a white spark, and the tray's unread variants with a dot: red
+//! (`rustket-unread`, mentions), orange (`rustket-group`, `@all`) and the
+//! quiet unread colour (`rustket-quiet`). Also
 //! writes `rustket.ico` (Windows executable and installer) and `rustket.icns`
 //! (macOS bundle) from the same renderer.
 //!
@@ -15,6 +17,16 @@ use tiny_skia::{
 };
 
 const SIZES: &[u32] = &[16, 22, 24, 32, 48, 64, 128, 256, 512];
+type Rgb = (u8, u8, u8);
+
+/// File name prefixes and dot colours (the theme's `badge_mention`,
+/// `badge_group_mention` and light `badge_unread`).
+const VARIANTS: &[(&str, Option<Rgb>)] = &[
+    ("rustket", None),
+    ("rustket-unread", Some((0xEC, 0x0D, 0x2A))),
+    ("rustket-group", Some((0xB3, 0x53, 0x00))),
+    ("rustket-quiet", Some((0x55, 0x74, 0xA6))),
+];
 const ICO_SIZES: &[u32] = &[16, 24, 32, 48, 64, 128, 256];
 /// PNG-backed icns element types with their pixel size (`@2x` types included).
 const ICNS_TYPES: &[(&[u8; 4], u32)] = &[
@@ -51,7 +63,7 @@ fn spark(pb: &mut PathBuilder, cx: f32, cy: f32, r: f32) {
     pb.close();
 }
 
-fn render(size: u32, unread: bool) -> Pixmap {
+fn render(size: u32, dot: Option<Rgb>) -> Pixmap {
     let mut pm = Pixmap::new(size, size).expect("pixmap");
     let s = size as f32 / 256.0;
     let t = Transform::from_scale(s, s);
@@ -101,7 +113,7 @@ fn render(size: u32, unread: bool) -> Pixmap {
     let sparks = pb.finish().expect("spark path");
     pm.fill_path(&sparks, &solid(255, 255, 255), FillRule::Winding, t, None);
 
-    if unread {
+    if let Some((red, green, blue)) = dot {
         let (cx, cy, r) = if small {
             (196.0, 60.0, 60.0)
         } else {
@@ -111,13 +123,13 @@ fn render(size: u32, unread: bool) -> Pixmap {
             PathBuilder::from_circle(cx, cy, r + if small { 14.0 } else { 10.0 }).expect("ring");
         pm.fill_path(&ring, &solid(255, 255, 255), FillRule::Winding, t, None);
         let dot = PathBuilder::from_circle(cx, cy, r).expect("dot");
-        pm.fill_path(&dot, &solid(0xEC, 0x0D, 0x2A), FillRule::Winding, t, None);
+        pm.fill_path(&dot, &solid(red, green, blue), FillRule::Winding, t, None);
     }
     pm
 }
 
 fn png(size: u32) -> Vec<u8> {
-    render(size, false).encode_png().expect("encode png")
+    render(size, None).encode_png().expect("encode png")
 }
 
 /// ICO with 32-bit BMP entries below 256 px (read by every Windows API) and a
@@ -129,7 +141,7 @@ fn ico() -> Vec<u8> {
             let data = if size >= 256 {
                 png(size)
             } else {
-                bmp(&render(size, false))
+                bmp(&render(size, None))
             };
             (size, data)
         })
@@ -208,9 +220,9 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("crates/rustket/assets/icons"));
     std::fs::create_dir_all(&out).expect("out dir");
     for &size in SIZES {
-        for (unread, name) in [(false, "rustket"), (true, "rustket-unread")] {
+        for (name, dot) in VARIANTS {
             let path = out.join(format!("{name}-{size}.png"));
-            render(size, unread).save_png(&path).expect("save png");
+            render(size, *dot).save_png(&path).expect("save png");
             println!("wrote {}", path.display());
         }
     }

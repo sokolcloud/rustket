@@ -586,7 +586,11 @@ pub(crate) mod tests {
                 .filter(|l| !l.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            for part in text.split("t!(\"").skip(1) {
+            // `t!("key"` and, as rustfmt wraps long calls, `t!(\n    "key"`.
+            for part in text.split("t!(").skip(1) {
+                let Some(part) = part.trim_start().strip_prefix('"') else {
+                    continue;
+                };
                 let Some((key, _)) = part.split_once('"') else {
                     continue;
                 };

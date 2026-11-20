@@ -11,6 +11,7 @@ mod flag;
 mod focus_ring;
 mod header;
 mod hover_box;
+mod inert;
 mod input;
 mod keyed_list;
 mod layer;
@@ -47,6 +48,7 @@ pub use focus_ring::{
 };
 pub use header::{header_bar, header_gap};
 pub use hover_box::{HoverBox, hover_box};
+pub use inert::{Inert, inert};
 pub use input::{TextField, text_field};
 pub use keyed_list::{KeyedColumn, keyed_list, keyed_list_keys};
 pub use layer::focus_cycle;

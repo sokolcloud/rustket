@@ -8,6 +8,7 @@ use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 use rust_i18n::t;
 
+use super::super::sound::{self, OsSound, Platform, Route, Toast};
 use super::{Event, Message, Notifier, Outgoing, Signal};
 
 /// The real backend: `org.freedesktop.Notifications` on the shared session
@@ -57,19 +58,24 @@ pub fn escape_markup(s: &str) -> String {
 
 type Hints = HashMap<&'static str, zbus::zvariant::Value<'static>>;
 
-/// Hints of `n` (`server_sound`: the server plays sound hints).
-fn hints(n: &Outgoing, server_sound: bool) -> Hints {
+/// Hints of `n` with its sound's `route`: the server plays the
+/// Rocket.Chat sound's file (`sound-file`) or the theme's message sound
+/// (`sound-name`); otherwise it stays silent (`suppress-sound`).
+fn hints(n: &Outgoing, route: &Route) -> Hints {
     use zbus::zvariant::{Structure, Value};
     let mut h = Hints::new();
     h.insert("category", Value::from("im.received"));
     h.insert("urgency", Value::U8(n.urgency));
-    if n.sound && server_sound {
-        h.insert(
-            "sound-name",
-            Value::from(super::super::sound::MESSAGE_SOUND),
-        );
-    } else {
-        h.insert("suppress-sound", Value::Bool(true));
+    match route {
+        Route::Os(OsSound::File(f)) => {
+            h.insert("sound-file", Value::from(f.to_string_lossy().into_owned()));
+        }
+        Route::Os(OsSound::Default) => {
+            h.insert("sound-name", Value::from(sound::MESSAGE_SOUND));
+        }
+        Route::Silent | Route::Local { .. } => {
+            h.insert("suppress-sound", Value::Bool(true));
+        }
     }
     if let Some((w, height, px)) = &n.image
         && let (Ok(w), Ok(height)) = (i32::try_from(*w), i32::try_from(*height))
@@ -92,9 +98,14 @@ type NotifyArgs<'a> = (
     i32,
 );
 
-/// Arguments of `Notify` (`caps`: the server's capabilities).
-fn notify_args<'a>(n: &'a Outgoing, app_name: &'a str, caps: &[String]) -> NotifyArgs<'a> {
-    let server_sound = caps.iter().any(|c| c == "sound");
+/// Arguments of `Notify` (`caps`: the server's capabilities; `route`: the
+/// sound's).
+fn notify_args<'a>(
+    n: &'a Outgoing,
+    app_name: &'a str,
+    caps: &[String],
+    route: &Route,
+) -> NotifyArgs<'a> {
     let body = if caps.iter().any(|c| c == "body-markup") {
         escape_markup(&n.body)
     } else {
@@ -112,7 +123,7 @@ fn notify_args<'a>(n: &'a Outgoing, app_name: &'a str, caps: &[String]) -> Notif
         n.title.as_str(),
         body,
         actions,
-        hints(n, server_sound),
+        hints(n, route),
         n.timeout,
     )
 }
@@ -121,9 +132,26 @@ impl Notifier for ZbusNotifier {
     fn show(&self, n: Outgoing) -> BoxFuture<'static, Event> {
         async move {
             let caps = capabilities().await;
-            let server_sound = caps.iter().any(|c| c == "sound");
+            let plays_sound = caps.iter().any(|c| c == "sound");
+            let file = match (&n.sound, plays_sound) {
+                (Some(s), true) => {
+                    let s = s.clone();
+                    tokio::task::spawn_blocking(move || sound::prepared_file(&s))
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                _ => None,
+            };
+            let route = sound::route(
+                Platform::Linux,
+                Toast::Shown { plays_sound },
+                n.sound.as_ref(),
+                file.as_deref(),
+            );
+            let server_sound = route.by_os();
             let app_name = t!("desktop.app_name");
-            let args = notify_args(&n, &app_name, &caps);
+            let args = notify_args(&n, &app_name, &caps, &route);
             match super::super::dbus::call(
                 NOTIFICATIONS,
                 NOTIFICATIONS_PATH,
@@ -243,20 +271,69 @@ mod tests {
             title: "t".into(),
             body: "b".into(),
             image: Some((2, 1, vec![0; 8])),
-            sound: true,
+            sound: Some(crate::desktop::sound::RcSound {
+                name: "chime".into(),
+                volume: 80,
+            }),
             actions: Vec::new(),
             timeout: TIMEOUT_DEFAULT,
             urgency: URGENCY_NORMAL,
         };
-        let h = hints(&out, true);
-        assert!(h.contains_key("sound-name") && h.contains_key("image-data"));
-        let h = hints(&out, false);
-        assert!(h.contains_key("suppress-sound") && !h.contains_key("sound-name"));
+        assert!(hints(&out, &Route::Silent).contains_key("image-data"));
         let bad = Outgoing {
             image: Some((2, 2, vec![0; 8])),
             ..out
         };
-        assert!(!hints(&bad, false).contains_key("image-data"));
+        assert!(!hints(&bad, &Route::Silent).contains_key("image-data"));
+    }
+
+    /// GNOME (the `sound` capability) plays the Rocket.Chat sound's file,
+    /// or the theme's message sound when the file could not be prepared;
+    /// a server without it (KDE) stays silent and Rustket plays the sound.
+    #[test]
+    fn sound_hints_follow_the_route() {
+        use std::path::Path;
+        use zbus::zvariant::Value;
+        let mut out = Outgoing {
+            replaces: None,
+            title: "t".into(),
+            body: "b".into(),
+            image: None,
+            sound: Some(crate::desktop::sound::RcSound {
+                name: "chime".into(),
+                volume: 80,
+            }),
+            actions: Vec::new(),
+            timeout: TIMEOUT_DEFAULT,
+            urgency: URGENCY_NORMAL,
+        };
+        let f = Path::new("/home/u/.cache/rustket/sounds/v1-chime-80.wav");
+        let gnome = Toast::Shown { plays_sound: true };
+        let kde = Toast::Shown { plays_sound: false };
+        let route_of = |out: &Outgoing, toast, file| {
+            sound::route(Platform::Linux, toast, out.sound.as_ref(), file)
+        };
+        let h = hints(&out, &route_of(&out, gnome, Some(f)));
+        assert_eq!(
+            h.get("sound-file"),
+            Some(&Value::from(f.to_string_lossy().into_owned()))
+        );
+        assert!(!h.contains_key("sound-name") && !h.contains_key("suppress-sound"));
+        let h = hints(&out, &route_of(&out, gnome, None));
+        assert_eq!(
+            h.get("sound-name"),
+            Some(&Value::from("message-new-instant"))
+        );
+        assert!(!h.contains_key("sound-file") && !h.contains_key("suppress-sound"));
+        let r = route_of(&out, kde, Some(f));
+        assert_eq!(r, Route::Local { quiet_check: true });
+        let h = hints(&out, &r);
+        assert_eq!(h.get("suppress-sound"), Some(&Value::Bool(true)));
+        assert!(!h.contains_key("sound-file") && !h.contains_key("sound-name"));
+        out.sound = None;
+        let h = hints(&out, &route_of(&out, gnome, Some(f)));
+        assert_eq!(h.get("suppress-sound"), Some(&Value::Bool(true)));
+        assert!(!h.contains_key("sound-file") && !h.contains_key("sound-name"));
     }
 
     #[test]
@@ -267,13 +344,13 @@ mod tests {
             title: "t".into(),
             body: "a < b".into(),
             image: Some((1, 1, vec![0; 4])),
-            sound: false,
+            sound: None,
             actions: vec![("default".into(), "Open".into())],
             timeout: TIMEOUT_DEFAULT,
             urgency: URGENCY_NORMAL,
         };
         let caps = vec!["body-markup".to_owned()];
-        let args = notify_args(&out, "Rustket", &caps);
+        let args = notify_args(&out, "Rustket", &caps, &Route::Silent);
         assert_eq!(args.signature().to_string(), "(susssasa{sv}i)");
         assert_eq!(args.4, "a &lt; b");
         assert_eq!(args.5, ["default", "Open"]);
@@ -281,6 +358,6 @@ mod tests {
             args.6["image-data"].value_signature().to_string(),
             "(iiibiiay)"
         );
-        assert_eq!(notify_args(&out, "Rustket", &[]).4, "a < b");
+        assert_eq!(notify_args(&out, "Rustket", &[], &Route::Silent).4, "a < b");
     }
 }
