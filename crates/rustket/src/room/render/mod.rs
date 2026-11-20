@@ -33,6 +33,7 @@ use super::ViewCtx;
 use crate::images::Images;
 
 pub use linkify::{find_links, safe_url};
+pub(crate) use md::mention_is_mine;
 pub use md::{EmojiPiece, emoji_element, emoji_piece, format_timestamp};
 pub use preview::preview_handle;
 
@@ -358,11 +359,27 @@ fn folded_text_part(msg: &Message, rc: &RenderCtx<'_>) -> Option<Element<'static
     }
 }
 
+/// The account's highlight words (`highlights` preference of `/me`, blank
+/// ones dropped).
+pub(crate) fn highlight_words(ws: &Workspace) -> Vec<String> {
+    crate::desktop::user_pref(ws, "highlights")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Only the text (markdown) part of `msg`, if it has any.
 pub fn text_part(msg: &Message, rc: &RenderCtx<'_>) -> Option<Element<'static, RenderMsg>> {
     match &msg.md {
         Some(root) if !root.is_empty() => Some(md::blocks(root, &msg.id, msg, rc)),
-        _ if !msg.msg.trim().is_empty() => Some(md::plain_paragraph(&msg.msg, &msg.id, rc)),
+        _ if !msg.msg.trim().is_empty() => Some(md::plain_paragraph(msg, rc)),
         _ => None,
     }
 }

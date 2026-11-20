@@ -433,7 +433,7 @@ impl Timeline {
             );
         }
 
-        let tunread = ws.subscription(&self.rid).and_then(|s| s.tunread.as_ref());
+        let sub = ws.subscription(&self.rid);
         let common = list::Common::new(ctx, &self.rid);
         let mut col = keyed_list::<u64, Message, _, _>()
             .width(Length::Fill)
@@ -462,7 +462,7 @@ impl Timeline {
             let flags = row::RowFlags {
                 sequential: r.sequential,
                 menu_open: self.items.menu.as_deref() == Some(m.id.as_str()),
-                thread_unread: tunread.is_some_and(|t| t.contains(&m.id)),
+                thread_unread: parent_thread_unread(sub, &m.id),
                 selected: selected == Some(m.id.as_str()),
                 picking: self.picked.is_some(),
                 picked: self.picked.as_ref().is_some_and(|p| p.contains(&m.id)),
@@ -603,4 +603,14 @@ fn top_indicator<'a>(tl: &rustket_core::timeline::Timeline, offline: bool) -> El
         .center_x(Length::Fill)
         .padding([SPACE_4, 0.0])
         .into()
+}
+
+/// Whether the thread of parent message `mid` has unread replies (the dot of
+/// its thread summary): `tunread` of the room's subscription lists it.
+pub(crate) fn parent_thread_unread(
+    sub: Option<&rocketchat::models::Subscription>,
+    mid: &str,
+) -> bool {
+    sub.and_then(|s| s.tunread.as_ref())
+        .is_some_and(|t| t.iter().any(|x| x == mid))
 }

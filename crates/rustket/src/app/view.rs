@@ -177,7 +177,7 @@ impl App {
                 id: s.id.clone(),
                 name: s.name.clone(),
                 avatar: AvatarSource::initials(&s.name, s.url.as_str()),
-                unread: room_list::unread_totals(&s.workspace),
+                signal: room_list::workspace_signal(&s.workspace),
                 selected: !adding && self.active.as_ref() == Some(&s.id),
                 signed_out: !s.is_logged_in() && !s.restoring,
             })

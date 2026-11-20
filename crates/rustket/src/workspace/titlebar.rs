@@ -198,7 +198,7 @@ pub fn view<'a>(v: View) -> Element<'a, Message> {
         }
     };
     let items = v.entries.into_iter().map(|e| {
-        let badge = rail::badge(e.unread);
+        let badge = rail::badge(e.signal);
         title_bar_workspace(
             &e.avatar,
             rail::label(e.name, e.signed_out),
@@ -459,12 +459,16 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "not toml [");
     }
 
-    fn entry(n: u8, unread: (u64, u64), signed_out: bool) -> RailEntry {
+    fn entry(n: u8, (rooms, mentions): (u64, u64), signed_out: bool) -> RailEntry {
         RailEntry {
             id: ServerId(format!("s{n}")),
             name: format!("Server {n}"),
             avatar: AvatarSource::initials("Server", "https://example.org"),
-            unread,
+            signal: rustket_core::room_list::WorkspaceSignal {
+                mentions,
+                strongest: (rooms > 0).then_some(rustket_core::room_list::BadgeVariant::Unread),
+                rooms,
+            },
             selected: n == 0,
             signed_out,
         }

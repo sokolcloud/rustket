@@ -55,8 +55,9 @@ pub(crate) fn visible_in<'a>(ws: &'a Workspace, rid: &str) -> impl Fn(&RcMessage
     }
 }
 
-/// Room/subscription state the row actions depend on (read-only, muted,
-/// room roles …); `Dirty::ROOMS` would change with every new message.
+/// Room/subscription state the rows depend on (read-only, muted, room
+/// roles, the `@all` highlight muted by R4 …); `Dirty::ROOMS` would change
+/// with every new message.
 fn room_state_key(ws: &Workspace, rid: &str) -> u64 {
     use rustket_core::permissions as perm;
     let mut h = std::hash::DefaultHasher::new();
@@ -71,6 +72,7 @@ fn room_state_key(ws: &Workspace, rid: &str) -> u64 {
     let sub = ws.subscription(rid);
     sub.is_some().hash(&mut h);
     sub.and_then(|s| s.roles.as_ref()).hash(&mut h);
+    sub.and_then(|s| s.mute_group_mentions).hash(&mut h);
     h.finish()
 }
 
@@ -633,6 +635,35 @@ pub(crate) fn with_jump_button<'a, M: Clone + 'a>(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Turning R4 on or off rebuilds the rows: their `@all` highlight
+    /// depends on it.
+    #[test]
+    fn row_state_follows_muted_group_mentions() {
+        use rocketchat::models::{RoomType, Subscription, UserRef};
+        use rustket_core::workspace::Change;
+        let mut ws = Workspace::new();
+        let sub = |mute: Option<bool>| Subscription {
+            id: "s".into(),
+            rid: "r".into(),
+            name: "r".into(),
+            t: RoomType::Channel,
+            mute_group_mentions: mute,
+            u: UserRef {
+                id: "me".into(),
+                username: None,
+                name: None,
+            },
+            ..Default::default()
+        };
+        ws.apply_subscription(Change::Inserted, sub(None));
+        let before = room_state_key(&ws, "r");
+        ws.apply_subscription(Change::Updated, sub(Some(true)));
+        let muted = room_state_key(&ws, "r");
+        assert_ne!(before, muted);
+        ws.apply_subscription(Change::Updated, sub(Some(false)));
+        assert_ne!(muted, room_state_key(&ws, "r"));
+    }
 
     #[test]
     fn ignored_authors_are_collapsed_until_revealed() {

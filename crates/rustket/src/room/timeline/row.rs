@@ -251,14 +251,38 @@ fn author_avatar(env: &Env<'_>, m: &RcMessage, name: &str) -> El {
 }
 
 fn mentions_me(env: &Env<'_>, m: &RcMessage) -> bool {
-    let me_id = env.ws.user_id();
-    if me_id.is_some_and(|id| id == m.u.id) {
+    highlights_in(env.ws, m)
+}
+
+/// [`highlights_row`] for the signed-in user of `ws`, with the room's R4
+/// and the account's highlight words: every view that shows messages
+/// (timeline, thread panel, All unreads) uses it.
+pub(crate) fn highlights_in(ws: &rustket_core::workspace::Workspace, m: &RcMessage) -> bool {
+    let mute_group = ws
+        .subscription(&m.rid)
+        .is_some_and(|s| s.mute_group_mentions == Some(true));
+    let words = render::highlight_words(ws);
+    highlights_row(ws.user_id(), mute_group, &words, m)
+}
+
+/// The row of `m` gets the mention highlight for user `me_id`: someone
+/// else's message mentioning the user, containing one of the user's
+/// highlight `words` (matched like the server does), or `@all` / `@here`
+/// unless the room mutes group mentions (`mute_group`).
+pub(crate) fn highlights_row(
+    me_id: Option<&str>,
+    mute_group: bool,
+    words: &[String],
+    m: &RcMessage,
+) -> bool {
+    if me_id.is_some_and(|id| id == m.u.id) || m.is_system() {
         return false;
     }
     m.mentions.as_ref().is_some_and(|list| {
-        list.iter()
-            .any(|x| x.id == "all" || x.id == "here" || me_id.is_some_and(|id| id == x.id))
-    })
+        list.iter().any(|x| {
+            (!mute_group && (x.id == "all" || x.id == "here")) || me_id.is_some_and(|id| id == x.id)
+        })
+    }) || rustket_core::highlight::contains(&m.msg, words)
 }
 
 fn reactions(env: &Env<'_>, m: &RcMessage, can_react: bool) -> Option<El> {
@@ -758,6 +782,76 @@ mod tests {
         assert_eq!(plural_for("en", 1), "one");
         assert_eq!(plural_for("en", 21), "many");
         assert_eq!(plural_for("en", 3), "many");
+    }
+
+    #[test]
+    fn group_mentions_highlight_unless_muted() {
+        let msg = |mentions: &[&str]| RcMessage {
+            u: UserRef {
+                id: "bob".into(),
+                ..Default::default()
+            },
+            mentions: Some(
+                mentions
+                    .iter()
+                    .map(|id| rocketchat::models::Mention {
+                        id: (*id).into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        for id in ["all", "here"] {
+            assert!(highlights_row(Some("me"), false, &[], &msg(&[id])));
+            assert!(!highlights_row(Some("me"), true, &[], &msg(&[id])), "R4");
+        }
+        assert!(highlights_row(Some("me"), true, &[], &msg(&["here", "me"])));
+    }
+
+    #[test]
+    fn highlight_words_highlight_the_row() {
+        let words = vec!["deploy".to_owned()];
+        let msg = |uid: &str, text: &str| RcMessage {
+            u: UserRef {
+                id: uid.into(),
+                ..Default::default()
+            },
+            msg: text.into(),
+            ..Default::default()
+        };
+        assert!(highlights_row(
+            Some("me"),
+            false,
+            &words,
+            &msg("bob", "Deploy at 5")
+        ));
+        // R4 mutes @all / @here only.
+        assert!(highlights_row(
+            Some("me"),
+            true,
+            &words,
+            &msg("bob", "deploy!")
+        ));
+        assert!(!highlights_row(
+            Some("me"),
+            false,
+            &words,
+            &msg("bob", "deployment")
+        ));
+        assert!(!highlights_row(
+            Some("me"),
+            false,
+            &[],
+            &msg("bob", "deploy")
+        ));
+        // Never the user's own message.
+        assert!(!highlights_row(
+            Some("me"),
+            false,
+            &words,
+            &msg("me", "deploy")
+        ));
     }
 
     /// Dates the parser now rejects, built directly. With a non-UTC local

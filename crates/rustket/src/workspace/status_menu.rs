@@ -50,6 +50,8 @@ pub enum Message {
     Settings,
     /// The keyboard shortcuts cheat sheet.
     Shortcuts,
+    /// Settings → Help (the indicators reference).
+    Help,
     /// Administration (shown with any admin permission).
     Admin,
     Logout,
@@ -423,6 +425,10 @@ impl StatusMenu {
                 self.open = false;
                 Action::effect(Effect::Navigate(Nav::Shortcuts))
             }
+            Message::Help => {
+                self.open = false;
+                Action::effect(Effect::Navigate(Nav::HelpSettings))
+            }
             Message::Admin => {
                 self.open = false;
                 Action::effect(Effect::Navigate(Nav::Admin))
@@ -709,6 +715,11 @@ impl StatusMenu {
         rows.item(
             labelled(Icon::Keyboard, t!("shortcuts.title").into_owned()),
             Some(Message::Shortcuts),
+            false,
+        );
+        rows.item(
+            labelled(Icon::CircleHelp, t!("help.title").into_owned()),
+            Some(Message::Help),
             false,
         );
         if rustket_core::admin::can_view_admin(ws) {
@@ -1027,6 +1038,13 @@ mod tests {
         assert!(matches!(
             a.effects.as_slice(),
             [Effect::Navigate(Nav::Settings)]
+        ));
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        let a = m.update(Message::Help, &mut fx.ctx());
+        assert!(!m.open);
+        assert!(matches!(
+            a.effects.as_slice(),
+            [Effect::Navigate(Nav::HelpSettings)]
         ));
         let a = m.update(Message::LogoutEverywhere, &mut fx.ctx());
         assert!(matches!(

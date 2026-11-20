@@ -72,8 +72,11 @@ pub struct Outgoing {
     pub body: String,
     /// RGBA pixels of the sender's avatar: `(width, height, pixels)`.
     pub image: Option<(u32, u32, Vec<u8>)>,
-    /// Ask for the message sound.
-    pub sound: bool,
+    /// The sound that comes with the notification: a backend that can
+    /// play sounds plays it ([`super::sound::route`]), so the system's Do
+    /// Not Disturb applies; otherwise the app plays it after
+    /// [`Event::Shown`] with `server_sound: false` or [`Event::Failed`].
+    pub sound: Option<super::sound::RcSound>,
     /// `(key, label)`; the first is the default action.
     pub actions: Vec<(String, String)>,
     /// Milliseconds, or [`TIMEOUT_DEFAULT`] / [`TIMEOUT_NEVER`].
@@ -84,8 +87,8 @@ pub struct Outgoing {
 /// Result of showing a notification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    /// Shown with this id; `server_sound`: the notification server plays the
-    /// sound hint itself.
+    /// Shown with this id; `server_sound`: the notification server plays
+    /// [`Outgoing::sound`] itself.
     Shown {
         id: u32,
         server_sound: bool,
@@ -155,10 +158,14 @@ impl Notifier for NullNotifier {
 pub struct MockNotifier {
     pub shown: Arc<Mutex<Vec<Outgoing>>>,
     pub closed: Arc<Mutex<Vec<u32>>>,
+    /// Plays the notifications' sounds (a server with the `sound`
+    /// capability).
+    pub plays_sound: bool,
 }
 
 impl Notifier for MockNotifier {
     fn show(&self, n: Outgoing) -> BoxFuture<'static, Event> {
+        let n_sound = n.sound.is_some();
         let id = match self.shown.lock() {
             Ok(mut g) => {
                 let id = n.replaces.unwrap_or(g.len() as u32 + 1);
@@ -167,13 +174,8 @@ impl Notifier for MockNotifier {
             }
             Err(_) => 0,
         };
-        async move {
-            Event::Shown {
-                id,
-                server_sound: false,
-            }
-        }
-        .boxed()
+        let server_sound = self.plays_sound && n_sound;
+        async move { Event::Shown { id, server_sound } }.boxed()
     }
 
     fn close(&self, id: u32) -> BoxFuture<'static, ()> {
@@ -195,11 +197,11 @@ pub struct Target {
 pub enum Message {
     /// A showing finished. `target`: `None` for the test notification; `seq`
     /// identifies the showing (a replaced notification's late result is
-    /// ignored); `sound`: the message sound was asked for.
+    /// ignored); `sound`: its [`Outgoing::sound`].
     Shown {
         target: Option<Target>,
         seq: u64,
-        sound: bool,
+        sound: Option<super::sound::RcSound>,
         event: Event,
     },
     /// A notification server signal for notification `id`.
@@ -239,6 +241,9 @@ struct Entry {
     about: Option<RcDate>,
     /// Call of a conference notification (its "Join" joins the call).
     conference_id: Option<String>,
+    /// Shown for the conversation on screen (`muteFocusedConversations`
+    /// off): reading it there is expected, so it is not closed on read.
+    on_screen: bool,
 }
 
 pub struct Notifications {
@@ -286,22 +291,123 @@ pub fn incoming(n: &DesktopNotification) -> IncomingNotification {
     }
 }
 
-/// Whether the message sound may play: the room's sound is not "None", the
-/// account's new-message sound is not "None" and its volumes are not zero.
-pub fn sound_allowed(n: &DesktopNotification, ws: &Workspace) -> bool {
-    if n.payload.audio_notification_value.as_deref() == Some("none") {
-        return false;
+/// Why the message sound of a shown notification stays silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageSoundOff {
+    /// Rustket's "Play a sound" is off.
+    Setting,
+    /// The room's sound (`audioNotificationValue`) is "None".
+    Room,
+    /// The account's new-message sound is "None".
+    Account,
+    /// The account's notification or master volume is zero.
+    Volume,
+}
+
+/// The message sound, as Rocket.Chat web picks it
+/// (`useNewMessageNotification`): `ui_sound` (`UiPrefs::sound`) must be on;
+/// the room's own sound `room_sound` (`audioNotificationValue`) wins and
+/// its "None" mutes the room; otherwise the account's new-message sound,
+/// whose "None" mutes only rooms without a sound of their own. The volume
+/// is the account's notification × master volume.
+pub fn message_sound(
+    ui_sound: bool,
+    room_sound: Option<&str>,
+    account: &super::AccountSound,
+) -> Result<super::sound::RcSound, MessageSoundOff> {
+    if !ui_sound {
+        return Err(MessageSoundOff::Setting);
     }
-    if super::user_pref(ws, "newMessageNotification").and_then(|v| v.as_str()) == Some("none") {
-        return false;
+    let name = match super::sound_choice(room_sound) {
+        Some("none") => return Err(MessageSoundOff::Room),
+        Some(own) => own,
+        None => account.message_sound().ok_or(MessageSoundOff::Account)?,
+    };
+    match account.volume() {
+        0 => Err(MessageSoundOff::Volume),
+        volume => Ok(super::sound::RcSound {
+            name: name.to_owned(),
+            volume,
+        }),
     }
-    !["notificationsSoundVolume", "masterVolume"]
-        .iter()
-        .any(|k| {
-            super::user_pref(ws, k)
-                .and_then(|v| v.as_f64())
-                .is_some_and(|v| v <= 0.0)
-        })
+}
+
+/// The room's sound for `n`: the subscription's `audioNotificationValue`
+/// (Rocket.Chat web reads it from the subscription), else the payload's; a
+/// payload's "None" (conference rings) always wins.
+fn room_sound<'a>(ws: &'a Workspace, n: &'a DesktopNotification) -> Option<&'a str> {
+    let payload = n.payload.audio_notification_value.as_deref();
+    if payload == Some("none") {
+        return payload;
+    }
+    ws.subscription(&n.payload.rid)
+        .and_then(|s| s.audio_notification_value.as_deref())
+        .or(payload)
+}
+
+/// Why [`message_sound`] stays silent; `None` when it plays.
+pub fn message_sound_off(
+    ui_sound: bool,
+    room_sound: Option<&str>,
+    account: &super::AccountSound,
+) -> Option<MessageSoundOff> {
+    message_sound(ui_sound, room_sound, account).err()
+}
+
+/// The account's "require interaction" preference
+/// (`desktopNotificationRequireInteraction`): notifications stay until
+/// dismissed.
+pub(crate) fn require_interaction_pref(ws: &Workspace) -> bool {
+    super::user_pref(ws, "desktopNotificationRequireInteraction")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// The account's "Mute focused conversations" preference
+/// (`muteFocusedConversations`, Rocket.Chat's default on): no notification
+/// for the conversation on screen.
+pub(crate) fn mute_focused_pref(ws: &Workspace) -> bool {
+    super::user_pref(ws, "muteFocusedConversations")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+/// Message `mid` of room `rid` is in the room's main timeline (a thread
+/// reply sent to the channel too, `tshow`), as far as the workspace knows.
+fn shown_in_room(ws: &Workspace, rid: &str, mid: &str) -> bool {
+    ws.timeline(rid).is_some_and(|t| t.contains(mid))
+        || ws
+            .room(rid)
+            .and_then(|e| e.room.as_ref())
+            .and_then(|r| r.last_message.as_deref())
+            .is_some_and(|m| m.id == mid && m.tshow == Some(true))
+}
+
+/// How long a thread reply's notification for the open room waits for the
+/// reply itself: the server sends the notification before the message, and
+/// only the message says whether it is also in the room (`tshow`).
+pub(crate) const REPLY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The notification of thread reply `n` must wait [`REPLY_WAIT`] before
+/// Q4 is decided: the reply is in the open, focused room whose panel does
+/// not show its thread, the account mutes the conversation on screen, and
+/// the reply has not reached the workspace yet.
+pub(crate) fn wait_for_reply(
+    n: &DesktopNotification,
+    ws: &Workspace,
+    focused_rid: Option<&str>,
+    focused_tmid: Option<&str>,
+    on_screen: bool,
+) -> bool {
+    let p = &n.payload;
+    let Some(tmid) = p.tmid.as_deref().filter(|t| !t.is_empty()) else {
+        return false;
+    };
+    on_screen
+        && focused_rid == Some(p.rid.as_str())
+        && focused_tmid != Some(tmid)
+        && mute_focused_pref(ws)
+        && !shown_in_room(ws, &p.rid, &p.id)
 }
 
 /// `expire_timeout` and urgency: rings (`requireInteraction`) stay and are
@@ -311,10 +417,7 @@ fn timeout_and_urgency(n: &DesktopNotification, ws: &Workspace) -> (i32, u8) {
     if n.require_interaction == Some(true) {
         return (TIMEOUT_NEVER, URGENCY_CRITICAL);
     }
-    let pref = super::user_pref(ws, "desktopNotificationRequireInteraction")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if pref {
+    if require_interaction_pref(ws) {
         return (TIMEOUT_NEVER, URGENCY_NORMAL);
     }
     let timeout = n
@@ -393,7 +496,10 @@ impl Notifications {
         }
     }
 
-    /// Shows `notification` unless a local rule suppresses it.
+    /// Shows `notification` unless a local rule suppresses it; returns the
+    /// showing and the message sound to play now, without a notification
+    /// (desktop notifications off or the toast suppressed: sound only). A
+    /// shown notification carries its sound ([`Outgoing::sound`]).
     #[allow(clippy::too_many_arguments)]
     pub fn notify(
         &mut self,
@@ -403,12 +509,12 @@ impl Notifications {
         workspace: &Workspace,
         prefs: &UiPrefs,
         env: &NotifyEnv<'_>,
-    ) -> Task<super::Message> {
+    ) -> (Task<super::Message>, Option<super::sound::RcSound>) {
         // Not about a room: nothing to open (the web client skips these too).
         // Queued-inquiry notifications (manual routing) have no room: shown,
         // clicking only brings the server up (`docs/omnichannel.md` §5.6).
         if notification.payload.rid.is_empty() && !notification.payload.is_queued_inquiry() {
-            return Task::none();
+            return (Task::none(), None);
         }
         let n = incoming(notification);
         let ctx = NotifyContext {
@@ -420,10 +526,31 @@ impl Notifications {
             server_active: env.server_active,
             prefs: NotificationPrefs::from(prefs),
             paused: env.paused,
+            mute_focused: mute_focused_pref(workspace),
+            reply_in_room: n.payload.tmid.is_some()
+                && shown_in_room(workspace, &n.payload.rid, &n.payload.id),
         };
         let Some(spec) = evaluate(&n, &ctx) else {
-            return Task::none();
+            return (Task::none(), None);
         };
+        let on_screen = !ctx.mute_focused
+            && evaluate(
+                &n,
+                &NotifyContext {
+                    mute_focused: true,
+                    ..ctx
+                },
+            )
+            .is_none();
+        let sound = message_sound(
+            spec.sound,
+            room_sound(workspace, notification),
+            &super::AccountSound::of(workspace),
+        )
+        .ok();
+        if !spec.toast {
+            return (Task::none(), sound);
+        }
         let mut title = spec.title.clone();
         if env.multi_server && !server_name.is_empty() {
             title = format!("{title} · {server_name}");
@@ -468,6 +595,7 @@ impl Notifications {
             mid: String::new(),
             about: None,
             conference_id: None,
+            on_screen: false,
         });
         entry.seq = seq;
         entry.tmid = spec.tmid.clone();
@@ -475,28 +603,29 @@ impl Notifications {
         entry.mid = mid;
         entry.about = about;
         entry.conference_id = notification.payload.conference_id.clone();
+        entry.on_screen = on_screen;
         let out = Outgoing {
             replaces: entry.id,
             title,
             body,
             image,
-            sound: spec.sound && sound_allowed(notification, workspace),
+            sound,
             actions,
             timeout,
             urgency,
         };
-        self.run(Some(target), seq, out)
+        (self.run(Some(target), seq, out), None)
     }
 
-    /// "Send test notification" from the settings.
-    pub fn test(&mut self, prefs: &UiPrefs) -> Task<super::Message> {
+    /// "Send test notification" from the settings, with `sound`.
+    pub fn test(&mut self, sound: Option<super::sound::RcSound>) -> Task<super::Message> {
         self.seq += 1;
         let out = Outgoing {
             replaces: self.test_id,
             title: t!("desktop.test_title").into_owned(),
             body: t!("desktop.test_body").into_owned(),
             image: None,
-            sound: prefs.sound,
+            sound,
             actions: vec![(ACTION_DEFAULT.to_owned(), t!("desktop.open").into_owned())],
             timeout: TIMEOUT_DEFAULT,
             urgency: URGENCY_NORMAL,
@@ -505,12 +634,12 @@ impl Notifications {
     }
 
     fn run(&self, target: Option<Target>, seq: u64, out: Outgoing) -> Task<super::Message> {
-        let sound = out.sound;
+        let sound = out.sound.clone();
         Task::perform(self.backend.show(out), move |event| {
             super::Message::Notifications(Message::Shown {
                 target: target.clone(),
                 seq,
-                sound,
+                sound: sound.clone(),
                 event,
             })
         })
@@ -525,8 +654,16 @@ impl Notifications {
         }
     }
 
-    /// Returns `(task, requests, play_sound)`.
-    pub fn update(&mut self, msg: Message) -> (Task<super::Message>, Vec<Request>, bool) {
+    /// Returns `(task, requests, sound)`; `sound`: the app plays it, as the
+    /// current showing's backend did not (it cannot, or it failed).
+    pub fn update(
+        &mut self,
+        msg: Message,
+    ) -> (
+        Task<super::Message>,
+        Vec<Request>,
+        Option<super::sound::RcSound>,
+    ) {
         match msg {
             Message::Shown {
                 target,
@@ -535,7 +672,7 @@ impl Notifications {
                 event,
             } => match event {
                 Event::Shown { id, server_sound } => {
-                    let play = sound && !server_sound;
+                    let play = sound.filter(|_| !server_sound);
                     let Some(t) = target else {
                         self.test_id = Some(id);
                         return (Task::none(), Vec::new(), play);
@@ -547,91 +684,93 @@ impl Notifications {
                         }
                         // A replaced showing that got its own id (it raced
                         // with the newer one): close the duplicate.
-                        Some(e) if e.id != Some(id) => {
-                            (self.close_ids(vec![id]), Vec::new(), false)
-                        }
-                        Some(_) => (Task::none(), Vec::new(), false),
-                        None => (self.close_ids(vec![id]), Vec::new(), false),
+                        Some(e) if e.id != Some(id) => (self.close_ids(vec![id]), Vec::new(), None),
+                        Some(_) => (Task::none(), Vec::new(), None),
+                        None => (self.close_ids(vec![id]), Vec::new(), None),
                     }
                 }
                 Event::Failed(e) => {
                     tracing::debug!(error = %e, "notification not shown");
-                    if let Some(t) = target
-                        && self.shown.get(&t).is_some_and(|e| e.seq == seq)
-                    {
-                        self.shown.remove(&t);
+                    let current = match &target {
+                        Some(t) => self.shown.get(t).is_some_and(|e| e.seq == seq),
+                        None => true,
+                    };
+                    if current && let Some(t) = &target {
+                        self.shown.remove(t);
                     }
-                    (Task::none(), Vec::new(), false)
+                    // Not shown: the sound plays alone.
+                    (Task::none(), Vec::new(), sound.filter(|_| current))
                 }
             },
             Message::Signal { id, signal } => {
-                let target = self
-                    .shown
-                    .iter()
-                    .find(|(_, e)| e.id == Some(id))
-                    .map(|(t, _)| t.clone());
-                let activated =
-                    matches!(&signal, Signal::Action(k) if k == ACTION_DEFAULT || k == ACTION_JOIN);
-                if let Some(t) = target {
-                    if !activated && signal != Signal::Closed {
-                        return (Task::none(), Vec::new(), false);
-                    }
-                    let Some(entry) = self.shown.remove(&t) else {
-                        return (Task::none(), Vec::new(), false);
-                    };
-                    if !activated {
-                        return (Task::none(), Vec::new(), false);
-                    }
-                    if signal == Signal::Action(ACTION_JOIN.to_owned())
-                        && let Some(call_id) = entry.conference_id
-                    {
-                        let server_id = t.server_id.clone();
-                        return (
-                            Task::none(),
-                            vec![
-                                Request::ShowWindow,
-                                Request::OpenRoom {
-                                    server_id: t.server_id,
-                                    rid: t.rid,
-                                },
-                                Request::JoinCall { server_id, call_id },
-                            ],
-                            false,
-                        );
-                    }
-                    let open = match entry.tmid {
-                        Some(tmid) => Request::OpenThread {
-                            server_id: t.server_id,
-                            rid: t.rid,
-                            tmid,
-                        },
-                        None => Request::OpenRoom {
-                            server_id: t.server_id,
-                            rid: t.rid,
-                        },
-                    };
-                    return (Task::none(), vec![Request::ShowWindow, open], false);
-                }
-                if self.test_id != Some(id) {
-                    // Not ours (e.g. a call notification of `videoconf`).
-                    return (
-                        Task::none(),
-                        vec![Request::ForeignSignal(id, signal)],
-                        false,
-                    );
-                }
-                if self.test_id == Some(id) {
-                    if activated {
-                        self.test_id = None;
-                        return (Task::none(), vec![Request::ShowWindow], false);
-                    }
-                    if signal == Signal::Closed {
-                        self.test_id = None;
-                    }
-                }
-                (Task::none(), Vec::new(), false)
+                let (task, requests) = self.signal(id, signal);
+                (task, requests, None)
             }
         }
+    }
+
+    /// A notification server signal for notification `id`.
+    fn signal(&mut self, id: u32, signal: Signal) -> (Task<super::Message>, Vec<Request>) {
+        let target = self
+            .shown
+            .iter()
+            .find(|(_, e)| e.id == Some(id))
+            .map(|(t, _)| t.clone());
+        let activated =
+            matches!(&signal, Signal::Action(k) if k == ACTION_DEFAULT || k == ACTION_JOIN);
+        if let Some(t) = target {
+            if !activated && signal != Signal::Closed {
+                return (Task::none(), Vec::new());
+            }
+            let Some(entry) = self.shown.remove(&t) else {
+                return (Task::none(), Vec::new());
+            };
+            if !activated {
+                return (Task::none(), Vec::new());
+            }
+            if signal == Signal::Action(ACTION_JOIN.to_owned())
+                && let Some(call_id) = entry.conference_id
+            {
+                let server_id = t.server_id.clone();
+                return (
+                    Task::none(),
+                    vec![
+                        Request::ShowWindow,
+                        Request::OpenRoom {
+                            server_id: t.server_id,
+                            rid: t.rid,
+                        },
+                        Request::JoinCall { server_id, call_id },
+                    ],
+                );
+            }
+            let open = match entry.tmid {
+                Some(tmid) => Request::OpenThread {
+                    server_id: t.server_id,
+                    rid: t.rid,
+                    tmid,
+                },
+                None => Request::OpenRoom {
+                    server_id: t.server_id,
+                    rid: t.rid,
+                },
+            };
+            return (Task::none(), vec![Request::ShowWindow, open]);
+        }
+        if self.test_id != Some(id) {
+            // Not ours (e.g. a call notification of `videoconf`).
+            return (Task::none(), vec![Request::ForeignSignal(id, signal)]);
+        }
+        if self.test_id == Some(id) {
+            if activated {
+                self.test_id = None;
+                return (Task::none(), vec![Request::ShowWindow]);
+            }
+            if signal == Signal::Closed {
+                self.test_id = None;
+            }
+        }
+        (Task::none(), Vec::new())
     }
 
     /// Closes the notifications of `sid`'s rooms that were read since: the
@@ -643,7 +782,7 @@ impl Notifications {
     pub fn sync_read(&mut self, sid: &ServerId, ws: &Workspace) -> Task<super::Message> {
         let mut close = Vec::new();
         self.shown.retain(|t, e| {
-            if &t.server_id != sid {
+            if &t.server_id != sid || e.on_screen {
                 return true;
             }
             if room_unread(ws, &t.rid) {
@@ -787,7 +926,7 @@ mod tests {
         let prefs = UiPrefs::default();
 
         // Room on screen in the focused window: nothing.
-        let t = n.notify(
+        let (t, _) = n.notify(
             &sid,
             "Dev",
             &notification("r1", "m0", None),
@@ -798,7 +937,7 @@ mod tests {
         drain(&mut n, t);
         assert!(mock.shown.lock().unwrap().is_empty());
 
-        let t = n.notify(
+        let (t, _) = n.notify(
             &sid,
             "Dev",
             &notification("r1", "m1", None),
@@ -807,7 +946,7 @@ mod tests {
             &fx.env(false, Some("r1")),
         );
         drain(&mut n, t);
-        let t = n.notify(
+        let (t, sound) = n.notify(
             &sid,
             "Dev",
             &notification("r1", "m2", None),
@@ -822,8 +961,76 @@ mod tests {
         assert_eq!(shown[1].replaces, Some(1), "same room replaces");
         assert_eq!(shown[1].title, "bob");
         assert_eq!(shown[1].body, "hello there");
-        assert!(shown[1].sound);
+        // Rocket.Chat's default sound comes with the notification.
+        assert_eq!(sound, None);
+        assert_eq!(
+            shown[1].sound,
+            Some(crate::desktop::sound::RcSound {
+                name: "chime".into(),
+                volume: 100
+            })
+        );
         assert_eq!(n.len(), 1);
+    }
+
+    /// Q4: `muteFocusedConversations` (default on) and what counts as on
+    /// screen for a thread reply.
+    #[test]
+    fn focused_conversation_follows_the_account_preference() {
+        let mock = MockNotifier::default();
+        let mut n = Notifications::with_backend(Arc::new(mock.clone()));
+        let fx = Fixture::new();
+        let mut ws = workspace();
+        let sid = ServerId("s1".into());
+        let prefs = UiPrefs::default();
+        let show = |n: &mut Notifications, ws: &Workspace, mid: &str, tmid: Option<&str>| {
+            let (t, _) = n.notify(
+                &sid,
+                "Dev",
+                &notification("r1", mid, tmid),
+                ws,
+                &prefs,
+                &fx.env(true, Some("r1")),
+            );
+            drain(n, t);
+            mock.shown.lock().unwrap().len()
+        };
+        assert!(mute_focused_pref(&ws), "absent: Rocket.Chat's default");
+        assert_eq!(show(&mut n, &ws, "m0", None), 0, "room on screen");
+        // A reply in the open room without its thread panel is not on screen.
+        assert_eq!(show(&mut n, &ws, "m1", Some("t1")), 1);
+        // The same kind of reply also sent to the channel is.
+        ws.apply_room(
+            rustket_core::Change::Inserted,
+            serde_json::from_value(json!({
+                "_id": "r1", "t": "d",
+                "lastMessage": {"_id": "m2", "rid": "r1", "msg": "x", "u": {"_id": "bobid"},
+                    "tmid": "t1", "tshow": true}
+            }))
+            .unwrap(),
+        );
+        assert_eq!(show(&mut n, &ws, "m2", Some("t1")), 1);
+        // Preference off: the conversation on screen notifies too.
+        ws.apply_me(
+            serde_json::from_value(json!({"_id": "me", "username": "me", "status": "online",
+                "settings": {"preferences": {"muteFocusedConversations": false}}}))
+            .unwrap(),
+        );
+        assert!(!mute_focused_pref(&ws));
+        assert_eq!(show(&mut n, &ws, "m3", None), 2);
+        assert_eq!(show(&mut n, &ws, "m4", Some("t1")), 3);
+        // Read right away where it is on screen: the toast stays (it is not
+        // closed on read like a toast of a conversation elsewhere; the
+        // reply above, without its thread panel, was not on screen).
+        assert_eq!(show(&mut n, &ws, "m5", None), 4);
+        ws.apply_subscription(rustket_core::workspace::Change::Inserted, sub("r1", 1));
+        let t = n.sync_read(&sid, &ws);
+        drain(&mut n, t);
+        ws.apply_subscription(rustket_core::workspace::Change::Updated, sub("r1", 0));
+        let t = n.sync_read(&sid, &ws);
+        drain(&mut n, t);
+        assert_eq!(n.len(), 1);
+        assert!(mock.closed.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -838,7 +1045,7 @@ mod tests {
             sound: false,
             ..UiPrefs::default()
         };
-        let t = n.notify(
+        let (t, sound) = n.notify(
             &sid,
             "Dev",
             &notification("r1", "m1", None),
@@ -850,10 +1057,11 @@ mod tests {
         let shown = mock.shown.lock().unwrap().clone();
         assert_ne!(shown[0].body, "hello there");
         assert!(!shown[0].body.is_empty());
-        assert!(!shown[0].sound);
+        assert_eq!(sound, None);
+        assert_eq!(shown[0].sound, None);
 
         ws.apply_user_status("me", Some("me"), UserStatus::Busy, None);
-        let t = n.notify(
+        let (t, sound) = n.notify(
             &sid,
             "Dev",
             &notification("r2", "m2", None),
@@ -863,6 +1071,56 @@ mod tests {
         );
         drain(&mut n, t);
         assert_eq!(mock.shown.lock().unwrap().len(), 1, "busy: do not disturb");
+        assert_eq!(sound, None);
+    }
+
+    /// "Play a sound" without desktop notifications: the sound alone.
+    #[test]
+    fn sound_without_notifications() {
+        let mock = MockNotifier::default();
+        let mut n = Notifications::with_backend(Arc::new(mock.clone()));
+        let fx = Fixture::new();
+        let ws = workspace();
+        let sid = ServerId("s1".into());
+        let prefs = UiPrefs {
+            desktop_notifications: false,
+            ..UiPrefs::default()
+        };
+        let (t, sound) = n.notify(
+            &sid,
+            "Dev",
+            &notification("r1", "m1", None),
+            &ws,
+            &prefs,
+            &fx.env(false, None),
+        );
+        drain(&mut n, t);
+        assert!(mock.shown.lock().unwrap().is_empty());
+        assert_eq!(sound.map(|s| s.name).as_deref(), Some("chime"));
+        assert_eq!(n.len(), 0);
+        // The gates still apply: the room on screen stays silent.
+        let (_, sound) = n.notify(
+            &sid,
+            "Dev",
+            &notification("r1", "m2", None),
+            &ws,
+            &prefs,
+            &fx.env(true, Some("r1")),
+        );
+        assert_eq!(sound, None);
+        let off = UiPrefs {
+            sound: false,
+            ..prefs
+        };
+        let (_, sound) = n.notify(
+            &sid,
+            "Dev",
+            &notification("r1", "m3", None),
+            &ws,
+            &off,
+            &fx.env(false, None),
+        );
+        assert_eq!(sound, None);
     }
 
     #[test]
@@ -882,6 +1140,7 @@ mod tests {
                 mid: String::new(),
                 about: None,
                 conference_id: None,
+                on_screen: false,
             },
         );
         let signal = |id, signal| Message::Signal { id, signal };
@@ -911,6 +1170,7 @@ mod tests {
                 mid: String::new(),
                 about: None,
                 conference_id: None,
+                on_screen: false,
             },
         );
         let (_, req, _) = n.update(signal(5, Signal::Closed));
@@ -926,6 +1186,7 @@ mod tests {
                 mid: String::new(),
                 about: None,
                 conference_id: None,
+                on_screen: false,
             },
         );
         let (_, req, _) = n.update(signal(6, Signal::Action("join".into())));
@@ -944,27 +1205,87 @@ mod tests {
                 mid: String::new(),
                 about: None,
                 conference_id: Some("c1".into()),
+                on_screen: false,
             },
         );
         let (_, req, _) = n.update(signal(10, Signal::Action("join".into())));
         assert!(matches!(&req[2], Request::JoinCall { call_id, .. } if call_id == "c1"));
     }
 
+    /// The app plays a notification's sound only when its backend did not:
+    /// it cannot (KDE), or the notification failed.
     #[test]
-    fn local_sound_only_when_the_server_does_not_play_it() {
+    fn local_sound_only_when_the_notification_does_not_play_it() {
+        use crate::desktop::sound::RcSound;
+        let chime = Some(RcSound {
+            name: "chime".into(),
+            volume: 100,
+        });
         let mut n = Notifications::default();
-        let ev = |server_sound, sound| Message::Shown {
-            target: None,
-            seq: 1,
-            sound,
-            event: Event::Shown {
-                id: 1,
-                server_sound,
-            },
+        let target = Target {
+            server_id: ServerId("s1".into()),
+            rid: "r1".into(),
         };
-        assert!(n.update(ev(false, true)).2);
-        assert!(!n.update(ev(true, true)).2);
-        assert!(!n.update(ev(false, false)).2);
+        let entry = || Entry {
+            id: None,
+            seq: 1,
+            tmid: None,
+            seen_unread: false,
+            mid: String::new(),
+            about: None,
+            conference_id: None,
+            on_screen: false,
+        };
+        let msg = |target: Option<Target>, seq, event| Message::Shown {
+            target,
+            seq,
+            sound: chime.clone(),
+            event,
+        };
+        let shown = |server_sound| Event::Shown {
+            id: 1,
+            server_sound,
+        };
+        n.shown.insert(target.clone(), entry());
+        assert_eq!(n.update(msg(Some(target.clone()), 1, shown(true))).2, None);
+        assert_eq!(
+            n.update(msg(Some(target.clone()), 1, shown(false))).2,
+            chime
+        );
+        // Failed: the sound alone, unless a newer showing replaced it.
+        let failed = || Event::Failed("no server".into());
+        assert_eq!(n.update(msg(Some(target.clone()), 2, failed())).2, None);
+        assert_eq!(n.update(msg(Some(target.clone()), 1, failed())).2, chime);
+        assert!(n.is_empty());
+        // The test notification.
+        assert_eq!(n.update(msg(None, 3, failed())).2, chime);
+        assert_eq!(n.update(msg(None, 4, shown(true))).2, None);
+
+        // Through a backend that plays sounds: nothing to play locally.
+        let mock = MockNotifier {
+            plays_sound: true,
+            ..MockNotifier::default()
+        };
+        let mut n = Notifications::with_backend(Arc::new(mock.clone()));
+        let fx = Fixture::new();
+        let (t, now) = n.notify(
+            &ServerId("s1".into()),
+            "Dev",
+            &notification("r1", "m1", None),
+            &workspace(),
+            &UiPrefs::default(),
+            &fx.env(false, None),
+        );
+        assert_eq!(now, None);
+        let stream = iced_runtime::task::into_stream(t).unwrap();
+        let mut played = Vec::new();
+        for a in futures::executor::block_on(stream.collect::<Vec<_>>()) {
+            if let iced_runtime::Action::Output(super::super::Message::Notifications(m)) = a {
+                played.push(n.update(m).2);
+            }
+        }
+        assert_eq!(played, vec![None]);
+        assert_eq!(mock.shown.lock().unwrap()[0].sound, chime);
     }
 
     #[test]
@@ -985,61 +1306,149 @@ mod tests {
                 mid: String::new(),
                 about: None,
                 conference_id: None,
+                on_screen: false,
             },
         );
         // An older showing finished late with a different id: closed.
-        let (t, _, play) = n.update(Message::Shown {
+        let (t, _, sound) = n.update(Message::Shown {
             target: Some(target.clone()),
             seq: 1,
-            sound: true,
+            sound: Some(crate::desktop::sound::RcSound {
+                name: "chime".into(),
+                volume: 100,
+            }),
             event: Event::Shown {
                 id: 4,
                 server_sound: false,
             },
         });
-        assert!(!play);
+        // The newer showing has its own sound.
+        assert_eq!(sound, None);
         drain(&mut n, t);
         assert_eq!(*mock.closed.lock().unwrap(), vec![4]);
         assert_eq!(n.shown[&target].id, Some(3));
     }
 
     #[test]
-    fn room_and_account_sound_none_mute_the_sound() {
+    fn message_sound_picks_room_then_account() {
+        use crate::desktop::AccountSound;
+        let name = |ui: bool, room: Option<&str>, acc: &AccountSound| {
+            message_sound(ui, room, acc).map(|s| (s.name, s.volume))
+        };
+        let def = AccountSound::default();
+        assert_eq!(name(true, None, &def), Ok(("chime".into(), 100)));
+        assert_eq!(name(true, Some("default"), &def), Ok(("chime".into(), 100)));
+        assert_eq!(name(true, Some(""), &def), Ok(("chime".into(), 100)));
+        assert_eq!(name(true, Some("door"), &def), Ok(("door".into(), 100)));
+        assert_eq!(name(true, Some("none"), &def), Err(MessageSoundOff::Room));
+        assert_eq!(
+            name(false, Some("door"), &def),
+            Err(MessageSoundOff::Setting)
+        );
+        let ding = AccountSound {
+            new_message: Some("ding".into()),
+            ..AccountSound::default()
+        };
+        assert_eq!(name(true, None, &ding), Ok(("ding".into(), 100)));
+        // The account's "None" mutes only rooms without their own sound.
+        let none = AccountSound {
+            new_message: Some("none".into()),
+            ..AccountSound::default()
+        };
+        assert_eq!(name(true, None, &none), Err(MessageSoundOff::Account));
+        assert_eq!(name(true, Some("beep"), &none), Ok(("beep".into(), 100)));
+        // Volumes multiply; zero mutes.
+        let half = AccountSound {
+            notifications_volume: Some(50.0),
+            master_volume: Some(50.0),
+            ..AccountSound::default()
+        };
+        assert_eq!(name(true, None, &half), Ok(("chime".into(), 25)));
+        let zero = AccountSound {
+            master_volume: Some(0.0),
+            ..AccountSound::default()
+        };
+        assert_eq!(
+            name(true, Some("door"), &zero),
+            Err(MessageSoundOff::Volume)
+        );
+        assert_eq!(
+            message_sound_off(true, None, &none),
+            Some(MessageSoundOff::Account)
+        );
+    }
+
+    #[test]
+    fn room_sound_comes_from_the_subscription() {
         let mock = MockNotifier::default();
         let mut n = Notifications::with_backend(Arc::new(mock.clone()));
         let fx = Fixture::new();
         let mut ws = workspace();
         let sid = ServerId("s1".into());
+        let prefs = UiPrefs::default();
         let mut quiet = notification("r1", "m1", None);
         quiet.payload.audio_notification_value = Some("none".into());
-        assert!(!sound_allowed(&quiet, &ws));
-        assert!(sound_allowed(&notification("r1", "m1", None), &ws));
-        let t = n.notify(
+        let last = || mock.shown.lock().unwrap().last().unwrap().sound.clone();
+        let (t, sound) = n.notify(&sid, "Dev", &quiet, &ws, &prefs, &fx.env(false, None));
+        drain(&mut n, t);
+        assert_eq!(sound, None);
+        assert_eq!(last(), None, "the payload's None");
+        let mut s = sub("r2", 1);
+        s.audio_notification_value = Some("highbell".into());
+        ws.apply_subscription(rustket_core::Change::Inserted, s);
+        let (_, now) = n.notify(
             &sid,
             "Dev",
-            &quiet,
+            &notification("r2", "m2", None),
             &ws,
-            &UiPrefs::default(),
+            &prefs,
             &fx.env(false, None),
         );
-        drain(&mut n, t);
-        assert!(!mock.shown.lock().unwrap()[0].sound);
+        assert_eq!(now, None);
+        let sound = last();
+        assert_eq!(sound.map(|s| s.name).as_deref(), Some("highbell"));
+        let mut door = notification("r3", "m3", None);
+        door.payload.audio_notification_value = Some("door".into());
+        let (_, now) = n.notify(&sid, "Dev", &door, &ws, &prefs, &fx.env(false, None));
+        assert_eq!(now, None);
+        let sound = last();
+        assert_eq!(sound.map(|s| s.name).as_deref(), Some("door"));
         ws.apply_me(
             serde_json::from_value(json!({
                 "_id": "me", "username": "me", "status": "online",
-                "settings": {"preferences": {"newMessageNotification": "none"}}
+                "settings": {"preferences": {"newMessageNotification": "none",
+                    "notificationsSoundVolume": 40}}
             }))
             .unwrap(),
         );
-        assert!(!sound_allowed(&notification("r1", "m1", None), &ws));
-        ws.apply_me(
-            serde_json::from_value(json!({
-                "_id": "me", "username": "me", "status": "online",
-                "settings": {"preferences": {"notificationsSoundVolume": 0}}
-            }))
-            .unwrap(),
+        let (_, now) = n.notify(
+            &sid,
+            "Dev",
+            &notification("r4", "m4", None),
+            &ws,
+            &prefs,
+            &fx.env(false, None),
         );
-        assert!(!sound_allowed(&notification("r1", "m1", None), &ws));
+        assert_eq!(now, None);
+        let sound = last();
+        assert_eq!(sound, None, "account None");
+        let (_, now) = n.notify(
+            &sid,
+            "Dev",
+            &notification("r2", "m5", None),
+            &ws,
+            &prefs,
+            &fx.env(false, None),
+        );
+        assert_eq!(now, None);
+        let sound = last();
+        assert_eq!(
+            sound,
+            Some(crate::desktop::sound::RcSound {
+                name: "highbell".into(),
+                volume: 40
+            })
+        );
     }
 
     #[test]
@@ -1051,18 +1460,18 @@ mod tests {
         let sid = ServerId("s1".into());
         let prefs = UiPrefs::default();
         let mut x = notification("", "m0", None);
-        let t = n.notify(&sid, "Dev", &x, &ws, &prefs, &fx.env(false, None));
+        let (t, _) = n.notify(&sid, "Dev", &x, &ws, &prefs, &fx.env(false, None));
         drain(&mut n, t);
         assert!(mock.shown.lock().unwrap().is_empty(), "no rid: skipped");
 
         x.payload.rid = "r1".into();
         x.duration = Some(10.0);
-        let t = n.notify(&sid, "Dev", &x, &ws, &prefs, &fx.env(false, None));
+        let (t, _) = n.notify(&sid, "Dev", &x, &ws, &prefs, &fx.env(false, None));
         drain(&mut n, t);
         let mut ring = notification("r2", "m2", None);
         ring.require_interaction = Some(true);
         ring.payload.conference_id = Some("c1".into());
-        let t = n.notify(&sid, "Dev", &ring, &ws, &prefs, &fx.env(false, None));
+        let (t, _) = n.notify(&sid, "Dev", &ring, &ws, &prefs, &fx.env(false, None));
         drain(&mut n, t);
         ws.apply_me(
             serde_json::from_value(json!({
@@ -1071,7 +1480,7 @@ mod tests {
             }))
             .unwrap(),
         );
-        let t = n.notify(
+        let (t, _) = n.notify(
             &sid,
             "Dev",
             &notification("r3", "m3", None),
@@ -1097,6 +1506,26 @@ mod tests {
         );
     }
 
+    /// The Help page's "stays until dismissed" follows the same preference
+    /// as the notification's timeout.
+    #[test]
+    fn help_sticky_agrees_with_the_timeout() {
+        let mut ws = workspace();
+        let n = notification("r1", "m1", None);
+        for on in [false, true] {
+            ws.apply_me(
+                serde_json::from_value(json!({
+                    "_id": "me", "username": "me", "status": "online",
+                    "settings": {"preferences": {"desktopNotificationRequireInteraction": on}}
+                }))
+                .unwrap(),
+            );
+            let sticky = crate::help::model::AccountPrefs::of(&ws).require_interaction;
+            assert_eq!(sticky, on);
+            assert_eq!(timeout_and_urgency(&n, &ws).0 == TIMEOUT_NEVER, sticky);
+        }
+    }
+
     #[test]
     fn closes_when_the_room_is_read() {
         let mock = MockNotifier::default();
@@ -1104,7 +1533,7 @@ mod tests {
         let fx = Fixture::new();
         let mut ws = workspace();
         let sid = ServerId("s1".into());
-        let t = n.notify(
+        let (t, _) = n.notify(
             &sid,
             "Dev",
             &notification("r1", "m1", None),
@@ -1154,7 +1583,7 @@ mod tests {
             .unwrap(),
         );
         ws.apply_subscription(Change::Inserted, sub_seen("r1", "2026-01-01T09:00:00.000Z"));
-        let t = n.notify(
+        let (t, _) = n.notify(
             &sid,
             "Dev",
             &notification("r1", "m1", None),
@@ -1188,7 +1617,7 @@ mod tests {
         let mut ws = workspace();
         let sid = ServerId("s1".into());
         ws.apply_subscription(Change::Inserted, sub_seen("r1", "2026-01-01T09:00:00.000Z"));
-        let t = n.notify(
+        let (t, _) = n.notify(
             &sid,
             "Dev",
             &notification("r1", "m1", None),
@@ -1240,6 +1669,7 @@ mod tests {
                 mid: String::new(),
                 about: None,
                 conference_id: None,
+                on_screen: false,
             },
         );
         let keep = ServerId("s1".into());

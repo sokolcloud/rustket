@@ -1,5 +1,5 @@
 //! App preferences (local, not per server) in tabs: General, Appearance,
-//! Notifications, Sidebar, Mentions, Privacy & storage, About. Each tab's cards are
+//! Notifications, Sidebar, Mentions, Privacy & storage, Help, About. Each tab's cards are
 //! built in `settings/<tab>.rs`; this file keeps the state, the messages, the
 //! update and the tab frame. Strings: `locales/settings.yml` (`settings.*`).
 
@@ -22,6 +22,7 @@ use crate::ui_state::UiState;
 mod about;
 mod appearance;
 mod general;
+pub(crate) mod help;
 mod mentions;
 mod notifications;
 mod pickers;
@@ -46,17 +47,20 @@ pub enum Tab {
     Sidebar,
     Mentions,
     Privacy,
+    /// The "Indicators and notifications" reference.
+    Help,
     About,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::General,
         Tab::Appearance,
         Tab::Notifications,
         Tab::Sidebar,
         Tab::Mentions,
         Tab::Privacy,
+        Tab::Help,
         Tab::About,
     ];
 
@@ -68,6 +72,7 @@ impl Tab {
             Tab::Sidebar => "settings.sidebar",
             Tab::Mentions => "settings.tab_mentions",
             Tab::Privacy => "settings.tab_privacy",
+            Tab::Help => "settings.tab_help",
             Tab::About => "settings.about",
         }
     }
@@ -80,6 +85,7 @@ impl Tab {
             Tab::Sidebar => Icon::PanelLeft,
             Tab::Mentions => Icon::AtSign,
             Tab::Privacy => Icon::ShieldCheck,
+            Tab::Help => Icon::CircleHelp,
             Tab::About => Icon::Info,
         }
     }
@@ -146,6 +152,20 @@ pub fn reveal_secret_store<M: Send + 'static>() -> Task<M> {
 /// storage tab must be open).
 pub fn reveal_storage<M: Send + 'static>() -> Task<M> {
     reveal_container(iced::widget::Id::new(STORAGE_CARD))
+}
+
+/// How often the Help tab refreshes.
+const HELP_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The selected theme's display name.
+fn theme_name(v: &SettingsView<'_>) -> String {
+    v.config
+        .ui
+        .theme_name
+        .as_deref()
+        .and_then(|id| v.themes.get(id))
+        .map(|e| e.display_name())
+        .unwrap_or_else(|| t!("settings.theme_builtin").into_owned())
 }
 
 /// Zoom step of the −/+ buttons.
@@ -228,6 +248,9 @@ pub enum Message {
     Mentions(MentionsMessage),
     OpenUrl(String),
     Close,
+    /// Nothing (the Help tab's refresh tick; its inert samples need a
+    /// message but never send it).
+    Noop,
     // Updates card (`crate::updater`).
     #[cfg(feature = "self-update")]
     SetCheckUpdates(bool),
@@ -272,6 +295,10 @@ pub struct SettingsView<'a> {
     pub star_kept_busy: bool,
     /// Mention groups of the signed-in accounts, the active server's first.
     pub mention_groups: Vec<MentionAccount<'a>>,
+    /// The theme mode in use.
+    pub mode: rustket_ui::theme::Mode,
+    /// What the Help tab is computed from (built only while it is shown).
+    pub help: Option<crate::help::model::HelpEnv>,
     #[cfg(feature = "self-update")]
     pub updater: crate::updater::view::SettingsData,
 }
@@ -479,6 +506,7 @@ impl Settings {
             Message::SetSecretsMemoryOnly(on) => Action::effect(Effect::SetSecretsMemoryOnly(on)),
             Message::OpenUrl(url) => Action::effect(Effect::OpenUrl(url)),
             Message::Close => Action::effect(Effect::Close),
+            Message::Noop => Action::none(),
             Message::SetGroupByType(v) => Self::pref(ctx, |p| p.group_by_type = v),
             Message::SetSidebarSort(s) => Self::pref(ctx, |p| p.sidebar_sort = s),
             Message::SetThreadsMode(m) => Self::pref(ctx, |p| p.sidebar_threads = m),
@@ -502,8 +530,15 @@ impl Settings {
         }
     }
 
-    pub fn subscription(&self) -> Subscription<Message> {
-        Subscription::none()
+    /// While the Help tab is shown and the window is `visible` (not hidden
+    /// to the tray), a tick keeps its time-dependent lines (pause until,
+    /// working hours) fresh.
+    pub fn subscription(&self, visible: bool) -> Subscription<Message> {
+        if self.tab == Tab::Help && visible {
+            iced::time::every(HELP_REFRESH).map(|_| Message::Noop)
+        } else {
+            Subscription::none()
+        }
     }
 
     /// The page: tab navigation and the current tab's cards. Takes the view
@@ -534,6 +569,16 @@ impl Settings {
             Tab::Sidebar => self.sidebar_cards(&v.config.ui, &v.flags, v.star_kept_busy),
             Tab::Mentions => mentions::view(self, v),
             Tab::Privacy => privacy::view(v),
+            // `App::help_env` builds the env whenever this tab is shown.
+            Tab::Help => match &v.help {
+                Some(env) => help::view(&help::Data {
+                    cfg: v.config,
+                    env,
+                    mode: v.mode,
+                    theme_name: theme_name(v),
+                }),
+                None => Vec::new(),
+            },
             Tab::About => about::view(v),
         };
         container(Column::with_children(cards).spacing(SPACE_6).max_width(720))

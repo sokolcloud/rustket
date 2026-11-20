@@ -10,7 +10,7 @@ mod later;
 mod links;
 mod mention_groups;
 mod quiet;
-mod reminders;
+pub(crate) mod reminders;
 mod rooms;
 mod search;
 mod secrets;
@@ -202,8 +202,8 @@ pub struct App {
     confirm_queue: VecDeque<(ServerId, Credentials, Box<User>)>,
     save_stamp: u64,
     pub desktop: crate::desktop::Desktop,
-    /// (unread rooms, mentions) over all servers, last given to `desktop`.
-    last_unread: (u64, u64),
+    /// The unread signal over all servers, last given to `desktop`.
+    last_unread: room_list::WorkspaceSignal,
     /// Video calls: ringing, popups, call dialogs (`crate::videoconf`).
     pub calls: crate::videoconf::Calls,
     /// Instance of the create-room / quick-switcher dialog opened last: task
@@ -220,12 +220,28 @@ pub struct App {
     star_kept: star_kept::StarKept,
     /// Reminder firing and notifications (`app::reminders`).
     reminder_timer: reminders::ReminderTimer,
+    /// Mentions in large rooms the server does not notify
+    /// (`rustket_core::notify::large_room`).
+    large_rooms: rustket_core::notify::large_room::Fallback,
     /// Pauses, status calls and the timer of scheduled messages
     /// (`app::quiet`).
     quiet: quiet::QuietRuntime,
     /// In-app updates (`crate::updater`).
     #[cfg(feature = "self-update")]
     pub updater: crate::updater::Updater,
+}
+
+/// The window title for the unread signal over all signed-in accounts:
+/// "Rustket (N)" with N mentions, else "Rustket •" while any counted row is
+/// unread, else "Rustket".
+pub fn window_title(signal: room_list::WorkspaceSignal) -> String {
+    if signal.mentions > 0 {
+        format!("{} ({})", t!("app.title"), signal.mentions)
+    } else if signal.any() {
+        format!("{} •", t!("app.title"))
+    } else {
+        t!("app.title").into_owned()
+    }
 }
 
 impl App {
@@ -313,7 +329,7 @@ impl App {
             confirm_queue: VecDeque::new(),
             save_stamp: 0,
             desktop,
-            last_unread: (0, 0),
+            last_unread: room_list::WorkspaceSignal::default(),
             calls: crate::videoconf::Calls::default(),
             dialog_instances: (0, 0),
             titlebar: Default::default(),
@@ -321,6 +337,7 @@ impl App {
             offline: crate::cache::Caches::new(flags.offline_cache.clone()),
             star_kept: Default::default(),
             reminder_timer: Default::default(),
+            large_rooms: Default::default(),
             quiet: Default::default(),
             #[cfg(feature = "self-update")]
             updater: crate::updater::Updater::new(flags.desktop),
@@ -395,16 +412,16 @@ impl App {
     }
 
     pub fn title(&self) -> String {
-        let unread: u64 = self
-            .servers
+        window_title(self.unread_signal())
+    }
+
+    /// The unread signal summed over all servers (signed-out ones have an
+    /// empty workspace).
+    pub(crate) fn unread_signal(&self) -> room_list::WorkspaceSignal {
+        self.servers
             .values()
-            .map(|s| room_list::unread_totals(&s.workspace).0)
-            .sum();
-        if unread > 0 {
-            format!("{} ({unread})", t!("app.title"))
-        } else {
-            t!("app.title").into_owned()
-        }
+            .map(|s| room_list::workspace_signal(&s.workspace))
+            .sum()
     }
 
     fn next_stamp(&mut self) -> u64 {
@@ -659,6 +676,8 @@ impl App {
             Message::LaterSync(sid, epoch, m) => self.on_later_sync(sid, epoch, m),
             Message::ReminderSync(sid, epoch, m) => self.on_reminder_sync(sid, epoch, m),
             Message::RemindersDue(at) => self.on_reminders_due(at),
+            Message::LargeRoomDue => self.on_large_room_due(),
+            Message::NotificationRecheck(sid, n) => self.show_notification(&sid, n, false),
             Message::Drafts(sid, epoch, m) => self.on_drafts(sid, epoch, m),
             Message::Missed(m) => self.on_missed(m),
             Message::Quiet(m) => self.on_quiet(m),
@@ -1161,5 +1180,32 @@ mod tests {
         ] {
             assert!(!is_openable_url(bad), "{bad}");
         }
+    }
+
+    /// Item 7: the title counts mentions; other counted unread is a dot.
+    #[test]
+    fn window_title_counts_mentions() {
+        use crate::app::window_title;
+        use rustket_core::room_list::{BadgeVariant, WorkspaceSignal};
+        let sig = |mentions, strongest, rooms| WorkspaceSignal {
+            mentions,
+            strongest,
+            rooms,
+        };
+        assert_eq!(window_title(sig(0, None, 0)), "Rustket");
+        assert_eq!(
+            window_title(sig(0, Some(BadgeVariant::Thread), 3)),
+            "Rustket •"
+        );
+        assert_eq!(
+            window_title(sig(2, Some(BadgeVariant::Mention), 5)),
+            "Rustket (2)"
+        );
+        // Several accounts: summed.
+        let two = [
+            sig(1, Some(BadgeVariant::Mention), 1),
+            sig(0, Some(BadgeVariant::GroupMention), 2),
+        ];
+        assert_eq!(window_title(two.into_iter().sum()), "Rustket (1)");
     }
 }

@@ -5,6 +5,7 @@ use iced::widget::{Column, column, container, scrollable, space, stack};
 use iced::{Alignment, Element, Length, Theme, border};
 use rust_i18n::t;
 use rustket_core::ServerId;
+use rustket_core::room_list::WorkspaceSignal;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{RAIL_WIDTH, SPACE_2, SPACE_3, tokens};
@@ -23,22 +24,27 @@ pub struct RailEntry {
     pub id: ServerId,
     pub name: String,
     pub avatar: AvatarSource,
-    /// (unread rooms, mentions)
-    pub unread: (u64, u64),
+    /// The account's unread signal (`room_list::workspace_signal`).
+    pub signal: WorkspaceSignal,
     pub selected: bool,
     /// Logged out (token rejected, signed out by the server, never signed
     /// in): nothing arrives from this server until the user signs in.
     pub signed_out: bool,
 }
 
-pub fn badge(unread: (u64, u64)) -> Option<(u32, BadgeKind)> {
-    let (rooms, mentions) = unread;
-    if mentions > 0 {
-        Some((crate::format::count_u32(mentions), BadgeKind::Mention))
-    } else if rooms > 0 {
-        Some((0, BadgeKind::Unread))
+/// The badge of a workspace item (rail or title bar): a red counter of the
+/// mentions, else a dot in the colour of the strongest counted unread row
+/// (orange `@all`, unread blue, thread slate), else nothing.
+pub fn badge(signal: WorkspaceSignal) -> Option<(u32, BadgeKind)> {
+    if signal.mentions > 0 {
+        Some((
+            crate::format::count_u32(signal.mentions),
+            BadgeKind::Mention,
+        ))
     } else {
-        None
+        signal
+            .strongest
+            .map(|k| (0, crate::workspace::sidebar::widget_kind(k)))
     }
 }
 
@@ -87,7 +93,7 @@ pub fn view<'a>(entries: Vec<RailEntry>) -> Element<'a, Message> {
         let item = workspace_rail_item(
             RailIcon::Avatar(e.avatar),
             name,
-            badge(e.unread),
+            badge(e.signal),
             e.selected,
             Message::Select(e.id),
         );
@@ -122,4 +128,41 @@ pub fn view<'a>(entries: Vec<RailEntry>) -> Element<'a, Message> {
     .height(Length::Fill)
     .style(style::container_rail)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustket_core::room_list::BadgeVariant;
+
+    fn signal(mentions: u64, strongest: Option<BadgeVariant>) -> WorkspaceSignal {
+        WorkspaceSignal {
+            mentions,
+            strongest,
+            rooms: u64::from(strongest.is_some()),
+        }
+    }
+
+    /// Items 3/4/7: a red count of mentions, else a dot in the strongest
+    /// counted colour, else nothing.
+    #[test]
+    fn workspace_badge() {
+        assert_eq!(badge(WorkspaceSignal::default()), None);
+        assert_eq!(
+            badge(signal(3, Some(BadgeVariant::Mention))),
+            Some((3, BadgeKind::Mention))
+        );
+        assert_eq!(
+            badge(signal(0, Some(BadgeVariant::GroupMention))),
+            Some((0, BadgeKind::GroupMention))
+        );
+        assert_eq!(
+            badge(signal(0, Some(BadgeVariant::Unread))),
+            Some((0, BadgeKind::Unread))
+        );
+        assert_eq!(
+            badge(signal(0, Some(BadgeVariant::Thread))),
+            Some((0, BadgeKind::Thread))
+        );
+    }
 }

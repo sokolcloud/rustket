@@ -168,30 +168,84 @@ pub enum Avatar {
     Room { rid: String, etag: Option<String> },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// What a room or thread badge means, weakest first: the one ranking every
+/// unread signal uses (`Ord`: a stronger kind compares greater).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum BadgeVariant {
-    /// Direct mention (red).
-    Mention,
-    /// `@all` / `@here` (orange).
-    GroupMention,
-    /// Unread thread replies (muted slate).
+    /// Grey: any non-mention badge of a room with notifications off
+    /// (`disableNotifications`); not counted as unread.
+    Muted,
+    /// Slate: unread thread replies only.
     Thread,
+    /// Muted blue: unread main-timeline messages, or `alert` alone (a dot).
     #[default]
-    Normal,
+    Unread,
+    /// Orange: `@all` / `@here` (`groupMentions`, `tunreadGroup`), unless
+    /// group mentions are muted or mention status is hidden.
+    GroupMention,
+    /// Red: a direct mention or a highlight word (`userMentions`,
+    /// `tunreadUser`), or an unread DM (not with notifications off), unless
+    /// mention status is hidden.
+    Mention,
+}
+
+impl BadgeVariant {
+    /// A badge of this kind counts as unread (collapsed sections, totals).
+    pub fn counted(self) -> bool {
+        self != BadgeVariant::Muted
+    }
+}
+
+/// The strongest of `kinds` (see [`BadgeVariant`]).
+pub fn strongest(kinds: impl IntoIterator<Item = BadgeVariant>) -> Option<BadgeVariant> {
+    kinds.into_iter().max()
+}
+
+/// The shared "counted unread row" predicate: the row shows a badge (a
+/// counter or a dot) whose kind is not [`BadgeVariant::Muted`].
+pub fn is_counted(kind: Option<BadgeVariant>) -> bool {
+    kind.is_some_and(BadgeVariant::counted)
+}
+
+/// What a collapsed section shows for rows with badge kinds `kinds`
+/// (`None`: no badge): the strongest counted kind (its dot) and the number
+/// of counted rows; `None` when no row counts.
+pub fn collapsed_unread(
+    kinds: impl IntoIterator<Item = Option<BadgeVariant>>,
+) -> Option<(BadgeVariant, usize)> {
+    let counted: Vec<BadgeVariant> = kinds
+        .into_iter()
+        .filter(|k| is_counted(*k))
+        .flatten()
+        .collect();
+    strongest(counted.iter().copied()).map(|k| (k, counted.len()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Badge {
     /// Unread messages + unread threads; 0 = no counter.
     pub count: u64,
+    /// The kind drawn, when [`Badge::kind`] shows one.
     pub variant: BadgeVariant,
     /// `alert` without a counter.
     pub dot: bool,
-    /// Bold room name.
+    /// Bold room name (Rocket.Chat's `highlightUnread`).
     pub highlighted: bool,
     pub mentions: u64,
     pub group_mentions: u64,
     pub threads: u64,
+}
+
+impl Badge {
+    /// The kind the row draws; `None`: neither a counter nor a dot.
+    pub fn kind(&self) -> Option<BadgeVariant> {
+        (self.count > 0 || self.dot).then_some(self.variant)
+    }
+
+    /// The row counts as unread ([`is_counted`]).
+    pub fn counted(&self) -> bool {
+        is_counted(self.kind())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -410,11 +464,17 @@ pub fn display_name(ws: &Workspace, e: &RoomEntry, use_real_names: bool) -> Stri
     s.to_owned()
 }
 
-/// Rocket.Chat's `getSubscriptionUnreadData`: mentions = `userMentions` +
-/// `tunreadUser`, group mentions = `groupMentions`, total = `unread` + `tunread`;
-/// variant mention > thread > group mention; the counter shows unless unread
-/// status is hidden (mentions still show unless mention status is hidden too);
-/// the name is bold only for `!hideUnreadStatus && (alert || unread)`.
+/// Rocket.Chat's `getSubscriptionUnreadData` for the counter: mentions =
+/// `userMentions` + `tunreadUser`, group mentions = `groupMentions`, total =
+/// `unread` + `tunread`; the counter shows unless unread status is hidden
+/// (mentions still show unless mention status is hidden too); the name is
+/// bold only for `!hideUnreadStatus && (alert || unread)`.
+///
+/// The kind follows [`BadgeVariant`]: Mention (also a DM, including a
+/// group DM, with `unread` or `alert`, unless its notifications are off),
+/// else Muted (notifications off), else GroupMention (also `tunreadGroup`; not with muted group
+/// mentions), else Unread for main-timeline unread or `alert` alone, else
+/// Thread. Hidden mention status drops Mention and GroupMention.
 pub fn badge(e: &RoomEntry) -> Badge {
     let Some(s) = e.sub.as_ref() else {
         return Badge::default();
@@ -425,18 +485,28 @@ pub fn badge(e: &RoomEntry) -> Badge {
     let group_mentions = s.group_mentions;
     let hide_unread = s.hide_unread_status == Some(true);
     let hide_mention = s.hide_mention_status == Some(true);
+    let mute_group = s.mute_group_mentions == Some(true);
     let total = s.unread + threads;
-    let variant = if mentions > 0 {
+    let muted = s.disable_notifications == Some(true);
+    // A direct mention keeps the counter under hidden unread status; a DM's
+    // plain unread is loud (red) but does not.
+    let mention = !hide_mention && mentions > 0;
+    let dm = !hide_mention && !muted && is_dm(e) && (s.unread > 0 || s.alert);
+    let group = !hide_mention && !mute_group;
+    let variant = if mention || dm {
         BadgeVariant::Mention
+    } else if muted {
+        BadgeVariant::Muted
+    } else if group && group_mentions + len(&s.tunread_group) > 0 {
+        BadgeVariant::GroupMention
+    } else if main_unread(e) {
+        BadgeVariant::Unread
     } else if threads > 0 {
         BadgeVariant::Thread
-    } else if group_mentions > 0 {
-        BadgeVariant::GroupMention
     } else {
-        BadgeVariant::Normal
+        BadgeVariant::Unread
     };
-    let show_count =
-        total > 0 && (!hide_unread || (!hide_mention && (mentions > 0 || group_mentions > 0)));
+    let show_count = total > 0 && (!hide_unread || mention || (group && group_mentions > 0));
     Badge {
         count: if show_count { total } else { 0 },
         variant,
@@ -446,6 +516,32 @@ pub fn badge(e: &RoomEntry) -> Badge {
         group_mentions,
         threads,
     }
+}
+
+/// The room's newest main-timeline message (Rocket.Chat does not move
+/// `room.lm` for thread-only replies).
+fn main_lm(e: &RoomEntry) -> Option<RcDate> {
+    let r = e.room.as_ref()?;
+    r.lm.or(r.last_message.as_ref().and_then(|m| m.ts))
+}
+
+/// The main timeline has something unread: `unread`, or an `alert` that
+/// the room's unread threads do not explain (its newest main message is
+/// past `ls`; without both dates, an alert with no unread threads).
+pub fn main_unread(e: &RoomEntry) -> bool {
+    e.sub.as_ref().is_some_and(|s| {
+        s.unread > 0
+            || (s.alert
+                && match (main_lm(e), s.ls) {
+                    (Some(lm), Some(ls)) => lm > ls,
+                    _ => s.tunread.as_ref().is_none_or(|t| t.is_empty()),
+                })
+    })
+}
+
+/// A 1:1 or group direct message.
+fn is_dm(e: &RoomEntry) -> bool {
+    e.room_type() == RoomType::Direct
 }
 
 /// `isUnreadRoom`: `!hideUnreadStatus && (alert || unread || tunread.length)`.
@@ -666,6 +762,11 @@ fn section_for(e: &RoomEntry, item: &RoomListItem, opts: &RoomListOptions) -> Se
     ty.section().into()
 }
 
+/// The section room `e` (listed as `item`) goes to under `opts`.
+pub fn section_of(e: &RoomEntry, item: &RoomListItem, opts: &RoomListOptions) -> SectionId {
+    section_for(e, item, opts)
+}
+
 /// Ascending order with `None` after every `Some`.
 fn cmp_none_last<T: Ord>(a: &Option<T>, b: &Option<T>) -> std::cmp::Ordering {
     match (a, b) {
@@ -686,14 +787,18 @@ fn sort_items(
 ) {
     sort_by_kind(items, sort);
     if unread_first {
-        let kept = |rid: &str| {
-            opts.kept_unread.as_deref() == Some(rid)
-                || opts.kept_unread_first.as_deref() == Some(rid)
-        };
-        let read = |i: &RoomListItem| !(i.badge.count > 0 || i.badge.dot || kept(&i.rid));
         // Stable: keeps the order of `sort` within both blocks.
-        items.sort_by_key(read);
+        items.sort_by_key(|i| !in_unread_block(i, opts));
     }
+}
+
+/// Whether `item` goes to the unread block of a section that lists unread
+/// rooms first: it has a counter or dot, or it is the open room kept there.
+pub fn in_unread_block(item: &RoomListItem, opts: &RoomListOptions) -> bool {
+    let kept = |rid: &str| {
+        opts.kept_unread.as_deref() == Some(rid) || opts.kept_unread_first.as_deref() == Some(rid)
+    };
+    item.badge.count > 0 || item.badge.dot || kept(&item.rid)
 }
 
 fn sort_by_kind(items: &mut [RoomListItem], sort: SidebarSort) {
@@ -816,7 +921,7 @@ pub fn compute(ws: &Workspace, opts: &RoomListOptions, filter: &str) -> Vec<Sect
 }
 
 /// Whether starred threads show in Favorites (and leave Threads).
-fn starred_threads_shown(ws: &Workspace, opts: &RoomListOptions) -> bool {
+pub fn starred_threads_shown(ws: &Workspace, opts: &RoomListOptions) -> bool {
     opts.starred_threads
         && opts.show_favorites
         && ws.thread_index().pins_enabled()
@@ -953,25 +1058,43 @@ fn thread_title(m: &Message) -> ThreadTitle {
     ThreadTitle::Text(first.or_else(att).or_else(file).unwrap_or_default())
 }
 
-/// Unread state of thread `tmid` in a room (`None`: read or hidden).
-/// Hidden unread status keeps only direct mentions (unless mention status is
-/// hidden too), like the room badge.
+/// Unread state of thread `tmid` in a room (`None`: read or hidden), in
+/// the [`BadgeVariant`] ranking: Mention (`tunreadUser`), else Muted
+/// (notifications off), else GroupMention (`tunreadGroup`, not with muted
+/// group mentions), else Thread. Hidden unread status keeps only direct
+/// mentions; hidden mention status drops both mention kinds, like the room
+/// badge.
 pub fn thread_unread(s: &rocketchat::models::Subscription, tmid: &str) -> Option<BadgeVariant> {
     let has = |v: &Option<Vec<String>>| v.as_ref().is_some_and(|v| v.iter().any(|t| t == tmid));
     let hide_unread = s.hide_unread_status == Some(true);
     let hide_mention = s.hide_mention_status == Some(true);
     let mention = has(&s.tunread_user) && !hide_mention;
-    let group = has(&s.tunread_group) && !hide_mention;
+    let group = has(&s.tunread_group) && !hide_mention && s.mute_group_mentions != Some(true);
     let any = has(&s.tunread) || has(&s.tunread_user) || has(&s.tunread_group);
     if mention {
         Some(BadgeVariant::Mention)
     } else if hide_unread || !any {
         None
+    } else if s.disable_notifications == Some(true) {
+        Some(BadgeVariant::Muted)
     } else if group {
         Some(BadgeVariant::GroupMention)
     } else {
         Some(BadgeVariant::Thread)
     }
+}
+
+/// The strongest [`thread_unread`] over every unread thread of the room:
+/// the dot of the room header's Threads button, shown whatever the Threads
+/// section mode (`None`: nothing unread, or all of it hidden).
+pub fn threads_unread(s: &rocketchat::models::Subscription) -> Option<BadgeVariant> {
+    let tmids: std::collections::BTreeSet<&String> =
+        [&s.tunread, &s.tunread_user, &s.tunread_group]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
+    strongest(tmids.into_iter().filter_map(|t| thread_unread(s, t)))
 }
 
 /// Rows of the Threads section (empty while it is off or threads are
@@ -1174,7 +1297,9 @@ pub fn item(ws: &Workspace, e: &RoomEntry, opts: &RoomListOptions) -> RoomListIt
     build_item(ws, e, opts)
 }
 
-/// Whether the room counts as unread (for window badges / "next unread room").
+/// `isUnreadRoom` (alert, unread or unread threads, unless the unread
+/// status is hidden): the Unread section, kept-unread rooms and the
+/// "All unreads" entry.
 pub fn room_is_unread(e: &RoomEntry) -> bool {
     is_unread(e)
 }
@@ -1249,31 +1374,70 @@ pub fn read_all_targets(ws: &Workspace) -> Vec<String> {
     out
 }
 
-/// Totals for a window/tray badge: (unread rooms, mentions) over open,
-/// non-archived rooms (service rooms aside); muted rooms (`disableNotifications`) don't count as
-/// unread rooms, hidden mention status hides mentions.
-pub fn unread_totals(ws: &Workspace) -> (u64, u64) {
-    let mut rooms = 0;
-    let mut mentions = 0;
-    for e in ws.rooms().values() {
-        let Some(s) = e
-            .sub
-            .as_ref()
-            .filter(|s| s.open && !e.is_archived() && !e.is_service_room())
-        else {
-            continue;
-        };
-        let b = badge(e);
-        if s.disable_notifications != Some(true) && is_unread(e) {
-            rooms += 1;
+/// What a workspace's unread rows add up to: the workspace icon, the
+/// window title and the tray show it. Built from the counted rows
+/// ([`Badge::counted`]) of open, non-archived rooms (service rooms aside).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WorkspaceSignal {
+    /// The mention counts of the counted rows whose kind is Mention; a DM
+    /// adds its counter (1 for a dot).
+    pub mentions: u64,
+    /// The strongest kind over the counted rows.
+    pub strongest: Option<BadgeVariant>,
+    /// The number of counted rows.
+    pub rooms: u64,
+}
+
+impl WorkspaceSignal {
+    /// Both signals together (several rooms, several accounts).
+    pub fn merge(self, o: Self) -> Self {
+        Self {
+            mentions: self.mentions + o.mentions,
+            strongest: self.strongest.max(o.strongest),
+            rooms: self.rooms + o.rooms,
         }
-        mentions += if s.hide_mention_status == Some(true) {
-            0
-        } else {
-            b.mentions
-        };
     }
-    (rooms, mentions)
+
+    /// Something counted is unread.
+    pub fn any(&self) -> bool {
+        self.rooms > 0
+    }
+}
+
+impl std::iter::Sum for WorkspaceSignal {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), Self::merge)
+    }
+}
+
+/// The [`WorkspaceSignal`] of a workspace.
+pub fn workspace_signal(ws: &Workspace) -> WorkspaceSignal {
+    ws.rooms().values().map(entry_signal).sum()
+}
+
+/// One room's part of [`workspace_signal`].
+pub fn entry_signal(e: &RoomEntry) -> WorkspaceSignal {
+    if !e
+        .sub
+        .as_ref()
+        .is_some_and(|s| s.open && !e.is_archived() && !e.is_service_room())
+    {
+        return WorkspaceSignal::default();
+    }
+    let b = badge(e);
+    let Some(kind) = b.kind().filter(|k| k.counted()) else {
+        return WorkspaceSignal::default();
+    };
+    let mentions = match kind {
+        BadgeVariant::Mention if is_dm(e) => b.count.max(b.mentions).max(1),
+        BadgeVariant::Mention => b.mentions,
+        _ => 0,
+    };
+    WorkspaceSignal {
+        mentions,
+        strongest: Some(kind),
+        rooms: 1,
+    }
 }
 
 #[cfg(test)]
@@ -1471,7 +1635,8 @@ mod tests {
         let b = get("threads").badge;
         assert_eq!((b.count, b.variant), (2, BadgeVariant::Thread));
         assert!(get("muted").muted);
-        assert_eq!(unread_totals(&ws), (3, 1));
+        let w = workspace_signal(&ws);
+        assert_eq!((w.rooms, w.mentions), (3, 1));
     }
 
     #[test]
@@ -1491,8 +1656,7 @@ mod tests {
             sub: Some(s),
         };
         assert_eq!(badge(&e).count, 0);
-        // RC's variant ignores hideMentionStatus.
-        assert_eq!(badge(&e).variant, BadgeVariant::Mention);
+        assert_eq!(badge(&e).kind(), None);
     }
 
     #[test]
@@ -1673,22 +1837,59 @@ mod tests {
     }
 
     #[test]
-    fn badge_variant_priority_follows_rocket_chat() {
-        // (mentions && danger) || (threads && primary) || (groupMentions && warning)
+    fn plain_message_beside_unread_threads_is_unread() {
+        // M5 in a room that also has unread threads: RC keeps `alert` for
+        // the threads, `unread` stays 0 (mentions-only Unread_Count).
+        let mut s = sub("r", "room", RoomType::Channel);
+        s.alert = true;
+        s.tunread = Some(vec!["t1".into()]);
+        s.ls = Some(ts(1_000));
+        let at = |lm| RoomEntry {
+            room: Some(with_lm(room("r", "room", RoomType::Channel), lm)),
+            sub: Some(s.clone()),
+        };
+        // The newest main message is past `ls`: plain unread.
+        assert_eq!(badge(&at(2_000)).kind(), Some(BadgeVariant::Unread));
+        assert!(main_unread(&at(2_000)));
+        // Only the thread is new: thread-only.
+        assert_eq!(badge(&at(500)).kind(), Some(BadgeVariant::Thread));
+        assert!(!main_unread(&at(500)));
+        // Without the room's dates the threads explain the alert.
+        assert_eq!(badge(&entry(s.clone())).kind(), Some(BadgeVariant::Thread));
+        let mut plain = s.clone();
+        plain.tunread = None;
+        assert_eq!(badge(&entry(plain)).kind(), Some(BadgeVariant::Unread));
+    }
+
+    #[test]
+    fn badge_variant_ranking() {
+        // Mention > GroupMention > Unread > Thread.
         let mut s = sub("r", "room", RoomType::Channel);
         s.unread = 1;
         s.group_mentions = 1;
         s.tunread = Some(vec!["t".into()]);
-        assert_eq!(badge(&entry(s.clone())).variant, BadgeVariant::Thread);
-        s.tunread = None;
         assert_eq!(badge(&entry(s.clone())).variant, BadgeVariant::GroupMention);
+        s.group_mentions = 0;
+        assert_eq!(badge(&entry(s.clone())).variant, BadgeVariant::Unread);
+        s.unread = 0;
+        assert_eq!(badge(&entry(s.clone())).variant, BadgeVariant::Thread);
+        s.unread = 1;
         s.tunread_user = Some(vec!["t".into()]);
         let b = badge(&entry(s));
         assert_eq!((b.variant, b.mentions), (BadgeVariant::Mention, 1));
+        let ranks = [
+            BadgeVariant::Muted,
+            BadgeVariant::Thread,
+            BadgeVariant::Unread,
+            BadgeVariant::GroupMention,
+            BadgeVariant::Mention,
+        ];
+        assert!(ranks.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(strongest(ranks), Some(BadgeVariant::Mention));
     }
 
     #[test]
-    fn thread_group_mentions_are_not_group_mentions() {
+    fn thread_group_mentions_are_orange_but_not_counted_as_group_mentions() {
         // A thread @all sets tunread + tunreadGroup, never groupMentions.
         let mut s = sub("r", "room", RoomType::Channel);
         s.alert = true;
@@ -1697,10 +1898,167 @@ mod tests {
         let b = badge(&entry(s.clone()));
         assert_eq!(
             (b.group_mentions, b.variant, b.count),
-            (0, BadgeVariant::Thread, 1)
+            (0, BadgeVariant::GroupMention, 1)
         );
         s.hide_unread_status = Some(true);
         assert_eq!(badge(&entry(s)).count, 0);
+    }
+
+    #[test]
+    fn alert_only_is_an_unread_dot_and_bold() {
+        // M5: a plain channel message sets only `alert`.
+        let mut s = sub("r", "room", RoomType::Channel);
+        s.alert = true;
+        let b = badge(&entry(s.clone()));
+        assert_eq!(
+            (b.count, b.dot, b.kind()),
+            (0, true, Some(BadgeVariant::Unread))
+        );
+        assert!(b.highlighted && b.counted());
+        // Thread-only rooms also carry `alert`: slate counter, bold.
+        s.tunread = Some(vec!["t".into()]);
+        let b = badge(&entry(s.clone()));
+        assert_eq!((b.count, b.kind()), (1, Some(BadgeVariant::Thread)));
+        assert!(b.highlighted);
+        // Hidden unread status: neither a badge nor bold.
+        s.hide_unread_status = Some(true);
+        let b = badge(&entry(s));
+        assert_eq!((b.kind(), b.highlighted), (None, false));
+    }
+
+    #[test]
+    fn muted_rooms_are_grey_except_mentions() {
+        let mut s = sub("r", "room", RoomType::Channel);
+        s.disable_notifications = Some(true);
+        s.unread = 1;
+        s.alert = true;
+        s.group_mentions = 1;
+        s.tunread = Some(vec!["t".into()]);
+        let b = badge(&entry(s.clone()));
+        assert_eq!(b.kind(), Some(BadgeVariant::Muted));
+        assert!(!b.counted());
+        s.user_mentions = 1;
+        let b = badge(&entry(s));
+        assert_eq!(b.kind(), Some(BadgeVariant::Mention));
+        assert!(b.counted());
+    }
+
+    #[test]
+    fn muted_group_mentions_are_plain_unread() {
+        // R4: @all / @here in the room or a thread is plain unread.
+        let mut s = sub("r", "room", RoomType::Channel);
+        s.mute_group_mentions = Some(true);
+        s.alert = true;
+        s.unread = 1;
+        s.group_mentions = 1;
+        assert_eq!(badge(&entry(s.clone())).kind(), Some(BadgeVariant::Unread));
+        // Hidden unread status: the muted group mention does not keep the counter.
+        let mut hidden = s.clone();
+        hidden.hide_unread_status = Some(true);
+        assert_eq!(badge(&entry(hidden)).kind(), None);
+        s.unread = 0;
+        s.group_mentions = 0;
+        s.tunread = Some(vec!["t".into()]);
+        s.tunread_group = Some(vec!["t".into()]);
+        assert_eq!(badge(&entry(s.clone())).kind(), Some(BadgeVariant::Thread));
+        assert_eq!(thread_unread(&s, "t"), Some(BadgeVariant::Thread));
+    }
+
+    #[test]
+    fn hidden_mention_status_drops_red_and_orange() {
+        // R3: the counter, when shown, uses the next kind.
+        let mut s = sub("r", "room", RoomType::Channel);
+        s.hide_mention_status = Some(true);
+        s.alert = true;
+        s.unread = 2;
+        s.user_mentions = 1;
+        s.group_mentions = 1;
+        let b = badge(&entry(s.clone()));
+        assert_eq!((b.count, b.kind()), (2, Some(BadgeVariant::Unread)));
+        let mut threads = sub("t", "threads", RoomType::Channel);
+        threads.hide_mention_status = Some(true);
+        threads.alert = true;
+        threads.tunread = Some(vec!["a".into(), "b".into()]);
+        threads.tunread_user = Some(vec!["a".into()]);
+        threads.tunread_group = Some(vec!["b".into()]);
+        let b = badge(&entry(threads.clone()));
+        assert_eq!((b.count, b.kind()), (2, Some(BadgeVariant::Thread)));
+        assert_eq!(thread_unread(&threads, "a"), Some(BadgeVariant::Thread));
+        assert_eq!(thread_unread(&threads, "b"), Some(BadgeVariant::Thread));
+        // A DM with R3 is blue.
+        let mut dm = sub("d", "bob", RoomType::Direct);
+        dm.hide_mention_status = Some(true);
+        dm.alert = true;
+        dm.unread = 1;
+        dm.user_mentions = 1;
+        assert_eq!(badge(&entry(dm)).kind(), Some(BadgeVariant::Unread));
+    }
+
+    #[test]
+    fn thread_rows_of_muted_rooms_are_grey() {
+        let mut s = sub("r", "room", RoomType::Channel);
+        s.disable_notifications = Some(true);
+        s.tunread = Some(vec!["a".into(), "b".into(), "c".into()]);
+        s.tunread_user = Some(vec!["a".into()]);
+        s.tunread_group = Some(vec!["b".into()]);
+        assert_eq!(thread_unread(&s, "a"), Some(BadgeVariant::Mention));
+        assert_eq!(thread_unread(&s, "b"), Some(BadgeVariant::Muted));
+        assert_eq!(thread_unread(&s, "c"), Some(BadgeVariant::Muted));
+        assert_eq!(thread_unread(&s, "x"), None);
+    }
+
+    #[test]
+    fn threads_button_takes_the_strongest_thread() {
+        use BadgeVariant::*;
+        let mut s = sub("r", "room", RoomType::Channel);
+        assert_eq!(threads_unread(&s), None);
+        s.tunread = Some(vec!["a".into(), "b".into(), "c".into()]);
+        assert_eq!(threads_unread(&s), Some(Thread));
+        s.tunread_group = Some(vec!["b".into()]);
+        assert_eq!(threads_unread(&s), Some(GroupMention));
+        s.tunread_user = Some(vec!["c".into()]);
+        assert_eq!(threads_unread(&s), Some(Mention));
+        // R3: no red or orange; R4: no orange.
+        let mut r3 = s.clone();
+        r3.hide_mention_status = Some(true);
+        assert_eq!(threads_unread(&r3), Some(Thread));
+        let mut r4 = s.clone();
+        r4.tunread_user = None;
+        r4.mute_group_mentions = Some(true);
+        assert_eq!(threads_unread(&r4), Some(Thread));
+        // R1: grey, a mention stays red.
+        let mut r1 = s.clone();
+        r1.disable_notifications = Some(true);
+        assert_eq!(threads_unread(&r1), Some(Mention));
+        r1.tunread_user = None;
+        assert_eq!(threads_unread(&r1), Some(Muted));
+        // R2 keeps direct mentions only.
+        let mut r2 = s.clone();
+        r2.hide_unread_status = Some(true);
+        assert_eq!(threads_unread(&r2), Some(Mention));
+        r2.tunread_user = None;
+        assert_eq!(threads_unread(&r2), None);
+        // Listed in tunreadUser only.
+        let mut only = sub("r", "room", RoomType::Channel);
+        only.tunread_user = Some(vec!["x".into()]);
+        assert_eq!(threads_unread(&only), Some(Mention));
+    }
+
+    #[test]
+    fn counted_rows_and_collapsed_sections() {
+        use BadgeVariant::*;
+        assert!(!is_counted(None));
+        assert!(!is_counted(Some(Muted)));
+        assert!(is_counted(Some(Thread)));
+        assert_eq!(collapsed_unread([None, Some(Muted)]), None);
+        assert_eq!(
+            collapsed_unread([Some(Muted), Some(Thread), None, Some(Unread)]),
+            Some((Unread, 2))
+        );
+        assert_eq!(
+            collapsed_unread([Some(GroupMention), Some(Mention), Some(Thread)]),
+            Some((Mention, 3))
+        );
     }
 
     #[test]
@@ -1777,7 +2135,8 @@ mod tests {
             (sub("b", "gone", RoomType::Channel), Some(r)),
         ]);
         assert!(compute(&ws, &RoomListOptions::default(), "").is_empty());
-        assert_eq!(unread_totals(&ws), (0, 0));
+        let w = workspace_signal(&ws);
+        assert_eq!((w.rooms, w.mentions), (0, 0));
     }
 
     #[test]
@@ -1830,7 +2189,7 @@ mod tests {
     }
 
     #[test]
-    fn unread_totals_rules() {
+    fn workspace_signal_counts_counted_rows() {
         let mut plain = sub("p", "p", RoomType::Channel);
         plain.unread = 2;
         plain.user_mentions = 1;
@@ -1838,6 +2197,9 @@ mod tests {
         muted.unread = 5;
         muted.user_mentions = 2;
         muted.disable_notifications = Some(true);
+        let mut muted_plain = sub("q", "q", RoomType::Channel);
+        muted_plain.unread = 5;
+        muted_plain.disable_notifications = Some(true);
         let mut hidden_mentions = sub("h", "h", RoomType::Channel);
         hidden_mentions.unread = 1;
         hidden_mentions.user_mentions = 4;
@@ -1848,16 +2210,104 @@ mod tests {
         closed.open = false;
         let mut group = sub("g", "g", RoomType::Channel);
         group.alert = true;
-        group.group_mentions = 3;
+        group.unread = 1;
+        group.group_mentions = 1;
+        let mut threads = sub("t", "t", RoomType::Channel);
+        threads.alert = true;
+        threads.tunread = Some(vec!["x".into()]);
+        let mut hidden = sub("u", "u", RoomType::Channel);
+        hidden.unread = 3;
+        hidden.hide_unread_status = Some(true);
         let ws = ws_with(vec![
             (plain, None),
             (muted, None),
+            (muted_plain, None),
             (hidden_mentions, None),
             (closed, None),
             (group, None),
+            (threads, None),
+            (hidden, None),
         ]);
-        // Rooms: p, h, g (muted and closed don't count); mentions: p 1 + m 2.
-        assert_eq!(unread_totals(&ws), (3, 3));
+        let per = |rid: &str| entry_signal(ws.room(rid).unwrap());
+        let sig = |mentions, kind, rooms| WorkspaceSignal {
+            mentions,
+            strongest: kind,
+            rooms,
+        };
+        use BadgeVariant::*;
+        assert_eq!(per("p"), sig(1, Some(Mention), 1));
+        // A mention in a muted room stays red and counts.
+        assert_eq!(per("m"), sig(2, Some(Mention), 1));
+        assert_eq!(per("q"), sig(0, None, 0));
+        assert_eq!(per("h"), sig(0, Some(Unread), 1));
+        assert_eq!(per("c"), sig(0, None, 0));
+        assert_eq!(per("g"), sig(0, Some(GroupMention), 1));
+        assert_eq!(per("t"), sig(0, Some(Thread), 1));
+        assert_eq!(per("u"), sig(0, None, 0));
+        assert_eq!(workspace_signal(&ws), sig(3, Some(Mention), 5));
+        assert_eq!(entry_signal(&RoomEntry::default()), sig(0, None, 0));
+        // Merging keeps the strongest kind and sums the numbers.
+        assert_eq!(
+            [per("g"), per("t"), per("h")]
+                .into_iter()
+                .sum::<WorkspaceSignal>(),
+            sig(0, Some(GroupMention), 3)
+        );
+        assert!(!WorkspaceSignal::default().any());
+    }
+
+    #[test]
+    fn direct_messages_are_loud() {
+        // M2: a DM's plain unread is a mention, a 1:1 and a group DM alike.
+        for name in ["bob", "bob, carol"] {
+            let mut dm = sub("d", name, RoomType::Direct);
+            dm.unread = 3;
+            dm.alert = true;
+            let b = badge(&entry(dm.clone()));
+            assert_eq!((b.count, b.kind()), (3, Some(BadgeVariant::Mention)));
+            let e = entry(dm.clone());
+            assert_eq!(
+                entry_signal(&e),
+                WorkspaceSignal {
+                    mentions: 3,
+                    strongest: Some(BadgeVariant::Mention),
+                    rooms: 1
+                }
+            );
+            // Alert alone (a thread reply): a red dot, one mention.
+            let mut alert = dm.clone();
+            alert.unread = 0;
+            let b = badge(&entry(alert.clone()));
+            assert_eq!(
+                (b.count, b.dot, b.kind()),
+                (0, true, Some(BadgeVariant::Mention))
+            );
+            assert_eq!(entry_signal(&entry(alert)).mentions, 1);
+            // R1: grey, not counted. R3: blue. R2: nothing.
+            let mut muted = dm.clone();
+            muted.disable_notifications = Some(true);
+            assert_eq!(
+                badge(&entry(muted.clone())).kind(),
+                Some(BadgeVariant::Muted)
+            );
+            assert_eq!(entry_signal(&entry(muted)), WorkspaceSignal::default());
+            let mut r3 = dm.clone();
+            r3.hide_mention_status = Some(true);
+            assert_eq!(badge(&entry(r3.clone())).kind(), Some(BadgeVariant::Unread));
+            assert_eq!(entry_signal(&entry(r3)).mentions, 0);
+            let mut r2 = dm.clone();
+            r2.hide_unread_status = Some(true);
+            assert_eq!(badge(&entry(r2)).kind(), None);
+            // Read: nothing.
+            let mut read = dm;
+            read.unread = 0;
+            read.alert = false;
+            assert_eq!(badge(&entry(read)).kind(), None);
+        }
+        // A channel's plain unread stays blue.
+        let mut c = sub("c", "c", RoomType::Channel);
+        c.unread = 1;
+        assert_eq!(badge(&entry(c)).kind(), Some(BadgeVariant::Unread));
     }
 
     #[test]
@@ -3161,7 +3611,8 @@ mod tests {
         assert_eq!(ids(&s), ["flag:orange"]);
         assert_eq!(s[0].title.as_deref(), Some("Ждёт ответа"));
         assert!(compute(&ws, &RoomListOptions::default(), "rustket").is_empty());
-        assert_eq!(unread_totals(&ws), (0, 0));
+        let w = workspace_signal(&ws);
+        assert_eq!((w.rooms, w.mentions), (0, 0));
         // A marked room someone else created is an ordinary room, even when
         // the user was made its owner: its data is not trusted.
         let forged = service_sub(
@@ -3174,7 +3625,8 @@ mod tests {
         assert_eq!(ws.room_flag("a"), Some(FlagColor::Orange));
         assert!(!ws.is_service_room("forged"));
         assert_eq!(ws.service_rooms(), ["svc"]);
-        assert_eq!(unread_totals(&ws), (1, 1));
+        let w = workspace_signal(&ws);
+        assert_eq!((w.rooms, w.mentions), (1, 1));
         assert!(
             compute(&ws, &RoomListOptions::default(), "")
                 .iter()

@@ -1,6 +1,7 @@
 //! Freedesktop sounds: an external player (`pw-play`, `paplay` or
 //! `canberra-gtk-play`, whichever is on `PATH`) and a sound theme file
-//! (freedesktop, KDE's ocean, Yaru).
+//! (freedesktop, KDE's ocean, Yaru), or a sound file (Rocket.Chat's sounds).
+//! [`quiet`] tells whether the desktop's Do Not Disturb is on.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -16,7 +17,6 @@ pub enum PlayerKind {
 }
 
 impl PlayerKind {
-    #[cfg(test)]
     pub const ALL: [PlayerKind; 3] = [Self::PwPlay, Self::Paplay, Self::Canberra];
 
     pub fn program(self) -> &'static str {
@@ -35,7 +35,6 @@ pub struct Player {
 }
 
 /// The first available player.
-#[cfg(test)]
 pub fn find_player(path: &std::ffi::OsStr) -> Option<Player> {
     PlayerKind::ALL
         .iter()
@@ -48,9 +47,7 @@ pub fn resolve(path: &std::ffi::OsStr, file: Option<PathBuf>) -> Option<(Player,
     let found =
         |k: PlayerKind| find_in_path(k.program(), path).map(|p| Player { kind: k, path: p });
     if let Some(file) = file
-        && let Some(p) = [PlayerKind::PwPlay, PlayerKind::Paplay, PlayerKind::Canberra]
-            .into_iter()
-            .find_map(found)
+        && let Some(p) = PlayerKind::ALL.into_iter().find_map(found)
     {
         return Some((p, Some(file)));
     }
@@ -116,9 +113,16 @@ pub fn command(player: &Player, id: &str, file: Option<&Path>) -> Option<Command
     Some(c)
 }
 
-pub type Resolved = Option<(Player, Option<PathBuf>)>;
+/// The players found at startup.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Resolved {
+    /// The theme sound player and the message sound's theme file.
+    theme: Option<(Player, Option<PathBuf>)>,
+    /// The player of sound files (Rocket.Chat's sounds).
+    file: Option<Player>,
+}
 
-/// Looks the player and message sound file up (blocking).
+/// Looks the players and the message sound file up (blocking).
 pub fn lookup() -> Resolved {
     let file = theme_file(
         &data_dirs(
@@ -127,13 +131,26 @@ pub fn lookup() -> Resolved {
         ),
         MESSAGE_SOUND,
     );
-    std::env::var_os("PATH").and_then(|p| resolve(&p, file))
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    Resolved {
+        theme: resolve(&path, file),
+        file: find_player(&path),
+    }
+}
+
+/// The command playing the sound file `file`.
+pub fn file_command(resolved: &Resolved, file: &Path) -> Option<Command> {
+    let Some(player) = &resolved.file else {
+        tracing::debug!("no sound player found");
+        return None;
+    };
+    command(player, "", Some(file))
 }
 
 /// The command playing theme sound `id` (the message sound when `None` or
 /// when the theme lacks it). Blocking.
 pub fn play_command(resolved: &Resolved, id: Option<&'static str>) -> Option<Command> {
-    let Some((player, file)) = resolved else {
+    let Some((player, file)) = &resolved.theme else {
         tracing::debug!("no sound player or sound file found");
         return None;
     };
@@ -154,11 +171,157 @@ pub fn play_command(resolved: &Resolved, id: Option<&'static str>) -> Option<Com
     themed.or_else(|| command(player, MESSAGE_SOUND, file.as_deref()))
 }
 
+/// How long the Do Not Disturb check may take before the sound plays.
+const QUIET_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// The desktop's Do Not Disturb is on: the notification server's
+/// `Inhibited` property (KDE Plasma) or, on GNOME, `show-banners` off.
+/// Absent, failing or slow (beyond [`QUIET_TIMEOUT`]) means off.
+pub async fn quiet() -> bool {
+    let check = async {
+        if inhibited().await {
+            return true;
+        }
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        if !is_gnome(&desktop) {
+            return false;
+        }
+        let Some(gsettings) = std::env::var_os("PATH").and_then(|p| find_in_path("gsettings", &p))
+        else {
+            return false;
+        };
+        tokio::task::spawn_blocking(move || banners_off(gsettings_banners(&gsettings).as_deref()))
+            .await
+            .unwrap_or(false)
+    };
+    tokio::time::timeout(QUIET_TIMEOUT, check)
+        .await
+        .unwrap_or(false)
+}
+
+/// `org.freedesktop.Notifications`' `Inhibited` property (KDE Plasma).
+/// Asked only of a running server, so an activatable daemon is not
+/// started by the question.
+async fn inhibited() -> bool {
+    const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
+    let running = super::super::dbus::call(
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "NameHasOwner",
+        &(NOTIFICATIONS,),
+    )
+    .await
+    .and_then(|r| r.body().deserialize::<bool>().ok())
+    .unwrap_or(false);
+    if !running {
+        return false;
+    }
+    let Some(reply) = super::super::dbus::call(
+        NOTIFICATIONS,
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        &(NOTIFICATIONS, "Inhibited"),
+    )
+    .await
+    else {
+        return false;
+    };
+    let body = reply.body();
+    body.deserialize::<zbus::zvariant::Value<'_>>()
+        .ok()
+        .and_then(|v| variant_bool(&v))
+        .unwrap_or(false)
+}
+
+fn variant_bool(v: &zbus::zvariant::Value<'_>) -> Option<bool> {
+    match v {
+        zbus::zvariant::Value::Bool(b) => Some(*b),
+        zbus::zvariant::Value::Value(inner) => variant_bool(inner),
+        _ => None,
+    }
+}
+
+/// `XDG_CURRENT_DESKTOP` (a `:`-separated list) names GNOME.
+fn is_gnome(desktop: &str) -> bool {
+    desktop.split(':').any(|d| d.eq_ignore_ascii_case("gnome"))
+}
+
+/// `gsettings get org.gnome.desktop.notifications show-banners` printed
+/// `false`.
+fn banners_off(output: Option<&str>) -> bool {
+    output.is_some_and(|o| o.trim() == "false")
+}
+
+/// The output of `gsettings get org.gnome.desktop.notifications
+/// show-banners`, killed after [`QUIET_TIMEOUT`]. Blocking.
+fn gsettings_banners(gsettings: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut child = Command::new(gsettings)
+        .args(["get", "org.gnome.desktop.notifications", "show-banners"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(None) if started.elapsed() < QUIET_TIMEOUT => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    child.stdout.take()?.read_to_string(&mut out).ok()?;
+    Some(out)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn gnome_do_not_disturb_from_gsettings() {
+        assert!(is_gnome("GNOME") && is_gnome("ubuntu:GNOME") && is_gnome("gnome"));
+        assert!(!is_gnome("KDE") && !is_gnome("GNOME-Flashback-x") && !is_gnome(""));
+        assert!(banners_off(Some("false\n")));
+        assert!(!banners_off(Some("true\n")));
+        assert!(!banners_off(Some("")));
+        assert!(!banners_off(None));
+        use zbus::zvariant::Value;
+        assert_eq!(variant_bool(&Value::Bool(true)), Some(true));
+        assert_eq!(
+            variant_bool(&Value::Value(Box::new(Value::Bool(false)))),
+            Some(false)
+        );
+        assert_eq!(variant_bool(&Value::from("x")), None);
+    }
+
+    #[test]
+    fn gsettings_output_is_read() {
+        let echo = Path::new("/bin/echo");
+        if echo.is_file() {
+            let out = gsettings_banners(echo).unwrap();
+            assert_eq!(
+                out.trim(),
+                "get org.gnome.desktop.notifications show-banners"
+            );
+        }
+        let fail = Path::new("/bin/false");
+        if fail.is_file() {
+            assert_eq!(gsettings_banners(fail), None);
+        }
+    }
 
     fn exe(dir: &Path, name: &str) -> PathBuf {
         let p = dir.join(name);
@@ -237,5 +400,35 @@ mod tests {
         exe(a.path(), "canberra-gtk-play");
         let (p, file) = resolve(&path, None).unwrap();
         assert_eq!((p.kind, file), (PlayerKind::Canberra, None));
+    }
+
+    #[test]
+    fn sound_files_play_without_a_theme() {
+        let pw = Player {
+            kind: PlayerKind::PwPlay,
+            path: "/usr/bin/pw-play".into(),
+        };
+        let r = Resolved {
+            theme: None,
+            file: Some(pw),
+        };
+        let f = Path::new("/cache/chime-100.wav");
+        let c = file_command(&r, f).unwrap();
+        assert_eq!(c.get_args().collect::<Vec<_>>(), [f.as_os_str()]);
+        // No theme: no fallback sound.
+        assert!(play_command(&r, None).is_none());
+        let ca = Resolved {
+            theme: None,
+            file: Some(Player {
+                kind: PlayerKind::Canberra,
+                path: "/usr/bin/canberra-gtk-play".into(),
+            }),
+        };
+        let c = file_command(&ca, f).unwrap();
+        assert_eq!(
+            c.get_args().collect::<Vec<_>>(),
+            ["-f", "/cache/chime-100.wav"]
+        );
+        assert!(file_command(&Resolved::default(), f).is_none());
     }
 }

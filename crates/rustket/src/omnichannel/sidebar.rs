@@ -14,7 +14,9 @@ use rustket_core::omnichannel::room_list::{
 use rustket_core::room_list::{RoomKind, RoomListItem, RoomListOptions, Section, SectionKind};
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::Icon;
-use rustket_ui::widget::{AvatarSource, RoomListItemProps, room_list_item, section_header};
+use rustket_ui::widget::{
+    AvatarSource, BadgeKind, RoomListItemProps, room_list_item, section_header_with,
+};
 
 use crate::workspace::sidebar::{Message, SidebarCtx, preview_text};
 
@@ -97,22 +99,39 @@ pub fn split_groups<'a>(ws: &Workspace, section: &'a Section) -> Vec<Group<'a>> 
 
 fn header<'a>(
     ctx: &SidebarCtx<'a>,
-    kind: OmnichannelSectionKind,
-    count: usize,
+    group: &Group<'a>,
     filter: &str,
 ) -> (Element<'a, Message>, bool) {
-    let key = section_key(kind);
+    let key = section_key(group.kind);
     let collapsed = filter.trim().is_empty() && ctx.collapsed.contains(key);
+    let count = group.queue.len() + group.rooms.len();
+    let status = collapsed.then(|| collapsed_kinds(group)).flatten();
     (
-        section_header(
+        section_header_with(
             t!(key).into_owned(),
             collapsed,
             Some(u32::try_from(count).unwrap_or(u32::MAX)),
+            status,
             Message::Omni(Msg::Toggle(key.to_owned())),
         ),
         collapsed,
     )
 }
+
+/// The unread dot of a collapsed group: its rooms' badges, and each queued
+/// chat as the quiet dot its row draws.
+fn collapsed_kinds<'a>(group: &Group<'_>) -> Option<Element<'a, Message>> {
+    crate::workspace::sidebar::collapsed_unread_dot(
+        group
+            .rooms
+            .iter()
+            .map(|i| crate::workspace::sidebar::badge_kind(&i.badge))
+            .chain(group.queue.iter().map(|_| Some(QUEUED_KIND))),
+    )
+}
+
+/// The badge of a queued chat's row.
+const QUEUED_KIND: BadgeKind = BadgeKind::Thread;
 
 /// Appends `group` to the sidebar list; room rows are drawn by `row`.
 pub fn push_group<'a>(
@@ -122,8 +141,7 @@ pub fn push_group<'a>(
     filter: &str,
     row: &dyn Fn(&'a RoomListItem) -> Element<'a, Message>,
 ) -> Column<'a, Message> {
-    let count = group.queue.len() + group.rooms.len();
-    let (head, collapsed) = header(ctx, group.kind, count, filter);
+    let (head, collapsed) = header(ctx, &group, filter);
     list = list.push(head);
     if collapsed {
         return list;
@@ -140,7 +158,7 @@ pub fn push_group<'a>(
         p.subtitle = q.preview.as_ref().map(preview_text);
         p.time =
             q.ts.map(|ts| crate::format::short_time(ts, chrono::Local::now(), ctx.prefs.clock_24h));
-        p.thread_unread = true;
+        p.badge = Some(QUEUED_KIND);
         p.is_selected = ctx.active_room == Some(q.rid.as_str());
         p.icon = Some(super::panel::info::source_icon(q.decor.source));
         p.presence = q

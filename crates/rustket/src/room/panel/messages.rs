@@ -238,10 +238,8 @@ impl Messages {
         .align_y(Alignment::Center);
         let mut content = column![head, self.viewer.body(m, ctx).map(Msg::View)].spacing(2);
         if self.mode == Mode::Threads {
-            let unread = ws
-                .subscription(ctx.rid)
-                .and_then(|s| s.tunread.as_ref())
-                .is_some_and(|l| l.iter().any(|id| id == &m.id));
+            let unread =
+                crate::room::timeline::parent_thread_unread(ws.subscription(ctx.rid), &m.id);
             let mut foot = row![
                 icon::sized(Icon::MessageCircle, 13.0).style(style::text_link),
                 text(t!("room_panel.replies", count = m.tcount.unwrap_or(0)).into_owned())

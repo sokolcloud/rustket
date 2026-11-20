@@ -15,6 +15,7 @@ use rustket_core::ServerId;
 use crate::desktop::notifications::{
     ACTION_DEFAULT, Event, Notifier, Outgoing, Signal, TIMEOUT_NEVER, URGENCY_NORMAL,
 };
+use crate::desktop::sound::RcSound;
 use crate::room::render::plural;
 
 /// Key of the "Snooze 1 hour" action.
@@ -33,7 +34,8 @@ pub enum Shown {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    Shown(Shown, Event),
+    /// A showing finished, with the notification's sound.
+    Shown(Shown, Event, Option<RcSound>),
     Closed,
 }
 
@@ -63,6 +65,8 @@ pub struct Content {
     pub place: String,
     /// Plain text of the message, when shown.
     pub body: Option<String>,
+    /// The reminder sound (`app::reminders::reminder_sound`).
+    pub sound: Option<RcSound>,
 }
 
 #[derive(Default)]
@@ -87,7 +91,10 @@ impl ReminderNotifier {
         }
         self.shown.insert(key.clone(), None);
         self.backend = Some(Arc::clone(&backend));
-        Task::perform(backend.show(out), move |e| Msg::Shown(key.clone(), e))
+        let sound = out.sound.clone();
+        Task::perform(backend.show(out), move |e| {
+            Msg::Shown(key.clone(), e, sound.clone())
+        })
     }
 
     /// Notifies about the reminder of `mid` due at `at`.
@@ -107,8 +114,7 @@ impl ReminderNotifier {
                 .filter(|b| !b.trim().is_empty())
                 .unwrap_or_else(|| t!("desktop.reminder_body_hidden").into_owned()),
             image: None,
-            // The app plays the reminder sound itself.
-            sound: false,
+            sound: c.sound,
             actions: vec![
                 (ACTION_DEFAULT.to_owned(), t!("desktop.open").into_owned()),
                 (
@@ -131,12 +137,14 @@ impl ReminderNotifier {
         self.show(backend, key, out)
     }
 
-    /// One notification for `count` reminders missed on server `sid`.
+    /// One notification for `count` reminders missed on server `sid`, with
+    /// `sound`.
     pub fn show_missed(
         &mut self,
         backend: Arc<dyn Notifier>,
         sid: &ServerId,
         count: usize,
+        sound: Option<RcSound>,
     ) -> Task<Msg> {
         let n = count as u64;
         let out = Outgoing {
@@ -148,7 +156,7 @@ impl ReminderNotifier {
             .into_owned(),
             body: t!("desktop.reminders_missed_body").into_owned(),
             image: None,
-            sound: false,
+            sound,
             actions: vec![(ACTION_DEFAULT.to_owned(), t!("desktop.open").into_owned())],
             timeout: TIMEOUT_NEVER,
             urgency: URGENCY_NORMAL,
@@ -204,25 +212,29 @@ impl ReminderNotifier {
         Task::batch(keys.iter().map(|k| self.close(k)).collect::<Vec<_>>())
     }
 
-    pub fn update(&mut self, m: Msg) -> Task<Msg> {
+    /// Returns the follow-up and the sound the app plays, as the backend
+    /// did not (it cannot, or the notification failed).
+    pub fn update(&mut self, m: Msg) -> (Task<Msg>, Option<RcSound>) {
         match m {
-            Msg::Shown(key, Event::Shown { id, .. }) => match self.shown.get_mut(&key) {
-                Some(slot) => {
-                    *slot = Some(id);
-                    Task::none()
+            Msg::Shown(key, Event::Shown { id, server_sound }, sound) => {
+                match self.shown.get_mut(&key) {
+                    Some(slot) => {
+                        *slot = Some(id);
+                        (Task::none(), sound.filter(|_| !server_sound))
+                    }
+                    // Closed while the showing was in flight.
+                    None => match &self.backend {
+                        Some(b) => (Task::perform(b.close(id), |()| Msg::Closed), None),
+                        None => (Task::none(), None),
+                    },
                 }
-                // Closed while the showing was in flight.
-                None => match &self.backend {
-                    Some(b) => Task::perform(b.close(id), |()| Msg::Closed),
-                    None => Task::none(),
-                },
-            },
-            Msg::Shown(key, Event::Failed(e)) => {
-                tracing::debug!(error = %e, "reminder notification not shown");
-                self.shown.remove(&key);
-                Task::none()
             }
-            Msg::Closed => Task::none(),
+            Msg::Shown(key, Event::Failed(e), sound) => {
+                tracing::debug!(error = %e, "reminder notification not shown");
+                let current = self.shown.remove(&key).is_some();
+                (Task::none(), sound.filter(|_| current))
+            }
+            Msg::Closed => (Task::none(), None),
         }
     }
 
@@ -266,6 +278,7 @@ mod tests {
         let content = || Content {
             place: "#general".into(),
             body: None,
+            sound: None,
         };
         let _ = n.show_reminder(backend.clone(), &sid(), "m1", 10, content());
         // Shown twice: one notification.
@@ -281,6 +294,7 @@ mod tests {
                 id: 7,
                 server_sound: false,
             },
+            None,
         ));
         assert!(n.owns(7) && !n.owns(8));
         assert_eq!(n.reminders(), vec![(sid(), "m1".to_owned(), 10)]);
@@ -292,13 +306,14 @@ mod tests {
             })
         );
         assert!(!n.owns(7));
-        let _ = n.show_missed(backend.clone(), &sid(), 3);
+        let _ = n.show_missed(backend.clone(), &sid(), 3, None);
         let _ = n.update(Msg::Shown(
             Shown::Missed(sid()),
             Event::Shown {
                 id: 9,
                 server_sound: false,
             },
+            None,
         ));
         assert_eq!(
             n.signal(9, Signal::Action(ACTION_DEFAULT.into())),
@@ -316,9 +331,44 @@ mod tests {
                 id: 11,
                 server_sound: false,
             },
+            None,
         ));
         // Dismissed: nothing to do, no longer owned.
         assert_eq!(n.signal(11, Signal::Closed), None);
         assert!(!n.owns(11));
+    }
+
+    /// The app plays a reminder's sound only when its notification did not.
+    #[test]
+    fn reminder_sound_plays_locally_only_without_the_os() {
+        let chime = Some(RcSound {
+            name: "chime".into(),
+            volume: 100,
+        });
+        let backend: Arc<dyn Notifier> = Arc::new(MockNotifier::default());
+        let mut n = ReminderNotifier::default();
+        let key = Shown::Missed(sid());
+        let shown = |server_sound| Event::Shown {
+            id: 3,
+            server_sound,
+        };
+        let _ = n.show_missed(backend.clone(), &sid(), 2, chime.clone());
+        assert_eq!(
+            n.update(Msg::Shown(key.clone(), shown(true), chime.clone()))
+                .1,
+            None
+        );
+        assert_eq!(
+            n.update(Msg::Shown(key.clone(), shown(false), chime.clone()))
+                .1,
+            chime
+        );
+        let failed = || Event::Failed("no server".into());
+        assert_eq!(
+            n.update(Msg::Shown(key.clone(), failed(), chime.clone())).1,
+            chime
+        );
+        // Gone (closed in flight): silent.
+        assert_eq!(n.update(Msg::Shown(key, failed(), chime.clone())).1, None);
     }
 }

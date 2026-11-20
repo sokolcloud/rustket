@@ -14,12 +14,12 @@ use iced::{Alignment, Element, Length, Subscription, Task};
 use rocketchat::models::{RoomType, SpotlightResult};
 use rust_i18n::t;
 use rustket_core::Workspace;
-use rustket_core::room_list::{self, Avatar, BadgeVariant, RoomKind, RoomListOptions};
+use rustket_core::room_list::{self, Avatar, RoomKind, RoomListOptions};
 use rustket_core::workspace::RoomEntry;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL};
-use rustket_ui::widget::{AvatarShape, BadgeKind, avatar, badge, dialog, kbd, spinner};
+use rustket_ui::widget::{AvatarShape, BadgeKind, avatar, badge, dialog, dot, kbd, spinner};
 
 use crate::component::{Action, Ctx, Effect, ViewCtx};
 use crate::error::Res;
@@ -54,7 +54,8 @@ pub enum Item {
         kind: RoomKind,
         avatar: Avatar,
         unread: u64,
-        mention: bool,
+        /// The badge kind the sidebar row shows.
+        badge_kind: Option<BadgeKind>,
         /// Not in the sidebar (`open: false`); opening it shows it again.
         hidden: bool,
         archived: bool,
@@ -222,7 +223,7 @@ pub fn results_for(
         .map(|(_, _, _, e)| {
             let i = room_list::item(ws, e, opts);
             Item::Local {
-                mention: i.badge.variant == BadgeVariant::Mention,
+                badge_kind: crate::workspace::sidebar::badge_kind(&i.badge),
                 unread: i.badge.count,
                 hidden: !e.sub.as_ref().is_some_and(|s| s.open),
                 archived: i.archived,
@@ -628,18 +629,17 @@ impl QuickSwitcher {
             line = line.push(text(h).size(TEXT_CAPTION).style(style::text_hint));
         }
         if let Item::Local {
-            unread, mention, ..
+            unread,
+            badge_kind: Some(kind),
+            ..
         } = item
-            && *unread > 0
         {
-            line = line.push(badge(
-                crate::format::count_u32(*unread),
-                if *mention {
-                    BadgeKind::Mention
-                } else {
-                    BadgeKind::Unread
-                },
-            ));
+            // The sidebar row's counter, or its dot (alert only).
+            line = line.push(if *unread > 0 {
+                badge(crate::format::count_u32(*unread), *kind)
+            } else {
+                container(dot(*kind, 8.0)).padding([0.0, SPACE_1]).into()
+            });
         }
         button(line)
             .width(Length::Fill)

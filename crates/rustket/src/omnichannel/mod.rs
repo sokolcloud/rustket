@@ -167,28 +167,38 @@ pub fn error_text(f: &Failure) -> String {
     t!(key).into_owned()
 }
 
-/// The new-room sound of the user (`newRoomNotification`, default `door`);
-/// `None` when switched off, when Rustket's "Play a sound" setting
-/// (`play_sounds`) is off or when the notification or master volume is zero
-/// (like the message sound, `desktop::notifications::sound_allowed`).
-pub fn new_room_sound(ws: &Workspace, play_sounds: bool) -> Option<String> {
-    if !play_sounds {
+/// The new-room sound of the user (`newRoomNotification`, default `door`)
+/// at the account's notification volume; `None` when switched off, when
+/// Rustket's "Play a sound" setting (`play_sounds`) is off or when the
+/// notification or master volume is zero (like the message sound,
+/// `desktop::notifications::message_sound`).
+pub fn new_room_sound_with(
+    account: &crate::desktop::AccountSound,
+    play_sounds: bool,
+) -> Option<crate::desktop::sound::RcSound> {
+    if !play_sounds || account.volume_muted() {
         return None;
     }
-    let muted = ["notificationsSoundVolume", "masterVolume"]
-        .iter()
-        .any(|k| {
-            crate::desktop::user_pref(ws, k)
-                .and_then(serde_json::Value::as_f64)
-                .is_some_and(|v| v <= 0.0)
-        });
-    if muted {
+    account
+        .room_sound()
+        .map(|name| crate::desktop::sound::RcSound {
+            name: name.to_owned(),
+            volume: account.volume(),
+        })
+}
+
+/// The sound of a new omnichannel chat: none while the user is Busy
+/// (`useNotifyUser`) or notifications are paused, else [`new_room_sound_with`].
+pub fn new_chat_sound(
+    account: &crate::desktop::AccountSound,
+    play_sounds: bool,
+    busy: bool,
+    paused: bool,
+) -> Option<crate::desktop::sound::RcSound> {
+    if busy || paused {
         return None;
     }
-    let name = crate::desktop::user_pref(ws, "newRoomNotification")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("door");
-    (name != "none").then(|| name.to_owned())
+    new_room_sound_with(account, play_sounds)
 }
 
 impl Omni {
@@ -665,6 +675,11 @@ mod tests {
 
     #[test]
     fn new_room_sound_follows_the_preferences() {
+        // As `App::play_new_room_sound` calls it, neither Busy nor paused.
+        let new_room_sound = |ws: &Workspace, play: bool| {
+            new_chat_sound(&crate::desktop::AccountSound::of(ws), play, false, false)
+                .map(|s| s.name)
+        };
         let ws_with = |prefs: serde_json::Value| {
             let mut ws = Workspace::new();
             ws.apply_me(
@@ -686,6 +701,16 @@ mod tests {
         assert_eq!(new_room_sound(&ws, true), None);
         let ws = ws_with(serde_json::json!({"newRoomNotification": "chime"}));
         assert_eq!(new_room_sound(&ws, true).as_deref(), Some("chime"));
+        // The volumes scale it.
+        let ws = ws_with(serde_json::json!({"notificationsSoundVolume": 50, "masterVolume": 60}));
+        let s = new_chat_sound(&crate::desktop::AccountSound::of(&ws), true, false, false);
+        assert_eq!(
+            s,
+            Some(crate::desktop::sound::RcSound {
+                name: "door".into(),
+                volume: 30
+            })
+        );
     }
 
     #[test]

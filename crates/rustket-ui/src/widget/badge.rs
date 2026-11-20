@@ -5,18 +5,25 @@ use iced::{Color, Element, Theme, border};
 
 use crate::theme::{TEXT_MICRO, Tokens, font_bold, tokens};
 
+/// The colour of a badge. Room and thread rows get their kind from
+/// `rustket_core::room_list` (`BadgeVariant`, the one ranking: Mention >
+/// GroupMention > Unread > Thread > Muted); this type only draws it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BadgeKind {
-    /// Plain unread messages.
+    /// Muted blue: unread messages in the main timeline, including the
+    /// `alert`-only dot of a plain channel message.
     #[default]
     Unread,
-    /// The user was mentioned directly (or a DM).
+    /// Red: the user was mentioned directly (or by a highlight word), or a
+    /// direct message is unread.
     Mention,
-    /// `@all` / `@here` mention.
+    /// Orange: `@all` / `@here`, unless the room mutes group mentions.
     GroupMention,
-    /// Unread thread replies.
+    /// Slate: unread thread replies (rows, headers, dots in timelines and
+    /// thread lists); also the waiting dot of a queued omnichannel chat.
     Thread,
-    /// Muted room.
+    /// Grey: a non-mention badge of a room with notifications off, or a
+    /// quiet counter (scheduled messages).
     Muted,
 }
 
@@ -28,30 +35,6 @@ impl BadgeKind {
             BadgeKind::GroupMention => (t.badge_group_mention, t.badge_fg),
             BadgeKind::Thread => (t.badge_thread, t.badge_fg),
             BadgeKind::Muted => (t.badge_muted, t.badge_muted_fg),
-        }
-    }
-
-    /// Picks the badge kind for a room the way Rocket.Chat does: direct mentions win
-    /// over group mentions, then thread-only unread; muted rooms are grey.
-    pub fn for_room(
-        user_mentions: u32,
-        group_mentions: u32,
-        unread: u32,
-        thread_unread: bool,
-        muted: bool,
-    ) -> Option<Self> {
-        if user_mentions > 0 {
-            Some(BadgeKind::Mention)
-        } else if group_mentions > 0 {
-            Some(BadgeKind::GroupMention)
-        } else if muted && (unread > 0 || thread_unread) {
-            Some(BadgeKind::Muted)
-        } else if unread > 0 {
-            Some(BadgeKind::Unread)
-        } else if thread_unread {
-            Some(BadgeKind::Thread)
-        } else {
-            None
         }
     }
 }
@@ -98,7 +81,7 @@ pub fn badge<'a, Message: 'a>(count: u32, kind: BadgeKind) -> Element<'a, Messag
     .into()
 }
 
-/// A small dot badge without a count (e.g. unread threads in condensed mode).
+/// A small dot badge without a count (e.g. a thread row, or `alert` alone).
 pub fn dot<'a, Message: 'a>(kind: BadgeKind, size: f32) -> Element<'a, Message> {
     container(space().width(size).height(size))
         .style(move |theme: &Theme| container::Style {
@@ -120,30 +103,5 @@ mod tests {
         assert_eq!(badge_label(99), "99");
         assert_eq!(badge_label(100), "99+");
         assert_eq!(badge_label(u32::MAX), "99+");
-    }
-
-    #[test]
-    fn room_badge_priority() {
-        assert_eq!(
-            BadgeKind::for_room(1, 1, 5, true, true),
-            Some(BadgeKind::Mention)
-        );
-        assert_eq!(
-            BadgeKind::for_room(0, 2, 5, false, false),
-            Some(BadgeKind::GroupMention)
-        );
-        assert_eq!(
-            BadgeKind::for_room(0, 0, 5, false, true),
-            Some(BadgeKind::Muted)
-        );
-        assert_eq!(
-            BadgeKind::for_room(0, 0, 5, false, false),
-            Some(BadgeKind::Unread)
-        );
-        assert_eq!(
-            BadgeKind::for_room(0, 0, 0, true, false),
-            Some(BadgeKind::Thread)
-        );
-        assert_eq!(BadgeKind::for_room(0, 0, 0, false, false), None);
     }
 }

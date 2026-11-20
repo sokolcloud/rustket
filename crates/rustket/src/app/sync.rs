@@ -1,9 +1,12 @@
 //! Server events and the initial load / resync of a server.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iced::Task;
+use rocketchat::RcDate;
+use rocketchat::session::{ChangeKind, SessionEvent};
 use rust_i18n::t;
+use rustket_core::notify::large_room;
 use rustket_core::workspace::ConnectionState;
 use rustket_core::{ServerId, sync};
 use rustket_ui::widget::BannerKind;
@@ -24,7 +27,130 @@ impl App {
             }
             _ => Task::none(),
         };
-        Task::batch([calls, self.on_server_event_inner(sid, ev)])
+        // Before the update is applied: the subscription as it was.
+        let large_room = self.large_room_trigger(&sid, &ev);
+        let inner = self.on_server_event_inner(sid.clone(), ev);
+        let check = match large_room {
+            Some((rid, about)) if self.large_rooms.arm(&sid, &rid, about, Instant::now()) => {
+                Task::perform(tokio::time::sleep(large_room::DELAY), |()| {
+                    Message::LargeRoomDue
+                })
+            }
+            _ => Task::none(),
+        };
+        Task::batch([calls, inner, check])
+    }
+
+    /// A live subscription update that counted a mention in a large room
+    /// (`large_room::triggers`): the room and the subscription's
+    /// `_updatedAt` before the update (the update's own is the stale one
+    /// the server read before counting).
+    fn large_room_trigger(&self, sid: &ServerId, ev: &ServerEvent) -> Option<(String, RcDate)> {
+        let ServerEvent::Event(e) = ev else {
+            return None;
+        };
+        let SessionEvent::SubscriptionChanged {
+            kind: ChangeKind::Updated,
+            sub,
+        } = &**e
+        else {
+            return None;
+        };
+        let ws = &self.servers.get(sid)?.workspace;
+        let room = ws.room(&sub.rid).and_then(|e| e.room.as_ref());
+        let limit = ws.settings().notifications_max_room_members();
+        let before = ws.subscription(&sub.rid);
+        if !large_room::triggers(before, sub, room, limit) {
+            return None;
+        }
+        Some((sub.rid.clone(), before?.updated_at?))
+    }
+
+    /// The large-room checks armed [`large_room::DELAY`] ago: notifies the
+    /// mentions no server notification came for, through the same path.
+    pub(super) fn on_large_room_due(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for p in self.large_rooms.take_due(Instant::now()) {
+            let Some(s) = self.servers.get(&p.server).filter(|s| s.is_logged_in()) else {
+                self.large_rooms.forget(&p.server);
+                continue;
+            };
+            // Offline (Q5): the server would not notify either.
+            if *s.workspace.connection() != ConnectionState::Connected {
+                continue;
+            }
+            let real = s.workspace.use_real_names(self.config.ui.use_real_names);
+            let Some(n) = large_room::notification(&s.workspace, &p.rid, p.about, real) else {
+                continue;
+            };
+            if self.large_rooms.seen(&p.server, &n.payload.id) {
+                continue;
+            }
+            self.large_rooms.showed(&p.server, &n.payload.id);
+            tasks.push(self.show_notification(&p.server, Box::new(n), false));
+        }
+        Task::batch(tasks)
+    }
+
+    /// A desktop notification of `sid` (from the server, or the large-room
+    /// fallback) goes to `Desktop::on_notification` with what is on screen.
+    /// With `may_wait`, a thread reply in the open room is decided once the
+    /// reply itself had time to arrive (`wait_for_reply`).
+    pub(super) fn show_notification(
+        &mut self,
+        sid: &ServerId,
+        n: Box<rocketchat::session::DesktopNotification>,
+        may_wait: bool,
+    ) -> Task<Message> {
+        let Some(s) = self.servers.get(sid) else {
+            return Task::none();
+        };
+        let n = crate::e2e::notify::prepare(&s.workspace, n);
+        let name = s.name.clone();
+        let server_active =
+            self.active.as_ref() == Some(sid) && matches!(self.screen, Screen::Server);
+        // A view in place of the room area: no room is shown.
+        let focused_rid = s.active_room.as_deref().filter(|_| !s.room_area_taken());
+        let focused_tmid =
+            focused_rid
+                .and_then(|rid| s.rooms.get(rid))
+                .and_then(|rv| match rv.panel.kind() {
+                    Some(room::panel::Kind::Thread(tmid)) => Some(tmid.as_str()),
+                    _ => None,
+                });
+        if may_wait
+            && crate::desktop::notifications::wait_for_reply(
+                &n,
+                &s.workspace,
+                focused_rid,
+                focused_tmid,
+                self.focused && server_active,
+            )
+        {
+            let sid = sid.clone();
+            return Task::perform(
+                tokio::time::sleep(crate::desktop::notifications::REPLY_WAIT),
+                move |()| Message::NotificationRecheck(sid, n),
+            );
+        }
+        let env = crate::desktop::NotifyEnv {
+            images: &self.images,
+            server: &s.url,
+            server_active,
+            focused_rid,
+            focused_tmid,
+            window_active: self.focused,
+            multi_server: self.config.servers.len() > 1,
+            paused: rustket_core::quiet::quiet_state(
+                &self.config.pause,
+                &self.config.ui.working_hours,
+                &chrono::Local::now(),
+            )
+            .paused,
+        };
+        self.desktop
+            .on_notification(sid, &name, &n, &s.workspace, &self.config.ui, &env)
+            .map(Message::Desktop)
     }
 
     fn on_server_event_inner(&mut self, sid: ServerId, ev: ServerEvent) -> Task<Message> {
@@ -51,37 +177,13 @@ impl App {
             ) {
                 Followup::None => Task::none(),
                 Followup::Notification(n) => {
-                    let n = crate::e2e::notify::prepare(&s.workspace, n);
-                    let name = s.name.clone();
-                    let server_active =
-                        self.active.as_ref() == Some(&sid) && matches!(self.screen, Screen::Server);
-                    // A view in place of the room area: no room is shown.
-                    let focused_rid = s.active_room.as_deref().filter(|_| !s.room_area_taken());
-                    let focused_tmid =
-                        focused_rid.and_then(|rid| s.rooms.get(rid)).and_then(|rv| {
-                            match rv.panel.kind() {
-                                Some(room::panel::Kind::Thread(tmid)) => Some(tmid.as_str()),
-                                _ => None,
-                            }
-                        });
-                    let env = crate::desktop::NotifyEnv {
-                        images: &self.images,
-                        server: &s.url,
-                        server_active,
-                        focused_rid,
-                        focused_tmid,
-                        window_active: self.focused,
-                        multi_server: self.config.servers.len() > 1,
-                        paused: rustket_core::quiet::quiet_state(
-                            &self.config.pause,
-                            &self.config.ui.working_hours,
-                            &chrono::Local::now(),
-                        )
-                        .paused,
-                    };
-                    self.desktop
-                        .on_notification(&sid, &name, &n, &s.workspace, &self.config.ui, &env)
-                        .map(Message::Desktop)
+                    // A server notification of this message: the large-room
+                    // fallback must not repeat it, nor it the fallback's.
+                    if self.large_rooms.shown_by_fallback(&sid, &n.payload.id) {
+                        return Task::none();
+                    }
+                    self.large_rooms.note(&sid, &n.payload.id);
+                    self.show_notification(&sid, n, true)
                 }
                 Followup::InitialLoad => {
                     let boot = self.uikit_bootstrap(&sid);

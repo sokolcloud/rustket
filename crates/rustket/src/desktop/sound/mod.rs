@@ -1,11 +1,15 @@
-//! Notification sounds through an external player, used when the
-//! notification server does not play the notification's sound itself: on
-//! Linux `pw-play`, `paplay` or `canberra-gtk-play` with a sound theme file;
-//! on Windows PowerShell's `System.Media.SoundPlayer` with a
-//! `%SystemRoot%\Media` sound; on macOS `afplay` with a system sound. The
-//! player is looked up once on a background thread at startup; playing never
-//! blocks: the player runs detached and is reaped (or killed after a
-//! timeout) on a blocking thread.
+//! Sounds through an external player. Message, reminder and new-chat sounds
+//! are Rocket.Chat's own ([`rc`]: bundled MP3s, decoded once at their volume
+//! into cached WAV files); calls use the platform's sounds. Players: on
+//! Linux `pw-play`, `paplay` or `canberra-gtk-play` (with a sound theme file
+//! for theme sounds); on Windows PowerShell's `System.Media.SoundPlayer`
+//! (theme sounds map to `%SystemRoot%\Media`); on macOS `afplay` (theme
+//! sounds map to system sounds). When a Rocket.Chat sound cannot be decoded
+//! or written, the platform's message sound plays instead. The player is
+//! looked up once on a background thread at startup; playing never blocks:
+//! the player runs detached and is reaped (or killed after a timeout) on a
+//! blocking thread. [`route`] decides whether a notification's backend
+//! plays a message or reminder sound instead.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -16,6 +20,8 @@ use std::time::{Duration, Instant};
 mod freedesktop;
 #[cfg(any(target_os = "macos", test))]
 mod macos;
+pub mod rc;
+pub mod route;
 #[cfg(any(windows, test))]
 mod win;
 
@@ -25,6 +31,8 @@ use freedesktop as backend;
 use macos as backend;
 #[cfg(windows)]
 use win as backend;
+
+pub use route::{OsSound, Platform, Route, Toast, route};
 
 /// Freedesktop sound id of an incoming instant message.
 pub const MESSAGE_SOUND: &str = "message-new-instant";
@@ -56,12 +64,28 @@ fn is_executable(p: &std::path::Path) -> bool {
     p.is_file()
 }
 
+/// One of Rocket.Chat's sounds at a volume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RcSound {
+    /// The sound's id (`chime`, `door`, …).
+    pub name: String,
+    /// Percent, 1..=100 (`notificationsSoundVolume` × `masterVolume`).
+    pub volume: u8,
+}
+
+/// The directory of the decoded sounds.
+pub fn cache_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "rustket").map(|d| d.cache_dir().join("sounds"))
+}
+
 /// Plays sounds; disabled (a no-op) in tests and snapshots.
 #[derive(Debug, Default)]
 pub struct Sound {
     enabled: bool,
     /// Filled by the background lookup.
     resolved: Arc<OnceLock<backend::Resolved>>,
+    /// Where decoded sounds are kept.
+    cache: Option<PathBuf>,
 }
 
 impl Sound {
@@ -80,6 +104,7 @@ impl Sound {
         Self {
             enabled: true,
             resolved,
+            cache: cache_dir(),
         }
     }
 
@@ -87,12 +112,64 @@ impl Sound {
         self.enabled
     }
 
-    /// Plays the message sound (the server's custom sound names map to the
-    /// platform's instant-message sound). Must be called inside the tokio
+    /// Plays Rocket.Chat sound `sound` that comes without a sounding
+    /// notification ([`route`] with [`Toast::None`]): on Linux not while
+    /// the desktop's Do Not Disturb is on. Must be called inside the tokio
     /// runtime.
-    pub fn play(&self, name: Option<&str>) {
-        let _ = name;
-        self.play_id(None);
+    pub fn play_alone(&self, sound: &RcSound) {
+        if let Route::Local { quiet_check } =
+            route(Platform::current(), Toast::None, Some(sound), None)
+        {
+            self.play_rc(sound, quiet_check);
+        }
+    }
+
+    /// Plays Rocket.Chat sound `sound` ([`prepared`]); one that cannot be
+    /// prepared plays the platform's message sound. `quiet_check`: not
+    /// while the desktop's Do Not Disturb is on (Linux). Must be called
+    /// inside the tokio runtime.
+    pub fn play_rc(&self, sound: &RcSound, quiet_check: bool) {
+        if !self.enabled || sound.volume == 0 {
+            return;
+        }
+        let Some(resolved) = self.resolved.get() else {
+            tracing::debug!("sound player lookup not finished");
+            return;
+        };
+        let resolved = resolved.clone();
+        let cache = self.cache.clone();
+        let RcSound { name, volume } = sound.clone();
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        handle.spawn(async move {
+            if quiet_check && desktop_quiet().await {
+                tracing::debug!("Do Not Disturb is on: sound not played");
+                return;
+            }
+            let played = tokio::task::spawn_blocking(move || {
+                let file = match cache {
+                    Some(dir) => prepared(&dir, &name, volume).map_err(|e| e.to_string()),
+                    None => Err("no cache directory".to_owned()),
+                };
+                let cmd = match file {
+                    Ok(f) => backend::file_command(&resolved, &f),
+                    Err(e) => {
+                        tracing::debug!(sound = %name, error = %e, "sound not prepared");
+                        None
+                    }
+                }
+                .or_else(|| backend::play_command(&resolved, None));
+                match cmd {
+                    Some(cmd) => run_reaped(cmd),
+                    None => tracing::debug!("no sound to play"),
+                }
+            })
+            .await;
+            if let Err(e) = played {
+                tracing::debug!(error = %e, "sound task failed");
+            }
+        });
     }
 
     /// Plays the freedesktop theme sound `id` (e.g. `phone-incoming-call`;
@@ -123,6 +200,59 @@ impl Sound {
         });
     }
 }
+
+/// The WAV file to play for Rocket.Chat sound `name` at `volume` percent:
+/// a sound Rustket does not bundle (a server's custom sound, `telephone`)
+/// plays Rocket.Chat's default `chime` at the same volume. Blocking.
+fn prepared(dir: &std::path::Path, name: &str, volume: u8) -> Result<PathBuf, rc::Error> {
+    match rc::wav_file(dir, name, volume) {
+        Err(rc::Error::Unknown(_)) => rc::wav_file(dir, DEFAULT_SOUND, volume),
+        other => other,
+    }
+}
+
+/// The WAV file of Rocket.Chat sound `sound` for a notification to play
+/// ([`prepared`] in the cache directory). Blocking.
+pub fn prepared_file(sound: &RcSound) -> Option<PathBuf> {
+    let dir = cache_dir()?;
+    match prepared(&dir, &sound.name, sound.volume) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            tracing::debug!(sound = %sound.name, error = %e, "sound not prepared");
+            None
+        }
+    }
+}
+
+/// The copy of Rocket.Chat sound `sound` in `~/Library/Sounds` that a
+/// notification plays by name (`macos::install_in`). Blocking.
+#[cfg(target_os = "macos")]
+pub fn notification_sound(sound: &RcSound) -> Option<PathBuf> {
+    let file = prepared_file(sound)?;
+    let dir = directories::BaseDirs::new()?
+        .home_dir()
+        .join("Library")
+        .join("Sounds");
+    match macos::install_in(&dir, &file) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::debug!(error = %e, "cannot copy the sound to ~/Library/Sounds");
+            None
+        }
+    }
+}
+
+/// The desktop's Do Not Disturb is on (Linux; elsewhere never known).
+/// Bounded by a short timeout; any error means it is off.
+async fn desktop_quiet() -> bool {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    return freedesktop::quiet().await;
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    false
+}
+
+/// Rocket.Chat's default new-message sound.
+const DEFAULT_SOUND: &str = "chime";
 
 /// Runs the player, killing it after [`PLAY_TIMEOUT`]. Blocking.
 fn run_reaped(mut cmd: Command) {
@@ -158,8 +288,30 @@ mod tests {
     fn disabled_sound_is_a_no_op() {
         let s = Sound::default();
         assert!(!s.is_enabled());
-        s.play(None);
+        s.play_rc(
+            &RcSound {
+                name: "chime".into(),
+                volume: 100,
+            },
+            false,
+        );
+        s.play_theme("phone-incoming-call");
         assert!(s.resolved.get().is_none());
+    }
+
+    /// A sound Rustket does not bundle plays the default at the same
+    /// volume (not the platform's sound at full volume).
+    #[test]
+    fn unbundled_sounds_play_the_default_at_their_volume() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(
+            prepared(d.path(), "telephone", 10).unwrap(),
+            rc::cache_file(d.path(), DEFAULT_SOUND, 10)
+        );
+        assert_eq!(
+            prepared(d.path(), "ding", 10).unwrap(),
+            rc::cache_file(d.path(), "ding", 10)
+        );
     }
 
     #[test]

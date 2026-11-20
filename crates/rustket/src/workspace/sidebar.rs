@@ -377,11 +377,10 @@ fn row_key(rid: &str, p: &RoomListItemProps<Message>) -> u64 {
     p.title.hash(&mut h);
     p.subtitle.hash(&mut h);
     p.time.hash(&mut h);
-    (p.unread, p.thread_count, p.user_mentions, p.group_mentions).hash(&mut h);
-    (p.thread_unread, p.is_muted, p.is_selected, p.typing).hash(&mut h);
+    (p.badge, p.count, p.bold).hash(&mut h);
+    (p.is_muted, p.is_selected, p.typing).hash(&mut h);
     p.presence.hash(&mut h);
     p.icon.as_ref().map(std::mem::discriminant).hash(&mut h);
-    p.badge_dot.hash(&mut h);
     p.flag.hash(&mut h);
     p.typing_label.hash(&mut h);
     std::mem::discriminant(&p.density).hash(&mut h);
@@ -1173,12 +1172,7 @@ impl Sidebar {
         p.time = item
             .last_activity
             .map(|ts| short_time(ts, chrono::Local::now(), ctx.prefs.clock_24h));
-        let b = row_badge(&item.badge);
-        p.unread = b.unread;
-        p.thread_count = b.thread_count;
-        p.user_mentions = b.user_mentions;
-        p.group_mentions = b.group_mentions;
-        p.thread_unread = b.thread_unread;
+        set_row_badge(&mut p, &item.badge);
         p.is_muted = item.muted;
         p.is_selected = ctx.active_room == Some(item.rid.as_str());
         p.presence = item.dm_status.map(presence);
@@ -1275,18 +1269,25 @@ fn progress_status((done, total): (usize, usize)) -> Element<'static, Message> {
     tooltip(content, full, TooltipPosition::Bottom)
 }
 
-/// "+N": thread rows left out by the limit, explained in a tooltip.
-/// A dot for the unread rows of a collapsed section (the strongest kind),
-/// their number in a tooltip.
+/// A dot for the counted unread rows of a collapsed section (the strongest
+/// kind), their number in a tooltip.
 fn collapsed_unread_status(section: &Section) -> Option<Element<'static, Message>> {
-    let kinds: Vec<BadgeKind> = section
-        .items
-        .iter()
-        .filter_map(room_badge_kind)
-        .chain(section.threads.iter().filter_map(thread_badge_kind))
-        .collect();
-    let kind = kinds.iter().copied().max_by_key(|&k| badge_rank(k))?;
-    let full = t!("sidebar.unread_collapsed", count = kinds.len()).into_owned();
+    collapsed_unread_dot(
+        section
+            .items
+            .iter()
+            .map(room_badge_kind)
+            .chain(section.threads.iter().map(thread_badge_kind)),
+    )
+}
+
+/// The status of a collapsed section whose rows show badge kinds `kinds`:
+/// the [`collapsed_unread`] dot with the "Unread: N" tooltip.
+pub(crate) fn collapsed_unread_dot(
+    kinds: impl IntoIterator<Item = Option<BadgeKind>>,
+) -> Option<Element<'static, Message>> {
+    let (kind, count) = collapsed_unread(kinds)?;
+    let full = t!("sidebar.unread_collapsed", count = count).into_owned();
     Some(tooltip(
         rustket_ui::widget::dot(kind, 8.0),
         full,
@@ -1294,16 +1295,26 @@ fn collapsed_unread_status(section: &Section) -> Option<Element<'static, Message
     ))
 }
 
+/// What a collapsed section with rows of badge kinds `kinds` shows
+/// (`room_list::collapsed_unread`): the dot of the strongest counted row and
+/// the number of counted rows.
+pub(crate) fn collapsed_unread(
+    kinds: impl IntoIterator<Item = Option<BadgeKind>>,
+) -> Option<(BadgeKind, usize)> {
+    room_list::collapsed_unread(kinds.into_iter().map(|k| k.map(core_kind)))
+        .map(|(k, n)| (widget_kind(k), n))
+}
+
 /// One pinned row: icon, label, the badge (counter or dot) and its
 /// tooltip with the shortcut; highlighted while its view is open.
-fn pinned_row<'a>(
+pub(crate) fn pinned_row<'a, M: Clone + 'a>(
     icon_: Icon,
     label: String,
     shortcut: Option<String>,
     badge: Option<(u64, BadgeKind)>,
     selected: bool,
-    on: Message,
-) -> Element<'a, Message> {
+    on: M,
+) -> Element<'a, M> {
     let mut r = row![
         icon::sized(icon_, 16.0).style(style::text_secondary),
         iced::widget::text(label.clone())
@@ -1326,6 +1337,11 @@ fn pinned_row<'a>(
         Some(k) => tooltip(b, format!("{label} ({k})"), TooltipPosition::Right),
         None => b.into(),
     }
+}
+
+/// The badge of the All unreads row: a counter of the rooms it lists.
+pub(crate) fn unreads_badge(unread_rooms: u64) -> Option<(u64, BadgeKind)> {
+    (unread_rooms > 0).then_some((unread_rooms, BadgeKind::Unread))
 }
 
 /// The badge of the Activity row: red counter of direct mentions, else an
@@ -1367,7 +1383,7 @@ fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
         Icon::Inbox,
         t!("inbox.all_unreads").into_owned(),
         chord_of(Shortcut::AllUnreads),
-        (c.unread_rooms > 0).then_some((c.unread_rooms, BadgeKind::Unread)),
+        unreads_badge(c.unread_rooms),
         matches!(open, Some(InboxKind::Unreads | InboxKind::CatchUp)),
         Message::Inbox(InboxKind::Unreads),
     );
@@ -1413,82 +1429,58 @@ fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
         .into()
 }
 
-/// How loud a badge kind is: mentions, then plain unread, then the quiet kinds.
-fn badge_rank(k: BadgeKind) -> u8 {
+/// The colour of a core badge kind (one to one).
+pub(crate) fn widget_kind(v: BadgeVariant) -> BadgeKind {
+    match v {
+        BadgeVariant::Mention => BadgeKind::Mention,
+        BadgeVariant::GroupMention => BadgeKind::GroupMention,
+        BadgeVariant::Unread => BadgeKind::Unread,
+        BadgeVariant::Thread => BadgeKind::Thread,
+        BadgeVariant::Muted => BadgeKind::Muted,
+    }
+}
+
+/// The core kind of a badge colour (the inverse of [`widget_kind`]).
+pub(crate) fn core_kind(k: BadgeKind) -> BadgeVariant {
     match k {
-        BadgeKind::Mention => 4,
-        BadgeKind::GroupMention => 3,
-        BadgeKind::Unread => 2,
-        BadgeKind::Thread => 1,
-        BadgeKind::Muted => 0,
+        BadgeKind::Mention => BadgeVariant::Mention,
+        BadgeKind::GroupMention => BadgeVariant::GroupMention,
+        BadgeKind::Unread => BadgeVariant::Unread,
+        BadgeKind::Thread => BadgeVariant::Thread,
+        BadgeKind::Muted => BadgeVariant::Muted,
     }
 }
 
-/// What a room row's badge is made of.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct RowBadge {
-    /// The counter: unread messages and unread threads.
-    unread: u32,
-    /// The part of `unread` that is threads.
-    thread_count: u32,
-    user_mentions: u32,
-    group_mentions: u32,
-    /// Unread threads, or `alert` without a counter (a dot).
-    thread_unread: bool,
-}
-
-/// A room's badge inputs; nothing when the room shows neither a counter nor
-/// a dot (its unread status is hidden), as Rocket.Chat does.
-fn row_badge(b: &room_list::Badge) -> RowBadge {
-    if b.count == 0 && !b.dot {
-        return RowBadge::default();
-    }
-    let unread = count_u32(b.count);
-    RowBadge {
-        unread,
-        thread_count: count_u32(b.threads),
-        user_mentions: if b.variant == BadgeVariant::Mention {
-            count_u32(b.mentions)
-        } else {
-            0
-        },
-        group_mentions: if b.variant == BadgeVariant::GroupMention {
-            count_u32(b.group_mentions)
-        } else {
-            0
-        },
-        thread_unread: b.threads > 0 || (b.dot && unread == 0),
-    }
+/// Fills the badge fields of a room row's props from the room's badge: the
+/// core kind, the counter (0: a dot) and the bold name (`highlighted`).
+pub(crate) fn set_row_badge<M>(p: &mut RoomListItemProps<M>, badge: &room_list::Badge) {
+    p.badge = badge_kind(badge);
+    p.count = count_u32(badge.count);
+    p.bold = badge.highlighted;
 }
 
 /// The badge kind of a room row (the same as [`RoomListItemProps::badge_kind`]).
 fn room_badge_kind(item: &RoomListItem) -> Option<BadgeKind> {
-    badge_kind(&item.badge, item.muted)
+    badge_kind(&item.badge)
 }
 
-/// The badge kind of a room with badge `b` (`muted`: notifications off), as
-/// its sidebar row shows it.
-pub(crate) fn badge_kind(b: &room_list::Badge, muted: bool) -> Option<BadgeKind> {
-    let b = row_badge(b);
-    BadgeKind::for_room(
-        b.user_mentions,
-        b.group_mentions,
-        b.unread.saturating_sub(b.thread_count),
-        b.thread_unread,
-        muted,
-    )
+/// The badge kind of a room with badge `b`, as its sidebar row shows it.
+pub(crate) fn badge_kind(b: &room_list::Badge) -> Option<BadgeKind> {
+    b.kind().map(widget_kind)
 }
 
-/// The dot of a thread row: red/orange for mentions, a quiet grey for
-/// plain replies (blue reads like a mention next to room badges).
+/// The dot of a thread row (`room_list::thread_unread`).
 pub(crate) fn thread_badge_kind(t: &ThreadListItem) -> Option<BadgeKind> {
-    t.unread.map(|v| match v {
-        BadgeVariant::Mention => BadgeKind::Mention,
-        BadgeVariant::GroupMention => BadgeKind::GroupMention,
-        BadgeVariant::Thread | BadgeVariant::Normal => BadgeKind::Muted,
-    })
+    thread_unread_kind(t.unread)
 }
 
+/// The dot kind of a thread row with unread state `unread`
+/// (`room_list::thread_unread`).
+pub(crate) fn thread_unread_kind(unread: Option<BadgeVariant>) -> Option<BadgeKind> {
+    unread.map(widget_kind)
+}
+
+/// "+N": thread rows left out by the limit, explained in a tooltip.
 fn hidden_status(hidden: usize, limit: u32) -> Element<'static, Message> {
     let full = t!("sidebar.threads_hidden_tip", count = hidden, limit = limit).into_owned();
     let content = iced::widget::text(t!("sidebar.threads_hidden", count = hidden).into_owned())
@@ -1591,7 +1583,8 @@ fn thread_row_props(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> RoomListItemPro
     p.flag = t
         .flag
         .map(|c| super::flag_menu::mark(ctx.workspace.flags(), c));
-    p.badge_dot = thread_badge_kind(t);
+    p.badge = thread_badge_kind(t);
+    p.bold = p.badge.is_some();
     p.is_selected = ctx.active_thread == Some(t.tmid.as_str());
     if let Some(label) = ctx.workspace.typing_label(&t.rid, Some(&t.tmid), ctx.now) {
         p.typing = true;
@@ -2891,7 +2884,7 @@ mod tests {
                     .chain(sec.threads.iter().map(thread_badge_kind))
                     .collect()
             };
-            assert!(kinds(&threads).contains(&Some(BadgeKind::Muted)));
+            assert!(kinds(&threads).contains(&Some(BadgeKind::Thread)));
             // A channel with only an unread thread: the quiet thread colour,
             // its counter still counts the thread.
             let r0 = fx
@@ -2904,7 +2897,10 @@ mod tests {
                 .clone();
             assert_eq!(room_badge_kind(&r0), Some(BadgeKind::Thread));
             let p = fx.sidebar.row_props(&r0, &ctx(&fx));
-            assert_eq!((p.unread, p.badge_kind()), (1, Some(BadgeKind::Thread)));
+            assert_eq!(
+                (p.badge_count(), p.badge_kind()),
+                (1, Some(BadgeKind::Thread))
+            );
             assert!(collapsed_unread_status(&threads).is_some());
             let mut s = sub("r0001", "r0001", RoomType::Channel);
             s.unread = 2;
@@ -2918,11 +2914,10 @@ mod tests {
                 .unwrap();
             assert!(kinds(sec).contains(&Some(BadgeKind::Unread)));
             assert!(collapsed_unread_status(sec).is_some());
-            let max = [BadgeKind::Muted, BadgeKind::Unread, BadgeKind::Mention]
-                .into_iter()
-                .max_by_key(|&k| badge_rank(k));
-            assert_eq!(max, Some(BadgeKind::Mention));
-            assert!(badge_rank(BadgeKind::Unread) > badge_rank(BadgeKind::Thread));
+            assert_eq!(
+                collapsed_unread(kinds(sec)).map(|(k, _)| k),
+                Some(BadgeKind::Unread)
+            );
 
             // Hidden unread status: no badge, also not in a collapsed header.
             let mut s = sub("r0002", "r0002", RoomType::Channel);
@@ -2962,13 +2957,13 @@ mod tests {
             let p = thread_row_props(&rows[0], &c);
             assert_eq!(p.title, "topic t000");
             assert_eq!(p.subtitle.as_deref(), Some("r0000 · Replies: 2"));
-            assert_eq!(p.badge_dot, Some(BadgeKind::Mention));
             assert_eq!(p.badge_kind(), Some(BadgeKind::Mention));
-            assert_eq!((p.unread, p.user_mentions), (0, 0), "no count");
+            assert_eq!(p.badge_count(), 0, "no count");
+            assert!(p.is_bold());
             let p = thread_row_props(&rows[1], &c);
             assert_eq!(p.title, "Loading…");
             assert_eq!(p.subtitle.as_deref(), Some("r0000"));
-            assert_eq!(p.badge_dot, Some(BadgeKind::Muted));
+            assert_eq!(p.badge_kind(), Some(BadgeKind::Thread));
             fx.ws.thread_gone("t001");
             fx.refresh();
             let gone = fx.sidebar.sections[0].threads[1].clone();
@@ -4139,5 +4134,137 @@ mod pinned_tests {
     fn later_row_badge_counts_overdue_reminders() {
         assert_eq!(later_badge(0), None);
         assert_eq!(later_badge(3), Some((3, BadgeKind::Mention)));
+    }
+}
+
+#[cfg(test)]
+mod extracted_tests {
+    use super::*;
+    use rustket_core::room_list::Badge;
+    use rustket_ui::widget::AvatarSource;
+
+    const VARIANTS: [BadgeVariant; 5] = [
+        BadgeVariant::Muted,
+        BadgeVariant::Thread,
+        BadgeVariant::Unread,
+        BadgeVariant::GroupMention,
+        BadgeVariant::Mention,
+    ];
+
+    fn badges() -> Vec<Badge> {
+        let mut out = Vec::new();
+        for count in [0, 3] {
+            for dot in [false, true] {
+                for variant in VARIANTS {
+                    for highlighted in [false, true] {
+                        out.push(Badge {
+                            count,
+                            variant,
+                            dot,
+                            highlighted,
+                            mentions: 2,
+                            group_mentions: 1,
+                            threads: 1,
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The props the sidebar row gets agree with `badge_kind`, the kind the
+    /// collapsed headers and the help page read: the core kind, the core
+    /// counter and the core bold name.
+    #[test]
+    fn row_badge_props_match_badge_kind() {
+        for b in badges() {
+            let mut p = RoomListItemProps::new(AvatarSource::initials("R", "r"), "r", ());
+            set_row_badge(&mut p, &b);
+            assert_eq!(p.badge_kind(), badge_kind(&b), "{b:?}");
+            assert_eq!(p.badge_kind(), b.kind().map(widget_kind), "{b:?}");
+            let shown = b.count > 0 || b.dot;
+            assert_eq!(p.badge_count(), if shown { b.count as u32 } else { 0 });
+            assert_eq!(p.is_bold(), b.highlighted, "{b:?}");
+        }
+    }
+
+    #[test]
+    fn thread_kinds_and_the_collapsed_dot() {
+        for v in std::iter::once(None).chain(VARIANTS.map(Some)) {
+            let t = ThreadListItem {
+                unread: v,
+                ..thread_item()
+            };
+            assert_eq!(thread_badge_kind(&t), thread_unread_kind(v));
+            assert_eq!(thread_unread_kind(v), v.map(widget_kind));
+        }
+        assert_eq!(
+            thread_unread_kind(Some(BadgeVariant::Thread)),
+            Some(BadgeKind::Thread)
+        );
+        let all = VARIANTS.map(widget_kind);
+        assert_eq!(
+            all,
+            [
+                BadgeKind::Muted,
+                BadgeKind::Thread,
+                BadgeKind::Unread,
+                BadgeKind::GroupMention,
+                BadgeKind::Mention,
+            ]
+        );
+        // The collapsed dot follows the core ranking; Muted is not counted.
+        for n in 2..=all.len() {
+            let got = collapsed_unread(all[..n].iter().copied().map(Some));
+            assert_eq!(got, Some((all[n - 1], n - 1)));
+        }
+        assert_eq!(collapsed_unread([Some(BadgeKind::Muted)]), None);
+        assert_eq!(collapsed_unread([]), None);
+        for v in VARIANTS {
+            assert_eq!(core_kind(widget_kind(v)), v);
+        }
+    }
+
+    /// Item 14: the collapsed header counts counted rows only (muted rows
+    /// out, thread rows in); its dot is the strongest counted kind.
+    #[test]
+    fn collapsed_header_counts_counted_rows() {
+        assert_eq!(collapsed_unread([None, Some(BadgeKind::Muted)]), None);
+        assert_eq!(
+            collapsed_unread([
+                Some(BadgeKind::Muted),
+                Some(BadgeKind::Thread),
+                None,
+                Some(BadgeKind::Thread),
+            ]),
+            Some((BadgeKind::Thread, 2))
+        );
+        assert_eq!(
+            collapsed_unread([Some(BadgeKind::GroupMention), Some(BadgeKind::Unread)]),
+            Some((BadgeKind::GroupMention, 2))
+        );
+    }
+
+    fn thread_item() -> ThreadListItem {
+        ThreadListItem {
+            rid: "r".into(),
+            tmid: "t".into(),
+            room_name: "room".into(),
+            room_kind: rustket_core::room_list::RoomKind::Channel,
+            title: rustket_core::room_list::ThreadTitle::Text("t".into()),
+            author: None,
+            avatar: rustket_core::room_list::Avatar::Room {
+                rid: "r".into(),
+                etag: None,
+            },
+            tcount: 0,
+            tlm: None,
+            unread: None,
+            kept: false,
+            following: false,
+            starred: false,
+            flag: None,
+        }
     }
 }

@@ -150,6 +150,11 @@ pub enum Message {
     ReminderSync(ServerId, u64, crate::workspace::later_sync::ReminderMsg),
     /// The reminder timer armed for this time fired.
     RemindersDue(std::time::Instant),
+    /// A large-room mention check is due (`App::on_large_room_due`).
+    LargeRoomDue,
+    /// A thread reply's notification held for the reply itself
+    /// (`desktop::notifications::wait_for_reply`), decided now.
+    NotificationRecheck(ServerId, Box<rocketchat::session::DesktopNotification>),
     /// Reminder notifications (`crate::later::notify`).
     ReminderNotify(crate::later::notify::Msg),
     /// A reminder notification action, replayed after the admin screen's

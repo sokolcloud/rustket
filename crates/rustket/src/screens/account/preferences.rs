@@ -13,7 +13,7 @@ use rustket_ui::widget::{BannerKind, banner, primary_button, secondary_button, t
 use serde_json::{Map, Value, json};
 
 use super::{Message, api, section};
-use crate::component::{Action, Ctx, ViewCtx};
+use crate::component::{Action, Ctx, Effect, ViewCtx};
 use crate::error::Res;
 
 /// Kind of a preference control.
@@ -52,7 +52,8 @@ const THREAD: &[(&str, &str)] = &[
     ("always", "account.opt_always"),
     ("never", "account.opt_never"),
 ];
-const SOUNDS: &[(&str, &str)] = &[
+/// The account's sound choices (value, label key).
+pub(crate) const SOUNDS: &[(&str, &str)] = &[
     ("none", "account.opt_sound_none"),
     ("chime", "account.opt_sound_chime"),
     ("door", "account.opt_sound_door"),
@@ -63,6 +64,8 @@ const SOUNDS: &[(&str, &str)] = &[
     ("highbell", "account.opt_sound_highbell"),
     ("seasons", "account.opt_sound_seasons"),
 ];
+/// The preferences whose choices are [`SOUNDS`].
+const SOUND_KEYS: [&str; 2] = ["newMessageNotification", "newRoomNotification"];
 const CLOCK: &[(i64, &str)] = &[
     (0, "account.opt_default"),
     (1, "account.opt_clock_12"),
@@ -333,9 +336,18 @@ impl Preferences {
     pub fn update(&mut self, msg: Msg, ctx: &mut Ctx<'_>) -> Action<Message> {
         match msg {
             Msg::Set(k, v) => {
+                // A sound just picked plays once.
+                let preview = SOUND_KEYS
+                    .contains(&k)
+                    .then(|| v.as_str().map(str::to_owned))
+                    .flatten()
+                    .filter(|name| name != "none");
                 self.values.insert(k.to_owned(), v);
                 self.saved = false;
-                Action::none()
+                match preview {
+                    Some(name) => Action::effect(Effect::PreviewSound(name)),
+                    None => Action::none(),
+                }
             }
             Msg::Text(k, s) => {
                 let kind = all().find(|p| p.key == k).map(|p| p.kind);
@@ -615,6 +627,33 @@ mod tests {
             ..Default::default()
         });
         ws
+    }
+
+    #[test]
+    fn picking_a_sound_previews_it() {
+        let mut ws = Workspace::new();
+        let sid = rustket_core::ServerId("s".into());
+        let url = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let images = crate::images::Images::new(None);
+        let config = rustket_core::config::AppConfig::default();
+        let mut ctx = Ctx {
+            server_id: &sid,
+            server: &url,
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            config: &config,
+        };
+        let mut p = Preferences::default();
+        let a = p.update(Msg::Set("newMessageNotification", json!("ding")), &mut ctx);
+        assert!(matches!(a.effects.as_slice(), [Effect::PreviewSound(n)] if n == "ding"));
+        assert_eq!(p.values["newMessageNotification"], json!("ding"));
+        let a = p.update(Msg::Set("newRoomNotification", json!("door")), &mut ctx);
+        assert!(matches!(a.effects.as_slice(), [Effect::PreviewSound(n)] if n == "door"));
+        let a = p.update(Msg::Set("newMessageNotification", json!("none")), &mut ctx);
+        assert!(a.effects.is_empty());
+        let a = p.update(Msg::Set("hideRoles", json!(true)), &mut ctx);
+        assert!(a.effects.is_empty());
     }
 
     #[test]

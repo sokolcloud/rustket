@@ -302,3 +302,33 @@ fn rows_shown_per_room_and_activity() {
     let _ = s.update(Msg::ShowMoreActivity, &ws, &mut st, false, true);
     assert_eq!(s.activity_shown(), 2 * ACTIVITY_PAGE);
 }
+
+/// All unreads highlights a message row by the timeline's rule: `@all`
+/// not in an R4 room, never a system message.
+#[test]
+fn catch_up_rows_highlight_like_the_timeline() {
+    let mut r4 = sub("r4", RoomType::Channel);
+    r4.mute_group_mentions = Some(true);
+    let ws = ws_with(vec![sub("plain", RoomType::Channel), r4]);
+    let all = |rid: &str| {
+        let mut m = msg("m", rid, 200);
+        m.msg = "@all deploy".into();
+        m.mentions = Some(vec![Mention {
+            id: "all".into(),
+            username: Some("all".into()),
+            ..Default::default()
+        }]);
+        m
+    };
+    use crate::room::timeline::row::highlights_in;
+    assert!(highlights_in(&ws, &all("plain")));
+    assert!(!highlights_in(&ws, &all("r4")));
+    let mut me = msg("j", "plain", 200);
+    me.mentions = Some(vec![Mention {
+        id: "me".into(),
+        ..Default::default()
+    }]);
+    assert!(highlights_in(&ws, &me));
+    me.t = Some("uj".into());
+    assert!(!highlights_in(&ws, &me));
+}

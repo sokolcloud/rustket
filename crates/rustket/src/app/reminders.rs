@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use iced::Task;
+use rocketchat::models::UserStatus;
 use rustket_core::ServerId;
 use rustket_core::reminders::{self, ReminderEdit};
 use rustket_core::room_list;
@@ -35,6 +36,57 @@ const BODY_CHARS: usize = 200;
 /// loader and links): reminders due together beyond that show where they
 /// are without the text.
 const FETCH_AT_ONCE: usize = 2;
+
+/// Due reminders get a notification (it stays until acted on, whatever the
+/// desktop notification switch, the status and the focus are).
+pub fn reminder_toast(ui: &rustket_core::config::UiPrefs) -> bool {
+    ui.reminder_notifications
+}
+
+/// Why a reminder notification is silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderSoundOff {
+    /// Settings → Notifications: "Play a sound" off (every sound).
+    Sound,
+    /// Settings → Notifications: reminder sound off.
+    Setting,
+    Paused,
+    /// Busy acts like a pause here (the notification itself still shows).
+    Busy,
+    /// The account's new-message sound is "None".
+    Account,
+    /// The account's notification or master volume is zero.
+    Volume,
+}
+
+/// The sound of a reminder notification: the account's message sound at
+/// its volume, when "Play a sound" and the reminder sound are on,
+/// notifications are not `paused` and the account's status is not `busy`.
+pub fn reminder_sound(
+    ui: &rustket_core::config::UiPrefs,
+    paused: bool,
+    busy: bool,
+    account: &crate::desktop::AccountSound,
+) -> Result<crate::desktop::sound::RcSound, ReminderSoundOff> {
+    use crate::desktop::notifications::{MessageSoundOff, message_sound};
+    if !ui.sound {
+        return Err(ReminderSoundOff::Sound);
+    }
+    if !ui.reminder_sound {
+        return Err(ReminderSoundOff::Setting);
+    }
+    if paused {
+        return Err(ReminderSoundOff::Paused);
+    }
+    if busy {
+        return Err(ReminderSoundOff::Busy);
+    }
+    message_sound(ui.sound, None, account).map_err(|o| match o {
+        MessageSoundOff::Volume => ReminderSoundOff::Volume,
+        MessageSoundOff::Setting => ReminderSoundOff::Sound,
+        MessageSoundOff::Room | MessageSoundOff::Account => ReminderSoundOff::Account,
+    })
+}
 
 /// Reminder firing state of the app.
 #[derive(Debug, Default)]
@@ -118,17 +170,21 @@ impl App {
             .later_message(mid)
             .filter(|_| self.config.ui.notification_preview)
             .and_then(body_of);
-        // Reminders still show while notifications are paused (the user
-        // asked for them), silently.
-        let sound = self.config.ui.reminder_sound && !self.quiet_now().paused;
+        // Reminders still show while notifications are paused or the
+        // account is Busy (the user asked for them), silently.
+        let busy = s.workspace.my_status() == UserStatus::Busy;
+        let account = crate::desktop::AccountSound::of(&s.workspace);
+        let sound = reminder_sound(&self.config.ui, self.quiet_now().paused, busy, &account);
         let place = self.reminder_place(sid, &r.rid, r.tmid.as_deref());
-        if sound {
-            self.desktop.sound.play_theme("alarm-clock-elapsed");
-        }
         let backend = self.desktop.notifications.backend();
+        let content = Content {
+            place,
+            body,
+            sound: sound.ok(),
+        };
         self.reminder_timer
             .notify
-            .show_reminder(backend, sid, mid, at, Content { place, body })
+            .show_reminder(backend, sid, mid, at, content)
             .map(Message::ReminderNotify)
     }
 
@@ -136,7 +192,7 @@ impl App {
     /// notifications of reminders that changed elsewhere and arms the timer.
     pub(super) fn reminders_tick(&mut self) -> Task<Message> {
         let now = now_ms();
-        let notify_on = self.config.ui.reminder_notifications;
+        let notify_on = reminder_toast(&self.config.ui);
         let mut tasks = Vec::new();
         let mut next: Option<i64> = None;
         let sids: Vec<ServerId> = self.servers.keys().cloned().collect();
@@ -195,14 +251,19 @@ impl App {
                 && notify_on
                 && self.reminder_timer.missed_shown.insert(sid.clone())
             {
-                if self.config.ui.reminder_sound && !self.quiet_now().paused {
-                    self.desktop.sound.play_theme("alarm-clock-elapsed");
-                }
+                let (busy, account) = self.servers.get(&sid).map_or_else(Default::default, |s| {
+                    (
+                        s.workspace.my_status() == UserStatus::Busy,
+                        crate::desktop::AccountSound::of(&s.workspace),
+                    )
+                });
+                let sound =
+                    reminder_sound(&self.config.ui, self.quiet_now().paused, busy, &account).ok();
                 let backend = self.desktop.notifications.backend();
                 tasks.push(
                     self.reminder_timer
                         .notify
-                        .show_missed(backend, &sid, missed.len())
+                        .show_missed(backend, &sid, missed.len(), sound)
                         .map(Message::ReminderNotify),
                 );
             }
@@ -335,10 +396,12 @@ impl App {
 
     /// A message of the reminder notifications.
     pub(super) fn on_reminder_notify(&mut self, m: crate::later::notify::Msg) -> Task<Message> {
-        self.reminder_timer
-            .notify
-            .update(m)
-            .map(Message::ReminderNotify)
+        let (task, sound) = self.reminder_timer.notify.update(m);
+        // The notification did not play it (it cannot, or it failed).
+        if let Some(sound) = sound {
+            self.desktop.sound.play_alone(&sound);
+        }
+        task.map(Message::ReminderNotify)
     }
 
     /// A notification signal: the reminders' own, else the calls'.
@@ -422,6 +485,82 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Q3: a Busy status silences the alarm like a pause; the toast stays.
+    #[test]
+    fn busy_and_pause_silence_the_alarm() {
+        use crate::desktop::AccountSound;
+        use crate::desktop::sound::RcSound;
+        let ui = rustket_core::config::UiPrefs::default();
+        let acc = AccountSound::default();
+        assert!(ui.reminder_sound);
+        assert_eq!(
+            reminder_sound(&ui, false, false, &acc),
+            Ok(RcSound {
+                name: "chime".into(),
+                volume: 100
+            })
+        );
+        assert_eq!(
+            reminder_sound(&ui, true, false, &acc),
+            Err(ReminderSoundOff::Paused)
+        );
+        assert_eq!(
+            reminder_sound(&ui, false, true, &acc),
+            Err(ReminderSoundOff::Busy)
+        );
+        assert!(reminder_toast(&ui));
+        let off = rustket_core::config::UiPrefs {
+            reminder_sound: false,
+            ..ui.clone()
+        };
+        assert_eq!(
+            reminder_sound(&off, false, false, &acc),
+            Err(ReminderSoundOff::Setting)
+        );
+        // "Play a sound" off silences reminders too.
+        let silent = rustket_core::config::UiPrefs {
+            sound: false,
+            reminder_sound: true,
+            ..ui.clone()
+        };
+        assert_eq!(
+            reminder_sound(&silent, false, false, &acc),
+            Err(ReminderSoundOff::Sound)
+        );
+    }
+
+    /// Reminders play the account's message sound at its volume.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn reminder_sound_follows_the_account() {
+        use crate::desktop::AccountSound;
+        let ui = rustket_core::config::UiPrefs::default();
+        let acc = AccountSound {
+            new_message: Some("ding".into()),
+            notifications_volume: Some(80.0),
+            master_volume: Some(50.0),
+            ..AccountSound::default()
+        };
+        let s = reminder_sound(&ui, false, false, &acc).unwrap();
+        assert_eq!((s.name.as_str(), s.volume), ("ding", 40));
+        let none = AccountSound {
+            new_message: Some("none".into()),
+            ..AccountSound::default()
+        };
+        assert_eq!(
+            reminder_sound(&ui, false, false, &none),
+            Err(ReminderSoundOff::Account)
+        );
+        let silent = AccountSound {
+            master_volume: Some(0.0),
+            ..AccountSound::default()
+        };
+        assert_eq!(
+            reminder_sound(&ui, false, false, &silent),
+            Err(ReminderSoundOff::Volume)
+        );
+    }
 
     #[test]
     fn bodies_are_one_line_and_cut() {
