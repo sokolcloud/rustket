@@ -797,3 +797,93 @@ fn right_click_off_the_selection_opens_the_message_menu() {
     assert_eq!(h.msgs, [Msg::Menu]);
     assert_eq!(h.clip.0, None);
 }
+
+/// The first point, from the bottom up, where the cursor shows `interaction`.
+fn find_from_bottom(h: &mut Harness, interaction: mouse::Interaction) -> Point {
+    for y in (0..600).rev().step_by(2) {
+        for x in (0..200).step_by(3) {
+            let p = Point::new(x as f32, y as f32);
+            h.move_to(p);
+            if h.interaction == interaction {
+                // A little inside, away from the edge just found.
+                let q = Point::new(p.x + 6.0, p.y - 2.0);
+                h.move_to(q);
+                if h.interaction == interaction {
+                    return q;
+                }
+            }
+        }
+    }
+    panic!("no point with {interaction:?}");
+}
+
+/// Press at `at`, move by `dx` (if any), release: the messages published.
+fn click_moving(h: &mut Harness, at: Point, dx: Option<f32>) -> Vec<Msg> {
+    // Apart from the previous click, so it is not a double click.
+    std::thread::sleep(std::time::Duration::from_millis(350));
+    h.msgs.clear();
+    h.move_to(at);
+    h.press(mouse::Button::Left);
+    if let Some(dx) = dx {
+        h.move_to(Point::new(at.x + dx, at.y));
+    }
+    h.release();
+    std::mem::take(&mut h.msgs)
+}
+
+/// Content of a scrollable sees a cursor translated by the scroll offset,
+/// but `CursorMoved` carries window coordinates: comparing the two dropped
+/// every link click with a motion event between press and release once the
+/// list was scrolled (room timeline and thread replies at the bottom).
+#[test]
+fn link_click_in_scrolled_list() {
+    let view = || -> El {
+        let link = scope(
+            rich::<String, Msg>(vec![
+                span("see "),
+                span("the docs").link("https://docs.example".to_owned()),
+                span(" now"),
+            ])
+            .on_link_click(Msg::Link)
+            .width(Length::Fill),
+        );
+        iced::widget::scrollable(column![space().height(1500), link].width(Length::Fill))
+            .anchor_bottom()
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    };
+    let mut h = Harness::new(view);
+    let link_at = find_from_bottom(&mut h, mouse::Interaction::Pointer);
+    let docs = || vec![Msg::Link("https://docs.example".into())];
+    assert_eq!(click_moving(&mut h, link_at, Some(0.0)), docs());
+    assert_eq!(click_moving(&mut h, link_at, Some(1.0)), docs());
+    // A drag still selects instead.
+    let dragged = click_moving(&mut h, link_at, Some(60.0));
+    assert!(dragged.is_empty(), "{dragged:?}");
+    assert!(h.selections()[0].is_some());
+}
+
+/// The same for clickable rows (pinned/starred panels, Activity) in a
+/// scrolled list.
+#[test]
+fn click_area_in_scrolled_list() {
+    let view = || -> El {
+        let row = click_area(
+            scope(
+                rich::<String, Msg>(vec![span("a clickable row with plain text")])
+                    .on_link_click(Msg::Link)
+                    .width(Length::Fill),
+            ),
+            Msg::Menu,
+        );
+        iced::widget::scrollable(column![space().height(1500), row].width(Length::Fill))
+            .anchor_bottom()
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    };
+    let mut h = Harness::new(view);
+    let row_at = find_from_bottom(&mut h, mouse::Interaction::Text);
+    assert_eq!(click_moving(&mut h, row_at, Some(1.0)), [Msg::Menu]);
+}

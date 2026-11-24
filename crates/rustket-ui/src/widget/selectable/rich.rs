@@ -303,10 +303,11 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, iced::Renderer>
                     shell.capture_event();
                 }
             }
-            mouse::Event::CursorMoved { position } => {
-                if state
-                    .pressed
-                    .is_some_and(|(_, at)| at.distance(*position) > DRAG_THRESHOLD)
+            mouse::Event::CursorMoved { .. } => {
+                // The press point is in the cursor's (scroll-translated)
+                // coordinates; the event's position is in window coordinates.
+                if let (Some((_, at)), Some(now)) = (state.pressed, cursor.land().position())
+                    && at.distance(now) > DRAG_THRESHOLD
                 {
                     state.pressed = None;
                 }

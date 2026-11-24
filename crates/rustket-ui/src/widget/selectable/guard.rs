@@ -175,10 +175,11 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for Forward<'_, Mess
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 state.pressed = cursor.position_over(layout.bounds()).filter(|_| !captured);
             }
-            Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                if state
-                    .pressed
-                    .is_some_and(|at| at.distance(*position) > DRAG_THRESHOLD)
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                // As in `Rich`: compare in the cursor's (scroll-translated)
+                // coordinates, not the event's window coordinates.
+                if let (Some(at), Some(now)) = (state.pressed, cursor.land().position())
+                    && at.distance(now) > DRAG_THRESHOLD
                 {
                     state.pressed = None;
                 }
