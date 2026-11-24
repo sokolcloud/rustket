@@ -80,6 +80,16 @@ processes.
 Pushing the `release-dry-run` branch with the secrets set signs and notarizes
 too: use it to test a new certificate or key before tagging.
 
+### Slow notarization
+
+Apple usually notarizes a submission in a few minutes. The first submissions
+of a new team or a new certificate can stay "In Progress" for hours (the
+first one took over 3 hours). Each submission waits at most
+`MACOS_NOTARY_TIMEOUT` (default `300m`), and the job stops after 355
+minutes. A timeout prints the submission id; check it with
+`xcrun notarytool info <id>` and re-run the failed job once Apple has
+finished.
+
 ## Developer ID Application certificate
 
 Only the Account Holder of the Apple Developer team can create one. It is

@@ -17,8 +17,9 @@
 # with an identity: set MACOS_NOTARY_PROFILE to a `xcrun notarytool
 # store-credentials` profile (MACOS_NOTARY_KEYCHAIN: the keychain holding it,
 # default the login keychain). The app is notarized and stapled first, then
-# the dmg; both are checked with spctl and stapler. Release CI sets all three
-# (.github/workflows/release.yml, docs/release-signing.md).
+# the dmg; both are checked with spctl and stapler. Each submission waits at
+# most MACOS_NOTARY_TIMEOUT (notarytool duration, default 300m). Release CI
+# sets all three (.github/workflows/release.yml, docs/release-signing.md).
 # Environment: CARGO_TARGET_DIR, RUSTKET_PACKAGE_OUT, RUSTKET_CARGO_FEATURES.
 set -euo pipefail
 umask 022
@@ -73,12 +74,17 @@ except Exception:
 notarize() {
     local file="$1" json id status
     echo "notarizing ${file##*/}" >&2
-    json="$(xcrun notarytool submit "$file" "${NOTARY_AUTH[@]}" --wait --output-format json)" || true
+    # A new team's first submissions can stay "In Progress" for hours.
+    json="$(xcrun notarytool submit "$file" "${NOTARY_AUTH[@]}" --wait \
+        --timeout "${MACOS_NOTARY_TIMEOUT:-300m}" --output-format json)" || true
     id="$(json_field id <<<"$json")"
     status="$(json_field status <<<"$json")"
     echo "notarization of ${file##*/}: ${status:-no result}${id:+ (submission $id)}" >&2
     if [ "$status" != Accepted ]; then
         [ -z "$json" ] || echo "$json" >&2
+        if [ "$status" = "In Progress" ]; then
+            die "Apple is still processing submission $id after ${MACOS_NOTARY_TIMEOUT:-300m}; re-run the job later (xcrun notarytool info $id shows the status)"
+        fi
         if [ -n "$id" ]; then
             xcrun notarytool log "$id" "${NOTARY_AUTH[@]}" >&2 || true
         fi

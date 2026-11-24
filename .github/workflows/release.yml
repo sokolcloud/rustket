@@ -233,6 +233,9 @@ jobs:
     name: macOS universal (dmg)
     needs: [macos-build]
     runs-on: macos-latest
+    # Usually minutes; a new team's first submission took over 3 hours.
+    # Stay just below the 360-minute limit of hosted runners.
+    timeout-minutes: 355
     environment: ${{ (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/release-dry-run') && 'macos-signing' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
