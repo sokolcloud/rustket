@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-11-24
+
+### Fixed
+
+- Links in messages open again. In a scrolled list, the slightest mouse
+  movement during the click cancelled it, so links in the room timeline,
+  in thread replies and in the Activity and All unreads feeds did nothing,
+  and only links near the top of a list (such as a thread's first message)
+  worked. Clickable rows in Activity and in the Pinned, Starred and
+  Mentions panels missed clicks the same way.
+- Jumping to a message (from Activity, All unreads, search, Later, a
+  message link or the Pinned, Starred and Mentions panels) no longer shows
+  a narrow coloured strip and an otherwise empty room for a few seconds;
+  the highlighted message is shown at full width.
+
+### Changed
+
+- macOS: the menu bar icon is a monochrome glyph that follows the light or
+  dark menu bar, like the system's own icons: a dot for mentions and
+  `@all`/`@here`, a ring for other unread.
+- macOS: the Dock icon shows the number of mentions (direct messages
+  included) as a badge.
+- macOS: the app icon is a rounded square on the system icon grid, so
+  macOS 26 no longer puts it on a grey plate.
+- Settings → Help describes the menu bar icon and the Dock badge on macOS.
+
 ## [0.2.9] - 2026-11-20
 
 ### Added
@@ -400,7 +426,8 @@ First public release.
 - Auth tokens and end-to-end encryption keys are kept in the desktop keyring,
   with a warned-about private file fallback when no keyring is available.
 
-[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/sokolcloud/rustket/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/sokolcloud/rustket/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/sokolcloud/rustket/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/sokolcloud/rustket/compare/v0.2.6...v0.2.7
