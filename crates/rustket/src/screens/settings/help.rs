@@ -22,6 +22,7 @@ use rustket_ui::widget::{
 
 use super::widgets::{action_row, caption, section};
 use super::{Message, Tab};
+use crate::desktop::sound::Platform;
 use crate::desktop::tray::TrayLevel;
 use crate::help::model::{
     self, AccountIcon, Cell, Code, Connection, Family, Feed, Global, HelpEnv, IconPlace, KindUse,
@@ -148,8 +149,13 @@ fn kind_name(k: BadgeKind) -> String {
     .into_owned()
 }
 
-fn kind_meaning(k: BadgeKind) -> String {
+/// What `k` means; on macOS (`mac`) the menu bar glyph is monochrome (a dot
+/// or a ring) and the Dock icon counts mentions.
+fn kind_meaning(k: BadgeKind, mac: bool) -> String {
     match k {
+        BadgeKind::Unread if mac => t!("help.kind_meaning_macos.unread"),
+        BadgeKind::Mention if mac => t!("help.kind_meaning_macos.mention"),
+        BadgeKind::GroupMention if mac => t!("help.kind_meaning_macos.group_mention"),
         BadgeKind::Unread => t!("help.kind_meaning.unread"),
         BadgeKind::Mention => t!("help.kind_meaning.mention"),
         BadgeKind::GroupMention => t!("help.kind_meaning.group_mention"),
@@ -513,7 +519,14 @@ fn icon_label(a: &AccountIcon) -> String {
     .into_owned()
 }
 
-fn window_text(w: &WindowOutcome) -> String {
+/// The macOS variants of the tray and window texts.
+fn mac(d: &Data<'_>) -> bool {
+    d.env.platform == Platform::MacOs
+}
+
+/// Window title and tray; on macOS (`mac`) the menu bar glyph (a dot or a
+/// ring) and the Dock icon's number.
+fn window_text(w: &WindowOutcome, mac: bool) -> String {
     let title = if w.signal.any() {
         t!(
             "help.window.title",
@@ -523,6 +536,19 @@ fn window_text(w: &WindowOutcome) -> String {
     } else {
         t!("help.window.title_same").into_owned()
     };
+    if mac {
+        let bar = match w.tray {
+            None => t!("help.window.menubar_none"),
+            Some(TrayLevel::Mention | TrayLevel::GroupMention) => t!("help.window.menubar_dot"),
+            Some(TrayLevel::Unread) => t!("help.window.menubar_ring"),
+            Some(TrayLevel::None) => t!("help.window.menubar_same"),
+        };
+        let dock = match crate::desktop::dock::badge_label(&w.signal) {
+            Some(count) => t!("help.window.dock_badge", count = count),
+            None => t!("help.window.dock_none"),
+        };
+        return format!("{title} · {bar} · {dock}");
+    }
     let tray = match w.tray {
         None => t!("help.window.no_tray"),
         Some(TrayLevel::Mention) => t!("help.window.tray_dot"),
@@ -951,7 +977,12 @@ fn current_settings<'a>(d: &Data<'_>) -> Element<'a, Message> {
             Some(Tab::Appearance),
         ),
         setting(
-            t!("help.tray").into_owned(),
+            if mac(d) {
+                t!("help.tray_macos")
+            } else {
+                t!("help.tray")
+            }
+            .into_owned(),
             if d.env.tray {
                 t!("help.tray_yes")
             } else {
@@ -981,7 +1012,7 @@ fn legend<'a>(d: &Data<'_>) -> Element<'a, Message> {
                         .size(TEXT_CAPTION)
                         .font(font_mono())
                         .style(style::text_secondary),
-                    caption(kind_meaning(*k)),
+                    caption(kind_meaning(*k, mac(d))),
                     uses_by_surface(uses, d),
                 ]
                 .spacing(SPACE_1)
@@ -1066,7 +1097,13 @@ fn trigger_text(code: Code, d: &Data<'_>) -> String {
             };
             t!(code.trigger_key(), sound = sound).into_owned()
         }
+        Code::Q1 if mac(d) => t!(
+            "help.code.q1.trigger_macos",
+            dnd = d.env.platform.dnd_text()
+        )
+        .into_owned(),
         Code::Q1 => t!(code.trigger_key(), dnd = d.env.platform.dnd_text()).into_owned(),
+        Code::M2 if mac(d) => t!("help.code.m2.trigger_macos").into_owned(),
         _ => t!(code.trigger_key()).into_owned(),
     }
 }
@@ -1169,7 +1206,12 @@ fn surface_lines<'a>(o: &Outcome, d: &Data<'_>) -> Vec<Element<'a, Message>> {
         );
     }
     if let Some(w) = &o.window {
-        add(t!("help.surface.window").into_owned(), window_text(w));
+        let label = if mac(d) {
+            t!("help.surface.window_macos")
+        } else {
+            t!("help.surface.window")
+        };
+        add(label.into_owned(), window_text(w, mac(d)));
     }
     if o.popup {
         add(

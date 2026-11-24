@@ -62,7 +62,7 @@ windows-registry = "0.6"
 # objc2: same generation as arboard/rfd/webbrowser already use.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSImage"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSDictionary", "NSNotification", "NSObject", "NSString", "NSThread", "NSUserNotification", "objc2-core-services"] }
 
 [lints]

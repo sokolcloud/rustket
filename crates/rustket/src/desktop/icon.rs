@@ -1,6 +1,6 @@
 //! The app icon (`assets/icons`, rendered by `examples/gen_icons.rs`): window
 //! icon and tray pixmaps, with unread variants carrying a dot for each
-//! [`TrayLevel`].
+//! [`TrayLevel`], and the macOS menu bar template glyphs.
 
 use super::tray::TrayLevel;
 
@@ -92,10 +92,49 @@ pub fn png(size: u32, level: TrayLevel) -> Option<&'static [u8]> {
 
 /// Decoded RGBA pixels: `(width, height, rgba)`.
 pub fn rgba(size: u32, level: TrayLevel) -> Option<(u32, u32, Vec<u8>)> {
-    let img = image::load_from_memory_with_format(png(size, level)?, image::ImageFormat::Png)
+    decode(png(size, level)?)
+}
+
+fn decode(png: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let img = image::load_from_memory_with_format(png, image::ImageFormat::Png)
         .ok()?
         .into_rgba8();
     Some((img.width(), img.height(), img.into_raw()))
+}
+
+/// Size of the macOS menu bar templates: 22 pt at 2x.
+#[cfg(any(target_os = "macos", test))]
+pub const MENUBAR_SIZE: u32 = 44;
+
+#[cfg(any(target_os = "macos", test))]
+macro_rules! menubar {
+    ($name:literal) => {
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/icons/",
+            $name,
+            ".png"
+        ))
+        .as_slice()
+    };
+}
+
+/// PNG bytes of the macOS menu bar template (black with alpha; the menu bar
+/// tints it): the plain glyph, a ring for quiet unread, a dot for mentions
+/// and `@all`.
+#[cfg(any(target_os = "macos", test))]
+pub fn menubar_png(level: TrayLevel) -> &'static [u8] {
+    match level {
+        TrayLevel::None => menubar!("rustket-menubar"),
+        TrayLevel::Unread => menubar!("rustket-menubar-ring"),
+        TrayLevel::GroupMention | TrayLevel::Mention => menubar!("rustket-menubar-dot"),
+    }
+}
+
+/// Decoded [`menubar_png`]: `(width, height, rgba)`.
+#[cfg(any(target_os = "macos", test))]
+pub fn menubar_rgba(level: TrayLevel) -> Option<(u32, u32, Vec<u8>)> {
+    decode(menubar_png(level))
 }
 
 /// The window icon.
@@ -190,6 +229,37 @@ mod tests {
                 assert!(close(got, want), "{level:?} {size}: {got:?}");
                 assert_ne!(got, plain);
             }
+        }
+    }
+
+    /// The menu bar templates are alpha only (the menu bar tints them): a
+    /// bubble with the spark knocked out; at the top right corner, (36, 8),
+    /// nothing for no unread, a ring for quiet unread, a dot for mentions and
+    /// `@all`, each in a cleared gap.
+    #[test]
+    fn menubar_templates_are_alpha_only() {
+        let alpha = |level| {
+            let (w, h, px) = menubar_rgba(level).unwrap();
+            assert_eq!((w, h), (MENUBAR_SIZE, MENUBAR_SIZE));
+            for p in px.as_chunks::<4>().0 {
+                assert!(p[3] == 0 || p[..3] == [0, 0, 0], "{level:?}: {p:?}");
+            }
+            move |x: u32, y: u32| px[((y * w + x) * 4 + 3) as usize]
+        };
+        for level in LEVELS {
+            let a = alpha(level);
+            assert_eq!(a(8, 20), 255, "{level:?}: glyph");
+            assert_eq!(a(22, 18), 0, "{level:?}: spark");
+        }
+        let plain = alpha(TrayLevel::None);
+        assert_eq!(plain(31, 13), 255);
+        assert!(plain(36, 8) < 128);
+        let ring = alpha(TrayLevel::Unread);
+        assert_eq!((ring(36, 8), ring(31, 13)), (0, 0));
+        assert!(ring(41, 8) >= 200);
+        for level in [TrayLevel::GroupMention, TrayLevel::Mention] {
+            let dot = alpha(level);
+            assert_eq!((dot(36, 8), dot(31, 13)), (255, 0), "{level:?}");
         }
     }
 }

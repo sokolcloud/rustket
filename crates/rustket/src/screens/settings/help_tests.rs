@@ -666,3 +666,59 @@ fn screenshots() {
         }
     }
 }
+
+/// On macOS the tray texts describe the monochrome menu bar glyph (a dot for
+/// mentions and `@all`, a ring otherwise) and the Dock icon's number of
+/// mentions; Linux and Windows keep the coloured tray dots.
+#[test]
+fn tray_texts_follow_the_platform() {
+    use crate::desktop::sound::Platform;
+    rust_i18n::set_locale("en");
+    let cfg = AppConfig::default();
+    let env = |platform| HelpEnv {
+        platform,
+        ..HelpEnv::default()
+    };
+    for platform in [Platform::Linux, Platform::Windows] {
+        let t = texts(&cfg, &env(platform));
+        assert!(has(&t, "tray icon with a red dot"), "{platform:?}");
+        assert!(has(&t, "tray icon with an orange dot"), "{platform:?}");
+        assert!(has(&t, "tray icon with a quiet dot"), "{platform:?}");
+        assert!(has(&t, "the tray's red dot"), "{platform:?}");
+        assert!(has(&t, "Status menu or tray"), "{platform:?}");
+        assert!(
+            !t.iter()
+                .any(|x| x.contains("menu bar") || x.contains("Dock")),
+            "{platform:?}: macOS text"
+        );
+    }
+    let mac = texts(&cfg, &env(Platform::MacOs));
+    for s in [
+        "Menu bar icon",
+        "Window title, menu bar and Dock",
+        "menu bar icon with a dot · Dock icon with the number “1”",
+        "menu bar icon with a ring · no number on the Dock icon",
+        "the ring on the menu bar icon",
+        "the dot on the menu bar icon, the number on the Dock icon",
+        "the number on the Dock icon counts only mentions of you, your highlight words and direct messages",
+        "Status menu or menu bar icon",
+        "puts the dot on the menu bar icon and counts in the number on the Dock icon",
+    ] {
+        assert!(has(&mac, s), "missing on macOS: {s}");
+    }
+    for s in [
+        "tray icon with",
+        "the tray's",
+        "orange dot of the workspace icon and the tray",
+        "Tray icon",
+        "Status menu or tray",
+    ] {
+        assert!(!has(&mac, s), "tray text on macOS: {s}");
+    }
+    // `@all` alone: a dot in the menu bar, no number on the Dock icon.
+    assert!(has(
+        &mac,
+        "menu bar icon with a dot · no number on the Dock icon"
+    ));
+    no_raw_keys(&mac);
+}

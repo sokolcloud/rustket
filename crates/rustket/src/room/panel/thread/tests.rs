@@ -1037,3 +1037,180 @@ fn flag_menu_sets_the_thread_flag() {
     let a = other.update(Msg::Flag(None), &mut ctx);
     assert!(a.effects.is_empty());
 }
+
+/// User report: links in thread replies and room messages did not open, the
+/// thread root did. The content of a scrolled list sees a translated cursor
+/// while `CursorMoved` carries window coordinates, so with the list anchored
+/// at the bottom one motion event between press and release (real mice send
+/// one) cancelled the click; the root, at the top, was not scrolled.
+#[test]
+fn links_open_in_scrolled_thread_and_room() {
+    use iced::{Event, Point, Size, mouse};
+    use iced_runtime::user_interface::{Cache, State, UserInterface};
+
+    struct Clip;
+    impl iced::advanced::Clipboard for Clip {
+        fn read(&self, _: iced::advanced::clipboard::Kind) -> Option<String> {
+            None
+        }
+        fn write(&mut self, _: iced::advanced::clipboard::Kind, _: String) {}
+    }
+
+    /// A window: the view rebuilt from the cache for every event.
+    struct Window<'v, M> {
+        view: Box<dyn Fn() -> Element<'v, M> + 'v>,
+        cache: Option<Cache>,
+        renderer: iced::Renderer,
+        size: Size,
+        cursor: Point,
+        interaction: mouse::Interaction,
+        msgs: Vec<M>,
+        last_click: Option<(Point, std::time::Instant)>,
+    }
+
+    impl<'v, M: std::fmt::Debug> Window<'v, M> {
+        fn new(size: Size, view: impl Fn() -> Element<'v, M> + 'v) -> Self {
+            let mut w = Self {
+                view: Box::new(view),
+                cache: Some(Cache::default()),
+                renderer: iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+                    rustket_ui::theme::font_regular(),
+                    iced::Pixels(rustket_ui::theme::TEXT_BODY),
+                )),
+                size,
+                cursor: Point::new(-100.0, -100.0),
+                interaction: mouse::Interaction::None,
+                msgs: Vec::new(),
+                last_click: None,
+            };
+            w.events(&[]);
+            w
+        }
+
+        fn events(&mut self, events: &[Event]) {
+            let cache = self.cache.take().unwrap_or_default();
+            let mut ui = UserInterface::build((self.view)(), self.size, cache, &mut self.renderer);
+            let (state, _) = ui.update(
+                events,
+                mouse::Cursor::Available(self.cursor),
+                &mut self.renderer,
+                &mut Clip,
+                &mut self.msgs,
+            );
+            if let State::Updated {
+                mouse_interaction, ..
+            } = state
+            {
+                self.interaction = mouse_interaction;
+            }
+            self.cache = Some(ui.into_cache());
+        }
+
+        fn move_to(&mut self, p: Point) {
+            self.cursor = p;
+            self.events(&[Event::Mouse(mouse::Event::CursorMoved { position: p })]);
+        }
+
+        /// Press, move 1 px, release: the messages published, as text.
+        fn click(&mut self, at: Point) -> String {
+            // Not a double click (iced: within 6 px and 300 ms).
+            if let Some((p, t)) = self.last_click
+                && p.distance(at) < 8.0
+            {
+                let wait = std::time::Duration::from_millis(350);
+                std::thread::sleep(wait.saturating_sub(t.elapsed()));
+            }
+            self.last_click = Some((at, std::time::Instant::now()));
+            self.msgs.clear();
+            self.move_to(at);
+            self.events(&[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))]);
+            self.move_to(Point::new(at.x + 1.0, at.y));
+            self.events(&[Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Left,
+            ))]);
+            format!("{:?}", std::mem::take(&mut self.msgs))
+        }
+
+        /// Scans the window (rows in `ys` order) for a pointer that a
+        /// click turns into `OpenUrl(url)`. Links start after the avatar
+        /// and the author; the right end is left to the hover toolbar.
+        fn opens(&mut self, ys: impl Iterator<Item = u32>, url: &str) -> bool {
+            let want = format!("OpenUrl({url:?})");
+            for y in ys.step_by(4) {
+                let mut x = 100.0;
+                while x < 260.0 {
+                    let p = Point::new(x, y as f32);
+                    self.move_to(p);
+                    if self.interaction == mouse::Interaction::Pointer {
+                        let q = Point::new(x + 4.0, p.y);
+                        self.move_to(q);
+                        if self.interaction == mouse::Interaction::Pointer
+                            && self.click(q).contains(&want)
+                        {
+                            return true;
+                        }
+                    }
+                    x += 8.0;
+                }
+            }
+            false
+        }
+    }
+
+    fn with_link(id: &str, uid: &str, ms: i64, tmid: Option<&str>) -> RcMessage {
+        let mut m = message(id, uid, ms, tmid);
+        m.msg = format!("{id} see https://example.com/{id} now");
+        m
+    }
+
+    let mut env = Env::new(None);
+    let mut p = with_link("P", "bob", T0, None);
+    p.tcount = Some(30);
+    env.ws.apply_message(p);
+    for i in 0..30i64 {
+        let uid = if i % 2 == 0 { "bob" } else { "alice" };
+        env.ws
+            .apply_message(with_link(&format!("m{i:02}"), uid, T0 + 100 + i, None));
+    }
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let ticket = t.ticket.unwrap();
+    let items = (0..30i64)
+        .rev()
+        .map(|i| {
+            let uid = if i % 2 == 0 { "alice" } else { "carol" };
+            with_link(&format!("r{i:02}"), uid, T0 + 1 + i, Some("P"))
+        })
+        .collect();
+    let _ = t.update(Msg::Page(ticket, Ok(page(items, 0, 30))), &mut env.ctx());
+
+    let ctx = view_ctx(&env);
+    let t = &t;
+    let mut w = Window::new(Size::new(420.0, 700.0), move || t.view(&ctx));
+    assert!(
+        w.opens((0..700).rev(), "https://example.com/r29"),
+        "the last reply opens its link"
+    );
+    // Scrolled to the top: the root still opens.
+    w.move_to(Point::new(200.0, 300.0));
+    for _ in 0..40 {
+        w.events(&[Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: 10.0 },
+        })]);
+    }
+    assert!(
+        w.opens(0..700, "https://example.com/P"),
+        "the root opens its link"
+    );
+
+    let tl = crate::room::timeline::Timeline::new("R1");
+    let ctx = view_ctx(&env);
+    let tl = &tl;
+    let mut w = Window::new(Size::new(800.0, 700.0), move || tl.view(&ctx));
+    assert!(
+        w.opens((0..700).rev(), "https://example.com/m29"),
+        "the last room message opens its link"
+    );
+}

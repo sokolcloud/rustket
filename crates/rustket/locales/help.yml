@@ -143,6 +143,12 @@ help.tray:
   es: "Icono en la bandeja"
   th: "ไอคอนในถาด"
   zh: "托盘图标"
+help.tray_macos:
+  en: "Menu bar icon"
+  ru: "Значок в строке меню"
+  es: "Icono de la barra de menús"
+  th: "ไอคอนในแถบเมนู"
+  zh: "菜单栏图标"
 help.tray_yes:
   en: "Shown"
   ru: "Есть"
@@ -209,18 +215,36 @@ help.kind_meaning.unread:
   es: "No leídos en la línea principal de una sala: su contador, o su punto por un mensaje nuevo que el servidor no cuenta (un mensaje normal en un canal); el contador de salas no leídas de Todos los no leídos; el punto del icono del espacio y el punto atenuado de la bandeja mientras no haya nada más importante."
   th: "ข้อความที่ยังไม่ได้อ่านในไทม์ไลน์หลักของห้อง: ตัวนับของห้อง หรือจุดของห้องเมื่อมีข้อความใหม่ที่เซิร์ฟเวอร์ไม่นับ (ข้อความทั่วไปในช่อง) ตัวนับห้องที่ยังไม่ได้อ่านในยังไม่ได้อ่านทั้งหมด และจุดบนไอคอนเวิร์กสเปซกับจุดแบบเงียบบนไอคอนในถาดขณะที่ไม่มีอะไรสำคัญกว่า"
   zh: "房间主时间线中的未读：房间的计数，或服务器不计数的新消息（频道中的普通消息）显示的圆点；“全部未读”的未读房间计数；没有更重要的未读时工作区图标上的圆点和托盘图标上的静默圆点。"
+help.kind_meaning_macos.unread:
+  en: "Unread in a room's main timeline: its counter, or its dot for a new message the server does not count (a plain channel message); the All unreads counter of unread rooms; the workspace icon's dot and the ring on the menu bar icon while nothing louder is unread."
+  ru: "Непрочитанное в основной ленте комнаты: её счётчик или точка, когда сервер не учитывает новое сообщение в счётчике (обычное сообщение в канале); счётчик непрочитанных комнат у «Всех непрочитанных»; точка на значке рабочего пространства и кольцо на значке в строке меню, пока нет ничего важнее."
+  es: "No leídos en la línea principal de una sala: su contador, o su punto por un mensaje nuevo que el servidor no cuenta (un mensaje normal en un canal); el contador de salas no leídas de Todos los no leídos; el punto del icono del espacio y el anillo del icono de la barra de menús mientras no haya nada más importante."
+  th: "ข้อความที่ยังไม่ได้อ่านในไทม์ไลน์หลักของห้อง: ตัวนับของห้อง หรือจุดของห้องเมื่อมีข้อความใหม่ที่เซิร์ฟเวอร์ไม่นับ (ข้อความทั่วไปในช่อง) ตัวนับห้องที่ยังไม่ได้อ่านในยังไม่ได้อ่านทั้งหมด และจุดบนไอคอนเวิร์กสเปซกับวงแหวนบนไอคอนในแถบเมนูขณะที่ไม่มีอะไรสำคัญกว่า"
+  zh: "房间主时间线中的未读：房间的计数，或服务器不计数的新消息（频道中的普通消息）显示的圆点；“全部未读”的未读房间计数；没有更重要的未读时工作区图标上的圆点和菜单栏图标上的圆环。"
 help.kind_meaning.mention:
   en: "Something for you: a mention of you, one of your highlight words or a direct message (room counter or dot, thread row dot, the room header's Threads button, Activity except DMs, the workspace icon's counter, the number in the window title, the tray's red dot), an overdue reminder (Later) or a scheduled message not sent on time (Drafts & scheduled). Mentions of you and highlight words also highlight their row in the feed, in the feed's own mention colours."
   ru: "То, что касается вас: упоминание вас, вашего выделяемого слова или личное сообщение (счётчик или точка комнаты, точка у строки треда, кнопка «Треды» в заголовке комнаты, «Активность», кроме личных сообщений, счётчик на значке рабочего пространства, число в заголовке окна, красная точка на значке в трее), просроченное напоминание («Позже») или отложенное сообщение, не отправленное вовремя («Черновики и отложенные»). Упоминания вас и выделяемые слова также подсвечивают свою строку в ленте — собственными цветами упоминания ленты."
   es: "Algo para ti: una mención a ti, una de tus palabras resaltadas o un mensaje directo (contador o punto de la sala, punto de la fila del hilo, el botón Hilos de la cabecera de la sala, Actividad salvo los mensajes directos, el contador del icono del espacio, el número del título de la ventana, el punto rojo de la bandeja), un recordatorio vencido (Más tarde) o un mensaje programado que no se envió a tiempo (Borradores y programados). Las menciones a ti y las palabras resaltadas también resaltan su fila en el chat, con los colores de mención propios del chat."
   th: "สิ่งที่เกี่ยวกับคุณ: การกล่าวถึงคุณ คำที่คุณไฮไลต์ หรือข้อความส่วนตัว (ตัวนับหรือจุดของห้อง จุดของแถวเธรด ปุ่มเธรดในส่วนหัวห้อง กิจกรรมยกเว้นข้อความส่วนตัว ตัวนับบนไอคอนเวิร์กสเปซ ตัวเลขในชื่อหน้าต่าง จุดสีแดงบนไอคอนในถาด) การเตือนที่เลยกำหนด (ภายหลัง) หรือข้อความตั้งเวลาที่ส่งไม่ทันเวลา (ฉบับร่างและข้อความที่ตั้งเวลา) การกล่าวถึงคุณและคำที่ไฮไลต์จะไฮไลต์แถวของตนในฟีดด้วย โดยใช้สีการกล่าวถึงของฟีดเอง"
   zh: "与你有关：提及你、你的高亮词或私信（房间计数或圆点、讨论串行圆点、房间标题栏的“讨论串”按钮、“动态”（私信除外）、工作区图标上的计数、窗口标题中的数字、托盘图标上的红点）、逾期提醒（稍后）或未按时发出的定时消息（草稿与定时消息）。提及你的消息和含高亮词的消息还会在消息流中以消息流自己的提及配色高亮整行。"
+help.kind_meaning_macos.mention:
+  en: "Something for you: a mention of you, one of your highlight words or a direct message (room counter or dot, thread row dot, the room header's Threads button, Activity except DMs, the workspace icon's counter, the number in the window title, the dot on the menu bar icon, the number on the Dock icon), an overdue reminder (Later) or a scheduled message not sent on time (Drafts & scheduled). Mentions of you and highlight words also highlight their row in the feed, in the feed's own mention colours."
+  ru: "То, что касается вас: упоминание вас, вашего выделяемого слова или личное сообщение (счётчик или точка комнаты, точка у строки треда, кнопка «Треды» в заголовке комнаты, «Активность», кроме личных сообщений, счётчик на значке рабочего пространства, число в заголовке окна, точка на значке в строке меню, число на значке в Dock), просроченное напоминание («Позже») или отложенное сообщение, не отправленное вовремя («Черновики и отложенные»). Упоминания вас и выделяемые слова также подсвечивают свою строку в ленте — собственными цветами упоминания ленты."
+  es: "Algo para ti: una mención a ti, una de tus palabras resaltadas o un mensaje directo (contador o punto de la sala, punto de la fila del hilo, el botón Hilos de la cabecera de la sala, Actividad salvo los mensajes directos, el contador del icono del espacio, el número del título de la ventana, el punto del icono de la barra de menús, el número del icono del Dock), un recordatorio vencido (Más tarde) o un mensaje programado que no se envió a tiempo (Borradores y programados). Las menciones a ti y las palabras resaltadas también resaltan su fila en el chat, con los colores de mención propios del chat."
+  th: "สิ่งที่เกี่ยวกับคุณ: การกล่าวถึงคุณ คำที่คุณไฮไลต์ หรือข้อความส่วนตัว (ตัวนับหรือจุดของห้อง จุดของแถวเธรด ปุ่มเธรดในส่วนหัวห้อง กิจกรรมยกเว้นข้อความส่วนตัว ตัวนับบนไอคอนเวิร์กสเปซ ตัวเลขในชื่อหน้าต่าง จุดบนไอคอนในแถบเมนู ตัวเลขบนไอคอนใน Dock) การเตือนที่เลยกำหนด (ภายหลัง) หรือข้อความตั้งเวลาที่ส่งไม่ทันเวลา (ฉบับร่างและข้อความที่ตั้งเวลา) การกล่าวถึงคุณและคำที่ไฮไลต์จะไฮไลต์แถวของตนในฟีดด้วย โดยใช้สีการกล่าวถึงของฟีดเอง"
+  zh: "与你有关：提及你、你的高亮词或私信（房间计数或圆点、讨论串行圆点、房间标题栏的“讨论串”按钮、“动态”（私信除外）、工作区图标上的计数、窗口标题中的数字、菜单栏图标上的圆点、程序坞图标上的数字）、逾期提醒（稍后）或未按时发出的定时消息（草稿与定时消息）。提及你的消息和含高亮词的消息还会在消息流中以消息流自己的提及配色高亮整行。"
 help.kind_meaning.group_mention:
   en: "@all or @here, unless the room mutes them or hides mention badges: the room's counter or dot, the thread row's dot, the room header's Threads button, the Activity counter, and the orange dot of the workspace icon and the tray while nothing mentions you."
   ru: "@all или @here, если комната их не заглушает и не скрывает значки упоминаний: счётчик или точка комнаты, точка у строки треда, кнопка «Треды» в заголовке комнаты, счётчик «Активности» и оранжевая точка на значке рабочего пространства и в трее, пока вас никто не упомянул."
   es: "@all o @here, salvo que la sala los silencie u oculte las insignias de menciones: el contador o punto de la sala, el punto de la fila del hilo, el botón Hilos de la cabecera de la sala, el contador de Actividad y el punto naranja del icono del espacio y de la bandeja mientras nada te menciona."
   th: "@all หรือ @here เว้นแต่ห้องปิดเสียงไว้หรือซ่อนป้ายการกล่าวถึง: ตัวนับหรือจุดของห้อง จุดของแถวเธรด ปุ่มเธรดในส่วนหัวห้อง ตัวนับกิจกรรม และจุดสีส้มบนไอคอนเวิร์กสเปซและในถาดขณะที่ยังไม่มีใครกล่าวถึงคุณ"
   zh: "@all 或 @here（除非房间已将其静音或隐藏提及标记）：房间计数或圆点、讨论串行圆点、房间标题栏的“讨论串”按钮、“动态”计数，以及没有人提及你时工作区图标和托盘上的橙点。"
+help.kind_meaning_macos.group_mention:
+  en: "@all or @here, unless the room mutes them or hides mention badges: the room's counter or dot, the thread row's dot, the room header's Threads button, the Activity counter, the orange dot of the workspace icon and the dot on the menu bar icon while nothing mentions you (the number on the Dock icon counts only mentions of you, your highlight words and direct messages)."
+  ru: "@all или @here, если комната их не заглушает и не скрывает значки упоминаний: счётчик или точка комнаты, точка у строки треда, кнопка «Треды» в заголовке комнаты, счётчик «Активности», оранжевая точка на значке рабочего пространства и точка на значке в строке меню, пока вас никто не упомянул (число на значке в Dock считает только упоминания вас, ваши выделяемые слова и личные сообщения)."
+  es: "@all o @here, salvo que la sala los silencie u oculte las insignias de menciones: el contador o punto de la sala, el punto de la fila del hilo, el botón Hilos de la cabecera de la sala, el contador de Actividad, el punto naranja del icono del espacio y el punto del icono de la barra de menús mientras nada te menciona (el número del icono del Dock solo cuenta las menciones a ti, tus palabras resaltadas y los mensajes directos)."
+  th: "@all หรือ @here เว้นแต่ห้องปิดเสียงไว้หรือซ่อนป้ายการกล่าวถึง: ตัวนับหรือจุดของห้อง จุดของแถวเธรด ปุ่มเธรดในส่วนหัวห้อง ตัวนับกิจกรรม จุดสีส้มบนไอคอนเวิร์กสเปซ และจุดบนไอคอนในแถบเมนูขณะที่ยังไม่มีใครกล่าวถึงคุณ (ตัวเลขบนไอคอนใน Dock นับเฉพาะการกล่าวถึงคุณ คำที่คุณไฮไลต์ และข้อความส่วนตัว)"
+  zh: "@all 或 @here（除非房间已将其静音或隐藏提及标记）：房间计数或圆点、讨论串行圆点、房间标题栏的“讨论串”按钮、“动态”计数，以及没有人提及你时工作区图标上的橙点和菜单栏图标上的圆点（程序坞图标上的数字只计提及你的消息、含你的高亮词的消息和私信）。"
 help.kind_meaning.thread:
   en: "Unread thread replies: a room's counter when only threads are unread, a thread row's dot, the Activity dot, the dots of unread threads in the timeline and the Threads panel, the dot of the room header's Threads button, and the workspace icon's dot when only threads are unread."
   ru: "Непрочитанные ответы в тредах: счётчик комнаты, когда непрочитаны только треды, точка у строки треда, точка у «Активности», точки непрочитанных тредов в ленте и на панели тредов, точка на кнопке «Треды» в заголовке комнаты и точка на значке рабочего пространства, когда непрочитаны только треды."
@@ -395,6 +419,42 @@ help.window.tray_same:
   es: "el icono de la bandeja no cambia"
   th: "ไอคอนในถาดไม่เปลี่ยน"
   zh: "托盘图标不变"
+help.window.menubar_none:
+  en: "no menu bar icon"
+  ru: "значка в строке меню нет"
+  es: "sin icono en la barra de menús"
+  th: "ไม่มีไอคอนในแถบเมนู"
+  zh: "无菜单栏图标"
+help.window.menubar_dot:
+  en: "menu bar icon with a dot"
+  ru: "значок в строке меню с точкой"
+  es: "icono de la barra de menús con un punto"
+  th: "ไอคอนในแถบเมนูมีจุด"
+  zh: "菜单栏图标带圆点"
+help.window.menubar_ring:
+  en: "menu bar icon with a ring"
+  ru: "значок в строке меню с кольцом"
+  es: "icono de la barra de menús con un anillo"
+  th: "ไอคอนในแถบเมนูมีวงแหวน"
+  zh: "菜单栏图标带圆环"
+help.window.menubar_same:
+  en: "menu bar icon unchanged"
+  ru: "значок в строке меню не меняется"
+  es: "el icono de la barra de menús no cambia"
+  th: "ไอคอนในแถบเมนูไม่เปลี่ยน"
+  zh: "菜单栏图标不变"
+help.window.dock_badge:
+  en: "Dock icon with the number “%{count}”"
+  ru: "число «%{count}» на значке в Dock"
+  es: "número «%{count}» en el icono del Dock"
+  th: "ตัวเลข “%{count}” บนไอคอนใน Dock"
+  zh: "程序坞图标上的数字“%{count}”"
+help.window.dock_none:
+  en: "no number on the Dock icon"
+  ru: "числа на значке в Dock нет"
+  es: "sin número en el icono del Dock"
+  th: "ไม่มีตัวเลขบนไอคอนใน Dock"
+  zh: "程序坞图标上无数字"
 help.feed.highlighted:
   en: "row highlighted"
   ru: "строка подсвечена"
@@ -815,6 +875,12 @@ help.surface.window:
   es: "Título de la ventana y bandeja"
   th: "ชื่อหน้าต่างและถาด"
   zh: "窗口标题与托盘"
+help.surface.window_macos:
+  en: "Window title, menu bar and Dock"
+  ru: "Заголовок окна, строка меню и Dock"
+  es: "Título de la ventana, barra de menús y Dock"
+  th: "ชื่อหน้าต่าง แถบเมนู และ Dock"
+  zh: "窗口标题、菜单栏与程序坞"
 help.surface.in_app:
   en: "In the window"
   ru: "В окне"
@@ -1133,6 +1199,12 @@ help.code.m2.trigger:
   es: "Un mensaje normal en un mensaje directo 1:1 o de grupo. Un mensaje directo es llamativo: toma el color de mención en su fila, en la lista de Todos los no leídos (junto a las menciones), en el icono del espacio, en el título de la ventana y en la bandeja; el contador de Todos los no leídos sigue con el color de no leídos. Actividad no muestra mensajes directos: es un feed de menciones e hilos."
   th: "ข้อความทั่วไปในแชตส่วนตัวแบบตัวต่อตัวหรือแบบกลุ่ม ข้อความส่วนตัวเป็นสิ่งที่ต้องสังเกต: ใช้สีการกล่าวถึงในแถวของห้อง ในรายการยังไม่ได้อ่านทั้งหมด (เรียงรวมกับการกล่าวถึง) บนไอคอนเวิร์กสเปซ ในชื่อหน้าต่าง และในถาด ส่วนตัวนับยังไม่ได้อ่านทั้งหมดยังคงเป็นสียังไม่ได้อ่าน กิจกรรมไม่แสดงข้อความส่วนตัว เพราะเป็นฟีดของการกล่าวถึงและเธรด"
   zh: "一对一或群组私信中的普通消息。私信是醒目的：在房间行、“全部未读”列表（与提及排在一起）、工作区图标、窗口标题和托盘中都使用提及色；“全部未读”计数本身仍为未读色。“动态”不列出私信：它是提及和讨论串的动态。"
+help.code.m2.trigger_macos:
+  en: "A plain message in a 1:1 or group direct message. A direct message is loud: it takes the mention colour in its row, in the All unreads list (sorted with the mentions), on the workspace icon and in the window title, puts the dot on the menu bar icon and counts in the number on the Dock icon; the All unreads counter itself stays the unread colour. Activity lists no direct messages: it is a feed of mentions and threads."
+  ru: "Обычное сообщение в личной переписке или групповом личном чате. Личные сообщения заметны: они получают цвет упоминания в строке комнаты, в списке «Всех непрочитанных» (вместе с упоминаниями), на значке рабочего пространства и в заголовке окна, ставят точку на значке в строке меню и учитываются в числе на значке в Dock; сам счётчик «Всех непрочитанных» остаётся цвета непрочитанного. «Активность» не показывает личные сообщения: это лента упоминаний и тредов."
+  es: "Un mensaje normal en un mensaje directo 1:1 o de grupo. Un mensaje directo es llamativo: toma el color de mención en su fila, en la lista de Todos los no leídos (junto a las menciones), en el icono del espacio y en el título de la ventana, pone el punto en el icono de la barra de menús y cuenta en el número del icono del Dock; el contador de Todos los no leídos sigue con el color de no leídos. Actividad no muestra mensajes directos: es un feed de menciones e hilos."
+  th: "ข้อความทั่วไปในแชตส่วนตัวแบบตัวต่อตัวหรือแบบกลุ่ม ข้อความส่วนตัวเป็นสิ่งที่ต้องสังเกต: ใช้สีการกล่าวถึงในแถวของห้อง ในรายการยังไม่ได้อ่านทั้งหมด (เรียงรวมกับการกล่าวถึง) บนไอคอนเวิร์กสเปซ และในชื่อหน้าต่าง แสดงจุดบนไอคอนในแถบเมนู และนับรวมในตัวเลขบนไอคอนใน Dock ส่วนตัวนับยังไม่ได้อ่านทั้งหมดยังคงเป็นสียังไม่ได้อ่าน กิจกรรมไม่แสดงข้อความส่วนตัว เพราะเป็นฟีดของการกล่าวถึงและเธรด"
+  zh: "一对一或群组私信中的普通消息。私信是醒目的：在房间行、“全部未读”列表（与提及排在一起）、工作区图标和窗口标题中都使用提及色，在菜单栏图标上显示圆点，并计入程序坞图标上的数字；“全部未读”计数本身仍为未读色。“动态”不列出私信：它是提及和讨论串的动态。"
 help.code.m3.title:
   en: "@all / @here"
   ru: "@all / @here"
@@ -1349,6 +1421,12 @@ help.code.q1.trigger:
   es: "Menú de estado o bandeja → Pausar notificaciones. Sin notificaciones de mensajes ni sonidos; los recordatorios y la tarjeta de llamada se siguen mostrando y los contadores se actualizan. %{dnd}"
   th: "เมนูสถานะหรือถาด → หยุดการแจ้งเตือนชั่วคราว ไม่มีการแจ้งเตือนข้อความและเสียง การเตือนความจำและการ์ดสายเรียกเข้ายังแสดง ตัวนับยังอัปเดต %{dnd}"
   zh: "状态菜单或托盘 → 暂停通知。不显示消息通知、不播放声音；提醒和来电卡片仍会显示，计数照常更新。%{dnd}"
+help.code.q1.trigger_macos:
+  en: "Status menu or menu bar icon → Pause notifications. No message notifications and no sounds; reminders and the call card still show, counters still update. %{dnd}"
+  ru: "Меню статуса или значок в строке меню → «Приостановить уведомления». Нет уведомлений о сообщениях и звуков; напоминания и карточка звонка показываются, счётчики обновляются. %{dnd}"
+  es: "Menú de estado o icono de la barra de menús → Pausar notificaciones. Sin notificaciones de mensajes ni sonidos; los recordatorios y la tarjeta de llamada se siguen mostrando y los contadores se actualizan. %{dnd}"
+  th: "เมนูสถานะหรือไอคอนในแถบเมนู → หยุดการแจ้งเตือนชั่วคราว ไม่มีการแจ้งเตือนข้อความและเสียง การเตือนความจำและการ์ดสายเรียกเข้ายังแสดง ตัวนับยังอัปเดต %{dnd}"
+  zh: "状态菜单或菜单栏图标 → 暂停通知。不显示消息通知、不播放声音；提醒和来电卡片仍会显示，计数照常更新。%{dnd}"
 help.code.q2.title:
   en: "Outside working hours"
   ru: "Вне рабочих часов"

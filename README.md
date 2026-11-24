@@ -222,6 +222,9 @@ every view.
 The workspace icon and the window title (`Rustket (N)`, or `Rustket •` when
 there is unread but no mention) count mentions only, and the tray icon's dot
 is red only for them.
+On macOS the menu bar icon is a template glyph that follows the menu bar's
+colours: a dot for mentions and `@all`, a ring for other unread; the Dock
+badge shows the number of mentions.
 **Settings → Help** explains every signal with a short code and samples
 computed from your current settings.
 

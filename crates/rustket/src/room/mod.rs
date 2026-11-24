@@ -1373,6 +1373,69 @@ mod tests {
         assert!(rv.marking_read, "read when shown again");
     }
 
+    /// The jumped-to message is highlighted at the timeline's width: in a
+    /// plain `container` (a `lazy` row hints `Shrink`) it collapsed to its
+    /// side padding with the text wrapped at zero width, and the timeline
+    /// showed a narrow tinted strip until the highlight ended (Activity →
+    /// a mention).
+    #[tokio::test]
+    async fn jumped_to_row_keeps_the_timeline_width() {
+        use iced::Rectangle;
+        use iced::advanced::widget::Operation;
+        use iced_runtime::user_interface::{Cache, UserInterface};
+        struct Find(iced::widget::Id, Option<Rectangle>);
+        impl Operation for Find {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn container(&mut self, id: Option<&iced::widget::Id>, bounds: Rectangle) {
+                if id == Some(&self.0) {
+                    self.1 = Some(bounds);
+                }
+            }
+        }
+        let mut ws = workspace();
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        for (id, ms) in [("a", 1_000_000), ("b", 2_000_000), ("c", 3_000_000)] {
+            let mut m = from_bob(id, ms);
+            m.msg = "could you please review the release notes before the deploy".into();
+            ctx.workspace.apply_message(m);
+        }
+        let _ = rv
+            .timeline
+            .jump_to("b", RcDate::from_millis(2_000_000), &mut ctx);
+        assert_eq!(rv.timeline.selected(), Some("b"));
+        let vctx = view_ctx(&ws, &sid, &url, &images, &prefs);
+        let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+            rustket_ui::theme::font_regular(),
+            iced::Pixels(rustket_ui::theme::TEXT_BODY),
+        ));
+        let mut ui = UserInterface::build(
+            rv.view(&vctx),
+            iced::Size::new(1000.0, 700.0),
+            Cache::default(),
+            &mut renderer,
+        );
+        let mut find = Find(timeline::row_id("b"), None);
+        ui.operate(&renderer, &mut find);
+        let row = find.1.expect("highlighted row");
+        assert!(row.width >= 980.0, "{row:?}");
+        assert!(row.height < 120.0, "{row:?}");
+    }
+
     /// Review: the automatic read mark cleared unread threads
     /// (`readThreads: true`) and, with `{rid}` only, an alert kept by unread
     /// threads would be marked again and again.
