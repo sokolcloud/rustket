@@ -8,6 +8,7 @@
 //! polling): tests and snapshots use it. The binary uses [`Desktop::system`].
 
 pub mod autostart;
+pub mod badge_art;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod dbus;
 pub mod dock;
@@ -205,6 +206,9 @@ pub struct Desktop {
     connected: HashMap<ServerId, bool>,
     /// The Dock badge last set (macOS).
     dock_badge: Option<String>,
+    /// The art of the window icon last set (Linux, Windows; the Rocket.Chat
+    /// scheme badges it).
+    window_art: tray::TrayArt,
 }
 
 impl Desktop {
@@ -233,11 +237,19 @@ impl Desktop {
             wayland: wayland_session(),
             connected: HashMap::new(),
             dock_badge: None,
+            window_art: tray::TrayArt::Plain,
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// The window icon can carry the Rocket.Chat badge: the conditions of
+    /// `set_window_art` (not on Wayland, which ignores window icons, nor on
+    /// macOS, which uses the Dock).
+    pub fn window_icon_badges(&self) -> bool {
+        self.enabled && !self.wayland && !cfg!(target_os = "macos")
     }
 
     pub fn tray_support(&self) -> TraySupport {
@@ -383,7 +395,52 @@ impl Desktop {
             dock::apply(badge.as_deref());
             self.dock_badge = badge;
         }
-        Task::none()
+        self.set_window_art(tray::TrayArt::Plain)
+    }
+
+    /// The unread signals over all servers changed under the Rocket.Chat
+    /// scheme: the tray, Dock and window icon show the desktop app's total
+    /// unread (`rc`), or its bullet.
+    pub fn on_unread_changed_rc(
+        &mut self,
+        signal: rustket_core::room_list::WorkspaceSignal,
+        rc: rustket_core::indicators::RcSignal,
+    ) -> Task<Message> {
+        self.tray.set_unread_rc(&signal, rc);
+        let badge = Some(dock::badge_label_rc(rc)).filter(|b| !b.is_empty());
+        if self.enabled && badge != self.dock_badge {
+            #[cfg(target_os = "macos")]
+            dock::apply(badge.as_deref());
+            self.dock_badge = badge;
+        }
+        self.set_window_art(tray::TrayArt::of(
+            &signal,
+            &rc,
+            rustket_core::indicators::IndicatorScheme::RocketChat,
+        ))
+    }
+
+    /// The art of the window icon now (see [`Self::on_unread_changed_rc`]).
+    pub fn window_art(&self) -> tray::TrayArt {
+        self.window_art
+    }
+
+    /// Badges the window icon with `art` when it changed (the plain icon
+    /// again for [`tray::TrayArt::Plain`]). macOS keeps the Dock instead.
+    fn set_window_art(&mut self, art: tray::TrayArt) -> Task<Message> {
+        if art == self.window_art || cfg!(target_os = "macos") {
+            return Task::none();
+        }
+        self.window_art = art;
+        // winit ignores window icons on Wayland.
+        if !self.enabled || self.wayland {
+            return Task::none();
+        }
+        let icon = match art.glyph() {
+            Some(_) => icon::window_icon_rc(art),
+            None => icon::window_icon(),
+        };
+        icon.map_or_else(Task::none, window::set_icon)
     }
 
     /// Called after every update with the logged-in servers: closes the
@@ -588,5 +645,47 @@ mod tests {
             rooms: 4,
         });
         assert_eq!((d.tray.state().unread, d.tray.state().mentions), (4, 2));
+    }
+
+    /// The Rocket.Chat hook fills the tray with the desktop app's art and
+    /// badges the window icon; the Rustket hook restores the plain icon.
+    #[test]
+    fn rc_unread_hook_and_window_icon() {
+        use rustket_core::indicators::RcSignal;
+        use rustket_core::room_list::WorkspaceSignal;
+        // macOS badges the Dock instead.
+        let badged = |a| {
+            if cfg!(target_os = "macos") {
+                tray::TrayArt::Plain
+            } else {
+                a
+            }
+        };
+        let mut d = Desktop::new();
+        let sig = WorkspaceSignal::default();
+        assert_eq!(d.window_art(), tray::TrayArt::Plain);
+        let _ = d.on_unread_changed_rc(
+            sig,
+            RcSignal {
+                unread: 4,
+                bullet: false,
+            },
+        );
+        assert_eq!(d.tray.state().art, tray::TrayArt::RcCount(4));
+        assert_eq!(d.window_art(), badged(tray::TrayArt::RcCount(4)));
+        let _ = d.on_unread_changed_rc(
+            sig,
+            RcSignal {
+                unread: 0,
+                bullet: true,
+            },
+        );
+        assert_eq!(d.window_art(), badged(tray::TrayArt::RcDot));
+        let _ = d.on_unread_changed(sig);
+        assert_eq!(d.window_art(), tray::TrayArt::Plain);
+        assert_eq!(
+            d.tray.state().scheme,
+            rustket_core::indicators::IndicatorScheme::Rustket
+        );
     }
 }

@@ -39,6 +39,9 @@ pub struct MenuItem<Message> {
     /// Unread dot after the label (e.g. a header button moved into the
     /// menu that shows one).
     pub dot: Option<super::BadgeKind>,
+    /// Counter pill after the label (Rocket.Chat look: the header's Threads
+    /// counter moved into the menu), content palette, `99+` cap.
+    pub badge: Option<(u64, super::BadgeKind)>,
     pub on_select: Message,
 }
 
@@ -53,6 +56,7 @@ impl<Message> MenuItem<Message> {
             checked: None,
             swatch: None,
             dot: None,
+            badge: None,
             on_select,
         }
     }
@@ -91,7 +95,15 @@ impl<Message> MenuItem<Message> {
         self.dot = kind;
         self
     }
+
+    pub fn badge(mut self, badge: Option<(u64, super::BadgeKind)>) -> Self {
+        self.badge = badge;
+        self
+    }
 }
+
+/// Room for a menu item's counter pill (`99+` at most).
+const BADGE_WIDTH: f32 = 28.0;
 
 /// Size of a menu item's unread dot.
 const DOT: f32 = 8.0;
@@ -139,11 +151,17 @@ pub fn menu_width<Message>(entries: &[MenuEntry<Message>]) -> f32 {
                 } else {
                     0.0
                 };
+                let badge = if item.badge.is_some() {
+                    BADGE_WIDTH + SPACE_3
+                } else {
+                    0.0
+                };
                 Some(
                     super::ellipsis::natural_width(&item.label, TEXT_BODY, font_regular())
                         + hint
                         + swatch
-                        + dot,
+                        + dot
+                        + badge,
                 )
             }
             MenuEntry::Header(h) => Some(super::ellipsis::natural_width(
@@ -200,6 +218,14 @@ pub fn menu_panel<'a, Message: Clone + 'a>(entries: &[MenuEntry<Message>]) -> El
                 content = content.push(ellipsis(item.label.clone()).size(TEXT_BODY));
                 if let Some(kind) = item.dot {
                     content = content.push(super::dot(kind, DOT));
+                }
+                if let Some((count, kind)) = item.badge {
+                    content = content.push(super::badge_in(
+                        count,
+                        kind,
+                        super::BadgePlace::Content,
+                        super::BadgeCap::At99,
+                    ));
                 }
                 if let Some(hint) = &item.hint {
                     content = content.push(
@@ -881,4 +907,30 @@ pub fn popover_menu<'a, Message: Clone + 'a>(
         space().into()
     };
     popover(trigger, panel, open, placement, on_dismiss)
+}
+
+#[cfg(test)]
+mod rc_tests {
+    use super::*;
+    use crate::widget::BadgeKind;
+
+    /// H1/Q23: a counter pill after the label widens the menu like a dot.
+    #[test]
+    fn counter_pill_entry() {
+        let label = "Threads with a fairly long label for the width";
+        let plain: Vec<MenuEntry<()>> = vec![MenuItem::new(label, ()).into()];
+        let item = MenuItem::new(label, ()).badge(Some((120, BadgeKind::Mention)));
+        assert_eq!(item.badge, Some((120, BadgeKind::Mention)));
+        assert!(item.dot.is_none());
+        let counted: Vec<MenuEntry<()>> = vec![item.into()];
+        assert!(menu_width(&counted) >= menu_width(&plain));
+        for look in [
+            crate::theme::IndicatorLook::Rustket,
+            crate::theme::IndicatorLook::RocketChat,
+        ] {
+            crate::theme::with_indicator_look(look, || {
+                let _ = menu_panel(&counted);
+            });
+        }
+    }
 }

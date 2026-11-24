@@ -9,7 +9,8 @@ use rocketchat::RcDate;
 use rocketchat::models::{
     Mention, Message as RcMessage, Room, RoomType, Setting, Subscription, User, UserRef, UserStatus,
 };
-use rustket_core::config::{AppConfig, Density};
+use rustket_core::config::{AppConfig, Density, IndicatorScheme};
+use rustket_core::indicators::{self, RcBadge, RcSignal, UnreadInfo};
 use rustket_core::notify::{
     IncomingNotification, NotificationMessage, NotificationPayload, NotificationPrefs,
     NotifyContext,
@@ -21,13 +22,13 @@ use rustket_core::room_list::{
 use rustket_core::sidebar_layout::{SectionId, ThreadsMode, section_unread_first};
 use rustket_core::workspace::{Change, ConnectionState, RoomEntry, Workspace};
 use rustket_ui::icon::Icon;
-use rustket_ui::widget::{AvatarSource, BadgeKind, RoomListItemProps};
+use rustket_ui::widget::{AvatarSource, BadgeKind, RoomListItemProps, WorkspaceBadge};
 
 use super::server::{self, DesktopPref, Incoming, Receiver, ServerBlock, ServerFacts, Trigger};
 use crate::desktop::AccountSound;
 use crate::desktop::notifications::{MessageSoundOff, message_sound, message_sound_off};
 use crate::desktop::sound::{Platform, RcSound};
-use crate::desktop::tray::TrayLevel;
+use crate::desktop::tray::{TrayArt, TrayLevel};
 use crate::workspace::{rail, sidebar};
 
 /// A family of codes (one card of the page).
@@ -206,6 +207,9 @@ pub struct AccountPrefs {
     /// `muteFocusedConversations` (Q4): the conversation on screen does
     /// not notify.
     pub mute_focused: bool,
+    /// `unreadAlert` ("Unread Tray Icon Alert"): under the Rocket.Chat
+    /// scheme an unread room with nothing counted shows "•".
+    pub unread_alert: bool,
 }
 
 impl Default for AccountPrefs {
@@ -222,6 +226,7 @@ impl Default for AccountPrefs {
             highlights: Vec::new(),
             require_interaction: false,
             mute_focused: true,
+            unread_alert: true,
         }
     }
 }
@@ -237,6 +242,7 @@ impl AccountPrefs {
             highlights: crate::room::render::highlight_words(ws),
             require_interaction: crate::desktop::notifications::require_interaction_pref(ws),
             mute_focused: crate::desktop::notifications::mute_focused_pref(ws),
+            unread_alert: ws.unread_alert_pref(),
         }
     }
 }
@@ -400,6 +406,9 @@ pub struct HelpEnv {
     pub off_hours_until: Option<i64>,
     /// A tray icon exists.
     pub tray: bool,
+    /// The window icon can carry the Rocket.Chat badge (Linux on X11,
+    /// Windows; not Wayland or macOS): `Desktop::window_icon_badges`.
+    pub window_icon: bool,
     /// Rustket draws its own title bar (workspace items there, else in the
     /// left rail).
     pub custom_chrome: bool,
@@ -419,6 +428,7 @@ impl Default for HelpEnv {
             working_now: true,
             off_hours_until: None,
             tray: true,
+            window_icon: true,
             custom_chrome: true,
             account: Some(AccountEnv::default()),
             platform: Platform::Linux,
@@ -432,6 +442,7 @@ impl HelpEnv {
         cfg: &AppConfig,
         now: &chrono::DateTime<Tz>,
         tray: bool,
+        window_icon: bool,
         custom_chrome: bool,
         account: Option<AccountEnv>,
     ) -> Self {
@@ -446,6 +457,7 @@ impl HelpEnv {
                 .then(|| wh.next_boundary(now).map(|b| b.timestamp_millis()))
                 .flatten(),
             tray,
+            window_icon,
             custom_chrome,
             account,
             platform: Platform::current(),
@@ -562,11 +574,25 @@ pub struct RowOutcome {
     pub kind: Option<BadgeKind>,
     /// The number shown; 0 with a kind: a dot.
     pub count: u32,
+    /// Rustket: the bold name; Rocket.Chat: the highlighted name.
     pub bold: bool,
+    /// The Rocket.Chat badge, drawn in place of `badge` (`None` under the
+    /// Rustket scheme).
+    pub rc: Option<RcBadge>,
 }
 
 impl RowOutcome {
     fn new(badge: Badge, muted: bool, room_kind: RoomKind, density: Density) -> Self {
+        Self::new_in(badge, None, muted, room_kind, density)
+    }
+
+    fn new_in(
+        badge: Badge,
+        rc: Option<RcBadge>,
+        muted: bool,
+        room_kind: RoomKind,
+        density: Density,
+    ) -> Self {
         let mut r = Self {
             badge,
             muted,
@@ -575,6 +601,7 @@ impl RowOutcome {
             kind: None,
             count: 0,
             bold: false,
+            rc,
         };
         let p = r.props("", ());
         r.kind = p.badge_kind();
@@ -588,7 +615,10 @@ impl RowOutcome {
         let mut p = RoomListItemProps::new(AvatarSource::initials(title, title), title, on_press);
         p.density = widget_density(self.density);
         p.icon = Some(sidebar::room_icon(self.room_kind));
-        sidebar::set_row_badge(&mut p, &self.badge);
+        match &self.rc {
+            Some(rc) => sidebar::set_row_badge_rc(&mut p, rc),
+            None => sidebar::set_row_badge(&mut p, &self.badge),
+        }
         p.is_muted = self.muted;
         p
     }
@@ -625,8 +655,11 @@ pub struct ThreadRowOutcome {
     pub starred_in_favorites: bool,
     pub density: Density,
     /// The dot of the room header's Threads button (any Threads mode;
-    /// `None`: no dot, or threads are off on the server).
+    /// `None`: no dot, or threads are off on the server). Rustket only.
     pub header_button: Option<BadgeKind>,
+    /// Rocket.Chat: the counter of the room header's Threads button (count,
+    /// kind); `None` under Rustket.
+    pub header_counter: Option<(u64, BadgeKind)>,
 }
 
 impl ThreadRowOutcome {
@@ -682,6 +715,48 @@ pub struct AccountIcon {
     /// `room_list::entry_signal`: what the room adds to the account's
     /// unread signal.
     pub signal: WorkspaceSignal,
+    /// Rocket.Chat: the ghost badge (`rail::badge_rc`) drawn in place of
+    /// `badge`; `None` under Rustket.
+    pub rc: Option<WorkspaceBadge>,
+}
+
+/// Window title, tray, window icon and Dock under the Rocket.Chat scheme,
+/// with this room the only unread one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RcWindowOutcome {
+    /// `rc_entry_signal`: the room's unread, or the bullet.
+    pub rc: RcSignal,
+    /// The tray art, `TrayArt::of`; `None`: no tray.
+    pub art: Option<TrayArt>,
+    /// The window icon's art (the same); `None`: the window icon is not
+    /// badged (Wayland, macOS).
+    pub icon: Option<TrayArt>,
+    /// `app::window_title_rc`.
+    pub title: String,
+    /// `dock::badge_label_rc` ("" : no badge).
+    pub dock: String,
+}
+
+/// How a mention reads in the feed under the Rocket.Chat scheme: coloured
+/// text, no background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RcChip {
+    /// `rc_mention_me`.
+    Me,
+    /// `rc_mention_other`.
+    Other,
+    /// `rc_mention_all`.
+    All,
+}
+
+/// The feed's Rocket.Chat parts (`Feed` keeps the shared ones; its
+/// `highlighted` is always false there).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RcFeed {
+    pub chip: Option<RcChip>,
+    /// The colour of the thread's dot (`parent_thread_kind`); the "View
+    /// thread" button is filled while it shows.
+    pub thread_dot: Option<BadgeKind>,
 }
 
 /// Window title and tray, with this room the only unread one.
@@ -883,6 +958,8 @@ pub struct Feed {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
     pub code: Code,
+    /// The indicator scheme the outcome is computed under.
+    pub scheme: IndicatorScheme,
     pub note: Option<Note>,
     pub server: Option<ServerOutcome>,
     pub row: Option<RowOutcome>,
@@ -892,13 +969,23 @@ pub struct Outcome {
     pub collapsed: Option<BadgeKind>,
     /// The dot of the collapsed Threads header.
     pub collapsed_threads: Option<BadgeKind>,
+    /// Rocket.Chat: the counter of the room's collapsed section header
+    /// (`rc_collapsed`; `collapsed` is `None` then).
+    pub rc_collapsed: Option<RcBadge>,
+    /// Rocket.Chat: the counter of the collapsed Threads header.
+    pub rc_collapsed_threads: Option<RcBadge>,
     /// `None` while the pinned rows are off.
     pub pinned: Option<PinnedOutcome>,
     pub account_icon: Option<AccountIcon>,
+    /// Rustket's window title and tray (`None` under Rocket.Chat).
     pub window: Option<WindowOutcome>,
+    /// Rocket.Chat's window title, tray, window icon and Dock.
+    pub rc_window: Option<RcWindowOutcome>,
     pub toast: Option<Toast>,
     pub sound: Option<Sound>,
     pub feed: Option<Feed>,
+    /// Rocket.Chat's parts of the feed.
+    pub rc_feed: Option<RcFeed>,
     /// C1: the in-app call card (always, even paused or Busy).
     pub popup: bool,
     /// D1: the "not sent on time" dialog.
@@ -909,8 +996,13 @@ pub struct Outcome {
 
 impl Outcome {
     fn empty(code: Code) -> Self {
+        Self::empty_in(code, IndicatorScheme::Rustket)
+    }
+
+    fn empty_in(code: Code, scheme: IndicatorScheme) -> Self {
         Self {
             code,
+            scheme,
             note: None,
             server: None,
             row: None,
@@ -918,12 +1010,16 @@ impl Outcome {
             section: None,
             collapsed: None,
             collapsed_threads: None,
+            rc_collapsed: None,
+            rc_collapsed_threads: None,
             pinned: None,
             account_icon: None,
             window: None,
+            rc_window: None,
             toast: None,
             sound: None,
             feed: None,
+            rc_feed: None,
             popup: false,
             dialog: false,
             once_per_run: false,
@@ -944,17 +1040,20 @@ pub fn evaluate(code: Code, cfg: &AppConfig, env: &HelpEnv) -> Outcome {
 }
 
 /// [`evaluate`] in a room with `mods` (M/T codes).
+/// Every surface follows `cfg.ui.indicator_scheme`.
 pub fn evaluate_with(code: Code, mods: RoomMods, cfg: &AppConfig, env: &HelpEnv) -> Outcome {
     if let Some(msg) = code.scenario() {
         return message(code, msg, mods, cfg, env);
     }
-    match code {
+    let mut out = match code {
         Code::L1 | Code::L2 => reminder(code, cfg, env),
         Code::D1 => scheduled(cfg),
         Code::C1 => call(cfg, env),
         Code::O1 => omnichannel(cfg, env),
         _ => Outcome::empty(code),
-    }
+    };
+    out.scheme = cfg.ui.indicator_scheme;
+    out
 }
 
 /// The scenario's room, subscription and workspace.
@@ -1052,7 +1151,9 @@ fn times(env: &HelpEnv, thread: bool) -> (i64, i64) {
 
 fn message(code: Code, msg: Incoming, mods: RoomMods, cfg: &AppConfig, env: &HelpEnv) -> Outcome {
     let ui = &cfg.ui;
-    let mut out = Outcome::empty(code);
+    let scheme = ui.indicator_scheme;
+    let rc_scheme = scheme == IndicatorScheme::RocketChat;
+    let mut out = Outcome::empty_in(code, scheme);
     let fallback = AccountEnv::placeholder();
     let acc = env.account.as_ref().unwrap_or(&fallback);
     let facts = acc.server;
@@ -1116,7 +1217,13 @@ fn message(code: Code, msg: Incoming, mods: RoomMods, cfg: &AppConfig, env: &Hel
     let item = room_list::item(&s.ws, &s.entry, &opts);
 
     // Sidebar row, section, collapsed header.
-    let row = RowOutcome::new(item.badge, item.muted, item.kind, ui.density);
+    let row = RowOutcome::new_in(
+        item.badge,
+        rc_scheme.then_some(item.rc),
+        item.muted,
+        item.kind,
+        ui.density,
+    );
     out.section = Some(match room_list::section_of(&s.entry, &item, &opts) {
         SectionId::Builtin(SectionKind::Unread) => Placement::Unread,
         id => {
@@ -1128,13 +1235,29 @@ fn message(code: Code, msg: Incoming, mods: RoomMods, cfg: &AppConfig, env: &Hel
             }
         }
     });
-    out.collapsed = sidebar::collapsed_unread([row.kind]).map(|(k, _)| k);
+    if rc_scheme {
+        // mirrors crates/rustket/src/workspace/sidebar.rs (`collapsed_rc`).
+        out.rc_collapsed = indicators::rc_collapsed([item.rc.info]);
+    } else {
+        out.collapsed = sidebar::collapsed_unread([row.kind]).map(|(k, _)| k);
+    }
     out.row = Some(row);
 
     // Thread row.
     if msg.thread {
         let unread = room_list::thread_unread(&sub, TMID);
-        let kind = sidebar::thread_unread_kind(unread);
+        // mirrors crates/rustket/src/workspace/sidebar.rs (`thread_kind_in`):
+        // the dot shows as Rustket's does; under Rocket.Chat its colour
+        // follows the subscription.
+        let kind = if rc_scheme {
+            unread.map(|_| {
+                sidebar::widget_kind(
+                    indicators::rc_thread_kind(&sub, TMID).unwrap_or(BadgeVariant::Thread),
+                )
+            })
+        } else {
+            sidebar::thread_unread_kind(unread)
+        };
         // mirrors crates/rustket-core/src/room_list.rs (`all_thread_rows`):
         // Unread / UnreadKept list unread threads, Following every followed
         // one; nothing while the section is off or threads are off. Tested
@@ -1151,7 +1274,13 @@ fn message(code: Code, msg: Incoming, mods: RoomMods, cfg: &AppConfig, env: &Hel
             }
         };
         if matches!(listing, ThreadListing::Threads { .. }) {
-            out.collapsed_threads = sidebar::collapsed_unread([kind]).map(|(k, _)| k);
+            if rc_scheme {
+                out.rc_collapsed_threads = indicators::rc_collapsed(
+                    kind.map(|k| UnreadInfo::thread(sidebar::core_kind(k))),
+                );
+            } else {
+                out.collapsed_threads = sidebar::collapsed_unread([kind]).map(|(k, _)| k);
+            }
         }
         out.thread_row = Some(ThreadRowOutcome {
             unread,
@@ -1159,37 +1288,62 @@ fn message(code: Code, msg: Incoming, mods: RoomMods, cfg: &AppConfig, env: &Hel
             listing,
             starred_in_favorites: room_list::starred_threads_shown(&s.ws, &opts),
             density: ui.density,
-            header_button: facts
-                .threads_enabled
+            header_button: (facts.threads_enabled && !rc_scheme)
                 .then(|| crate::room::header::threads_badge(Some(&sub)))
                 .flatten(),
+            // mirrors crates/rustket/src/room/header.rs (`threads_counter`).
+            header_counter: (facts.threads_enabled && rc_scheme)
+                .then(|| indicators::rc_threads_button(&sub))
+                .flatten()
+                .map(|(n, v)| (n, sidebar::widget_kind(v))),
         });
     }
 
     // Pinned rows, account icon, window title and tray.
     if ui.sidebar_pinned_views {
         let c = rustket_core::inbox::entry_counts(&s.entry);
+        let ([all_unreads, activity, ..], _) = sidebar::pinned_badges(
+            scheme,
+            &c,
+            || rustket_core::inbox::rc_activity_total(&s.ws),
+            0,
+            0,
+            0,
+        );
         out.pinned = Some(PinnedOutcome {
             in_all_unreads: c.unread_rooms > 0,
-            all_unreads: sidebar::unreads_badge(c.unread_rooms),
-            activity: sidebar::activity_badge(&c),
+            all_unreads,
+            activity,
             ..PinnedOutcome::default()
         });
     }
     let signal = room_list::entry_signal(&s.entry);
+    let rc = indicators::rc_entry_signal(&s.entry, acc.prefs.unread_alert);
     out.account_icon = Some(AccountIcon {
         place: if env.custom_chrome {
             IconPlace::TitleBar
         } else {
             IconPlace::Rail
         },
-        badge: rail::badge(signal),
+        badge: (!rc_scheme).then(|| rail::badge(signal)).flatten(),
         signal,
+        rc: rc_scheme.then(|| rail::badge_rc(rc)),
     });
-    out.window = Some(WindowOutcome {
-        signal,
-        tray: env.tray.then(|| TrayLevel::of(&signal)),
-    });
+    if rc_scheme {
+        let art = TrayArt::of(&signal, &rc, IndicatorScheme::RocketChat);
+        out.rc_window = Some(RcWindowOutcome {
+            rc,
+            art: env.tray.then_some(art),
+            icon: env.window_icon.then_some(art),
+            title: crate::app::window_title_rc(rc),
+            dock: crate::desktop::dock::badge_label_rc(rc),
+        });
+    } else {
+        out.window = Some(WindowOutcome {
+            signal,
+            tray: env.tray.then(|| TrayLevel::of(&signal)),
+        });
+    }
 
     // Toast and sound: the server, then the app's own rules for a window in
     // the background.
@@ -1271,13 +1425,16 @@ fn message(code: Code, msg: Incoming, mods: RoomMods, cfg: &AppConfig, env: &Hel
         Trigger::MentionAll => Some("all"),
         Trigger::Plain | Trigger::Highlight => None,
     };
+    // mirrors crates/rustket/src/room/timeline/row.rs (`highlights_for`):
+    // no row highlight under Rocket.Chat.
     out.feed = Some(Feed {
-        highlighted: crate::room::timeline::row::highlights_row(
-            Some(&acc.user_id),
-            sub.mute_group_mentions == Some(true),
-            &words,
-            &m,
-        ),
+        highlighted: !rc_scheme
+            && crate::room::timeline::row::highlights_row(
+                Some(&acc.user_id),
+                sub.mute_group_mentions == Some(true),
+                &words,
+                &m,
+            ),
         // mirrors crates/rustket/src/room/render/md.rs (`push_marked`:
         // someone else's text, matched by `rustket_core::highlight`).
         word_marked: rustket_core::highlight::contains(&m.msg, &words),
@@ -1285,6 +1442,27 @@ fn message(code: Code, msg: Incoming, mods: RoomMods, cfg: &AppConfig, env: &Hel
         divider: !msg.thread,
         thread_dot: msg.thread && crate::room::timeline::parent_thread_unread(Some(&sub), TMID),
     });
+    if rc_scheme {
+        // mirrors crates/rustket/src/room/render/md.rs (`rc_mention_user`):
+        // @all/@here, else the user's own id, else someone else.
+        out.rc_feed = Some(RcFeed {
+            chip: match msg.trigger {
+                Trigger::MentionMe => Some(RcChip::Me),
+                Trigger::MentionAll => Some(RcChip::All),
+                Trigger::Plain | Trigger::Highlight => None,
+            },
+            thread_dot: msg
+                .thread
+                .then(|| {
+                    crate::room::timeline::parent_thread_kind(
+                        Some(&sub),
+                        TMID,
+                        IndicatorScheme::RocketChat,
+                    )
+                })
+                .flatten(),
+        });
+    }
     out.server = Some(ServerOutcome {
         sub,
         desktop,
@@ -1446,9 +1624,13 @@ fn scheduled(cfg: &AppConfig) -> Outcome {
     let mut out = Outcome::empty(Code::D1);
     out.dialog = true;
     if cfg.ui.sidebar_pinned_views {
+        let drafts: fn(usize, usize) -> Option<(u64, BadgeKind)> = match cfg.ui.indicator_scheme {
+            IndicatorScheme::Rustket => sidebar::drafts_badge,
+            IndicatorScheme::RocketChat => sidebar::drafts_badge_rc,
+        };
         out.pinned = Some(PinnedOutcome {
-            drafts: sidebar::drafts_badge(1, 1),
-            drafts_on_time: sidebar::drafts_badge(1, 0),
+            drafts: drafts(1, 1),
+            drafts_on_time: drafts(1, 0),
             ..PinnedOutcome::default()
         });
     }
@@ -1697,7 +1879,8 @@ pub struct KindUse {
 }
 
 /// Every badge kind the M/T/L/D outcomes currently show, with where each
-/// code shows it (the colour legend), in code order.
+/// code shows it (the colour legend), in code order. Under Rocket.Chat the
+/// workspace icon's grey badge has no kind and is left out.
 pub fn legend(cfg: &AppConfig, env: &HelpEnv) -> Vec<(BadgeKind, Vec<KindUse>)> {
     let mut out: Vec<(BadgeKind, Vec<KindUse>)> = Vec::new();
     for &code in Code::ALL {
@@ -1724,9 +1907,11 @@ pub fn legend(cfg: &AppConfig, env: &HelpEnv) -> Vec<(BadgeKind, Vec<KindUse>)> 
             (Surface::ThreadRow, thread),
             (
                 Surface::ThreadsButton,
-                o.thread_row
-                    .as_ref()
-                    .and_then(|t| t.header_button.map(|k| (k, true))),
+                o.thread_row.as_ref().and_then(|t| {
+                    t.header_button
+                        .map(|k| (k, true))
+                        .or(t.header_counter.map(|(_, k)| (k, false)))
+                }),
             ),
             (
                 Surface::AccountIcon,

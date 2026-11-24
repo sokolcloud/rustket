@@ -16,7 +16,7 @@ use rustket::cache::Msg;
 use rustket::message::{Message, SecretsReady};
 use rustket_core::ServerId;
 use rustket_core::cache::{CacheHandle, TimelineKey, server_dir};
-use rustket_core::config::{AppConfig, ServerEntry};
+use rustket_core::config::{AppConfig, IndicatorScheme, ServerEntry};
 use rustket_core::secrets::{MemoryStore, SecretBackend, SwitchableStore};
 use rustket_core::sync::InitialData;
 use rustket_core::timeline::DeliveryState;
@@ -74,6 +74,8 @@ fn start(dir: &Path) -> (App, ServerId) {
         AppConfig::load(&cfg_dir).unwrap().servers[0].id.clone()
     } else {
         let mut cfg = AppConfig::default();
+        // The process-wide indicator look never changes in this binary.
+        cfg.ui.indicator_scheme = IndicatorScheme::Rustket;
         let mut entry = ServerEntry::new("http://localhost:3000", "Local");
         entry.user_id = Some(UID.into());
         entry.last_room = Some("R1".into());

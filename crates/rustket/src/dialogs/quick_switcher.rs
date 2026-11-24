@@ -14,12 +14,16 @@ use iced::{Alignment, Element, Length, Subscription, Task};
 use rocketchat::models::{RoomType, SpotlightResult};
 use rust_i18n::t;
 use rustket_core::Workspace;
+use rustket_core::indicators::{IndicatorScheme, RcBadge};
 use rustket_core::room_list::{self, Avatar, RoomKind, RoomListOptions};
 use rustket_core::workspace::RoomEntry;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL};
-use rustket_ui::widget::{AvatarShape, BadgeKind, avatar, badge, dialog, dot, kbd, spinner};
+use rustket_ui::widget::{
+    AvatarShape, BadgeCap, BadgeKind, BadgePlace, TooltipPosition, avatar, badge, badge_in, dialog,
+    dot, kbd, row_colors, row_fonts, spinner, tooltip,
+};
 
 use crate::component::{Action, Ctx, Effect, ViewCtx};
 use crate::error::Res;
@@ -56,6 +60,8 @@ pub enum Item {
         unread: u64,
         /// The badge kind the sidebar row shows.
         badge_kind: Option<BadgeKind>,
+        /// The Rocket.Chat badge (filled under that scheme only).
+        rc: RcBadge,
         /// Not in the sidebar (`open: false`); opening it shows it again.
         hidden: bool,
         archived: bool,
@@ -224,6 +230,7 @@ pub fn results_for(
             let i = room_list::item(ws, e, opts);
             Item::Local {
                 badge_kind: crate::workspace::sidebar::badge_kind(&i.badge),
+                rc: i.rc,
                 unread: i.badge.count,
                 hidden: !e.sub.as_ref().is_some_and(|s| s.open),
                 archived: i.archived,
@@ -615,20 +622,57 @@ impl QuickSwitcher {
             ),
         };
         let src = ctx.images.avatar(ctx.server_id, ctx.server, &av, &name);
-        let mut line = row![
-            avatar(src, 24.0, AvatarShape::Rounded),
-            icon::sized(kind_icon, 14.0).style(style::text_secondary),
-            text(name)
-                .size(TEXT_BODY)
-                .wrapping(iced::widget::text::Wrapping::None)
-                .width(Length::Fill),
-        ]
-        .spacing(SPACE_2)
-        .align_y(Alignment::Center);
+        let rc = local_rc(item, ctx.config.ui.indicator_scheme);
+        let name = text(name)
+            .size(TEXT_BODY)
+            .wrapping(iced::widget::text::Wrapping::None)
+            .width(Length::Fill);
+        let (kind_icon, name) = match rc {
+            // Rocket.Chat's navbar search: the sidebar row's highlighted name.
+            Some(b) => {
+                let look = rustket_ui::theme::IndicatorLook::RocketChat;
+                let colors = move |theme: &iced::Theme| {
+                    row_colors(rustket_ui::theme::tokens(theme), look, b.highlighted, false)
+                };
+                (
+                    icon::sized(kind_icon, 14.0).style(move |theme: &iced::Theme| {
+                        iced::widget::text::Style {
+                            color: Some(colors(theme).icon),
+                        }
+                    }),
+                    name.font(row_fonts(look, b.highlighted).0).style(
+                        move |theme: &iced::Theme| iced::widget::text::Style {
+                            color: Some(colors(theme).title),
+                        },
+                    ),
+                )
+            }
+            None => (
+                icon::sized(kind_icon, 14.0).style(style::text_secondary),
+                name,
+            ),
+        };
+        let mut line = row![avatar(src, 24.0, AvatarShape::Rounded), kind_icon, name,]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center);
         if let Some(h) = hint {
             line = line.push(text(h).size(TEXT_CAPTION).style(style::text_hint));
         }
-        if let Item::Local {
+        if let Some(b) = rc {
+            // The full counter in the content palette, never a dot.
+            if let Some(kind) = b.kind() {
+                line = line.push(tooltip(
+                    badge_in(
+                        b.count,
+                        crate::workspace::sidebar::widget_kind(kind),
+                        BadgePlace::Content,
+                        BadgeCap::None,
+                    ),
+                    crate::workspace::sidebar::rc_unread_title(&b.title),
+                    TooltipPosition::Bottom,
+                ));
+            }
+        } else if let Item::Local {
             unread,
             badge_kind: Some(kind),
             ..
@@ -659,6 +703,15 @@ fn kind_icon(k: RoomKind) -> Icon {
         RoomKind::Discussion => Icon::MessagesSquare,
         RoomKind::Team { .. } => Icon::Users,
         RoomKind::Omnichannel => Icon::Headset,
+    }
+}
+
+/// The Rocket.Chat badge a sidebar room's row draws under `scheme`; `None`
+/// under Rustket (the sidebar's own counter or dot).
+fn local_rc(item: &Item, scheme: IndicatorScheme) -> Option<RcBadge> {
+    match item {
+        Item::Local { rc, .. } if scheme == IndicatorScheme::RocketChat => Some(*rc),
+        _ => None,
     }
 }
 
@@ -1057,5 +1110,25 @@ mod tests {
             let a = qs.update(Message::Submit, ctx);
             assert!(matches!(&a.effects[..], [Effect::OpenRoom(r), Effect::Close] if r == "r2"));
         });
+    }
+
+    /// Sidebar rooms draw the RC badge under Rocket.Chat only.
+    #[test]
+    fn local_rows_take_the_rc_badge_per_scheme() {
+        let ws = ws();
+        let opts = RoomListOptions {
+            scheme: IndicatorScheme::RocketChat,
+            ..Default::default()
+        };
+        let r = results(&ws, &opts, "devops", None);
+        let b = local_rc(&r[0], IndicatorScheme::RocketChat).unwrap();
+        assert_eq!(b.count, 3);
+        assert!(b.kind().is_some());
+        assert_eq!(local_rc(&r[0], IndicatorScheme::Rustket), None);
+        let user = Item::User {
+            username: "x".into(),
+            name: "x".into(),
+        };
+        assert_eq!(local_rc(&user, IndicatorScheme::RocketChat), None);
     }
 }

@@ -7,7 +7,8 @@ use iced::widget::{Column, container};
 use iced::{Element, Length, Subscription, Task};
 use rust_i18n::t;
 use rustket_core::config::{
-    AppConfig, Density, Language, SidebarSort, Theme as ThemePref, ThreadsMode, UiPrefs, ZOOM_RANGE,
+    AppConfig, Density, IndicatorScheme, Language, SidebarSort, Theme as ThemePref, ThreadsMode,
+    UiPrefs, ZOOM_RANGE,
 };
 use rustket_core::secrets::SecretBackend;
 use rustket_ui::icon::Icon;
@@ -183,6 +184,8 @@ pub enum Message {
     ReloadThemes,
     OpenThemesFolder,
     SetDensity(Density),
+    /// Unread indicators: Rustket's own or Rocket.Chat's.
+    SetIndicatorScheme(IndicatorScheme),
     /// Zoom in (`1`), out (`-1`) or reset (`0`).
     Zoom(i8),
     SetShowAvatars(bool),
@@ -405,6 +408,8 @@ impl Settings {
             Message::ReloadThemes => Action::effect(Effect::ApplyTheme { rescan: true }),
             Message::OpenThemesFolder => Action::effect(Effect::OpenThemesFolder),
             Message::SetDensity(v) => Self::pref(ctx, |p| p.density = v),
+            Message::SetIndicatorScheme(v) => Self::pref(ctx, |p| p.indicator_scheme = v)
+                .with(Effect::ApplyTheme { rescan: false }),
             Message::Zoom(dir) => Self::pref(ctx, |p| p.zoom = zoom_step(p.zoom, dir)),
             Message::SetShowAvatars(v) => Self::pref(ctx, |p| p.show_avatars = v),
             Message::SetUnreadOnTop(v) => Self::pref(ctx, |p| p.unread_on_top = v),
@@ -716,6 +721,18 @@ mod tests {
             assert!(
                 matches!(a.effects.as_slice(), [Effect::SaveConfig]),
                 "{msg:?}"
+            );
+        }
+        // The indicator look switches at once, like the theme.
+        for scheme in [IndicatorScheme::Rustket, IndicatorScheme::RocketChat] {
+            let a = run(&mut s, &mut cfg, Message::SetIndicatorScheme(scheme));
+            assert_eq!(cfg.ui.indicator_scheme, scheme);
+            assert!(
+                matches!(
+                    a.effects.as_slice(),
+                    [Effect::SaveConfig, Effect::ApplyTheme { rescan: false }]
+                ),
+                "{scheme:?}"
             );
         }
     }

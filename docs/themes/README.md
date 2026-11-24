@@ -103,6 +103,36 @@ template (`surface_sidebar`, `text_hint`, `badge_unread`, …) and `flag`, an
 array of exactly six colours (red, orange, yellow, green, blue, purple
 flag marks). Overrides win over everything derived from the palette.
 
+### Rocket.Chat indicator tokens
+
+The `rc_*` tokens colour unread and mention indicators while **Settings →
+Appearance → Unread indicators** is set to "Rocket.Chat". They copy the
+stock Rocket.Chat 8.9 web client and its desktop app, so they are never
+derived from the palette seeds, never nudged for contrast and not part of
+the contrast warnings (some of Rocket.Chat's own colours are below AA).
+Override them in `[light.tokens]` / `[dark.tokens]` like any other token.
+Under the "Rustket" setting they are not used.
+
+| Token | Light | Dark | Used for |
+|-------|-------|------|----------|
+| `rc_sidebar_danger` | `#B43C4C` | `#B43C4C` | room list badges: mentions (Rocket.Chat's room list is dark in every theme) |
+| `rc_sidebar_warning` | `#955828` | `#955828` | room list: @all / @here |
+| `rc_sidebar_primary` | `#2C65BA` | `#2C65BA` | room list: unread threads |
+| `rc_sidebar_secondary` | `#6C737A` | `#6C737A` | room list: other unread messages |
+| `rc_danger` | `#EC0D2A` | `#B43C4C` | badges and dots in the room area: mentions; the highlight-word mark |
+| `rc_warning` | `#F38C39` | `#955828` | room area: @all / @here |
+| `rc_primary` | `#156FF5` | `#2C65BA` | room area: unread threads |
+| `rc_secondary` | `#6C737A` | `#6C737A` | room area: other unread messages |
+| `rc_badge_fg` | `#FFFFFF` | `#FFFFFF` | text on every badge; text of the highlight-word mark |
+| `rc_button_primary` | `#156FF5` | `#095AD2` | the filled thread button while the thread is unread |
+| `rc_mention_me` | `#9B1325` | `#D88892` | mention text: you |
+| `rc_mention_other` | `#8E6300` | `#C7AA66` | mention text: another user or a team |
+| `rc_mention_all` | `#974809` | `#CA9163` | mention text: @all / @here |
+| `rc_mention_channel` | `#095AD2` | `#739EDE` | mention text: #channel |
+| `rc_jump_bg` | `#FFF8E0` | `#3C3625` | the message you jumped to, for 2 seconds |
+| `rc_ghost` | `#6C737A` | `#9EA2A8` | the workspace badge on the rail and title bar |
+| `rc_ghost_fg` | `#FFFFFF` | `#FFFFFF` | text and dot on the workspace badge |
+
 ### Fonts and corner radius
 
 `[fonts] ui` and `mono` name installed system font families. They apply to

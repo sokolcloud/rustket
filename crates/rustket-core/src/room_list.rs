@@ -9,6 +9,7 @@ use rocketchat::models::{Message, RoomType, UserStatus};
 
 use crate::config::{SidebarSort, UiPrefs};
 use crate::flags::FlagColor;
+use crate::indicators::{IndicatorScheme, RcBadge, rc_badge};
 use crate::sidebar_layout::{GroupType, Layout, MAX_STARRED_THREADS, SectionId, ThreadsMode};
 use crate::workspace::{RoomEntry, Workspace};
 
@@ -79,6 +80,9 @@ pub struct RoomListOptions {
     /// Threads whose parent the user starred show in Favorites (when the
     /// server allows starring and threads), not in Threads.
     pub starred_threads: bool,
+    /// The indicator scheme: under Rocket.Chat rows carry [`RoomListItem::rc`]
+    /// and the unread-first blocks follow [`RcBadge::marked`].
+    pub scheme: IndicatorScheme,
 }
 
 impl RoomListOptions {
@@ -94,6 +98,7 @@ impl RoomListOptions {
             kept_thread: None,
             open_thread: None,
             starred_threads: prefs.sidebar_starred_threads,
+            scheme: prefs.indicator_scheme,
         }
     }
 }
@@ -111,6 +116,7 @@ impl Default for RoomListOptions {
             kept_thread: None,
             open_thread: None,
             starred_threads: true,
+            scheme: IndicatorScheme::Rustket,
         }
     }
 }
@@ -291,6 +297,9 @@ pub struct RoomListItem {
     pub dm_status: Option<UserStatus>,
     pub avatar: Avatar,
     pub badge: Badge,
+    /// The Rocket.Chat badge; filled only under [`IndicatorScheme::RocketChat`]
+    /// (default otherwise).
+    pub rc: RcBadge,
     pub favorite: bool,
     /// The room's flag (never on omnichannel rooms).
     pub flag: Option<FlagColor>,
@@ -304,6 +313,18 @@ pub struct RoomListItem {
     pub has_draft: bool,
     pub last_activity: Option<RcDate>,
     pub preview: Option<Preview>,
+}
+
+impl RoomListItem {
+    /// The row shows something unread under scheme `s`: Rustket, a counter
+    /// or a dot; Rocket.Chat, [`RcBadge::marked`] (a counter, or an alert
+    /// that brightens the name).
+    pub fn marked(&self, s: IndicatorScheme) -> bool {
+        match s {
+            IndicatorScheme::Rustket => self.badge.count > 0 || self.badge.dot,
+            IndicatorScheme::RocketChat => self.rc.marked,
+        }
+    }
 }
 
 /// What a thread row shows as its title.
@@ -700,6 +721,10 @@ fn build_item(ws: &Workspace, e: &RoomEntry, opts: &RoomListOptions) -> RoomList
         dm_status,
         avatar,
         badge: badge(e),
+        rc: match opts.scheme {
+            IndicatorScheme::RocketChat => rc_badge(e),
+            IndicatorScheme::Rustket => RcBadge::default(),
+        },
         favorite: sub.is_some_and(|s| s.f),
         muted: sub.and_then(|s| s.disable_notifications) == Some(true),
         read_only: e.is_read_only(),
@@ -793,12 +818,13 @@ fn sort_items(
 }
 
 /// Whether `item` goes to the unread block of a section that lists unread
-/// rooms first: it has a counter or dot, or it is the open room kept there.
+/// rooms first: it is marked under `opts.scheme` ([`RoomListItem::marked`]),
+/// or it is the open room kept there.
 pub fn in_unread_block(item: &RoomListItem, opts: &RoomListOptions) -> bool {
     let kept = |rid: &str| {
         opts.kept_unread.as_deref() == Some(rid) || opts.kept_unread_first.as_deref() == Some(rid)
     };
-    item.badge.count > 0 || item.badge.dot || kept(&item.rid)
+    item.marked(opts.scheme) || kept(&item.rid)
 }
 
 fn sort_by_kind(items: &mut [RoomListItem], sort: SidebarSort) {

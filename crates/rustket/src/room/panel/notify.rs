@@ -176,7 +176,7 @@ impl Notify {
         }
     }
 
-    pub fn view<'a>(&'a self, _ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
+    pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
         let Some(f) = &self.form else {
             return common::empty(Icon::BellOff, t!("room_panel.not_member").into_owned());
         };
@@ -261,7 +261,7 @@ impl Notify {
                 .style(style::text_hint)
         };
 
-        let col = column![
+        let mut col = column![
             toggle(
                 t!("room_panel.receive_notifications").into_owned(),
                 Some(t!("room_panel.receive_notifications_hint").into_owned()),
@@ -280,54 +280,73 @@ impl Notify {
                 f.show_counter,
                 Flag::ShowCounter
             ),
-            toggle(
+        ];
+        if shows_mentions_toggle(ctx.prefs.indicator_scheme, f.show_counter) {
+            col = col.push(toggle(
                 t!("room_panel.show_mentions").into_owned(),
                 None,
                 f.show_mentions,
-                Flag::ShowMentions
-            ),
-            section(t!("room_panel.section_desktop").into_owned()),
-            alert(
+                Flag::ShowMentions,
+            ));
+        }
+        let col = col
+            .push(section(t!("room_panel.section_desktop").into_owned()))
+            .push(alert(
                 t!("room_panel.alert").into_owned(),
                 Channel::Desktop,
-                f.desktop
-            ),
-            common::field(
+                f.desktop,
+            ))
+            .push(common::field(
                 t!("room_panel.sound").into_owned(),
-                pick_list(sounds, selected_sound, |c: Choice<String>| Msg::Sound(
-                    c.value
-                ))
+                pick_list(sounds, selected_sound, |c: Choice<String>| {
+                    Msg::Sound(c.value)
+                })
                 .text_size(TEXT_BODY)
                 .width(Length::Fill)
                 .style(style::pick_list)
                 .menu_style(style::menu),
-            ),
-            section(t!("room_panel.section_mobile").into_owned()),
-            alert(
+            ))
+            .push(section(t!("room_panel.section_mobile").into_owned()))
+            .push(alert(
                 t!("room_panel.alert").into_owned(),
                 Channel::Mobile,
-                f.mobile
-            ),
-            section(t!("room_panel.section_email").into_owned()),
-            alert(t!("room_panel.alert").into_owned(), Channel::Email, f.email),
-            container(
-                primary_button(
-                    t!("room_panel.save").into_owned(),
-                    (self.form != self.saved).then_some(Msg::Save)
+                f.mobile,
+            ))
+            .push(section(t!("room_panel.section_email").into_owned()))
+            .push(alert(
+                t!("room_panel.alert").into_owned(),
+                Channel::Email,
+                f.email,
+            ))
+            .push(
+                container(
+                    primary_button(
+                        t!("room_panel.save").into_owned(),
+                        (self.form != self.saved).then_some(Msg::Save),
+                    )
+                    .loading(self.saving)
+                    .width(Length::Fill),
                 )
-                .loading(self.saving)
-                .width(Length::Fill)
+                .padding([SPACE_2, 0.0]),
             )
-            .padding([SPACE_2, 0.0]),
-        ]
-        .spacing(SPACE_3)
-        .padding(SPACE_4);
+            .spacing(SPACE_3)
+            .padding(SPACE_4);
         let _ = SPACE_1;
         scrollable(col)
             .height(Length::Fill)
             .style(style::scrollable)
             .into()
     }
+}
+
+/// Whether the room's "Show mention badges" toggle (`hideMentionStatus`)
+/// is offered: Rocket.Chat hides it while the unread counter is shown,
+/// where it has no visible effect (`NotificationPreferencesForm`).
+pub(crate) fn shows_mentions_toggle(
+    scheme: rustket_core::config::IndicatorScheme,
+    show_counter: bool,
+) -> bool {
+    scheme == rustket_core::config::IndicatorScheme::Rustket || !show_counter
 }
 
 #[cfg(test)]
@@ -375,5 +394,16 @@ mod tests {
         let saved = n.saved.clone().unwrap();
         assert!(saved.mute_group_mentions && saved.show_counter);
         assert_ne!(n.form, n.saved, "the second change still needs saving");
+    }
+
+    /// P17: Rocket.Chat hides "Show mention badges" while the counter is
+    /// shown; Rustket always offers it.
+    #[test]
+    fn mention_badges_toggle_follows_the_scheme() {
+        use rustket_core::config::IndicatorScheme;
+        assert!(shows_mentions_toggle(IndicatorScheme::Rustket, true));
+        assert!(shows_mentions_toggle(IndicatorScheme::Rustket, false));
+        assert!(!shows_mentions_toggle(IndicatorScheme::RocketChat, true));
+        assert!(shows_mentions_toggle(IndicatorScheme::RocketChat, false));
     }
 }

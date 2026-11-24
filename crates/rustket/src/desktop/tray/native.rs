@@ -11,7 +11,8 @@
 //!
 //! On macOS the icon is a template glyph (the menu bar tints it for light,
 //! dark and highlighted bars) with a dot or a ring for unread, see
-//! [`super::super::icon::menubar_png`]; Windows shows the coloured icon.
+//! [`super::super::icon::menubar_png`], and under the Rocket.Chat scheme the
+//! unread count as the menu bar title; Windows shows the coloured icon.
 
 use std::cell::RefCell;
 use std::sync::{LazyLock, Mutex};
@@ -23,7 +24,7 @@ use rust_i18n::t;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use super::{Message, TrayLevel, TrayState, pause_entries, status_label, tooltip};
+use super::{Message, Repaint, TrayArt, TrayState, pause_entries, status_label, tooltip};
 
 const ID_OPEN: &str = "open";
 const ID_QUIT: &str = "quit";
@@ -70,13 +71,13 @@ pub fn events() -> impl futures::Stream<Item = Message> {
     futures::stream::once(async { Message::Init }).chain(rx)
 }
 
-fn icon(level: TrayLevel) -> Option<Icon> {
+fn icon_art(art: TrayArt) -> Option<Icon> {
     // tray-icon draws an image taller than 22 px at 22 pt with its pixel
     // size taken as points, so the 44 px template is 22 pt, crisp at 2x.
     #[cfg(target_os = "macos")]
-    let (w, h, px) = super::super::icon::menubar_rgba(level)?;
+    let (w, h, px) = super::super::icon::menubar_rgba_art(art)?;
     #[cfg(windows)]
-    let (w, h, px) = super::super::icon::rgba(ICON_SIZE, level)?;
+    let (w, h, px) = super::super::icon::rgba_art(ICON_SIZE, art)?;
     Icon::from_rgba(px, w, h)
         .inspect_err(|e| tracing::debug!(error = %e, "bad tray icon"))
         .ok()
@@ -210,7 +211,7 @@ pub fn create(state: &TrayState) -> bool {
             .with_tooltip(tooltip_text(state))
             .with_menu(Box::new(menu(state)))
             .with_menu_on_left_click(false);
-        if let Some(i) = icon(state.level) {
+        if let Some(i) = icon_art(state.art) {
             #[cfg(target_os = "macos")]
             {
                 builder = builder.with_icon_templated(i);
@@ -219,6 +220,10 @@ pub fn create(state: &TrayState) -> bool {
             {
                 builder = builder.with_icon(i);
             }
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(title) = super::menubar_title(state) {
+            builder = builder.with_title(title);
         }
         match builder.build() {
             Ok(icon) => {
@@ -247,29 +252,23 @@ pub fn apply(state: &TrayState) {
         let set = |i| n.icon.set_icon_templated(i);
         #[cfg(windows)]
         let set = |i| n.icon.set_icon(i);
-        if state.level != n.shown.level
-            && let Err(e) = set(icon(state.level))
+        let repaint = Repaint::of(&n.shown, state);
+        if repaint.icon
+            && let Err(e) = set(icon_art(state.art))
         {
             tracing::debug!(error = %e, "tray icon");
         }
-        let relabel = state.revision != n.shown.revision;
-        if (relabel || (state.unread, state.mentions) != (n.shown.unread, n.shown.mentions))
+        if repaint.tooltip
             && let Err(e) = n.icon.set_tooltip(Some(tooltip_text(state)))
         {
             tracing::debug!(error = %e, "tray tooltip");
         }
-        if (state.paused != n.shown.paused)
-            && let Err(e) = n.icon.set_tooltip(Some(tooltip_text(state)))
-        {
-            tracing::debug!(error = %e, "tray tooltip");
-        }
-        if relabel
-            || state.status != n.shown.status
-            || state.offered != n.shown.offered
-            || state.paused != n.shown.paused
-            || state.pause_labels != n.shown.pause_labels
-        {
+        if repaint.menu {
             n.icon.set_menu(Some(Box::new(menu(state))));
+        }
+        #[cfg(target_os = "macos")]
+        if repaint.title {
+            n.icon.set_title(super::menubar_title(state));
         }
         n.shown = state.clone();
     });

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 use std::collections::HashSet;
 
+use rustket_core::config::IndicatorScheme;
 use rustket_core::quiet::Quiet;
 use rustket_core::room_list::SectionKind;
 
@@ -8,7 +9,9 @@ use super::*;
 use crate::help::server::UnreadCount;
 
 fn cfg() -> AppConfig {
-    AppConfig::default()
+    let mut cfg = AppConfig::default();
+    cfg.ui.indicator_scheme = IndicatorScheme::Rustket;
+    cfg
 }
 
 fn env() -> HelpEnv {
@@ -1073,7 +1076,7 @@ fn monday(h: u32, m: u32) -> chrono::DateTime<chrono::Utc> {
 }
 
 fn env_at(cfg: &AppConfig, now: &chrono::DateTime<chrono::Utc>) -> HelpEnv {
-    HelpEnv::new(cfg, now, true, true, Some(AccountEnv::default()))
+    HelpEnv::new(cfg, now, true, true, true, Some(AccountEnv::default()))
 }
 
 /// A manual pause and off-hours at once: the cause that ends last, with its
@@ -1694,4 +1697,297 @@ fn windows_toasts_play_the_windows_sound() {
         evaluate(Code::M2, &cfg, &win).sound,
         Some(Sound::Plays(SoundKind::Message("chime".into())))
     );
+}
+
+// --- the Rocket.Chat scheme -------------------------------------------------
+
+fn rc_cfg() -> AppConfig {
+    let mut cfg = AppConfig::default();
+    cfg.ui.indicator_scheme = IndicatorScheme::RocketChat;
+    cfg
+}
+
+/// (count, kind) of a Rocket.Chat badge.
+fn rc_of(b: Option<RcBadge>) -> Option<(u64, BadgeVariant)> {
+    b.map(|b| (b.count, b.variant))
+}
+
+/// `AppConfig::default` is the Rocket.Chat scheme.
+#[test]
+fn the_default_config_is_rocketchat() {
+    let o = evaluate(Code::M1, &AppConfig::default(), &env());
+    assert_eq!(o.scheme, IndicatorScheme::RocketChat);
+    assert!(o.row.unwrap().rc.is_some());
+}
+
+/// Each M code under the Rocket.Chat scheme (dev-server facts): one grey,
+/// red, orange or no counter per room, full numbers, no dots, the highlighted
+/// name; RC's own window, tray and Dock; no row highlight in the feed.
+#[test]
+fn rocketchat_messages_under_the_defaults() {
+    let (cfg, env) = (rc_cfg(), env());
+    let o = |c| evaluate(c, &cfg, &env);
+
+    let m1 = o(Code::M1);
+    assert_eq!(m1.scheme, IndicatorScheme::RocketChat);
+    assert_eq!(row(&m1), (Some(BadgeKind::Mention), 1, true));
+    assert_eq!(m1.row.as_ref().unwrap().rc.unwrap().count, 1);
+    assert_eq!(m1.collapsed, None);
+    assert_eq!(rc_of(m1.rc_collapsed), Some((1, BadgeVariant::Mention)));
+    let p = m1.pinned.clone().unwrap();
+    assert_eq!(p.all_unreads, Some((1, BadgeKind::Unread)));
+    assert_eq!(p.activity, Some((1, BadgeKind::Mention)));
+    let icon = m1.account_icon.unwrap();
+    assert_eq!(icon.badge, None);
+    assert_eq!(icon.rc, Some(WorkspaceBadge::Ghost(1)));
+    assert_eq!(m1.window, None);
+    let w = m1.rc_window.clone().unwrap();
+    assert_eq!(w.rc.unread, 1);
+    assert_eq!(w.art, Some(TrayArt::RcCount(1)));
+    assert_eq!(w.title, "Rustket (1)");
+    assert_eq!(w.dock, "1");
+    let f = m1.feed.unwrap();
+    assert!(!f.highlighted);
+    assert_eq!(
+        m1.rc_feed,
+        Some(RcFeed {
+            chip: Some(RcChip::Me),
+            thread_dot: None
+        })
+    );
+    // The toast and the sound are shared.
+    assert_eq!(m1.toast, Some(SHOWN));
+
+    // M2: a DM is a grey counter, not red.
+    let m2 = o(Code::M2);
+    assert_eq!(row(&m2), (Some(BadgeKind::Unread), 1, true));
+    assert_eq!(rc_of(m2.rc_collapsed), Some((1, BadgeVariant::Unread)));
+    assert_eq!(m2.pinned.clone().unwrap().activity, None);
+    assert_eq!(m2.rc_window.unwrap().art, Some(TrayArt::RcCount(1)));
+
+    let m3 = o(Code::M3);
+    assert_eq!(row(&m3), (Some(BadgeKind::GroupMention), 1, true));
+    assert_eq!(m3.account_icon.unwrap().rc, Some(WorkspaceBadge::Ghost(1)));
+    assert_eq!(m3.rc_feed.unwrap().chip, Some(RcChip::All));
+    assert!(!m3.feed.unwrap().highlighted);
+
+    // M4: a red counter; the word is marked, the row is not highlighted.
+    let m4 = o(Code::M4);
+    assert_eq!(row(&m4), (Some(BadgeKind::Mention), 1, true));
+    let f = m4.feed.unwrap();
+    assert!(f.word_marked && !f.highlighted);
+    assert_eq!(m4.rc_feed.unwrap().chip, None);
+
+    // M5: no counter and no dot, only the highlighted name; the collapsed
+    // header counts the alert as 1; the bullet everywhere else.
+    let m5 = o(Code::M5);
+    assert_eq!(row(&m5), (None, 0, true));
+    assert_eq!(rc_of(m5.rc_collapsed), Some((1, BadgeVariant::Unread)));
+    assert_eq!(
+        m5.account_icon.unwrap().rc,
+        Some(WorkspaceBadge::GhostBullet)
+    );
+    let w = m5.rc_window.clone().unwrap();
+    assert!(w.rc.shows_bullet());
+    assert_eq!(w.art, Some(TrayArt::RcDot));
+    assert_eq!(w.title, "Rustket");
+    assert_eq!(w.dock, "•");
+    // Unread-first ordering still sees the room (`RcBadge::marked`).
+    assert!(m5.row.unwrap().rc.unwrap().marked);
+}
+
+#[test]
+fn rocketchat_threads_under_the_defaults() {
+    let (cfg, env) = (rc_cfg(), env());
+    let o = |c| evaluate(c, &cfg, &env);
+
+    let t1 = o(Code::T1);
+    assert_eq!(row(&t1), (Some(BadgeKind::Thread), 1, true));
+    let t = t1.thread_row.clone().unwrap();
+    // Presence is Rustket's, the colour Rocket.Chat's.
+    assert_eq!(t.unread, Some(BadgeVariant::Thread));
+    assert_eq!(t.kind, Some(BadgeKind::Thread));
+    assert_eq!(t.header_button, None);
+    assert_eq!(t.header_counter, Some((1, BadgeKind::Thread)));
+    assert_eq!(t1.rc_feed.unwrap().thread_dot, Some(BadgeKind::Thread));
+    assert_eq!(
+        t1.pinned.clone().unwrap().activity,
+        Some((1, BadgeKind::Thread))
+    );
+    // A thread reply adds no unread: the bullet.
+    assert_eq!(t1.rc_window.unwrap().art, Some(TrayArt::RcDot));
+
+    let t2 = o(Code::T2);
+    assert_eq!(row(&t2), (Some(BadgeKind::Mention), 1, true));
+    let t = t2.thread_row.clone().unwrap();
+    assert_eq!(t.kind, Some(BadgeKind::Mention));
+    assert_eq!(t.header_counter, Some((1, BadgeKind::Mention)));
+    assert!(!t2.feed.unwrap().highlighted);
+
+    // Threads beat @all in the room's counter; the thread itself is orange.
+    let t3 = o(Code::T3);
+    assert_eq!(row(&t3), (Some(BadgeKind::Thread), 1, true));
+    let t = t3.thread_row.clone().unwrap();
+    assert_eq!(t.kind, Some(BadgeKind::GroupMention));
+    assert_eq!(t.header_counter, Some((1, BadgeKind::GroupMention)));
+    assert_eq!(
+        t3.rc_feed.unwrap().thread_dot,
+        Some(BadgeKind::GroupMention)
+    );
+
+    // With the Threads section on, its collapsed header counts the thread.
+    let mut cfg = rc_cfg();
+    cfg.ui.sidebar_threads = ThreadsMode::Unread;
+    let t2 = evaluate(Code::T2, &cfg, &env);
+    assert_eq!(t2.collapsed_threads, None);
+    assert_eq!(
+        rc_of(t2.rc_collapsed_threads),
+        Some((1, BadgeVariant::Mention))
+    );
+}
+
+/// R1–R4 under Rocket.Chat: R1 and R4 change nothing visible, R2 keeps only
+/// the mention counters, R3 alone changes nothing.
+#[test]
+fn rocketchat_matrix() {
+    let (cfg, env) = (rc_cfg(), env());
+    let m = matrix(&cfg, &env);
+    let cell = |code: Code, col: usize| {
+        let (_, cells) = m.iter().find(|(c, _)| *c == code).unwrap();
+        let r = &cells[col].row;
+        (r.kind, r.count, r.bold)
+    };
+    let as_is = |code| cell(code, 0);
+    for code in MATRIX_CODES {
+        // R1, R3 and R4 look like "as is".
+        for col in [1, 3, 4] {
+            assert_eq!(cell(code, col), as_is(code), "{code:?} column {col}");
+        }
+    }
+    // R2: mentions keep their counter, without the highlighted name; the rest
+    // disappears.
+    assert_eq!(cell(Code::M1, 2), (Some(BadgeKind::Mention), 1, false));
+    assert_eq!(cell(Code::M3, 2), (Some(BadgeKind::GroupMention), 1, false));
+    assert_eq!(cell(Code::M2, 2), (None, 0, false));
+    assert_eq!(cell(Code::M5, 2), (None, 0, false));
+    assert_eq!(cell(Code::T1, 2), (None, 0, false));
+    assert_eq!(cell(Code::T2, 2), (Some(BadgeKind::Mention), 1, false));
+    // R1 still blocks the server's notification.
+    let (_, cells) = m.iter().find(|(c, _)| *c == Code::M1).unwrap();
+    assert!(cells[0].server_toast && !cells[1].server_toast);
+}
+
+/// The legend lists the Rocket.Chat kinds only (no grey Muted, no dots on
+/// room rows), with the header's Threads counter.
+#[test]
+fn rocketchat_legend() {
+    let (cfg, env) = (rc_cfg(), env());
+    let legend = legend(&cfg, &env);
+    let kinds: Vec<BadgeKind> = legend.iter().map(|(k, _)| *k).collect();
+    assert!(!kinds.contains(&BadgeKind::Muted), "{kinds:?}");
+    for k in [
+        BadgeKind::Mention,
+        BadgeKind::Unread,
+        BadgeKind::GroupMention,
+        BadgeKind::Thread,
+    ] {
+        assert!(kinds.contains(&k), "{k:?} missing");
+    }
+    let uses: Vec<&KindUse> = legend.iter().flat_map(|(_, u)| u).collect();
+    assert!(
+        !uses.iter().any(|u| u.surface == Surface::Row && u.dot),
+        "a room row dot"
+    );
+    assert!(
+        !uses.iter().any(|u| u.surface == Surface::AccountIcon),
+        "the grey workspace badge has no kind"
+    );
+    assert!(
+        uses.iter()
+            .any(|u| u.code == Code::T3 && u.surface == Surface::ThreadsButton && !u.dot)
+    );
+    // Drafts on time are grey, not Muted.
+    let d1 = evaluate(Code::D1, &cfg, &env);
+    assert_eq!(d1.scheme, IndicatorScheme::RocketChat);
+    assert_eq!(
+        d1.pinned.unwrap().drafts_on_time,
+        Some((1, BadgeKind::Unread))
+    );
+}
+
+/// The account's "Unread Tray Icon Alert" off: an alert alone shows
+/// nothing on the tray, the Dock or the workspace icon.
+#[test]
+fn rocketchat_unread_alert_preference() {
+    let cfg = rc_cfg();
+    let mut env = env();
+    assert!(acc(&mut env).prefs.unread_alert);
+    acc(&mut env).prefs.unread_alert = false;
+    let m5 = evaluate(Code::M5, &cfg, &env);
+    let w = m5.rc_window.unwrap();
+    assert!(!w.rc.any());
+    assert_eq!(w.art, Some(TrayArt::Plain));
+    assert_eq!(w.dock, "");
+    assert_eq!(m5.account_icon.unwrap().rc, Some(WorkspaceBadge::None));
+    // A counted message still shows its number.
+    let m1 = evaluate(Code::M1, &cfg, &env);
+    assert_eq!(m1.rc_window.unwrap().art, Some(TrayArt::RcCount(1)));
+    // No tray: no art; the window icon is badged on its own.
+    env.tray = false;
+    let w = evaluate(Code::M1, &cfg, &env).rc_window.unwrap();
+    assert_eq!(w.art, None);
+    assert_eq!(w.icon, Some(TrayArt::RcCount(1)));
+    // Wayland: the tray only.
+    env.tray = true;
+    env.window_icon = false;
+    let w = evaluate(Code::M1, &cfg, &env).rc_window.unwrap();
+    assert_eq!(w.art, Some(TrayArt::RcCount(1)));
+    assert_eq!(w.icon, None);
+}
+
+/// M2 on a server whose DMs count mentions only (`Unread_Count_DM =
+/// mentions_only`): no counter, only the highlighted name.
+#[test]
+fn rocketchat_dm_mentions_only() {
+    let mut settings = rustket_core::settings::Settings::new();
+    settings.set_value("Unread_Count_DM", "mentions_only".into());
+    let facts = crate::help::server::ServerFacts::from_settings(&settings);
+    assert_ne!(facts.unread_count_dm, UnreadCount::AllMessages);
+    let cfg = rc_cfg();
+    let mut env = env();
+    assert_eq!(
+        row(&evaluate(Code::M2, &cfg, &env)),
+        (Some(BadgeKind::Unread), 1, true)
+    );
+    acc(&mut env).server = facts;
+    assert_eq!(row(&evaluate(Code::M2, &cfg, &env)), (None, 0, true));
+}
+
+/// The Rocket.Chat outcomes are the app's own: the sidebar row, collapsed
+/// header and Threads counter functions give the same values.
+#[test]
+fn rocketchat_outcomes_agree_with_the_app() {
+    let (cfg, env) = (rc_cfg(), env());
+    for code in [Code::M1, Code::M3, Code::T2, Code::T3] {
+        let o = evaluate(code, &cfg, &env);
+        let sub = &o.server.as_ref().unwrap().sub;
+        let rc = rustket_core::indicators::rc_badge_of(UnreadInfo::of(sub));
+        assert_eq!(o.row.as_ref().unwrap().rc, Some(rc), "{code:?}");
+        if let Some(t) = &o.thread_row {
+            assert_eq!(
+                t.header_counter,
+                rustket_core::indicators::rc_threads_button(sub)
+                    .map(|(n, v)| (n, sidebar::widget_kind(v))),
+                "{code:?}"
+            );
+            assert_eq!(
+                o.rc_feed.unwrap().thread_dot,
+                crate::room::timeline::parent_thread_kind(
+                    Some(sub),
+                    TMID,
+                    IndicatorScheme::RocketChat
+                )
+            );
+        }
+    }
 }

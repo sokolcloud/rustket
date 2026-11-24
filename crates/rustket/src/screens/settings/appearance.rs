@@ -4,7 +4,7 @@
 use iced::widget::{button, row, text};
 use iced::{Alignment, Element, Length};
 use rust_i18n::t;
-use rustket_core::config::{Density, Theme as ThemePref, ZOOM_RANGE};
+use rustket_core::config::{Density, IndicatorScheme, Theme as ThemePref, ZOOM_RANGE};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_2, TEXT_BODY, TEXT_SUBTITLE};
 use rustket_ui::widget::{focus_ring, secondary_button};
@@ -83,6 +83,24 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
                         ),
                     ],
                     Message::SetDensity,
+                ),
+            ),
+            field(
+                t!("settings.indicator_scheme").into_owned(),
+                Some(t!("settings.indicator_scheme_help").into_owned()),
+                segmented(
+                    &ui.indicator_scheme,
+                    vec![
+                        (
+                            IndicatorScheme::Rustket,
+                            t!("settings.indicator_scheme_rustket").into_owned(),
+                        ),
+                        (
+                            IndicatorScheme::RocketChat,
+                            t!("settings.indicator_scheme_rocketchat").into_owned(),
+                        ),
+                    ],
+                    Message::SetIndicatorScheme,
                 ),
             ),
             field(t!("settings.zoom").into_owned(), None, zoom.into()),

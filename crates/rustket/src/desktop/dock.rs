@@ -1,12 +1,27 @@
 //! The Dock tile badge (macOS): the number of mentions (a DM counts as one);
-//! nothing for `@all` alone or quiet unread (only mentions are loud).
+//! nothing for `@all` alone or quiet unread (only mentions are loud). Under
+//! the Rocket.Chat scheme: the desktop app's total unread or "•".
 
+use rustket_core::indicators::RcSignal;
 use rustket_core::room_list::WorkspaceSignal;
 
 /// The badge text for the unread signal over all accounts ("99+" above 99).
 pub fn badge_label(signal: &WorkspaceSignal) -> Option<String> {
     (signal.mentions > 0)
         .then(|| rustket_ui::widget::badge_label(crate::format::count_u32(signal.mentions)))
+}
+
+/// The badge text under the Rocket.Chat scheme, as the desktop app sets it:
+/// the full unread number over all accounts (no cap), "•" for an alert with
+/// nothing counted, else empty (no badge).
+pub fn badge_label_rc(rc: RcSignal) -> String {
+    if rc.unread > 0 {
+        rc.unread.to_string()
+    } else if rc.bullet {
+        "•".to_owned()
+    } else {
+        String::new()
+    }
 }
 
 /// Sets (or clears) the Dock badge. Main thread only (iced `update`).
@@ -52,5 +67,14 @@ mod tests {
             badge_label(&sig(250, Some(BadgeVariant::Mention), 5)).as_deref(),
             Some("99+")
         );
+    }
+
+    #[test]
+    fn rc_badge_is_the_full_number_or_a_bullet() {
+        let rc = |unread, bullet| RcSignal { unread, bullet };
+        assert_eq!(badge_label_rc(rc(0, false)), "");
+        assert_eq!(badge_label_rc(rc(0, true)), "•");
+        assert_eq!(badge_label_rc(rc(3, true)), "3");
+        assert_eq!(badge_label_rc(rc(1234, false)), "1234");
     }
 }

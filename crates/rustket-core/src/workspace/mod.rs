@@ -660,6 +660,27 @@ impl Workspace {
         local_override.unwrap_or_else(|| self.settings.use_real_name())
     }
 
+    /// A `/me` preference (`settings.preferences.<key>`).
+    fn preference(&self, key: &str) -> Option<&serde_json::Value> {
+        self.me.as_ref()?.preferences()?.get(key)
+    }
+
+    /// The account's "Unread Tray Icon Alert" (`unreadAlert`, default true):
+    /// whether an alert alone gives Rocket.Chat's "•" bullet.
+    pub fn unread_alert_pref(&self) -> bool {
+        self.preference("unreadAlert")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+    }
+
+    /// The account's `mentionsWithSymbol` (default false): Rocket.Chat
+    /// prints mentions with their "@" / "#".
+    pub fn mentions_with_symbol(&self) -> bool {
+        self.preference("mentionsWithSymbol")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    }
+
     // --- drafts -------------------------------------------------------------------
 
     /// Stores a draft; empty text removes it.

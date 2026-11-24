@@ -44,3 +44,11 @@ pub fn hide_if_minimized() -> Task<bool> {
         None => Task::done(false),
     })
 }
+
+/// Sets the window icon.
+pub fn set_icon<T: Send + 'static>(icon: iced::window::Icon) -> Task<T> {
+    window::latest().then(move |id| match id {
+        Some(id) => window::set_icon(id, icon.clone()),
+        None => Task::none(),
+    })
+}

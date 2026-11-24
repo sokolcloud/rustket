@@ -1,7 +1,7 @@
 //! Timeline pieces: separators, reactions, emoji.
 
-use iced::widget::{Text, button, container, row, text};
-use iced::{Alignment, Element, Length, Theme};
+use iced::widget::{Text, button, container, row, rule, text};
+use iced::{Alignment, Element, Theme};
 
 use super::misc::divider;
 use crate::style;
@@ -28,13 +28,13 @@ pub fn date_separator<'a, Message: 'a>(label: impl Into<String>) -> Element<'a, 
 
 /// Red "Unread messages" line with the label on the right.
 pub fn unread_separator<'a, Message: 'a>(label: impl Into<String>) -> Element<'a, Message> {
-    let line = container(iced::widget::space().height(1))
-        .width(Length::Fill)
-        .height(1)
-        .style(|theme: &Theme| container::Style {
-            background: Some(tokens(theme).danger.into()),
-            ..container::Style::default()
-        });
+    // A rule rounds its y when drawn: a crisp line at a fractional offset.
+    let line = rule::horizontal(1).style(|theme: &Theme| rule::Style {
+        color: tokens(theme).danger,
+        radius: 0.0.into(),
+        fill_mode: rule::FillMode::Full,
+        snap: true,
+    });
     row![
         line,
         container(

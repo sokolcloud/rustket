@@ -205,13 +205,44 @@ pub fn entry_counts(e: &RoomEntry) -> InboxCounts {
         .flatten()
         .filter(|t| room_list::thread_unread(s, t) == Some(BadgeVariant::GroupMention))
         .count() as u64;
-    if e.room_type() != RoomType::Direct {
-        c.mentions += s.user_mentions;
-        if group_mentions_count(s) {
-            c.group_mentions += s.group_mentions;
-        }
-    }
+    let (user, group) = main_mentions(e, s);
+    c.mentions += user;
+    c.group_mentions += group;
     c
+}
+
+/// The main-timeline (user, group) mentions [`entry_counts`] adds to its
+/// thread mentions (none in DMs).
+fn main_mentions(e: &RoomEntry, s: &rocketchat::models::Subscription) -> (u64, u64) {
+    if e.room_type() == RoomType::Direct {
+        return (0, 0);
+    }
+    let group = if group_mentions_count(s) {
+        s.group_mentions
+    } else {
+        0
+    };
+    (s.user_mentions, group)
+}
+
+/// The Rocket.Chat Activity counter: the unread threads plus the
+/// main-timeline mentions. Thread mentions are already among the threads
+/// (RC counts `unread + len(tunread)`, mentions being a subset of it).
+pub fn rc_activity_total(ws: &Workspace) -> u64 {
+    ws.rooms()
+        .values()
+        .filter(|e| shown(ws, e))
+        .map(|e| {
+            let threads = entry_counts(e).threads;
+            match e.sub.as_ref() {
+                Some(s) if s.hide_mention_status != Some(true) => {
+                    let (user, group) = main_mentions(e, s);
+                    threads + user + group
+                }
+                _ => threads,
+            }
+        })
+        .sum()
 }
 
 /// The room's `@all` / `@here` mentions count (orange): not muted, and the

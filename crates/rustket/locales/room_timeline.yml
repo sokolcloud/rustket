@@ -581,3 +581,21 @@ room_timeline.remind_removed:
   es: "Recordatorio quitado"
   th: "ลบการเตือนแล้ว"
   zh: "提醒已删除"
+room_timeline.rc_thread_dot_mention:
+  en: "Mentions you"
+  ru: "Упоминает вас"
+  es: "Te menciona"
+  th: "กล่าวถึงคุณ"
+  zh: "提及你"
+room_timeline.rc_thread_dot_all:
+  en: "Mention All"
+  ru: "Упоминать всех"
+  es: "Mencionar a todos"
+  th: "กล่าวถึงทั้งหมด"
+  zh: "提及所有"
+room_timeline.rc_thread_dot_unread:
+  en: "Unread"
+  ru: "Не прочитано"
+  es: "No leído"
+  th: "ไม่ได้อ่าน"
+  zh: "未读"

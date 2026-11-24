@@ -12,6 +12,7 @@ use rust_i18n::t;
 use rustket_core::config::UiPrefs;
 use rustket_core::inbox::feeds::FeedState;
 use rustket_core::inbox::{ActivityFilter, ActivityItem, PendingMentions, Tier, UnreadRoom};
+use rustket_core::indicators::{IndicatorScheme, rc_badge};
 use rustket_core::room_list::{self, Avatar, ThreadListItem};
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::{self, Icon};
@@ -20,9 +21,10 @@ use rustket_ui::theme::{
     SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, TEXT_SMALL, font_semibold,
 };
 use rustket_ui::widget::{
-    AvatarShape, BadgeKind, ButtonSize, MessageRowProps, TooltipPosition, avatar, badge, divider,
-    dot, ellipsis, empty_state, header_bar, icon_button, icon_button_with, message_row,
-    message_toolbar, modal_keyed, primary_button, secondary_button, spinner, tooltip,
+    AvatarShape, BadgeCap, BadgeKind, BadgePlace, ButtonSize, MessageRowProps, TooltipPosition,
+    avatar, badge, badge_in, divider, dot, dot_in, ellipsis, empty_state, header_bar, icon_button,
+    icon_button_with, message_row, message_toolbar, modal_keyed, primary_button, secondary_button,
+    spinner, tooltip,
 };
 
 use super::{InboxKind, InboxScreen, InboxState, Msg, ROOMS_PAGE};
@@ -72,6 +74,10 @@ impl<'a> Ctx<'a> {
             panel: None,
             now: self.now,
         }
+    }
+
+    fn rc(&self) -> bool {
+        self.prefs.indicator_scheme == IndicatorScheme::RocketChat
     }
 
     fn use_real(&self) -> bool {
@@ -131,6 +137,29 @@ fn room_badge(r: &UnreadRoom) -> Option<Element<'static, Msg>> {
     } else {
         container(dot(kind, 8.0)).padding([0.0, SPACE_1]).into()
     })
+}
+
+/// The room's badge under the Rocket.Chat scheme: its full counter in the
+/// content palette with the itemised tooltip; never a dot.
+fn room_badge_rc(ws: &Workspace, rid: &str) -> Option<Element<'static, Msg>> {
+    let b = ws.room(rid).map(rc_badge)?;
+    let kind = crate::workspace::sidebar::widget_kind(b.kind()?);
+    Some(tip(
+        badge_in(b.count, kind, BadgePlace::Content, BadgeCap::None),
+        crate::workspace::sidebar::rc_unread_title(&b.title),
+    ))
+}
+
+/// Whether a view's message row takes the mention tint: Rustket's row
+/// highlight; Rocket.Chat tints no row for a mention.
+fn mention_tint(scheme: IndicatorScheme, ws: &Workspace, m: &RcMessage) -> bool {
+    scheme == IndicatorScheme::Rustket && crate::room::timeline::row::highlights_in(ws, m)
+}
+
+/// A mention or thread dot of the views (content palette under
+/// Rocket.Chat).
+fn kind_dot(kind: BadgeKind) -> Element<'static, Msg> {
+    dot_in(kind, 8.0, BadgePlace::Content)
 }
 
 fn tip(content: Element<'static, Msg>, label: String) -> Element<'static, Msg> {
@@ -300,7 +329,12 @@ impl InboxScreen {
         .align_y(Alignment::Center);
         // The badge sits with the actions: the name (`Fill`) takes the
         // row up to them (a badge after a short name floated mid-row).
-        if let Some(b) = room_badge(r) {
+        let b = if c.rc() {
+            room_badge_rc(c.workspace, &r.rid)
+        } else {
+            room_badge(r)
+        };
+        if let Some(b) = b {
             head = head.push(b);
         }
         if !catch_up {
@@ -472,7 +506,7 @@ impl InboxScreen {
             m: v,
         });
         let mut p = MessageRowProps::new(c.user_avatar(&username, &name, 36.0), name, time, body);
-        p.is_mention_highlight = crate::room::timeline::row::highlights_in(ws, m);
+        p.is_mention_highlight = mention_tint(c.prefs.indicator_scheme, ws, m);
         p.edited = m.edited_at.is_some();
         p.edited_label = t!("room_timeline.edited").into_owned();
         p.actions_toolbar = Some(message_toolbar(toolbar));
@@ -733,7 +767,7 @@ impl InboxScreen {
             BadgeKind::Mention
         };
         let place = container(
-            row![dot(kind, 8.0), caption(place)]
+            row![kind_dot(kind), caption(place)]
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center),
         )
@@ -819,7 +853,7 @@ impl InboxScreen {
             PendingMentions::Older => caption(t!("inbox.older_mentions").into_owned()),
         };
         let line = row![
-            dot(kind, 8.0),
+            kind_dot(kind),
             c.room_avatar(rid, 20.0),
             ellipsis(c.room_name(rid))
                 .size(TEXT_BODY)
@@ -840,7 +874,9 @@ impl InboxScreen {
                 .map(|k| t!(k).into_owned())
                 .unwrap_or_default(),
         };
-        let kind = crate::workspace::sidebar::thread_badge_kind(t).unwrap_or(BadgeKind::Thread);
+        let kind =
+            crate::workspace::sidebar::thread_kind_in(c.workspace, t, c.prefs.indicator_scheme)
+                .unwrap_or(BadgeKind::Thread);
         let vc = c.room_ctx(&t.rid);
         let mut meta = format!(
             "{} · {}",
@@ -857,7 +893,7 @@ impl InboxScreen {
             );
         }
         let main = row![
-            dot(kind, 8.0),
+            kind_dot(kind),
             icon::sized(Icon::MessageCircle, 16.0).style(style::text_secondary),
             column![
                 ellipsis(title).size(TEXT_BODY).font(font_semibold()),
@@ -918,4 +954,80 @@ fn thread_title(ws: &Workspace, tmid: &str) -> String {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod rc_tests {
+    use super::*;
+    use rocketchat::models::{Mention, Room, RoomType, Subscription, User, UserRef};
+    use rustket_core::Change;
+
+    fn ws() -> Workspace {
+        let mut ws = Workspace::new();
+        ws.apply_me(User {
+            id: "me".into(),
+            username: Some("me".into()),
+            ..Default::default()
+        });
+        for (rid, unread) in [("hot", 2), ("read", 0)] {
+            ws.apply_room(
+                Change::Inserted,
+                Room {
+                    id: rid.into(),
+                    t: RoomType::Channel,
+                    name: Some(rid.into()),
+                    ..Default::default()
+                },
+            );
+            ws.apply_subscription(
+                Change::Inserted,
+                Subscription {
+                    id: format!("s-{rid}"),
+                    rid: rid.into(),
+                    name: rid.into(),
+                    t: RoomType::Channel,
+                    open: true,
+                    unread,
+                    user_mentions: unread,
+                    alert: unread > 0,
+                    u: UserRef {
+                        id: "me".into(),
+                        username: Some("me".into()),
+                        name: None,
+                    },
+                    ..Default::default()
+                },
+            );
+        }
+        ws
+    }
+
+    /// The views' room header draws the RC counter of an unread room only,
+    /// and a mention of the user tints its row under Rustket only.
+    #[test]
+    fn views_follow_the_scheme() {
+        let ws = ws();
+        assert!(room_badge_rc(&ws, "hot").is_some());
+        assert!(room_badge_rc(&ws, "read").is_none());
+        assert!(room_badge_rc(&ws, "missing").is_none());
+        let m = RcMessage {
+            id: "m".into(),
+            rid: "hot".into(),
+            msg: "@me hi".into(),
+            u: UserRef {
+                id: "bob".into(),
+                username: Some("bob".into()),
+                name: None,
+            },
+            mentions: Some(vec![Mention {
+                id: "me".into(),
+                username: Some("me".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert!(mention_tint(IndicatorScheme::Rustket, &ws, &m));
+        assert!(!mention_tint(IndicatorScheme::RocketChat, &ws, &m));
+    }
 }

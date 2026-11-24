@@ -71,6 +71,18 @@ desktop.tray_unread_mentions:
   es: "Menciones: %{mentions} · salas no leídas: %{count}"
   th: "การกล่าวถึง: %{mentions} · ห้องที่ยังไม่ได้อ่าน: %{count}"
   zh: "提及：%{mentions} · 未读聊天室：%{count}"
+desktop.tray_rc_unread:
+  en: "Unread messages: %{count}"
+  ru: "Непрочитанных сообщений: %{count}"
+  es: "Mensajes no leídos: %{count}"
+  th: "ข้อความที่ยังไม่ได้อ่าน: %{count}"
+  zh: "未读消息：%{count}"
+desktop.tray_rc_alert:
+  en: "Unread messages"
+  ru: "Есть непрочитанные сообщения"
+  es: "Hay mensajes no leídos"
+  th: "มีข้อความที่ยังไม่ได้อ่าน"
+  zh: "有未读消息"
 desktop.status_online:
   en: "Online"
   ru: "В сети"

@@ -14,6 +14,7 @@ use rust_i18n::t;
 use rustket_core::config::{Density, UiPrefs};
 use rustket_core::config::{SidebarSort, ThreadsMode};
 use rustket_core::flags::{FlagColor, FlagEdit};
+use rustket_core::indicators::{self, IndicatorScheme, RcBadge, UnreadInfo, UnreadTitle};
 use rustket_core::room_list::{
     self, Avatar, BadgeVariant, Preview, PreviewKind, RoomKind, RoomListItem, RoomListOptions,
     Section, SectionKind, ThreadListItem,
@@ -25,9 +26,9 @@ use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_BODY};
 use rustket_ui::widget::{
-    BadgeKind, MenuEntry, MenuItem, Presence, RoomListItemProps, TooltipPosition, context_menu,
-    empty_state, icon_button, keyed_list, reorder_area, room_list_item, section_header_full,
-    spinner, tooltip,
+    BadgeCap, BadgeKind, BadgePlace, MenuEntry, MenuItem, Presence, RoomListItemProps,
+    TooltipPosition, badge_in, context_menu, empty_state, icon_button, keyed_list, reorder_area,
+    room_list_item, section_header_full, section_header_rc, spinner, tooltip,
 };
 
 use crate::format::{count_u32, short_time};
@@ -377,7 +378,7 @@ fn row_key(rid: &str, p: &RoomListItemProps<Message>) -> u64 {
     p.title.hash(&mut h);
     p.subtitle.hash(&mut h);
     p.time.hash(&mut h);
-    (p.badge, p.count, p.bold).hash(&mut h);
+    (p.badge, p.count, p.bold, p.cap, &p.badge_tip).hash(&mut h);
     (p.is_muted, p.is_selected, p.typing).hash(&mut h);
     p.presence.hash(&mut h);
     p.icon.as_ref().map(std::mem::discriminant).hash(&mut h);
@@ -580,7 +581,7 @@ impl Sidebar {
         // with hidden unread status) keeps the row in an unread-first block
         // only, never moves it to the Unread section.
         let badged = !unread
-            && listed(&|s, i| layout.is_unread_first(&s.id) && (i.badge.count > 0 || i.badge.dot));
+            && listed(&|s, i| layout.is_unread_first(&s.id) && i.marked(prefs.indicator_scheme));
         self.kept_unread = unread.then(|| rid.to_owned());
         self.kept_unread_first = badged.then(|| rid.to_owned());
     }
@@ -1033,37 +1034,11 @@ impl Sidebar {
             } else if slot >= end {
                 after += HEADER_H;
             } else {
-                // A collapsed section still shows that something in it is unread.
-                let unread = collapsed
-                    .then(|| collapsed_unread_status(section))
-                    .flatten();
-                let status = if section.is(SectionKind::Threads) {
-                    self.thread_progress
-                        .map(progress_status)
-                        .or(unread)
-                        .or_else(|| {
-                            (section.threads_hidden > 0).then(|| {
-                                hidden_status(section.threads_hidden, layout.threads_limit)
-                            })
-                        })
+                let header = if ctx.prefs.indicator_scheme == IndicatorScheme::RocketChat {
+                    self.header_rc(section, collapsed, layout, ctx)
                 } else {
-                    unread.or_else(|| {
-                        (section.threads_hidden > 0).then(|| {
-                            hidden_status(
-                                section.threads_hidden,
-                                rustket_core::sidebar_layout::MAX_STARRED_THREADS as u32,
-                            )
-                        })
-                    })
+                    self.header_rustket(section, collapsed, layout)
                 };
-                let header = section_header_full(
-                    section_title(section),
-                    collapsed,
-                    Some(section.len() as u32),
-                    section.id.flag().map(FlagColor::index),
-                    status,
-                    Message::Toggle(section.id.clone()),
-                );
                 let menu = self.header_menu_at(section, i, &ids, collapsed, layout, ctx.prefs);
                 built.push((
                     section_key(&section.id),
@@ -1104,6 +1079,86 @@ impl Sidebar {
         })
         .on_auto_scroll(Message::AutoScroll)
         .into()
+    }
+
+    /// "+N" thread rows left out of `section` by its limit, if any.
+    fn hidden_threads(section: &Section, layout: &Layout) -> Option<Element<'static, Message>> {
+        let limit = if section.is(SectionKind::Threads) {
+            layout.threads_limit
+        } else {
+            rustket_core::sidebar_layout::MAX_STARRED_THREADS as u32
+        };
+        (section.threads_hidden > 0).then(|| hidden_status(section.threads_hidden, limit))
+    }
+
+    /// A section header under the Rocket.Chat scheme: no row count; a
+    /// collapsed section with something unread shows the counter and a bold
+    /// title; the Threads header shows the counter, then the loading
+    /// progress.
+    fn header_rc(
+        &self,
+        section: &Section,
+        collapsed: bool,
+        layout: &Layout,
+        ctx: &SidebarCtx<'_>,
+    ) -> Element<'static, Message> {
+        let unread = collapsed
+            .then(|| collapsed_rc(section, ctx.workspace))
+            .flatten();
+        let emphasis = unread.is_some();
+        let counter = unread.as_ref().map(collapsed_rc_status);
+        let progress = section
+            .is(SectionKind::Threads)
+            .then_some(self.thread_progress)
+            .flatten()
+            .map(progress_status);
+        let status = match (counter, progress) {
+            (Some(c), Some(p)) => Some(
+                row![c, p]
+                    .spacing(SPACE_1)
+                    .align_y(Alignment::Center)
+                    .into(),
+            ),
+            (c, p) => c.or(p),
+        }
+        .or_else(|| Self::hidden_threads(section, layout));
+        section_header_rc(
+            section_title(section),
+            collapsed,
+            section.id.flag().map(FlagColor::index),
+            status,
+            emphasis,
+            Message::Toggle(section.id.clone()),
+        )
+    }
+
+    /// A section header under the Rustket scheme.
+    fn header_rustket(
+        &self,
+        section: &Section,
+        collapsed: bool,
+        layout: &Layout,
+    ) -> Element<'static, Message> {
+        // A collapsed section still shows that something in it is unread.
+        let unread = collapsed
+            .then(|| collapsed_unread_status(section))
+            .flatten();
+        let status = if section.is(SectionKind::Threads) {
+            self.thread_progress
+                .map(progress_status)
+                .or(unread)
+                .or_else(|| Self::hidden_threads(section, layout))
+        } else {
+            unread.or_else(|| Self::hidden_threads(section, layout))
+        };
+        section_header_full(
+            section_title(section),
+            collapsed,
+            Some(section.len() as u32),
+            section.id.flag().map(FlagColor::index),
+            status,
+            Message::Toggle(section.id.clone()),
+        )
     }
 
     /// Context menu of `section`, the `i`-th of the listed sections `ids`.
@@ -1172,7 +1227,10 @@ impl Sidebar {
         p.time = item
             .last_activity
             .map(|ts| short_time(ts, chrono::Local::now(), ctx.prefs.clock_24h));
-        set_row_badge(&mut p, &item.badge);
+        match ctx.prefs.indicator_scheme {
+            IndicatorScheme::Rustket => set_row_badge(&mut p, &item.badge),
+            IndicatorScheme::RocketChat => set_row_badge_rc(&mut p, &item.rc),
+        }
         p.is_muted = item.muted;
         p.is_selected = ctx.active_room == Some(item.rid.as_str());
         p.presence = item.dm_status.map(presence);
@@ -1305,6 +1363,62 @@ pub(crate) fn collapsed_unread(
         .map(|(k, n)| (widget_kind(k), n))
 }
 
+/// The Rocket.Chat counter of collapsed `section` (`rc_collapsed`): its room
+/// rows, and each unread thread row as one unread thread (a thread mention
+/// when its dot is red). A thread of a room listed in the section is already
+/// in that room's `tunread`. `None` when nothing counts.
+pub(crate) fn collapsed_rc(section: &Section, ws: &Workspace) -> Option<RcBadge> {
+    let threads = section
+        .threads
+        .iter()
+        .filter(|t| !section.items.iter().any(|i| i.rid == t.rid))
+        .filter_map(|t| {
+            thread_kind_in(ws, t, IndicatorScheme::RocketChat)
+                .map(|k| UnreadInfo::thread(core_kind(k)))
+        });
+    indicators::rc_collapsed(section.items.iter().map(|i| i.rc.info).chain(threads))
+}
+
+/// The status of a collapsed section under the Rocket.Chat scheme: the full
+/// counter in the sidebar palette, the itemised text in a tooltip.
+pub(crate) fn collapsed_rc_status(b: &RcBadge) -> Element<'static, Message> {
+    tooltip(
+        badge_in(
+            b.count,
+            widget_kind(b.variant),
+            BadgePlace::Sidebar,
+            BadgeCap::None,
+        ),
+        rc_unread_title(&b.title),
+        TooltipPosition::Bottom,
+    )
+}
+
+/// Rocket.Chat's itemised badge text (`getUnreadTitle`) in the current
+/// locale: "3 mentions, 2 unread threaded messages, 1 unread message".
+pub(crate) fn rc_unread_title(t: &UnreadTitle) -> String {
+    rc_unread_title_in(t, &rust_i18n::locale())
+}
+
+/// [`rc_unread_title`] in `locale`.
+pub(crate) fn rc_unread_title_in(t: &UnreadTitle, locale: &str) -> String {
+    let sep = t!("sidebar.rc_title_separator", locale = locale);
+    [
+        ("sidebar.rc_mentions", t.mentions),
+        ("sidebar.rc_threads", t.threads),
+        ("sidebar.rc_group", t.group_mentions),
+        ("sidebar.rc_unread", t.rest),
+    ]
+    .into_iter()
+    .filter(|(_, n)| *n > 0)
+    .map(|(key, n)| {
+        let form = crate::room::render::plural_for(locale, n);
+        t!(format!("{key}_{form}"), locale = locale, count = n).into_owned()
+    })
+    .collect::<Vec<_>>()
+    .join(&sep)
+}
+
 /// One pinned row: icon, label, the badge (counter or dot) and its
 /// tooltip with the shortcut; highlighted while its view is open.
 pub(crate) fn pinned_row<'a, M: Clone + 'a>(
@@ -1312,6 +1426,20 @@ pub(crate) fn pinned_row<'a, M: Clone + 'a>(
     label: String,
     shortcut: Option<String>,
     badge: Option<(u64, BadgeKind)>,
+    selected: bool,
+    on: M,
+) -> Element<'a, M> {
+    pinned_row_in(icon_, label, shortcut, badge, BadgeCap::At99, selected, on)
+}
+
+/// [`pinned_row`] with the counter printed under `cap`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pinned_row_in<'a, M: Clone + 'a>(
+    icon_: Icon,
+    label: String,
+    shortcut: Option<String>,
+    badge: Option<(u64, BadgeKind)>,
+    cap: BadgeCap,
     selected: bool,
     on: M,
 ) -> Element<'a, M> {
@@ -1324,7 +1452,10 @@ pub(crate) fn pinned_row<'a, M: Clone + 'a>(
     .spacing(SPACE_2)
     .align_y(Alignment::Center);
     match badge {
-        Some((n, kind)) if n > 0 => r = r.push(rustket_ui::widget::badge(count_u32(n), kind)),
+        Some((n, kind)) if n > 0 && cap == BadgeCap::At99 => {
+            r = r.push(rustket_ui::widget::badge(count_u32(n), kind));
+        }
+        Some((n, kind)) if n > 0 => r = r.push(badge_in(n, kind, BadgePlace::Sidebar, cap)),
         Some((_, kind)) => r = r.push(rustket_ui::widget::dot(kind, 8.0)),
         None => {}
     }
@@ -1358,6 +1489,21 @@ pub(crate) fn activity_badge(c: &rustket_core::inbox::InboxCounts) -> Option<(u6
     }
 }
 
+/// The Activity row under the Rocket.Chat scheme: one counter of `total`
+/// (`inbox::rc_activity_total`: unread threads and main-timeline mentions),
+/// coloured by Rocket.Chat's order on `c` (mentions, then threads, then
+/// group mentions).
+pub(crate) fn activity_badge_rc(
+    c: &rustket_core::inbox::InboxCounts,
+    total: u64,
+) -> Option<(u64, BadgeKind)> {
+    let n = total;
+    (n > 0).then(|| {
+        let v = indicators::rc_variant(c.mentions, c.threads, c.group_mentions);
+        (n, widget_kind(v))
+    })
+}
+
 /// The badge of the Later row: a red counter of overdue reminders.
 pub(crate) fn later_badge(overdue: usize) -> Option<(u64, BadgeKind)> {
     (overdue > 0).then_some((overdue as u64, BadgeKind::Mention))
@@ -1373,17 +1519,74 @@ pub(crate) fn drafts_badge(scheduled: usize, missed: usize) -> Option<(u64, Badg
     }
 }
 
+/// The Drafts & scheduled row under the Rocket.Chat scheme: missed sends
+/// in red, else the scheduled messages in grey.
+pub(crate) fn drafts_badge_rc(scheduled: usize, missed: usize) -> Option<(u64, BadgeKind)> {
+    drafts_badge(scheduled, missed).map(|(n, k)| match k {
+        BadgeKind::Muted => (n, BadgeKind::Unread),
+        k => (n, k),
+    })
+}
+
+/// The badges of the pinned All unreads, Activity, Later and Drafts rows
+/// under `scheme`, and their cap. `rc_activity` is
+/// `inbox::rc_activity_total`, used under Rocket.Chat only.
+pub(crate) fn pinned_badges(
+    scheme: IndicatorScheme,
+    c: &rustket_core::inbox::InboxCounts,
+    rc_activity: impl FnOnce() -> u64,
+    overdue: usize,
+    scheduled: usize,
+    missed: usize,
+) -> ([Option<(u64, BadgeKind)>; 4], BadgeCap) {
+    match scheme {
+        IndicatorScheme::Rustket => (
+            [
+                unreads_badge(c.unread_rooms),
+                activity_badge(c),
+                later_badge(overdue),
+                drafts_badge(scheduled, missed),
+            ],
+            BadgeCap::At99,
+        ),
+        IndicatorScheme::RocketChat => (
+            [
+                unreads_badge(c.unread_rooms),
+                activity_badge_rc(c, rc_activity()),
+                later_badge(overdue),
+                drafts_badge_rc(scheduled, missed),
+            ],
+            BadgeCap::None,
+        ),
+    }
+}
+
 /// The rows pinned under the search (`UiPrefs::sidebar_pinned_views`).
 fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
     use crate::inbox::InboxKind;
     use crate::keymap::{Shortcut, chord_of};
     let c = rustket_core::inbox::counts(ctx.workspace);
     let open = ctx.inbox_open;
+    let overdue = ctx
+        .workspace
+        .overdue_reminders(chrono::Utc::now().timestamp_millis());
+    let queue = ctx.workspace.scheduled();
+    let ([unreads_b, activity_b, later_b, drafts_b], cap) = pinned_badges(
+        ctx.prefs.indicator_scheme,
+        &c,
+        || rustket_core::inbox::rc_activity_total(ctx.workspace),
+        overdue,
+        queue.len(),
+        queue.missed().len(),
+    );
+    let pinned_row = |icon_, label, shortcut, badge, selected, on| {
+        pinned_row_in(icon_, label, shortcut, badge, cap, selected, on)
+    };
     let unreads = pinned_row(
         Icon::Inbox,
         t!("inbox.all_unreads").into_owned(),
         chord_of(Shortcut::AllUnreads),
-        unreads_badge(c.unread_rooms),
+        unreads_b,
         matches!(open, Some(InboxKind::Unreads | InboxKind::CatchUp)),
         Message::Inbox(InboxKind::Unreads),
     );
@@ -1391,27 +1594,23 @@ fn pinned_rows<'a>(ctx: &SidebarCtx<'a>) -> Element<'a, Message> {
         Icon::AtSign,
         t!("inbox.activity").into_owned(),
         chord_of(Shortcut::Activity),
-        activity_badge(&c),
+        activity_b,
         open == Some(InboxKind::Activity),
         Message::Inbox(InboxKind::Activity),
     );
-    let overdue = ctx
-        .workspace
-        .overdue_reminders(chrono::Utc::now().timestamp_millis());
     let later = pinned_row(
         Icon::BookmarkCheck,
         t!("later.title").into_owned(),
         chord_of(Shortcut::Later),
-        later_badge(overdue),
+        later_b,
         ctx.later_open,
         Message::Later,
     );
-    let queue = ctx.workspace.scheduled();
     let drafts = pinned_row(
         Icon::NotebookPen,
         t!("scheduled.title").into_owned(),
         chord_of(Shortcut::Drafts),
-        drafts_badge(queue.len(), queue.missed().len()),
+        drafts_b,
         ctx.drafts_open,
         Message::Drafts,
     );
@@ -1459,6 +1658,17 @@ pub(crate) fn set_row_badge<M>(p: &mut RoomListItemProps<M>, badge: &room_list::
     p.bold = badge.highlighted;
 }
 
+/// Fills the badge fields of a room row's props from its Rocket.Chat badge:
+/// the variant with the full counter (never a dot), the highlighted name
+/// (`highlighted`) and the itemised tooltip.
+pub(crate) fn set_row_badge_rc<M>(p: &mut RoomListItemProps<M>, rc: &RcBadge) {
+    p.badge = rc.kind().map(widget_kind);
+    p.count = count_u32(rc.count);
+    p.cap = BadgeCap::None;
+    p.bold = rc.highlighted;
+    p.badge_tip = (rc.count > 0).then(|| rc_unread_title(&rc.title));
+}
+
 /// The badge kind of a room row (the same as [`RoomListItemProps::badge_kind`]).
 fn room_badge_kind(item: &RoomListItem) -> Option<BadgeKind> {
     badge_kind(&item.badge)
@@ -1478,6 +1688,27 @@ pub(crate) fn thread_badge_kind(t: &ThreadListItem) -> Option<BadgeKind> {
 /// (`room_list::thread_unread`).
 pub(crate) fn thread_unread_kind(unread: Option<BadgeVariant>) -> Option<BadgeKind> {
     unread.map(widget_kind)
+}
+
+/// The dot of thread row `t` under `scheme`. Whether it shows is the row's
+/// own state in both schemes; under Rocket.Chat its colour follows the
+/// subscription (`rc_thread_kind`: a thread mention red, an @all orange,
+/// else blue), blue when the subscription no longer lists the thread.
+pub(crate) fn thread_kind_in(
+    ws: &Workspace,
+    t: &ThreadListItem,
+    scheme: IndicatorScheme,
+) -> Option<BadgeKind> {
+    match scheme {
+        IndicatorScheme::Rustket => thread_badge_kind(t),
+        IndicatorScheme::RocketChat => t.unread.map(|_| {
+            let v = ws
+                .subscription(&t.rid)
+                .and_then(|s| indicators::rc_thread_kind(s, &t.tmid))
+                .unwrap_or(BadgeVariant::Thread);
+            widget_kind(v)
+        }),
+    }
 }
 
 /// "+N": thread rows left out by the limit, explained in a tooltip.
@@ -1583,7 +1814,7 @@ fn thread_row_props(t: &ThreadListItem, ctx: &SidebarCtx<'_>) -> RoomListItemPro
     p.flag = t
         .flag
         .map(|c| super::flag_menu::mark(ctx.workspace.flags(), c));
-    p.badge = thread_badge_kind(t);
+    p.badge = thread_kind_in(ctx.workspace, t, ctx.prefs.indicator_scheme);
     p.bold = p.badge.is_some();
     p.is_selected = ctx.active_thread == Some(t.tmid.as_str());
     if let Some(label) = ctx.workspace.typing_label(&t.rid, Some(&t.tmid), ctx.now) {
@@ -1963,6 +2194,10 @@ pub fn typing_text(l: &TypingLabel) -> String {
 }
 
 #[cfg(test)]
+#[path = "sidebar_rc_tests.rs"]
+mod rc_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use rustket_core::typing::Activity;
@@ -1974,6 +2209,7 @@ mod tests {
         use rocketchat::RcDate;
         use rocketchat::models::{Room, RoomType, Subscription, User, UserRef};
         use rustket_core::Change;
+        use rustket_core::config::IndicatorScheme;
 
         const ROOMS: usize = 300;
 
@@ -2040,7 +2276,10 @@ mod tests {
                 Self {
                     ws,
                     images: Images::new(None),
-                    prefs: UiPrefs::default(),
+                    prefs: UiPrefs {
+                        indicator_scheme: IndicatorScheme::Rustket,
+                        ..UiPrefs::default()
+                    },
                     collapsed: BTreeSet::new(),
                     sid: ServerId("s".into()),
                     url: ServerUrl::parse("http://localhost:3000").unwrap(),

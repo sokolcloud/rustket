@@ -30,6 +30,9 @@ impl UnreadCount {
             "user_mentions_only" => Self::UserMentionsOnly,
             "group_mentions_only" => Self::GroupMentionsOnly,
             "user_and_group_mentions_only" => Self::UserAndGroupMentionsOnly,
+            // `Unread_Count_DM` / `Unread_Count_Omni`: there every mention
+            // counts once and a plain message does not.
+            "mentions_only" => Self::UserAndGroupMentionsOnly,
             _ => return None,
         })
     }

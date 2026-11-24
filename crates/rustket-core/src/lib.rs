@@ -17,6 +17,7 @@ pub mod emoji;
 pub mod flags;
 pub mod highlight;
 pub mod inbox;
+pub mod indicators;
 pub mod later;
 pub mod mention_groups;
 pub mod notify;

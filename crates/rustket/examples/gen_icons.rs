@@ -4,13 +4,20 @@
 //! quiet unread colour (`rustket-quiet`). Also
 //! writes `rustket.ico` (Windows executable and installer) from the same
 //! renderer, `rustket.icns` (macOS bundle) from a squircle tile on the macOS
-//! icon grid, and the macOS menu bar template glyphs (`rustket-menubar*`).
+//! icon grid, the macOS menu bar template glyphs (`rustket-menubar*`), and
+//! the Rocket.Chat scheme's tray icons (`rustket-rc-{1..9,plus,dot}`): the
+//! desktop app's counter badge (`Badge.tsx`) at the bottom right of the logo,
+//! in a cut-out, as its `AppIcon.tsx` places it.
 //!
 //! ```sh
 //! cargo run -p rustket --example gen_icons -- crates/rustket/assets/icons
+//! # only the rustket-rc-* icons:
+//! cargo run -p rustket --example gen_icons -- crates/rustket/assets/icons --rc-only
 //! ```
 
 use std::path::PathBuf;
+
+use rustket::desktop::badge_art::{self, Glyph};
 
 use tiny_skia::{
     BlendMode, Color, FillRule, GradientStop, LinearGradient, Mask, MaskType, Paint, Path,
@@ -266,6 +273,66 @@ fn mac_tile(size: u32) -> Pixmap {
     pm
 }
 
+/// The Rocket.Chat counter icons: name suffix and glyph.
+const RC_ART: &[(&str, Glyph)] = &[
+    ("1", Glyph::Digit(1)),
+    ("2", Glyph::Digit(2)),
+    ("3", Glyph::Digit(3)),
+    ("4", Glyph::Digit(4)),
+    ("5", Glyph::Digit(5)),
+    ("6", Glyph::Digit(6)),
+    ("7", Glyph::Digit(7)),
+    ("8", Glyph::Digit(8)),
+    ("9", Glyph::Digit(9)),
+    ("plus", Glyph::Plus),
+    ("dot", Glyph::Dot),
+];
+/// The tray sizes (StatusNotifierItem; Windows uses 32).
+const RC_SIZES: &[u32] = &[22, 32, 48, 64];
+
+/// The logo with the desktop app's badge (`AppIcon.tsx`): a disc of radius
+/// `size/4` centred at three quarters of the size is cut out, and the badge
+/// (0.4 of the size wide) is centred there.
+fn rc_tray(size: u32, glyph: Glyph) -> Pixmap {
+    let mut pm = render(size, None);
+    let s = size as f32;
+    let (c, id) = (s * 0.75, Transform::identity());
+    let cut = PathBuilder::from_circle(c, c, s / 4.0).expect("cut");
+    pm.fill_path(&cut, &clear(), FillRule::Winding, id, None);
+    let side = s * 0.4;
+    let disc = PathBuilder::from_circle(c, c, side / 2.0).expect("disc");
+    let (r, g, b) = badge_art::DISC;
+    pm.fill_path(&disc, &solid(r, g, b), FillRule::Winding, id, None);
+    let (vx, vy, vs) = badge_art::VIEW;
+    let k = side / vs;
+    let t = Transform::from_row(
+        k,
+        0.0,
+        0.0,
+        k,
+        c - side / 2.0 - vx * k,
+        c - side / 2.0 - vy * k,
+    );
+    let mut pb = PathBuilder::new();
+    if glyph == Glyph::Dot {
+        let (x, y, r) = badge_art::DOT;
+        pb.push_circle(x, y, r);
+    }
+    for poly in badge_art::polygons(glyph) {
+        for (i, (x, y)) in poly.into_iter().enumerate() {
+            if i == 0 {
+                pb.move_to(x, y);
+            } else {
+                pb.line_to(x, y);
+            }
+        }
+        pb.close();
+    }
+    let mark = pb.finish().expect("glyph path");
+    pm.fill_path(&mark, &solid(255, 255, 255), FillRule::EvenOdd, t, None);
+    pm
+}
+
 fn png(size: u32) -> Vec<u8> {
     render(size, None).encode_png().expect("encode png")
 }
@@ -352,11 +419,24 @@ fn icns() -> Vec<u8> {
 }
 
 fn main() {
-    let out: PathBuf = std::env::args()
-        .nth(1)
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let rc_only = args.iter().any(|a| a == "--rc-only");
+    let out: PathBuf = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("crates/rustket/assets/icons"));
     std::fs::create_dir_all(&out).expect("out dir");
+    for &size in RC_SIZES {
+        for (name, glyph) in RC_ART {
+            let path = out.join(format!("rustket-rc-{name}-{size}.png"));
+            rc_tray(size, *glyph).save_png(&path).expect("save png");
+            println!("wrote {}", path.display());
+        }
+    }
+    if rc_only {
+        return;
+    }
     for &size in SIZES {
         for (name, dot) in VARIANTS {
             let path = out.join(format!("{name}-{size}.png"));

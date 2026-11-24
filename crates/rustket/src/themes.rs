@@ -8,9 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use rustket_core::config::{AppConfig, CONFIG_FILE};
+use rustket_core::config::{AppConfig, CONFIG_FILE, IndicatorScheme};
 use rustket_ui::Mode;
-use rustket_ui::theme::{self, ContrastIssue, DARK, LIGHT};
+use rustket_ui::theme::{self, ContrastIssue, DARK, IndicatorLook, LIGHT};
 use rustket_ui::theme_file::{FontPrefs, ThemeFile, ThemeFileError, ThemeWarning};
 
 /// Subdirectory of the config directory with the theme files.
@@ -20,6 +20,25 @@ const MAX_FILE: u64 = 256 * 1024;
 
 pub fn themes_dir(config_dir: &Path) -> PathBuf {
     config_dir.join(THEMES_DIR)
+}
+
+/// The widget look of indicator scheme `s`.
+pub fn indicator_look(s: IndicatorScheme) -> IndicatorLook {
+    match s {
+        IndicatorScheme::Rustket => IndicatorLook::Rustket,
+        IndicatorScheme::RocketChat => IndicatorLook::RocketChat,
+    }
+}
+
+/// Makes the process-wide indicator look follow `s` (repaints cached views
+/// when it changes). A no-op in this crate's unit tests: they run in
+/// parallel and draw under the default look
+/// (`rustket_ui::theme::with_indicator_look` sets one per thread).
+pub fn apply_indicator_look(s: IndicatorScheme) {
+    if cfg!(test) {
+        return;
+    }
+    theme::set_indicator_look(indicator_look(s));
 }
 
 /// Why a theme cannot be used.
@@ -217,6 +236,21 @@ pub fn init_fonts(config_dir: Option<&Path>) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indicator_looks_mirror_the_schemes() {
+        assert_eq!(
+            indicator_look(IndicatorScheme::Rustket),
+            IndicatorLook::Rustket
+        );
+        assert_eq!(
+            indicator_look(IndicatorScheme::RocketChat),
+            IndicatorLook::RocketChat
+        );
+        // Unit tests never switch the shared look.
+        apply_indicator_look(IndicatorScheme::RocketChat);
+        assert_eq!(theme::indicator_look(), IndicatorLook::Rustket);
+    }
 
     const FOREST: &str = include_str!("../../../docs/themes/forest.toml");
 

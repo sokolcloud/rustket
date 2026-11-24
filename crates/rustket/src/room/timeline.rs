@@ -29,11 +29,14 @@ use iced::widget::{button, column, container, row as hrow, scrollable, sensor, s
 use iced::{Alignment, Element, Length, Padding, Subscription, Task};
 use rocketchat::RcDate;
 use rust_i18n::t;
+use rustket_core::config::IndicatorScheme;
 use rustket_core::workspace::Changes;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_CAPTION, TEXT_SMALL};
-use rustket_ui::widget::{BannerKind, empty_state, keyed_list, loading_placeholder, spinner};
+use rustket_ui::widget::{
+    BadgeKind, BannerKind, empty_state, keyed_list, loading_placeholder, spinner,
+};
 
 use super::render::system;
 use super::{Action, Effect, UpdateCtx, ViewCtx};
@@ -47,8 +50,14 @@ pub use viewer::{Viewer, ViewerMsg, opens_image as viewer_opens_image};
 
 /// History pages loaded at most while looking for a jump target.
 const SEEK_PAGES: u32 = 20;
-/// How long a jumped-to message stays highlighted.
-pub(crate) const SELECTED_FOR: Duration = Duration::from_secs(4);
+/// How long a jumped-to message stays highlighted: 4 s, Rocket.Chat 2 s
+/// (`useTryToJumpToMessage`).
+pub(crate) fn selected_for(scheme: IndicatorScheme) -> Duration {
+    match scheme {
+        IndicatorScheme::Rustket => Duration::from_secs(4),
+        IndicatorScheme::RocketChat => Duration::from_secs(2),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -319,9 +328,10 @@ impl Timeline {
             Task::perform(tokio::time::sleep(Duration::from_millis(60)), move |_| {
                 Message::Reveal(reveal.clone())
             }),
-            Task::perform(tokio::time::sleep(SELECTED_FOR), move |_| {
-                Message::Unselect(stamp)
-            }),
+            Task::perform(
+                tokio::time::sleep(selected_for(ctx.prefs.indicator_scheme)),
+                move |_| Message::Unselect(stamp),
+            ),
         ]))
     }
 
@@ -463,6 +473,7 @@ impl Timeline {
                 sequential: r.sequential,
                 menu_open: self.items.menu.as_deref() == Some(m.id.as_str()),
                 thread_unread: parent_thread_unread(sub, &m.id),
+                thread_kind: parent_thread_kind(sub, &m.id, ctx.prefs.indicator_scheme),
                 selected: selected == Some(m.id.as_str()),
                 picking: self.picked.is_some(),
                 picked: self.picked.as_ref().is_some_and(|p| p.contains(&m.id)),
@@ -613,4 +624,125 @@ pub(crate) fn parent_thread_unread(
 ) -> bool {
     sub.and_then(|s| s.tunread.as_ref())
         .is_some_and(|t| t.iter().any(|x| x == mid))
+}
+
+/// The colour of that dot, `Some` iff [`parent_thread_unread`]: Thread, or
+/// under Rocket.Chat its thread rule (`tunreadUser` Mention, `tunreadGroup`
+/// GroupMention, else Thread).
+pub(crate) fn parent_thread_kind(
+    sub: Option<&rocketchat::models::Subscription>,
+    mid: &str,
+    scheme: IndicatorScheme,
+) -> Option<BadgeKind> {
+    if !parent_thread_unread(sub, mid) {
+        return None;
+    }
+    Some(match scheme {
+        IndicatorScheme::Rustket => BadgeKind::Thread,
+        IndicatorScheme::RocketChat => sub
+            .and_then(|s| rustket_core::indicators::rc_thread_kind(s, mid))
+            .map_or(BadgeKind::Thread, crate::workspace::sidebar::widget_kind),
+    })
+}
+
+/// Rocket.Chat's tooltip on an unread thread's dot ("Mentions you",
+/// "mention-all", "Unread"); none under Rustket.
+pub(crate) fn rc_thread_dot_tip(kind: BadgeKind, scheme: IndicatorScheme) -> Option<String> {
+    if scheme != IndicatorScheme::RocketChat {
+        return None;
+    }
+    let key = match kind {
+        BadgeKind::Mention => "room_timeline.rc_thread_dot_mention",
+        BadgeKind::GroupMention => "room_timeline.rc_thread_dot_all",
+        _ => "room_timeline.rc_thread_dot_unread",
+    };
+    Some(t!(key).into_owned())
+}
+
+#[cfg(test)]
+mod rc_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// H2: the unread thread dot's tooltip, Rocket.Chat only.
+    #[test]
+    fn thread_dot_tip_follows_the_scheme() {
+        let rk = IndicatorScheme::Rustket;
+        let rc = IndicatorScheme::RocketChat;
+        for kind in [
+            BadgeKind::Mention,
+            BadgeKind::GroupMention,
+            BadgeKind::Thread,
+        ] {
+            assert_eq!(rc_thread_dot_tip(kind, rk), None);
+        }
+        for (kind, key, en) in [
+            (
+                BadgeKind::Mention,
+                "room_timeline.rc_thread_dot_mention",
+                "Mentions you",
+            ),
+            (
+                BadgeKind::GroupMention,
+                "room_timeline.rc_thread_dot_all",
+                "Mention All",
+            ),
+            (
+                BadgeKind::Thread,
+                "room_timeline.rc_thread_dot_unread",
+                "Unread",
+            ),
+        ] {
+            assert_eq!(rc_thread_dot_tip(kind, rc), Some(t!(key).into_owned()));
+            assert_eq!(t!(key, locale = "en"), en);
+        }
+    }
+
+    /// H7: the jump highlight lasts 4 s, 2 s under Rocket.Chat.
+    #[test]
+    fn jump_highlight_duration_follows_the_scheme() {
+        assert_eq!(
+            selected_for(IndicatorScheme::Rustket),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            selected_for(IndicatorScheme::RocketChat),
+            Duration::from_secs(2)
+        );
+    }
+
+    /// H2/H3: the summary dot shows iff `tunread` lists the parent in both
+    /// schemes; Rocket.Chat colours it by `tunreadUser` / `tunreadGroup`.
+    #[test]
+    fn thread_dot_kind_follows_the_scheme() {
+        let sub = rocketchat::models::Subscription {
+            tunread: Some(vec!["a".into(), "b".into(), "c".into()]),
+            tunread_user: Some(vec!["a".into()]),
+            tunread_group: Some(vec!["b".into()]),
+            // R1–R3 do not matter for the dot.
+            disable_notifications: Some(true),
+            hide_unread_status: Some(true),
+            hide_mention_status: Some(true),
+            ..Default::default()
+        };
+        let rc = IndicatorScheme::RocketChat;
+        let rk = IndicatorScheme::Rustket;
+        for (mid, kind) in [
+            ("a", BadgeKind::Mention),
+            ("b", BadgeKind::GroupMention),
+            ("c", BadgeKind::Thread),
+        ] {
+            assert!(parent_thread_unread(Some(&sub), mid));
+            assert_eq!(parent_thread_kind(Some(&sub), mid, rc), Some(kind), "{mid}");
+            assert_eq!(
+                parent_thread_kind(Some(&sub), mid, rk),
+                Some(BadgeKind::Thread),
+                "{mid}"
+            );
+        }
+        for scheme in [rc, rk] {
+            assert_eq!(parent_thread_kind(Some(&sub), "d", scheme), None);
+            assert_eq!(parent_thread_kind(None, "a", scheme), None);
+        }
+    }
 }
