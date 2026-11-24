@@ -120,10 +120,14 @@ click **More info → Run anyway**. Third-party licenses:
 `Rustket-0.2.10-macos-universal.dmg` runs natively on Apple Silicon and Intel
 Macs with macOS 11 or newer. Open it and drag Rustket to Applications.
 
-The app is not notarized, so Gatekeeper blocks the first start. Either
-right-click (Control-click) Rustket in Applications and choose **Open**, then
-**Open** again; or try to open it once, then use **System Settings → Privacy &
-Security → Open Anyway**. Alternatively remove the quarantine flag:
+Releases after 0.2.10 are signed with a Developer ID certificate and notarized
+by Apple, so Gatekeeper does not block them; macOS only asks once to confirm
+opening an app downloaded from the Internet.
+
+0.2.10 and older are not notarized, so Gatekeeper blocks their first start.
+Either right-click (Control-click) Rustket in Applications and choose **Open**,
+then **Open** again; or try to open it once, then use **System Settings →
+Privacy & Security → Open Anyway**. Alternatively remove the quarantine flag:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Rustket.app
@@ -174,6 +178,10 @@ entry under `## [Unreleased]` in `CHANGELOG.md`. To release X.Y.Z:
    prints the notes the release will get.
 4. Commit "Release X.Y.Z" and push the tag `vX.Y.Z`. The release notes are the
    changelog section followed by GitHub's generated list.
+
+The macOS job signs, notarizes and staples the dmg with the secrets of the
+`macos-signing` environment; a tag build fails without them. Secrets, certificate and key
+rotation: [docs/release-signing.md](docs/release-signing.md).
 
 `SKIP_BUILD=1` reuses an existing `target/dist/rustket`. The scripts need
 `python3` for the third-party notices. cargo-deb users can run

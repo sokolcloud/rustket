@@ -186,8 +186,11 @@ jobs:
           archive: false
           if-no-files-found: error
 
-  macos:
-    name: macOS universal (dmg)
+  # Compiles both slices and assembles the unsigned Rustket.app. No signing
+  # secret reaches this job: dependency build scripts and the app's own code
+  # run only here, on a VM that never sees the key (the `macos` job signs).
+  macos-build:
+    name: macOS universal (app)
     needs: [changelog]
     # Apple Silicon runner; the x86_64 slice is cross-compiled.
     runs-on: macos-latest
@@ -199,8 +202,179 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
           rustup default stable
-      - name: Build packages
+      - name: Build Rustket.app
+        env:
+          APP_ONLY: 1
         run: packaging/macos/build.sh
+      # A tar keeps the executable bits that a zipped artifact would lose.
+      - name: Archive the app
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          mkdir dist
+          tar --no-mac-metadata -C packaging/out/macos -cf "dist/Rustket-$version-macos-app-unsigned.tar" Rustket.app
+          ls -l dist
+      - name: Upload the unsigned app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: dist/*-macos-app-unsigned.tar
+          archive: false
+          retention-days: 1
+          if-no-files-found: error
+
+  # Signs Rustket.app and the dmg with the Developer ID Application certificate
+  # of APPLE_TEAM_ID, notarizes and staples them when the signing secrets are
+  # set (docs/release-signing.md). Runs no cargo and none of the app's code.
+  # The secrets live in the `macos-signing` environment, which only tags v*
+  # and the release-dry-run branch may use; other refs run without it and get
+  # an ad hoc signed dmg. A tag build without the secrets fails unless the
+  # repository variable MACOS_ALLOW_UNSIGNED is 'true'.
+  macos:
+    name: macOS universal (dmg)
+    needs: [macos-build]
+    runs-on: macos-latest
+    environment: ${{ (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/release-dry-run') && 'macos-signing' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Signing policy
+        id: signing
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          ALLOW_UNSIGNED: ${{ vars.MACOS_ALLOW_UNSIGNED }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD APPLE_API_KEY_P8 \
+              APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_TEAM_ID; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -z "$missing" ]; then
+            echo "sign=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "sign=false" >>"$GITHUB_OUTPUT"
+          msg="macOS signing is not configured (missing:$missing; see docs/release-signing.md)"
+          if [ "$IS_TAG" = true ] && [ "$ALLOW_UNSIGNED" != true ]; then
+            echo "::error::$msg. A release must be signed and notarized; set the repository variable MACOS_ALLOW_UNSIGNED=true to publish an ad hoc signed dmg instead."
+            exit 1
+          fi
+          echo "::warning::$msg: the dmg is ad hoc signed and not notarized."
+      - name: Download the unsigned app
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: '*-macos-app-unsigned.tar'
+          path: ${{ runner.temp }}/unsigned
+          merge-multiple: true
+          skip-decompress: true
+      - name: Unpack the app
+        env:
+          UNSIGNED: ${{ runner.temp }}/unsigned
+        run: |
+          set -euo pipefail
+          tars=()
+          while IFS= read -r f; do tars+=("$f"); done < <(find "$UNSIGNED" -type f -name '*-macos-app-unsigned.tar')
+          if [ "${#tars[@]}" -ne 1 ]; then
+            echo "::error::expected one unsigned app archive, found ${#tars[@]}"
+            exit 1
+          fi
+          if tar -tf "${tars[0]}" | grep -Ev '^Rustket\.app(/|$)'; then
+            echo "::error::unexpected paths in ${tars[0]}"
+            exit 1
+          fi
+          mkdir -p packaging/out/macos
+          tar -C packaging/out/macos -xf "${tars[0]}"
+          rm -rf "$UNSIGNED"
+      - name: Signing keychain and notary profile
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          SIGNING_KEYCHAIN: ${{ runner.temp }}/rustket-signing.keychain-db
+          NOTARY_KEY: ${{ runner.temp }}/rustket-notary.p8
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          kc_pass="$(openssl rand -hex 32)"
+          echo "::add-mask::$kc_pass"
+          security create-keychain -p "$kc_pass" "$SIGNING_KEYCHAIN"
+          # No auto-lock during packaging and notarization (6 h).
+          security set-keychain-settings -lut 21600 "$SIGNING_KEYCHAIN"
+          security unlock-keychain -p "$kc_pass" "$SIGNING_KEYCHAIN"
+
+          p12="$RUNNER_TEMP/rustket-signing.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | tr -d '[:space:]' | base64 --decode >"$p12"
+          if ! security import "$p12" -k "$SIGNING_KEYCHAIN" -f pkcs12 \
+              -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null; then
+            rm -f "$p12"
+            echo "::error::cannot import MACOS_CERTIFICATE_P12 (wrong MACOS_CERTIFICATE_PASSWORD or not base64 of a .p12?)"
+            exit 1
+          fi
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" \
+            "$SIGNING_KEYCHAIN" >/dev/null
+          # Prepend to the user search list, keeping the login keychain.
+          keychains=("$SIGNING_KEYCHAIN")
+          while IFS= read -r k; do
+            k="$(sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//' <<<"$k")"
+            [ -z "$k" ] || [ "$k" = "$SIGNING_KEYCHAIN" ] || keychains+=("$k")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${keychains[@]}"
+
+          identities="$(security find-identity -v -p codesigning "$SIGNING_KEYCHAIN")"
+          match="$(grep -F "\"Developer ID Application: " <<<"$identities" | grep -F "($APPLE_TEAM_ID)\"" || true)"
+          if [ -z "$match" ]; then
+            echo "::error::MACOS_CERTIFICATE_P12 has no valid \"Developer ID Application\" identity of team $APPLE_TEAM_ID. Identities found:"
+            echo "$identities"
+            exit 1
+          fi
+          if [ "$(wc -l <<<"$match")" -gt 1 ]; then
+            echo "::warning::several Developer ID Application identities of team $APPLE_TEAM_ID; using the first"
+          fi
+          # The SHA-1 is unambiguous where the name might not be.
+          identity="$(head -1 <<<"$match" | awk '{ print $2 }')"
+          echo "signing with: $(head -1 <<<"$match" | sed 's/^[^"]*//')"
+
+          printf '%s' "$APPLE_API_KEY_P8" | tr -d '[:space:]' | base64 --decode >"$NOTARY_KEY"
+          chmod 600 "$NOTARY_KEY"
+          # Validates the key with Apple and stores it in the signing keychain.
+          if ! xcrun notarytool store-credentials rustket-notary --key "$NOTARY_KEY" \
+              --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+              --keychain "$SIGNING_KEYCHAIN" >/dev/null; then
+            echo "::error::notarytool rejects APPLE_API_KEY_P8 / APPLE_API_KEY_ID / APPLE_API_ISSUER_ID"
+            exit 1
+          fi
+          rm -f "$NOTARY_KEY"
+          {
+            echo "MACOS_SIGN_IDENTITY=$identity"
+            echo "MACOS_NOTARY_PROFILE=rustket-notary"
+            echo "MACOS_NOTARY_KEYCHAIN=$SIGNING_KEYCHAIN"
+          } >>"$GITHUB_ENV"
+      - name: Package, sign and notarize
+        env:
+          PREBUILT_APP: 1
+        run: packaging/macos/build.sh
+      - name: Remove the signing keychain
+        if: always()
+        env:
+          SIGNING_KEYCHAIN: ${{ runner.temp }}/rustket-signing.keychain-db
+          NOTARY_KEY: ${{ runner.temp }}/rustket-notary.p8
+        run: |
+          if [ -f "$SIGNING_KEYCHAIN" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+          rm -f "$NOTARY_KEY" "$RUNNER_TEMP/rustket-signing.p12"
       - name: Collect
         run: |
           mkdir dist
@@ -238,8 +412,9 @@ jobs:
           echo "version=$version" >>"$GITHUB_OUTPUT"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          # Every artifact of this run is one package file; keep the portable
-          # zips as they are instead of extracting them.
+          # Every artifact of this run is one file (a package, or the unsigned
+          # macOS app dropped below); keep the portable zips as they are
+          # instead of extracting them.
           path: dist
           merge-multiple: true
           skip-decompress: true
@@ -248,7 +423,11 @@ jobs:
           set -euo pipefail
           # Unarchived artifacts can land in per-artifact directories: flatten.
           mkdir release
-          if [ -d dist ]; then find dist -type f -exec mv -t release {} +; fi
+          # The unsigned app is an intermediate artifact of macos-build.
+          if [ -d dist ]; then
+            find dist -type f -name '*-macos-app-unsigned.tar' -delete
+            find dist -type f -exec mv -t release {} +
+          fi
           cd release
           missing=""
           for want in '*_amd64.deb' '*.x86_64.rpm' '*-x86_64.AppImage' '*-x64-setup.exe' \
