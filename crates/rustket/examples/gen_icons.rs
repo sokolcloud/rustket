@@ -2,8 +2,9 @@
 //! bubble with a white spark, and the tray's unread variants with a dot: red
 //! (`rustket-unread`, mentions), orange (`rustket-group`, `@all`) and the
 //! quiet unread colour (`rustket-quiet`). Also
-//! writes `rustket.ico` (Windows executable and installer) and `rustket.icns`
-//! (macOS bundle) from the same renderer.
+//! writes `rustket.ico` (Windows executable and installer) from the same
+//! renderer, `rustket.icns` (macOS bundle) from a squircle tile on the macOS
+//! icon grid, and the macOS menu bar template glyphs (`rustket-menubar*`).
 //!
 //! ```sh
 //! cargo run -p rustket --example gen_icons -- crates/rustket/assets/icons
@@ -12,8 +13,8 @@
 use std::path::PathBuf;
 
 use tiny_skia::{
-    Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, Point, Shader,
-    SpreadMode, Transform,
+    BlendMode, Color, FillRule, GradientStop, LinearGradient, Mask, MaskType, Paint, Path,
+    PathBuilder, Pixmap, Point, Rect, Shader, SpreadMode, Stroke, Transform,
 };
 
 const SIZES: &[u32] = &[16, 22, 24, 32, 48, 64, 128, 256, 512];
@@ -27,6 +28,14 @@ const VARIANTS: &[(&str, Option<Rgb>)] = &[
     ("rustket-group", Some((0xB3, 0x53, 0x00))),
     ("rustket-quiet", Some((0x55, 0x74, 0xA6))),
 ];
+/// macOS menu bar templates (alpha only; the system tints them): 44 px, drawn
+/// at 22 pt (2x), with no mark, a ring (quiet unread) or a dot (mentions).
+const MENUBAR: &[(&str, Mark)] = &[
+    ("rustket-menubar", Mark::None),
+    ("rustket-menubar-ring", Mark::Ring),
+    ("rustket-menubar-dot", Mark::Dot),
+];
+const MENUBAR_SIZE: u32 = 44;
 const ICO_SIZES: &[u32] = &[16, 24, 32, 48, 64, 128, 256];
 /// PNG-backed icns element types with their pixel size (`@2x` types included).
 const ICNS_TYPES: &[(&[u8; 4], u32)] = &[
@@ -52,6 +61,30 @@ fn solid(r: u8, g: u8, b: u8) -> Paint<'static> {
     paint(Shader::SolidColor(Color::from_rgba8(r, g, b, 255)))
 }
 
+/// Erases what it paints.
+fn clear() -> Paint<'static> {
+    Paint {
+        blend_mode: BlendMode::Clear,
+        anti_alias: true,
+        ..Paint::default()
+    }
+}
+
+/// The icon's blue gradient (#3D8BFF → #0B4FC7), top `y0` to bottom `y1`.
+fn blue(y0: f32, y1: f32) -> Shader<'static> {
+    LinearGradient::new(
+        Point::from_xy(0.0, y0),
+        Point::from_xy(0.0, y1),
+        vec![
+            GradientStop::new(0.0, Color::from_rgba8(0x3D, 0x8B, 0xFF, 255)),
+            GradientStop::new(1.0, Color::from_rgba8(0x0B, 0x4F, 0xC7, 255)),
+        ],
+        SpreadMode::Pad,
+        Transform::identity(),
+    )
+    .expect("gradient")
+}
+
 /// A four-pointed spark centred at `(cx, cy)` with radius `r`.
 fn spark(pb: &mut PathBuilder, cx: f32, cy: f32, r: f32) {
     let k = r * 0.16;
@@ -63,18 +96,9 @@ fn spark(pb: &mut PathBuilder, cx: f32, cy: f32, r: f32) {
     pb.close();
 }
 
-fn render(size: u32, dot: Option<Rgb>) -> Pixmap {
-    let mut pm = Pixmap::new(size, size).expect("pixmap");
-    let s = size as f32 / 256.0;
-    let t = Transform::from_scale(s, s);
-    let small = size < 32;
-
-    // Bubble: rounded rectangle plus a tail at the bottom left.
-    let (x0, y0, x1, y1, r) = if small {
-        (8.0, 12.0, 248.0, 204.0, 60.0)
-    } else {
-        (16.0, 22.0, 240.0, 198.0, 56.0)
-    };
+/// The chat bubble in 256-unit space: a rounded rectangle `(x0, y0)`-`(x1, y1)`
+/// with corner `r`, plus a tail at the bottom left reaching y = 246.
+fn bubble_path(x0: f32, y0: f32, x1: f32, y1: f32, r: f32) -> Path {
     let mut pb = PathBuilder::new();
     pb.move_to(x0 + r, y0);
     pb.line_to(x1 - r, y0);
@@ -89,19 +113,28 @@ fn render(size: u32, dot: Option<Rgb>) -> Pixmap {
     pb.line_to(x0, y0 + r);
     pb.quad_to(x0, y0, x0 + r, y0);
     pb.close();
-    let bubble = pb.finish().expect("bubble path");
-    let gradient = LinearGradient::new(
-        Point::from_xy(0.0, y0),
-        Point::from_xy(0.0, 246.0),
-        vec![
-            GradientStop::new(0.0, Color::from_rgba8(0x3D, 0x8B, 0xFF, 255)),
-            GradientStop::new(1.0, Color::from_rgba8(0x0B, 0x4F, 0xC7, 255)),
-        ],
-        SpreadMode::Pad,
-        Transform::identity(),
-    )
-    .expect("gradient");
-    pm.fill_path(&bubble, &paint(gradient), FillRule::Winding, t, None);
+    pb.finish().expect("bubble path")
+}
+
+/// The large-size bubble: (16, 22)-(240, 198), 224 units square with its tail.
+fn large_bubble() -> Path {
+    bubble_path(16.0, 22.0, 240.0, 198.0, 56.0)
+}
+
+fn render(size: u32, dot: Option<Rgb>) -> Pixmap {
+    let mut pm = Pixmap::new(size, size).expect("pixmap");
+    let s = size as f32 / 256.0;
+    let t = Transform::from_scale(s, s);
+    let small = size < 32;
+
+    // Bubble: rounded rectangle plus a tail at the bottom left.
+    let (x0, y0, x1, y1, r) = if small {
+        (8.0, 12.0, 248.0, 204.0, 60.0)
+    } else {
+        (16.0, 22.0, 240.0, 198.0, 56.0)
+    };
+    let bubble = bubble_path(x0, y0, x1, y1, r);
+    pm.fill_path(&bubble, &paint(blue(y0, 246.0)), FillRule::Winding, t, None);
 
     // Spark (and a small companion spark on larger sizes).
     let mut pb = PathBuilder::new();
@@ -125,6 +158,111 @@ fn render(size: u32, dot: Option<Rgb>) -> Pixmap {
         let dot = PathBuilder::from_circle(cx, cy, r).expect("dot");
         pm.fill_path(&dot, &solid(red, green, blue), FillRule::Winding, t, None);
     }
+    pm
+}
+
+/// The mark on a menu bar template.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    None,
+    Ring,
+    Dot,
+}
+
+/// A macOS menu bar template: black with alpha (the menu bar tints it). The
+/// bubble is 32 px (16 pt) at (6, 6) with the spark knocked out; the mark sits
+/// at the top right corner, (36, 8), in a cleared gap.
+fn menubar(mark: Mark) -> Pixmap {
+    let mut pm = Pixmap::new(MENUBAR_SIZE, MENUBAR_SIZE).expect("pixmap");
+    let s = 32.0 / 224.0;
+    let t = Transform::from_row(s, 0.0, 0.0, s, 6.0 - 16.0 * s, 6.0 - 22.0 * s);
+    pm.fill_path(&large_bubble(), &solid(0, 0, 0), FillRule::Winding, t, None);
+    let mut pb = PathBuilder::new();
+    spark(&mut pb, 128.0, 110.0, 66.0);
+    let sparks = pb.finish().expect("spark path");
+    pm.fill_path(&sparks, &clear(), FillRule::Winding, t, None);
+
+    let (cx, cy) = (36.0, 8.0);
+    let id = Transform::identity();
+    if mark != Mark::None {
+        let gap = PathBuilder::from_circle(cx, cy, 8.5).expect("gap");
+        pm.fill_path(&gap, &clear(), FillRule::Winding, id, None);
+    }
+    match mark {
+        Mark::None => {}
+        Mark::Dot => {
+            let dot = PathBuilder::from_circle(cx, cy, 6.0).expect("dot");
+            pm.fill_path(&dot, &solid(0, 0, 0), FillRule::Winding, id, None);
+        }
+        Mark::Ring => {
+            let ring = PathBuilder::from_circle(cx, cy, 4.9).expect("ring");
+            let stroke = Stroke {
+                width: 2.2,
+                ..Stroke::default()
+            };
+            pm.stroke_path(&ring, &solid(0, 0, 0), &stroke, id, None);
+        }
+    }
+    pm
+}
+
+/// A superellipse (n = 5) "squircle" of side `side` at `(x, y)`.
+fn squircle(x: f32, y: f32, side: f32) -> Path {
+    let (a, n) = (side / 2.0, 5.0f32);
+    let (cx, cy) = (x + a, y + a);
+    let mut pb = PathBuilder::new();
+    let steps = 720;
+    for i in 0..=steps {
+        let th = i as f32 / steps as f32 * std::f32::consts::TAU;
+        let (c, s) = (th.cos(), th.sin());
+        let px = cx + a * c.signum() * c.abs().powf(2.0 / n);
+        let py = cy + a * s.signum() * s.abs().powf(2.0 / n);
+        if i == 0 {
+            pb.move_to(px, py);
+        } else {
+            pb.line_to(px, py);
+        }
+    }
+    pb.close();
+    pb.finish().expect("squircle path")
+}
+
+/// The macOS app icon: a blue squircle tile on the macOS icon grid (824 of
+/// 1024 units at (100, 100), no shadow) with the white bubble; the sparks
+/// show the tile's gradient.
+fn mac_tile(size: u32) -> Pixmap {
+    let mut pm = Pixmap::new(size, size).expect("pixmap");
+    let k = size as f32 / 1024.0;
+    let t = Transform::from_scale(k, k);
+    let tile = || paint(blue(100.0, 924.0));
+    pm.fill_path(
+        &squircle(100.0, 100.0, 824.0),
+        &tile(),
+        FillRule::Winding,
+        t,
+        None,
+    );
+
+    // The bubble (224 units) at 540, centred (optically a bit up).
+    let s = 540.0 / 224.0;
+    let bt =
+        Transform::from_row(s, 0.0, 0.0, s, 512.0 - 128.0 * s, 502.0 - 134.0 * s).post_scale(k, k);
+    pm.fill_path(
+        &large_bubble(),
+        &solid(255, 255, 255),
+        FillRule::Winding,
+        bt,
+        None,
+    );
+    let mut pb = PathBuilder::new();
+    spark(&mut pb, 128.0, 110.0, 62.0);
+    spark(&mut pb, 186.0, 66.0, 18.0);
+    let sparks = pb.finish().expect("spark path");
+    let mut layer = Pixmap::new(size, size).expect("pixmap");
+    layer.fill_path(&sparks, &solid(0, 0, 0), FillRule::Winding, bt, None);
+    let mask = Mask::from_pixmap(layer.as_ref(), MaskType::Alpha);
+    let all = Rect::from_xywh(0.0, 0.0, 1024.0, 1024.0).expect("rect");
+    pm.fill_rect(all, &tile(), t, Some(&mask));
     pm
 }
 
@@ -198,11 +336,11 @@ fn bmp(pm: &Pixmap) -> Vec<u8> {
     out
 }
 
-/// ICNS made of PNG elements (macOS 10.7+).
+/// ICNS made of PNG elements (macOS 10.7+), from [`mac_tile`].
 fn icns() -> Vec<u8> {
     let mut body = Vec::new();
     for (kind, size) in ICNS_TYPES {
-        let data = png(*size);
+        let data = mac_tile(*size).encode_png().expect("encode png");
         body.extend_from_slice(*kind);
         body.extend_from_slice(&(data.len() as u32 + 8).to_be_bytes());
         body.extend_from_slice(&data);
@@ -225,6 +363,11 @@ fn main() {
             render(size, *dot).save_png(&path).expect("save png");
             println!("wrote {}", path.display());
         }
+    }
+    for (name, mark) in MENUBAR {
+        let path = out.join(format!("{name}.png"));
+        menubar(*mark).save_png(&path).expect("save png");
+        println!("wrote {}", path.display());
     }
     for (name, data) in [("rustket.ico", ico()), ("rustket.icns", icns())] {
         let path = out.join(name);

@@ -1,7 +1,8 @@
 //! System tray: the app icon (with a dot while something is unread: red for
-//! mentions, orange for `@all`, a quiet one otherwise; see [`TrayLevel`]), a
-//! tooltip with the counts (and a notification pause) and a menu: open,
-//! status, pause notifications, quit. Clicking the icon
+//! mentions, orange for `@all`, a quiet one otherwise; see [`TrayLevel`]; on
+//! macOS a monochrome template glyph with a dot for mentions and `@all` and a
+//! ring otherwise), a tooltip with the counts (and a notification pause) and
+//! a menu: open, status, pause notifications, quit. Clicking the icon
 //! toggles the window.
 //!
 //! Backends: a StatusNotifierItem (ksni) on Linux and the BSDs, `tray-icon`
@@ -39,17 +40,19 @@ pub enum Message {
     Quit,
 }
 
-/// The dot on the tray icon, weakest first.
+/// The dot on the tray icon, weakest first. The macOS menu bar glyph is
+/// monochrome: a ring for [`TrayLevel::Unread`], a dot for the mention levels.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TrayLevel {
     /// The plain icon: nothing counted is unread.
     #[default]
     None,
-    /// A quiet dot (the unread colour): plain or thread unread only.
+    /// A quiet dot (the unread colour; a ring on macOS): plain or thread
+    /// unread only.
     Unread,
-    /// An orange dot: `@all` / `@here`, no mentions.
+    /// An orange dot (a dot on macOS): `@all` / `@here`, no mentions.
     GroupMention,
-    /// A red dot: mentions (a DM included).
+    /// A red dot (a dot on macOS): mentions (a DM included).
     Mention,
 }
 

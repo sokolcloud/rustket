@@ -11,7 +11,7 @@ in parallel, so ownership matters.
 | timeline agent | `src/room/timeline.rs` (+ `room/timeline/…`), `src/room/render/` (shared message rendering) | `room_timeline.yml`, `room_render.yml` |
 | composer agent | `src/room/composer.rs` (+ `room/composer/…`) | `room_composer.yml` |
 | panel agent | `src/room/panel.rs` (+ `room/panel/…`), `src/room/header.rs` | `room_panel.yml`, `room_header.yml` |
-| desktop agent | `src/screens/settings.rs`, `src/desktop/` (notifications, tray, idle, sound, autostart), `src/workspace/status_menu.rs` | `settings.yml`, `desktop.yml`, `status_menu.yml` |
+| desktop agent | `src/screens/settings.rs`, `src/desktop/` (notifications, tray, dock, idle, sound, autostart), `src/workspace/status_menu.rs` | `settings.yml`, `desktop.yml`, `status_menu.yml` |
 | account agent | `src/screens/account.rs`, `src/screens/directory.rs`, `src/dialogs/create_room.rs`, `src/dialogs/quick_switcher.rs` | `account.yml`, `directory.yml`, `create_room.yml`, `quick_switcher.yml` |
 | teams agent | `src/teams/` (team info / channels / members / discussions panel bodies, leave / delete / convert / remove-member dialogs), `src/videoconf/` (call layer: header call button, `video_conf` blocks, popups, call dialogs, call notifications) | `teams.yml`, `videoconf.yml` |
 | omnichannel agent | `src/omnichannel/` (controller, sidebar groups, room callouts/quick actions/dialogs, panels, contact center; see `docs/omnichannel.md` §22.3a) | `omnichannel.yml` |
@@ -119,8 +119,9 @@ app calls:
   &UiPrefs, &NotifyEnv) -> Task<desktop::Message>` for every
   `{uid}/notification` event (after it was applied); `NotifyEnv` carries the
   images, server URL, active server/room/thread and window focus;
-- `on_unread_changed(unread_rooms, mentions)` whenever the totals over all
-  servers change; `on_state(&[(sid, &Workspace)], active)` after every update
+- `on_unread_changed(WorkspaceSignal)` whenever the totals over all
+  servers change (tray icon; on macOS also the Dock badge, `dock.rs`: the
+  number of mentions); `on_state(&[(sid, &Workspace)], active)` after every update
   (closes notifications of read rooms, tray status);
 - `on_focus_changed`, `on_close_requested` (close/minimize to tray),
   `show_window` (second launch, tray), `idle_calls`, `test_notification`.

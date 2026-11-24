@@ -8,6 +8,10 @@
 //! handlers and reach the tray subscription over a channel; the subscription
 //! starts with [`Message::Init`] so the icon is created once the event loop
 //! runs.
+//!
+//! On macOS the icon is a template glyph (the menu bar tints it for light,
+//! dark and highlighted bars) with a dot or a ring for unread, see
+//! [`super::super::icon::menubar_png`]; Windows shows the coloured icon.
 
 use std::cell::RefCell;
 use std::sync::{LazyLock, Mutex};
@@ -27,11 +31,9 @@ const STATUS_PREFIX: &str = "status:";
 const PAUSE_PREFIX: &str = "pause:";
 const ID_RESUME: &str = "resume";
 
-/// Icon size in pixels (the menu bar scales it to its height).
+/// Icon size in pixels (Windows scales it to the notification area).
 #[cfg(windows)]
 const ICON_SIZE: u32 = 32;
-#[cfg(target_os = "macos")]
-const ICON_SIZE: u32 = 64;
 
 struct Native {
     icon: TrayIcon,
@@ -69,6 +71,11 @@ pub fn events() -> impl futures::Stream<Item = Message> {
 }
 
 fn icon(level: TrayLevel) -> Option<Icon> {
+    // tray-icon draws an image taller than 22 px at 22 pt with its pixel
+    // size taken as points, so the 44 px template is 22 pt, crisp at 2x.
+    #[cfg(target_os = "macos")]
+    let (w, h, px) = super::super::icon::menubar_rgba(level)?;
+    #[cfg(windows)]
     let (w, h, px) = super::super::icon::rgba(ICON_SIZE, level)?;
     Icon::from_rgba(px, w, h)
         .inspect_err(|e| tracing::debug!(error = %e, "bad tray icon"))
@@ -204,7 +211,14 @@ pub fn create(state: &TrayState) -> bool {
             .with_menu(Box::new(menu(state)))
             .with_menu_on_left_click(false);
         if let Some(i) = icon(state.level) {
-            builder = builder.with_icon(i);
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder.with_icon_templated(i);
+            }
+            #[cfg(windows)]
+            {
+                builder = builder.with_icon(i);
+            }
         }
         match builder.build() {
             Ok(icon) => {
@@ -228,8 +242,13 @@ pub fn apply(state: &TrayState) {
         let Some(n) = slot else {
             return;
         };
+        // A plain `set_icon` would drop the template flag on macOS.
+        #[cfg(target_os = "macos")]
+        let set = |i| n.icon.set_icon_templated(i);
+        #[cfg(windows)]
+        let set = |i| n.icon.set_icon(i);
         if state.level != n.shown.level
-            && let Err(e) = n.icon.set_icon(icon(state.level))
+            && let Err(e) = set(icon(state.level))
         {
             tracing::debug!(error = %e, "tray icon");
         }

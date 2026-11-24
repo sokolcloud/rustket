@@ -1,6 +1,6 @@
-//! Desktop integration: notifications, tray, window behaviour (close /
-//! minimize to tray, start minimized), idle → away, sounds, autostart,
-//! keyboard shortcuts. Owner: desktop agent. Strings: `locales/desktop.yml`
+//! Desktop integration: notifications, tray, Dock badge (macOS), window
+//! behaviour (close / minimize to tray, start minimized), idle → away, sounds,
+//! autostart, keyboard shortcuts. Owner: desktop agent. Strings: `locales/desktop.yml`
 //! (`desktop.*`).
 //!
 //! The app calls the hooks below; everything else is internal.
@@ -10,6 +10,7 @@
 pub mod autostart;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod dbus;
+pub mod dock;
 pub mod icon;
 pub mod idle;
 pub mod notifications;
@@ -202,6 +203,8 @@ pub struct Desktop {
     /// Last seen connection state per server (`true`: connected), to notice
     /// reconnects.
     connected: HashMap<ServerId, bool>,
+    /// The Dock badge last set (macOS).
+    dock_badge: Option<String>,
 }
 
 impl Desktop {
@@ -229,6 +232,7 @@ impl Desktop {
             locale: crate::i18n::cache_tag(),
             wayland: wayland_session(),
             connected: HashMap::new(),
+            dock_badge: None,
         }
     }
 
@@ -373,6 +377,12 @@ impl Desktop {
         signal: rustket_core::room_list::WorkspaceSignal,
     ) -> Task<Message> {
         self.tray.set_unread(&signal);
+        let badge = dock::badge_label(&signal);
+        if self.enabled && badge != self.dock_badge {
+            #[cfg(target_os = "macos")]
+            dock::apply(badge.as_deref());
+            self.dock_badge = badge;
+        }
         Task::none()
     }
 
