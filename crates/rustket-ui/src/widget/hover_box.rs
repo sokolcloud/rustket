@@ -15,10 +15,12 @@ type StyleFn<'a> = Box<dyn Fn(&Theme, bool) -> container::Style + 'a>;
 /// hovered, the `on_hover` layers on top (laid out over the content's bounds, e.g.
 /// a toolbar aligned top-right or a timestamp in the gutter). The layers also
 /// show while one of their widgets has the keyboard focus (Tab reaches a
-/// row's toolbar), and then get keyboard events.
+/// row's toolbar), and then get keyboard events, and while [`HoverBox::pinned`]
+/// (a menu of the toolbar is open).
 pub struct HoverBox<'a, Message> {
     children: Vec<Element<'a, Message>>,
     style: StyleFn<'a>,
+    pinned: bool,
 }
 
 pub fn hover_box<'a, Message: 'a>(
@@ -31,6 +33,17 @@ pub fn hover_box<'a, Message: 'a>(
     HoverBox {
         children,
         style: Box::new(style),
+        pinned: false,
+    }
+}
+
+impl<Message> HoverBox<'_, Message> {
+    /// The layers and their overlays stay shown although the box is not
+    /// hovered, e.g. while a menu of its toolbar is open (over the menu card
+    /// the box gets no cursor).
+    pub fn pinned(mut self, pinned: bool) -> Self {
+        self.pinned = pinned;
+        self
     }
 }
 
@@ -114,7 +127,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for HoverBox<'_, Message> {
             return;
         };
         let hovered = cursor.is_over(bounds);
-        let shown = tree.state.downcast_ref::<State>().shown(hovered);
+        let shown = self.pinned || tree.state.downcast_ref::<State>().shown(hovered);
         let s = (self.style)(theme, shown);
         if s.background.is_some() || s.border.width > 0.0 {
             container::draw_background(renderer, &s, bounds);
@@ -182,8 +195,9 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for HoverBox<'_, Message> {
             }
             was
         };
-        // Hover layers get events while hovered, on the event that leaves the row
-        // (so tooltips close) and on every release (so buttons do not stay pressed).
+        // Hover layers get events while hovered or pinned, on the event that
+        // leaves the row (so tooltips close) and on every release (so buttons
+        // do not stay pressed).
         let resets = matches!(
             event,
             Event::Mouse(mouse::Event::ButtonReleased(_) | mouse::Event::CursorLeft)
@@ -215,7 +229,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for HoverBox<'_, Message> {
             }
         }
         let focus_within = tree.state.downcast_ref::<State>().focus_within;
-        if hovered || was_hovered || resets || focus_within {
+        if hovered || was_hovered || resets || focus_within || self.pinned {
             let item_trees = &mut tree.children[1..];
             for ((child, tree), layout) in self.children[1..]
                 .iter_mut()
@@ -308,7 +322,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for HoverBox<'_, Message> {
         // Overlays of the hover layers (tooltips, menus) only exist while
         // they are shown.
         let state = tree.state.downcast_ref::<State>();
-        if !state.shown(state.hovered) {
+        if !self.pinned && !state.shown(state.hovered) {
             let content_layout = layout.children().next()?;
             return self.children[0].as_widget_mut().overlay(
                 &mut tree.children[0],

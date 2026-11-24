@@ -51,7 +51,9 @@ controls) already wrap themselves; wrap your own
 around a styled box whose inner (borderless) input has the focus. Custom
 menus use `menu_nav(column, actions)` for Up/Down/Enter (the status menu
 does). Hover toolbars (`hover_box`) show while one of their buttons has the
-focus. Tab and F6 scroll the focused widget into view; `side_panel` hides
+focus, or while pinned (`.pinned()`, set by `MessageRowProps::actions_menu_open`
+while a toolbar menu is open; any popover inside a hover layer needs it: over
+the popover the row gets no cursor and is not hovered). Tab and F6 scroll the focused widget into view; `side_panel` hides
 the room column's focusables while a panel covers it. Regions for F6 are
 containers with the ids in `crate::focus` (sidebar, timeline, composer,
 panel); the custom title bar is not a region (Tab reaches it first). Escape

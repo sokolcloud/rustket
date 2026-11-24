@@ -46,6 +46,8 @@ pub struct MessageRowProps<'a, Message> {
     pub is_selected: bool,
     /// Floating toolbar shown top-right while the row is hovered.
     pub actions_toolbar: Option<Element<'a, Message>>,
+    /// A menu of the toolbar is open: the toolbar stays shown.
+    pub actions_menu_open: bool,
     /// Not yet confirmed by the server: text is dimmed and a clock is shown.
     pub is_pending: bool,
     /// Sending failed: error line with `failed_label` and a retry action.
@@ -82,6 +84,7 @@ impl<'a, Message> MessageRowProps<'a, Message> {
             is_own_highlight: false,
             is_selected: false,
             actions_toolbar: None,
+            actions_menu_open: false,
             is_pending: false,
             is_failed: false,
             failed_label: "Message not sent".into(),
@@ -265,6 +268,7 @@ pub fn message_row<'a, Message: Clone + 'a>(
             p.is_pending,
         ),
     )
+    .pinned(p.actions_menu_open)
     .into()
 }
 

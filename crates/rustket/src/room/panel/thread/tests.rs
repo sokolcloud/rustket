@@ -1214,3 +1214,235 @@ fn links_open_in_scrolled_thread_and_room() {
         "the last room message opens its link"
     );
 }
+
+/// User report: the "…" menu of a message vanished on the first mouse move
+/// when it opened upward (the last replies) and blinked when it opened
+/// downward (the root). Over the menu card iced gives the row no cursor, so
+/// the row lost its hover and with it the toolbar's overlays. Driven like
+/// iced_winit: one interface lives until a message is published, every
+/// input is followed by redraw frames while they are requested.
+#[test]
+fn message_menu_stays_open_under_the_pointer() {
+    use iced::{Event, Point, Size, mouse, window};
+    use iced_runtime::user_interface::{Cache, State, UserInterface};
+
+    const MAX_FRAMES: usize = 8;
+
+    struct Clip;
+    impl iced::advanced::Clipboard for Clip {
+        fn read(&self, _: iced::advanced::clipboard::Kind) -> Option<String> {
+            None
+        }
+        fn write(&mut self, _: iced::advanced::clipboard::Kind, _: String) {}
+    }
+
+    /// A window with a persistent interface; published messages are
+    /// collected, the caller applies them and rebuilds.
+    struct Driver<'a> {
+        ui: UserInterface<'a, Msg, iced::Theme, iced::Renderer>,
+        renderer: iced::Renderer,
+        cursor: Point,
+        interaction: mouse::Interaction,
+        msgs: Vec<Msg>,
+        /// Inputs whose redraw frames did not settle.
+        loops: usize,
+    }
+
+    impl<'a> Driver<'a> {
+        fn new(view: Element<'a, Msg>, cache: Cache, cursor: Point) -> Self {
+            let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+                rustket_ui::theme::font_regular(),
+                iced::Pixels(rustket_ui::theme::TEXT_BODY),
+            ));
+            let ui = UserInterface::build(view, Size::new(420.0, 700.0), cache, &mut renderer);
+            let mut d = Self {
+                ui,
+                renderer,
+                cursor,
+                interaction: mouse::Interaction::None,
+                msgs: Vec::new(),
+                loops: 0,
+            };
+            d.settle();
+            d
+        }
+
+        fn into_cache(self) -> Cache {
+            self.ui.into_cache()
+        }
+
+        /// One `update`: whether a redraw is due.
+        fn update(&mut self, events: &[Event]) -> bool {
+            let before = self.msgs.len();
+            let (state, _) = self.ui.update(
+                events,
+                mouse::Cursor::Available(self.cursor),
+                &mut self.renderer,
+                &mut Clip,
+                &mut self.msgs,
+            );
+            match state {
+                State::Updated {
+                    mouse_interaction,
+                    redraw_request,
+                    ..
+                } => {
+                    self.interaction = mouse_interaction;
+                    redraw_request != window::RedrawRequest::Wait || self.msgs.len() > before
+                }
+                State::Outdated => true,
+            }
+        }
+
+        /// Redraw frames while requested (a published message stops them:
+        /// the app would rebuild).
+        fn settle(&mut self) {
+            let theme = rustket_ui::theme(rustket_ui::Mode::Light);
+            for _ in 0..MAX_FRAMES {
+                let more = self.update(&[Event::Window(window::Event::RedrawRequested(
+                    std::time::Instant::now(),
+                ))]);
+                self.ui.draw(
+                    &mut self.renderer,
+                    &theme,
+                    &iced::advanced::renderer::Style {
+                        text_color: iced::Color::BLACK,
+                    },
+                    mouse::Cursor::Available(self.cursor),
+                );
+                if !more || !self.msgs.is_empty() {
+                    return;
+                }
+            }
+            self.loops += 1;
+        }
+
+        fn input(&mut self, events: &[Event]) {
+            if self.update(events) && self.msgs.is_empty() {
+                self.settle();
+            }
+        }
+
+        fn move_to(&mut self, p: Point) {
+            self.cursor = p;
+            self.input(&[Event::Mouse(mouse::Event::CursorMoved { position: p })]);
+        }
+
+        fn click(&mut self) -> Vec<Msg> {
+            self.input(&[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))]);
+            self.input(&[Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Left,
+            ))]);
+            std::mem::take(&mut self.msgs)
+        }
+
+        /// Hovers rows in `ys` order and clicks the rightmost pointer of the
+        /// row's toolbar until a click opens a message menu: its id and the
+        /// trigger point. Other clicks are dropped.
+        fn open_menu(&mut self, ys: impl Iterator<Item = u32>) -> Option<(String, Point)> {
+            for y in ys.step_by(4) {
+                self.move_to(Point::new(200.0, y as f32));
+                let mut x = 416.0;
+                while x > 250.0 {
+                    let p = Point::new(x, y as f32);
+                    self.move_to(p);
+                    if self.interaction == mouse::Interaction::Pointer {
+                        if let [Msg::Item(ItemMsg::Menu(Some(mid)))] = self.click().as_slice() {
+                            return Some((mid.clone(), p));
+                        }
+                        break;
+                    }
+                    x -= 2.0;
+                }
+            }
+            None
+        }
+    }
+
+    let mut env = Env::new(None);
+    env.ws.apply_message(parent(30));
+    for i in 0..30i64 {
+        let uid = if i % 2 == 0 { "bob" } else { "alice" };
+        env.ws
+            .apply_message(message(&format!("m{i:02}"), uid, T0 + 100 + i, None));
+    }
+    let mut t = Thread::new("R1", "P");
+    let _ = t.activate(&mut env.ctx());
+    let ticket = t.ticket.unwrap();
+    let items = (0..30i64)
+        .rev()
+        .map(|i| {
+            let uid = if i % 2 == 0 { "alice" } else { "carol" };
+            message(&format!("r{i:02}"), uid, T0 + 1 + i, Some("P"))
+        })
+        .collect();
+    let _ = t.update(Msg::Page(ticket, Ok(page(items, 0, 30))), &mut env.ctx());
+
+    // The last reply, at the bottom: its menu flips up.
+    let ctx = view_ctx(&env);
+    let mut d = Driver::new(t.view(&ctx), Cache::default(), Point::new(-100.0, -100.0));
+    let (mid, at) = d.open_menu((0..700).rev()).expect("a reply menu opens");
+    assert_eq!(mid, "r29");
+    let cache = d.into_cache();
+    let _ = t.update(Msg::Item(ItemMsg::Menu(Some(mid))), &mut env.ctx());
+    let ctx = view_ctx(&env);
+    let mut d = Driver::new(t.view(&ctx), cache, at);
+    // The card is clamped to the narrow window: walk left of the trigger.
+    let x = at.x - 40.0;
+    let mut y = at.y;
+    while y > at.y - 60.0 {
+        y -= 3.0;
+        d.move_to(Point::new(x, y));
+    }
+    assert_ne!(
+        d.interaction,
+        mouse::Interaction::None,
+        "over the menu card"
+    );
+    let clicked = d.click();
+    assert!(
+        matches!(clicked.as_slice(), [Msg::Item(ItemMsg::Act(m, _))] if m == "r29"),
+        "a click on the upward menu: {clicked:?}"
+    );
+    assert_eq!(d.loops, 0, "the frames settle");
+    let cache = d.into_cache();
+    for m in clicked {
+        let _ = t.update(m, &mut env.ctx());
+    }
+
+    // Scrolled to the top: the root's menu opens down over its own row.
+    let ctx = view_ctx(&env);
+    let mut d = Driver::new(t.view(&ctx), cache, Point::new(200.0, 300.0));
+    for _ in 0..40 {
+        d.input(&[Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: 10.0 },
+        })]);
+    }
+    d.msgs.clear();
+    let (mid, at) = d.open_menu(0..700).expect("the root menu opens");
+    assert_eq!(mid, "P");
+    let cache = d.into_cache();
+    let _ = t.update(Msg::Item(ItemMsg::Menu(Some(mid))), &mut env.ctx());
+    let ctx = view_ctx(&env);
+    let mut d = Driver::new(t.view(&ctx), cache, at);
+    // The card is clamped to the narrow window: walk left of the trigger.
+    let x = at.x - 40.0;
+    let mut y = at.y;
+    while y < at.y + 60.0 {
+        y += 3.0;
+        d.move_to(Point::new(x, y));
+        assert_eq!(d.loops, 0, "the frames settle at y {y}");
+    }
+    assert_ne!(
+        d.interaction,
+        mouse::Interaction::None,
+        "over the menu card"
+    );
+    let clicked = d.click();
+    assert!(
+        matches!(clicked.as_slice(), [Msg::Item(ItemMsg::Act(m, _))] if m == "P"),
+        "a click on the downward menu: {clicked:?}"
+    );
+}

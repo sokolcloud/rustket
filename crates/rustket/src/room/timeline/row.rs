@@ -708,6 +708,7 @@ pub(crate) fn build(
             }
             if !acts.is_empty() || !apps.is_empty() {
                 p.actions_toolbar = Some(toolbar(&acts, &m.id, flags.menu_open, &apps));
+                p.actions_menu_open = flags.menu_open;
             }
             let row = message_row(p);
             if acts.is_empty() && apps.is_empty() {
