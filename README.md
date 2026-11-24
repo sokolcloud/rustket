@@ -214,19 +214,37 @@ away and the workspaces move back to a column on the left.
 
 ### Indicators, notifications and sounds
 
-Unread signals are ranked the same way everywhere: mentions and direct
-messages (red), `@all`/`@here` (orange), new messages (muted blue), thread
-replies only (slate), rooms with notifications turned off (grey); a room's
-"Show mention badges" and "Mute @all and @here mentions" settings apply in
-every view.
-The workspace icon and the window title (`Rustket (N)`, or `Rustket •` when
-there is unread but no mention) count mentions only, and the tray icon's dot
-is red only for them.
-On macOS the menu bar icon is a template glyph that follows the menu bar's
-colours: a dot for mentions and `@all`, a ring for other unread; the Dock
-badge shows the number of mentions.
-**Settings → Help** explains every signal with a short code and samples
-computed from your current settings.
+**Settings → Appearance → Unread indicators** picks one of two schemes. Both
+read the server's unread counters, and notifications and sounds are the same
+in both.
+
+- **Rocket.Chat** (the default) looks like the Rocket.Chat web client and
+  desktop app: red for mentions of you, blue for unread threads, orange for
+  `@all`/`@here`, grey for everything else counted, with full numbers and no
+  dots (a message the server does not count only highlights the room's name).
+  As in Rocket.Chat, a room's notification settings leave its badge alone,
+  except that with **Show unread counter** off the room shows a counter only
+  for mentions (none at all if **Show mention badges** is off too). All
+  unreads and Activity keep Rustket's rules: they leave out muted rooms'
+  plain unread and thread replies, and they leave out muted `@all` and the
+  mentions of rooms with hidden mention badges. Mentions in messages are
+  coloured text and highlight words are white on red. The window title
+  (`Rustket (N)`), the Dock and the menu bar count unread messages; the tray
+  and the window icon get a red badge (1–9, `+9`, or `•` when nothing is
+  counted; the window icon only on X11 and Windows: Wayland ignores window
+  icons, and macOS uses the Dock); the workspace icon has a grey badge.
+- **Rustket** is quieter: mentions and direct messages (red), `@all`/`@here`
+  (orange), new messages (muted blue), thread replies only (slate), rooms
+  with notifications turned off (grey); a room's "Show mention badges" and
+  "Mute @all and @here mentions" settings apply in every view. The
+  workspace icon and the window title (`Rustket (N)`, or `Rustket •` when
+  there is unread but no mention) count mentions only, and the tray icon's
+  dot is red only for them. On macOS the menu bar icon is a template glyph
+  that follows the menu bar's colours: a dot for mentions and `@all`, a ring
+  for other unread; the Dock badge shows the number of mentions.
+
+**Settings → Help** explains every signal of the selected scheme with a
+short code and samples computed from your current settings.
 
 Message sounds are Rocket.Chat's own: the room's sound, otherwise the account's
 New message sound, at the account's volume. **Play a sound** (Settings →

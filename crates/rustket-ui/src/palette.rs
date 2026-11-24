@@ -533,4 +533,38 @@ mod tests {
         assert!(!s.set("nope", Color::BLACK));
         assert!(s.is_empty());
     }
+
+    /// The Rocket.Chat tokens are copies: seeds and the contrast pass never
+    /// move them.
+    #[test]
+    fn seeds_leave_rc_tokens_unchanged() {
+        let rc = |t: &Tokens| -> Vec<(&'static str, Color)> {
+            t.colors()
+                .into_iter()
+                .filter(|(n, _)| n.starts_with("rc_"))
+                .collect()
+        };
+        let all = Seeds {
+            accent: Some(rgb(0x8A3FD1)),
+            danger: Some(rgb(0x00AA00)),
+            success: Some(rgb(0xAA00AA)),
+            warning: Some(rgb(0x0000FF)),
+            background: Some(rgb(0x202020)),
+            text: Some(rgb(0xF0F0F0)),
+        };
+        for base in [LIGHT, DARK] {
+            assert_eq!(rc(&base).len(), 17);
+            for name in Seeds::NAMES {
+                let mut s = Seeds::default();
+                assert!(s.set(name, rgb(0x777777)));
+                let mut t = base;
+                apply_seeds(&mut t, &s);
+                assert_eq!(rc(&t), rc(&base), "{name}");
+            }
+            let mut t = base;
+            apply_seeds(&mut t, &all);
+            assert_ne!(t.primary, base.primary);
+            assert_eq!(rc(&t), rc(&base));
+        }
+    }
 }

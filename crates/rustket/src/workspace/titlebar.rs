@@ -18,7 +18,7 @@ use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, TEXT_SMALL};
 use rustket_ui::widget::{
     MenuEntry, MenuItem, TITLE_BAR_HEIGHT, TITLE_BAR_ITEM, WindowControlLabels, context_menu,
-    divider, title_bar_button, title_bar_workspace, window_controls,
+    divider, title_bar_button, title_bar_workspace_with, window_controls,
 };
 
 use super::rail::{self, RailEntry};
@@ -197,11 +197,12 @@ pub fn view<'a>(v: View) -> Element<'a, Message> {
             area.on_press(Message::Inert).into()
         }
     };
+    let look = rustket_ui::theme::indicator_look();
     let items = v.entries.into_iter().map(|e| {
-        let badge = rail::badge(e.signal);
-        title_bar_workspace(
+        let (badge, name) = rail::entry_badge_label(&e, look);
+        title_bar_workspace_with(
             &e.avatar,
-            rail::label(e.name, e.signed_out),
+            name,
             badge,
             e.selected,
             e.signed_out,
@@ -469,6 +470,7 @@ mod tests {
                 strongest: (rooms > 0).then_some(rustket_core::room_list::BadgeVariant::Unread),
                 rooms,
             },
+            rc: Default::default(),
             selected: n == 0,
             signed_out,
         }
@@ -828,5 +830,183 @@ mod tests {
         assert!(!close.iter().any(|m| m.contains("TitleBar")), "{close:?}");
         let rail = click(&app, 1024.0, Point::new(32.0, 30.0));
         assert!(rail.iter().any(|m| m.contains("Rail(Select")), "{rail:?}");
+    }
+
+    /// The window title follows the scheme: Rustket counts mentions over all
+    /// accounts, Rocket.Chat the active account's unread.
+    #[test]
+    fn title_follows_the_scheme() {
+        use rustket_core::config::IndicatorScheme;
+        let mut app = app();
+        let sid = app.active.clone().unwrap();
+        let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+        ws.apply_subscription(Change::Updated, sub("R1", 4, 2));
+        app.config.ui.indicator_scheme = IndicatorScheme::Rustket;
+        assert_eq!(app.title(), "Rustket (2)");
+        app.config.ui.indicator_scheme = IndicatorScheme::RocketChat;
+        assert_eq!(app.title(), "Rustket (4)");
+        assert_eq!(app.rc_signal().unread, 4);
+    }
+
+    /// The app feeds the Rocket.Chat signal to the desktop layer and the
+    /// workspace items only under that scheme.
+    #[test]
+    fn rc_signal_reaches_desktop_and_rail() {
+        use crate::desktop::tray::{TrayArt, TrayLevel};
+        use rustket_core::config::IndicatorScheme;
+        use rustket_core::indicators::RcSignal;
+        let mut app = app();
+        let sid = app.active.clone().unwrap();
+        let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+        ws.apply_subscription(Change::Updated, sub("R1", 4, 2));
+        app.config.ui.indicator_scheme = IndicatorScheme::RocketChat;
+        let _ = app.update(AppMsg::Noop);
+        let tray = app.desktop.tray.state();
+        assert_eq!(tray.rc.unread, 4);
+        assert_eq!(tray.art, TrayArt::RcCount(4));
+        assert_eq!(app.rail_entries()[0].rc.unread, 4);
+        app.config.ui.indicator_scheme = IndicatorScheme::Rustket;
+        let _ = app.update(AppMsg::Noop);
+        let tray = app.desktop.tray.state();
+        assert_eq!(tray.rc, RcSignal::default());
+        assert_eq!(tray.art, TrayArt::Level(TrayLevel::Mention));
+        assert_eq!(app.rail_entries()[0].rc, RcSignal::default());
+    }
+
+    /// `view` drawn by the CPU renderer at `size` (light theme), as RGBA.
+    fn render(view: Element<'_, Message>, size: iced::Size) -> Vec<u8> {
+        use iced::advanced::renderer::{Headless, Style};
+        use iced_runtime::user_interface::{Cache, UserInterface};
+        use rustket_ui::theme::Mode;
+        if let Ok(mut fonts) = iced::advanced::graphics::text::font_system().write() {
+            for f in rustket_ui::fonts() {
+                fonts.load_font(f);
+            }
+        }
+        let tokens = rustket_ui::theme::active_tokens(Mode::Light);
+        let mut r = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+            rustket_ui::theme::font_regular(),
+            iced::Pixels(rustket_ui::theme::TEXT_BODY),
+        ));
+        let mut ui = UserInterface::build(view, size, Cache::default(), &mut r);
+        ui.draw(
+            &mut r,
+            &rustket_ui::theme(Mode::Light),
+            &Style {
+                text_color: tokens.text_primary,
+            },
+            mouse::Cursor::Unavailable,
+        );
+        let (w, h) = (size.width as u32, size.height as u32);
+        r.screenshot(iced::Size::new(w, h), 1.0, tokens.surface_rail)
+    }
+
+    /// Rocket.Chat's workspace badges are drawn, unclipped, on the rail and
+    /// in the title bar: the ghost counter, its `99+`, the rail's bullet pill
+    /// and the title bar's ball. `RUSTKET_SHOT_DIR` keeps the images.
+    #[test]
+    fn rc_workspace_badges_render() {
+        use rustket_ui::theme::{IndicatorLook, with_indicator_look};
+        let entries = |rc: bool| {
+            [(5, false), (150, false), (0, true)]
+                .into_iter()
+                .enumerate()
+                .map(|(i, (unread, bullet))| {
+                    let mut e = entry(i as u8, (0, 0), false);
+                    if rc {
+                        e.rc = rustket_core::indicators::RcSignal { unread, bullet };
+                    }
+                    e
+                })
+                .collect::<Vec<_>>()
+        };
+        let rail_size = iced::Size::new(rustket_ui::theme::RAIL_WIDTH, 400.0);
+        let bar_size = iced::Size::new(420.0, TITLE_BAR_HEIGHT);
+        let bar = |rc| {
+            view(View {
+                entries: entries(rc),
+                workspace_buttons: true,
+                settings_active: false,
+                title: "Rustket".into(),
+                maximized: false,
+                interactive: true,
+            })
+        };
+        let shots = with_indicator_look(IndicatorLook::RocketChat, || {
+            [
+                (
+                    "rail",
+                    rail_size,
+                    render(rail::view(entries(false)).map(Message::Rail), rail_size),
+                    render(rail::view(entries(true)).map(Message::Rail), rail_size),
+                ),
+                (
+                    "titlebar",
+                    bar_size,
+                    render(bar(false), bar_size),
+                    render(bar(true), bar_size),
+                ),
+            ]
+        });
+        for (name, size, plain, badged) in shots {
+            let (pixels, _) = badged.as_chunks::<4>();
+            let (base, _) = plain.as_chunks::<4>();
+            let changed = pixels.iter().zip(base).filter(|(a, b)| a != b).count();
+            assert!(changed > 100, "{name}: no badges drawn ({changed})");
+            let ghost = rustket_ui::theme::active_tokens(rustket_ui::theme::Mode::Light)
+                .rc_ghost
+                .into_rgba8();
+            let near = |p: &[u8; 4]| (0..3).all(|c| p[c].abs_diff(ghost[c]) < 8);
+            let ghostly = pixels.iter().filter(|p| near(p)).count();
+            assert!(ghostly > 100, "{name}: no ghost badges ({ghostly})");
+            if let Some(dir) = std::env::var_os("RUSTKET_SHOT_DIR") {
+                let (w, h) = (size.width as u32, size.height as u32);
+                let mut out = Vec::new();
+                {
+                    let mut enc = png::Encoder::new(&mut out, w, h);
+                    enc.set_color(png::ColorType::Rgba);
+                    enc.set_depth(png::BitDepth::Eight);
+                    let mut wr = enc.write_header().unwrap();
+                    wr.write_image_data(&badged).unwrap();
+                }
+                let path = std::path::Path::new(&dir).join(format!("rc-{name}.png"));
+                std::fs::write(path, out).unwrap();
+            }
+        }
+    }
+
+    /// The rail and the title bar draw the badge of the active look.
+    #[test]
+    fn workspace_views_follow_the_look() {
+        use crate::tree_probe::texts;
+        use rustket_ui::theme::{IndicatorLook, with_indicator_look};
+        let entries = || {
+            let mut e = entry(0, (1, 2), false);
+            e.rc.unread = 7;
+            vec![e]
+        };
+        let bar = || {
+            view(View {
+                entries: entries(),
+                workspace_buttons: true,
+                settings_active: false,
+                title: "Rustket".into(),
+                maximized: false,
+                interactive: true,
+            })
+        };
+        let rail = || rail::view(entries());
+        for (look, shown, hidden) in [
+            (IndicatorLook::Rustket, "2", "7"),
+            (IndicatorLook::RocketChat, "7", "2"),
+        ] {
+            for t in [
+                with_indicator_look(look, || texts(bar())),
+                with_indicator_look(look, || texts(rail())),
+            ] {
+                assert!(t.iter().any(|s| s == shown), "{look:?}: {t:?}");
+                assert!(!t.iter().any(|s| s == hidden), "{look:?}: {t:?}");
+            }
+        }
     }
 }

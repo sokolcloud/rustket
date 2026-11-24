@@ -62,6 +62,12 @@ pub struct Subscription {
     pub disable_notifications: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mute_group_mentions: Option<bool>,
+    /// `unreadAlert`: `default`, `all`, `mentions` or `nothing` (the tray/title bullet).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient::opt"
+    )]
+    pub unread_alert: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignored: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,4 +173,31 @@ pub struct OldRoomKey {
     /// The old room key wrapped for this user (`kid + base64`).
     #[serde(rename = "E2EKey")]
     pub e2e_key: String,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unread_alert_is_lenient() {
+        let s: Subscription =
+            serde_json::from_value(serde_json::json!({"rid": "r", "unreadAlert": "nothing"}))
+                .unwrap();
+        assert_eq!(s.unread_alert.as_deref(), Some("nothing"));
+        for bad in [
+            serde_json::json!(true),
+            serde_json::json!(3),
+            serde_json::json!({}),
+        ] {
+            let s: Subscription =
+                serde_json::from_value(serde_json::json!({"rid": "r", "unreadAlert": bad}))
+                    .unwrap();
+            assert_eq!(s.unread_alert, None);
+            assert_eq!(s.rid, "r");
+        }
+        let s: Subscription = serde_json::from_value(serde_json::json!({"rid": "r"})).unwrap();
+        assert_eq!(s.unread_alert, None);
+    }
 }

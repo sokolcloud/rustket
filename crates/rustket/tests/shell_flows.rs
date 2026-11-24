@@ -93,6 +93,8 @@ fn app_with(names: &[&str]) -> (App, Vec<ServerId>) {
         ephemeral: true,
         secrets: SecretsMode::Memory,
         open_urls: false,
+        // The process-wide indicator look never changes in this binary.
+        indicator_scheme: Some(rustket_core::config::IndicatorScheme::Rustket),
         ..Flags::default()
     });
     let _ = app.update(Message::SecretsReady(rustket::message::SecretsReady {

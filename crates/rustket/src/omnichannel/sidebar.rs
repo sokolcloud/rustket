@@ -7,6 +7,7 @@ use iced::widget::Column;
 use rust_i18n::t;
 use std::collections::BTreeSet;
 
+use rustket_core::indicators::{IndicatorScheme, RcBadge, rc_collapsed};
 use rustket_core::omnichannel::room::month_key;
 use rustket_core::omnichannel::room_list::{
     OmnichannelSectionKind, QueueRow, decor, queue_section,
@@ -15,7 +16,8 @@ use rustket_core::room_list::{RoomKind, RoomListItem, RoomListOptions, Section, 
 use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::Icon;
 use rustket_ui::widget::{
-    AvatarSource, BadgeKind, RoomListItemProps, room_list_item, section_header_with,
+    AvatarSource, BadgeKind, RoomListItemProps, room_list_item, section_header_rc,
+    section_header_with,
 };
 
 use crate::workspace::sidebar::{Message, SidebarCtx, preview_text};
@@ -104,6 +106,22 @@ fn header<'a>(
 ) -> (Element<'a, Message>, bool) {
     let key = section_key(group.kind);
     let collapsed = filter.trim().is_empty() && ctx.collapsed.contains(key);
+    if ctx.prefs.indicator_scheme == IndicatorScheme::RocketChat {
+        let unread = collapsed.then(|| collapsed_rc(group)).flatten();
+        return (
+            section_header_rc(
+                t!(key).into_owned(),
+                collapsed,
+                None,
+                unread
+                    .as_ref()
+                    .map(crate::workspace::sidebar::collapsed_rc_status),
+                unread.is_some(),
+                Message::Omni(Msg::Toggle(key.to_owned())),
+            ),
+            collapsed,
+        );
+    }
     let count = group.queue.len() + group.rooms.len();
     let status = collapsed.then(|| collapsed_kinds(group)).flatten();
     (
@@ -128,6 +146,12 @@ fn collapsed_kinds<'a>(group: &Group<'_>) -> Option<Element<'a, Message>> {
             .map(|i| crate::workspace::sidebar::badge_kind(&i.badge))
             .chain(group.queue.iter().map(|_| Some(QUEUED_KIND))),
     )
+}
+
+/// The Rocket.Chat counter of a collapsed group: its rooms only (queued
+/// chats have no unread state).
+pub(crate) fn collapsed_rc(group: &Group<'_>) -> Option<RcBadge> {
+    rc_collapsed(group.rooms.iter().map(|i| i.rc.info))
 }
 
 /// The badge of a queued chat's row.
@@ -158,7 +182,8 @@ pub fn push_group<'a>(
         p.subtitle = q.preview.as_ref().map(preview_text);
         p.time =
             q.ts.map(|ts| crate::format::short_time(ts, chrono::Local::now(), ctx.prefs.clock_24h));
-        p.badge = Some(QUEUED_KIND);
+        // Rocket.Chat marks nothing on a queued chat.
+        p.badge = (ctx.prefs.indicator_scheme == IndicatorScheme::Rustket).then_some(QUEUED_KIND);
         p.is_selected = ctx.active_room == Some(q.rid.as_str());
         p.icon = Some(super::panel::info::source_icon(q.decor.source));
         p.presence = q

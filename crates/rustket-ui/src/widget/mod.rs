@@ -34,7 +34,11 @@ pub use arrow_keys::arrow_keys;
 pub use avatar::{
     AVATAR_COLORS, Avatar, AvatarShape, AvatarSource, avatar, avatar_color, initials,
 };
-pub use badge::{BADGE_HEIGHT, BadgeKind, badge, badge_label, dot};
+pub use badge::{
+    BADGE_HEIGHT, BULLET_SIZE, BadgeCap, BadgeKind, BadgePlace, BadgeShape, GHOST_SHADOW,
+    WorkspaceAt, WorkspaceBadge, badge, badge_in, badge_label, badge_label_in, bullet_in, dot,
+    dot_in, workspace_badge,
+};
 pub use button::{
     ActionButton, ButtonKind, ButtonSize, action_button, danger_button, ghost_button, icon_button,
     icon_button_with, primary_button, secondary_button,
@@ -58,7 +62,7 @@ pub use menu::{
 };
 pub use message::{
     GUTTER, MESSAGE_AVATAR, MessageRowProps, discussion_summary, message_row, message_toolbar,
-    system_message_row, thread_summary,
+    row_style_in, system_message_row, thread_summary, thread_summary_kind,
 };
 pub use misc::{
     ChipKind, TooltipPosition, above, chip, divider, kbd, slot, tooltip, vertical_divider,
@@ -69,13 +73,15 @@ pub use presence::{Presence, presence_dot};
 pub use reorder::{ReorderArea, ReorderHandle, reorder_area};
 pub use side_panel::{MIN_MAIN_WIDTH, MIN_SIDE_WIDTH, side_panel};
 pub use sidebar::{
-    Density, RailIcon, RoomListItemProps, add_server_button, room_list_item, section_header,
-    section_header_full, section_header_with, workspace_rail_item,
+    Density, RailIcon, RoomListItemProps, RowColors, add_server_button, room_list_item, row_colors,
+    row_fonts, section_header, section_header_full, section_header_rc, section_header_with,
+    workspace_rail_item, workspace_rail_item_with,
 };
 pub use spinner::{empty_state, loading_placeholder, spinner, spinner_colored};
 pub use split::{HANDLE_WIDTH, split};
 pub use timeline::{date_separator, emoji_text, reaction_pill, unread_separator};
 pub use window_chrome::{
     RESIZE_EDGE, TITLE_BAR_HEIGHT, TITLE_BAR_ITEM, WINDOW_CONTROL_WIDTH, WindowControlLabels,
-    resize_cursor, title_bar_button, title_bar_workspace, window_controls, window_frame,
+    resize_cursor, title_bar_button, title_bar_workspace, title_bar_workspace_with,
+    window_controls, window_frame,
 };

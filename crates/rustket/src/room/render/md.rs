@@ -24,9 +24,9 @@ use rustket_ui::emoji::{EMOJI_FONT, segments};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
-    SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_EMOJI_LARGE, TEXT_HEADLINE,
-    TEXT_SMALL, TEXT_SUBTITLE, TEXT_TITLE, font_bold, font_mono, font_regular, font_semibold,
-    radius_sm,
+    IndicatorLook, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION, TEXT_EMOJI_LARGE,
+    TEXT_HEADLINE, TEXT_SMALL, TEXT_SUBTITLE, TEXT_TITLE, font_bold, font_medium, font_mono,
+    font_regular, font_semibold, indicator_look, radius_sm,
 };
 use rustket_ui::widget::selectable::rich;
 use rustket_ui::widget::{TooltipPosition, divider, tooltip};
@@ -48,6 +48,8 @@ pub(super) struct Cx<'r, 'a> {
     pub msg: Option<&'r Message>,
     pub me: Option<&'r str>,
     pub t: &'static Tokens,
+    /// The indicator look: mention chips and highlight words follow it.
+    look: IndicatorLook,
     spoiler: Cell<usize>,
     /// Index of the next code block (fold toggles).
     code: Cell<usize>,
@@ -65,6 +67,7 @@ impl<'r, 'a> Cx<'r, 'a> {
             msg,
             me: rc.workspace.username(),
             t: tokens(),
+            look: indicator_look(),
             spoiler: Cell::new(0),
             code: Cell::new(0),
             trim_next: Cell::new(false),
@@ -76,9 +79,11 @@ impl<'r, 'a> Cx<'r, 'a> {
     /// else sent it (the row gets the mention highlight too,
     /// `crate::room::timeline::row::highlights_row`). Only words the raw
     /// text matches, as the server and the row see it: `_word_` (italic)
-    /// does not count there, so it is not marked either.
+    /// does not count there, so it is not marked either. The Rocket.Chat
+    /// look marks the user's own messages too.
     pub fn with_highlights(mut self, msg: &Message) -> Self {
-        let own = self.rc.workspace.user_id().is_some_and(|id| id == msg.u.id);
+        let own = self.rc.workspace.user_id().is_some_and(|id| id == msg.u.id)
+            && self.look == IndicatorLook::Rustket;
         if !own && !msg.is_system() {
             let words = super::highlight_words(self.rc.workspace);
             if !words.is_empty() {
@@ -649,18 +654,42 @@ fn push_linkified(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>) {
 }
 
 /// Text with the highlight words of `cx` marked like a mention of the user
-/// (link text stays a link).
+/// (link text stays a link, unmarked; the Rocket.Chat look marks it).
 fn push_marked(out: &mut Vec<Sp>, text: &str, fmt: &Fmt, cx: &Cx<'_, '_>) {
-    if cx.words.is_empty() || fmt.link.is_some() {
+    let rc = cx.look == IndicatorLook::RocketChat;
+    if cx.words.is_empty() || (fmt.link.is_some() && !rc) {
         return push_text(out, text, fmt);
     }
     let mut last = 0;
     for r in cx.words.ranges(text) {
         push_text(out, &text[last..r.start], fmt);
-        out.push(highlight_word(&text[r.clone()], cx.t, fmt));
+        let word = &text[r.clone()];
+        out.push(if rc {
+            rc_highlight_word(word, cx.t, fmt)
+        } else {
+            highlight_word(word, cx.t, fmt)
+        });
         last = r.end;
     }
     push_text(out, &text[last..], fmt);
+}
+
+/// Rocket.Chat's highlight-word mark (`.highlight-text`): white on the
+/// danger colour, square, the weight of the text around it; inside a link
+/// it stays the link, underlined like the rest of its label.
+fn rc_highlight_word(word: &str, t: &Tokens, fmt: &Fmt) -> Sp {
+    let mut s = span(word.to_owned())
+        .font(fmt.font())
+        .color(t.rc_badge_fg)
+        .background(t.rc_danger)
+        .padding([0, 2])
+        .underline(fmt.link.is_some())
+        .strikethrough(fmt.strike)
+        .link_maybe(fmt.link.clone());
+    if let Some(size) = fmt.size {
+        s = s.size(size);
+    }
+    s
 }
 
 /// A matched highlight word: the colours of a mention of the user.
@@ -798,12 +827,16 @@ fn push_inline(out: &mut Vec<Sp>, node: &Inline, fmt: &Fmt, cx: &Cx<'_, '_>) {
         Inline::MentionUser { value } => out.push(mention_user(&value.value, cx, fmt)),
         Inline::MentionChannel { value } => {
             let name = value.value.as_str();
-            out.push(
-                span(format!("#{name}"))
-                    .font(fmt.semibold())
-                    .color(t.link)
-                    .link(RenderMsg::OpenRoom(name.to_owned())),
-            );
+            if cx.look == IndicatorLook::RocketChat {
+                out.push(rc_mention_channel(name, cx, fmt));
+            } else {
+                out.push(
+                    span(format!("#{name}"))
+                        .font(fmt.semibold())
+                        .color(t.link)
+                        .link(RenderMsg::OpenRoom(name.to_owned())),
+                );
+            }
         }
         Inline::Emoji(e) => {
             let code = e
@@ -875,6 +908,9 @@ pub(crate) fn mention_is_mine(name: &str, me: Option<&str>) -> bool {
 }
 
 fn mention_user(name: &str, cx: &Cx<'_, '_>, fmt: &Fmt) -> Sp {
+    if cx.look == IndicatorLook::RocketChat {
+        return rc_mention_user(name, cx, fmt);
+    }
     let t = cx.t;
     let special = name == "all" || name == "here";
     let me = mention_is_mine(name, cx.me);
@@ -903,6 +939,95 @@ fn mention_user(name: &str, cx: &Cx<'_, '_>, fmt: &Fmt) -> Sp {
         s = s.link(RenderMsg::OpenUser(name.to_owned()));
     }
     s
+}
+
+/// Rocket.Chat's user mention (`UserMentionElement`): coloured text in
+/// the medium weight, no background, "@" only with the account's
+/// `mentionsWithSymbol`. `@all` / `@here` in the "relevant" colour (not
+/// clickable); a user (or team) the message resolves in `mentions`: the
+/// user's own in the "critical" colour, others in "other", real names per
+/// the room's setting; an unresolved name stays plain "@name".
+fn rc_mention_user(name: &str, cx: &Cx<'_, '_>, fmt: &Fmt) -> Sp {
+    let t = cx.t;
+    let symbol = if cx.rc.workspace.mentions_with_symbol() {
+        "@"
+    } else {
+        ""
+    };
+    let chip = |shown: &str, color: Color| {
+        span(format!(
+            "{symbol}{}",
+            rustket_ui::widget::sanitize_bidi(shown)
+        ))
+        .font(fmt.styled(font_medium()))
+        .color(color)
+        .strikethrough(fmt.strike)
+    };
+    if name == "all" || name == "here" {
+        return chip(name, t.rc_mention_all);
+    }
+    let resolved = cx.msg.and_then(|m| m.mentions.as_ref()).and_then(|l| {
+        l.iter().find(|x| match x.kind.as_deref() {
+            Some("team") => x.name.as_deref() == Some(name),
+            _ => x
+                .username
+                .as_deref()
+                .is_some_and(|u| u.eq_ignore_ascii_case(name.trim_start_matches('@'))),
+        })
+    });
+    let Some(m) = resolved else {
+        return styled(format!("@{name}"), fmt, false);
+    };
+    let mine = cx.rc.workspace.user_id().is_some_and(|id| id == m.id);
+    let shown = if cx.rc.use_real_names {
+        m.name.as_deref().filter(|n| !n.trim().is_empty())
+    } else {
+        m.username.as_deref()
+    }
+    .unwrap_or(name);
+    let s = chip(
+        shown,
+        if mine {
+            t.rc_mention_me
+        } else {
+            t.rc_mention_other
+        },
+    );
+    match m.username.as_deref() {
+        Some(u) if m.kind.as_deref() != Some("team") => s.link(RenderMsg::OpenUser(u.to_owned())),
+        _ => s,
+    }
+}
+
+/// Rocket.Chat's channel mention (`ChannelMentionElement`): a channel the
+/// message resolves in `channels` as link-coloured text with its `fname`,
+/// "#" only with `mentionsWithSymbol`; otherwise plain "#name".
+fn rc_mention_channel(name: &str, cx: &Cx<'_, '_>, fmt: &Fmt) -> Sp {
+    let resolved = cx
+        .msg
+        .and_then(|m| m.channels.as_ref())
+        .and_then(|l| l.iter().find(|c| c.name.as_deref() == Some(name)));
+    let Some(c) = resolved else {
+        return styled(format!("#{name}"), fmt, false);
+    };
+    let symbol = if cx.rc.workspace.mentions_with_symbol() {
+        "#"
+    } else {
+        ""
+    };
+    let shown = c
+        .fname
+        .as_deref()
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or(name);
+    span(format!(
+        "{symbol}{}",
+        rustket_ui::widget::sanitize_bidi(shown)
+    ))
+    .font(fmt.styled(font_medium()))
+    .color(cx.t.rc_mention_channel)
+    .strikethrough(fmt.strike)
+    .link(RenderMsg::OpenRoom(name.to_owned()))
 }
 
 /// How to show an emoji code (`smile`, `:smile:`, custom names).
@@ -2094,5 +2219,186 @@ mod tests {
         let mut s = String::new();
         unknown_text(&v, &mut s, 0);
         assert_eq!(s, "ab");
+    }
+
+    /// H4 under the Rocket.Chat look: text-only chips in the medium weight,
+    /// "@" / "#" only with `mentionsWithSymbol`, unresolved mentions plain,
+    /// channels by `fname`.
+    #[test]
+    fn rocketchat_mentions_are_coloured_text() {
+        use rustket_ui::theme::with_indicator_look;
+        let mut fx = Fx::new();
+        fx.ws.apply_me(
+            serde_json::from_value(serde_json::json!({"_id": "me", "username": "me"})).unwrap(),
+        );
+        let mention = |id: &str, username: &str, name: &str| rocketchat::models::Mention {
+            id: id.into(),
+            username: Some(username.into()),
+            name: Some(name.into()),
+            ..Default::default()
+        };
+        let msg = Message {
+            id: "m1".into(),
+            u: rocketchat::models::UserRef {
+                id: "bob".into(),
+                ..Default::default()
+            },
+            mentions: Some(vec![
+                mention("me", "me", "Me Myself"),
+                mention("bob", "bob", "Bob Builder"),
+                mention("all", "all", ""),
+            ]),
+            channels: Some(vec![rocketchat::models::ChannelRef {
+                id: "g".into(),
+                name: Some("general".into()),
+                fname: Some("General Talk".into()),
+            }]),
+            ..Default::default()
+        };
+        let value = para(serde_json::json!([
+            {"type": "MENTION_USER", "value": plain("me")},
+            {"type": "MENTION_USER", "value": plain("bob")},
+            {"type": "MENTION_USER", "value": plain("all")},
+            {"type": "MENTION_USER", "value": plain("here")},
+            {"type": "MENTION_USER", "value": plain("ghost")},
+            {"type": "MENTION_CHANNEL", "value": plain("general")},
+            {"type": "MENTION_CHANNEL", "value": plain("nowhere")},
+        ]));
+        let t = tokens();
+        with_indicator_look(IndicatorLook::RocketChat, || {
+            let rc = fx.rc();
+            let cx = Cx::new(&rc, "m1", Some(&msg));
+            let spans = inline_spans(&value, &cx);
+            let texts: Vec<&str> = spans.iter().map(|s| s.text.as_ref()).collect();
+            assert_eq!(
+                texts,
+                [
+                    "me",
+                    "bob",
+                    "all",
+                    "here",
+                    "@ghost",
+                    "General Talk",
+                    "#nowhere"
+                ]
+            );
+            assert_eq!(spans[0].color, Some(t.rc_mention_me));
+            assert_eq!(spans[1].color, Some(t.rc_mention_other));
+            assert_eq!(spans[2].color, Some(t.rc_mention_all));
+            assert_eq!(spans[3].color, Some(t.rc_mention_all));
+            assert_eq!(spans[5].color, Some(t.rc_mention_channel));
+            for i in [0, 1, 2, 3, 5] {
+                assert!(spans[i].highlight.is_none(), "no chip background: {i}");
+                assert_eq!(spans[i].font, Some(font_medium()), "{i}");
+            }
+            assert_eq!(spans[1].link, Some(RenderMsg::OpenUser("bob".into())));
+            assert_eq!(spans[2].link, None, "group mentions are not links");
+            assert_eq!(spans[5].link, Some(RenderMsg::OpenRoom("general".into())));
+            // Unresolved: plain text, not clickable.
+            assert!(spans[4].link.is_none() && spans[4].color.is_none());
+            assert!(spans[6].link.is_none() && spans[6].color.is_none());
+        });
+        // Real names and the account's "mentions with symbol".
+        fx.ws.apply_me(
+            serde_json::from_value(serde_json::json!({
+                "_id": "me", "username": "me",
+                "settings": {"preferences": {"mentionsWithSymbol": true}}
+            }))
+            .unwrap(),
+        );
+        with_indicator_look(IndicatorLook::RocketChat, || {
+            let rc = RenderCtx {
+                use_real_names: true,
+                ..fx.rc()
+            };
+            let cx = Cx::new(&rc, "m1", Some(&msg));
+            let spans = inline_spans(&value, &cx);
+            let texts: Vec<&str> = spans.iter().map(|s| s.text.as_ref()).collect();
+            assert_eq!(
+                texts,
+                [
+                    "@Me Myself",
+                    "@Bob Builder",
+                    "@all",
+                    "@here",
+                    "@ghost",
+                    "#General Talk",
+                    "#nowhere"
+                ]
+            );
+        });
+        // The Rustket look keeps its chips.
+        with_indicator_look(IndicatorLook::Rustket, || {
+            let rc = fx.rc();
+            let cx = Cx::new(&rc, "m1", Some(&msg));
+            let spans = inline_spans(&value, &cx);
+            assert_eq!(spans[0].text.as_ref(), "@me");
+            assert_eq!(spans[0].color, Some(t.mention_me_fg));
+            assert_eq!(spans[4].text.as_ref(), "@ghost");
+            assert_eq!(spans[4].color, Some(t.mention_fg));
+            assert_eq!(spans[6].text.as_ref(), "#nowhere");
+        });
+    }
+
+    /// H5 under the Rocket.Chat look: white on `rc_danger`, square, the
+    /// surrounding weight, also in link labels (still links) and in the
+    /// user's own messages.
+    #[test]
+    fn rocketchat_marks_highlight_words_everywhere() {
+        use rustket_ui::theme::with_indicator_look;
+        let mut fx = Fx::new();
+        fx.ws.apply_me(
+            serde_json::from_value(serde_json::json!({
+                "_id": "me", "username": "me",
+                "settings": {"preferences": {"highlights": ["deploy"]}}
+            }))
+            .unwrap(),
+        );
+        let msg = |uid: &str| Message {
+            id: "m1".into(),
+            msg: "Deploy now [deploy](https://x.org)".into(),
+            u: rocketchat::models::UserRef {
+                id: uid.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let value = para(serde_json::json!([
+            plain("Deploy now "),
+            {"type": "LINK", "value": {"src": {"type": "PLAIN_TEXT", "value": "https://x.org"}, "label": [plain("deploy")]}},
+        ]));
+        let t = tokens();
+        with_indicator_look(IndicatorLook::RocketChat, || {
+            for uid in ["bob", "me"] {
+                let m = msg(uid);
+                let rc = fx.rc();
+                let cx = Cx::new(&rc, "m1", Some(&m)).with_highlights(&m);
+                let spans = inline_spans(&value, &cx);
+                let texts: Vec<&str> = spans.iter().map(|s| s.text.as_ref()).collect();
+                assert_eq!(texts, ["Deploy", " now ", "deploy"], "{uid}");
+                for i in [0, 2] {
+                    let h = spans[i].highlight.unwrap();
+                    assert_eq!(h.background, t.rc_danger.into(), "{uid} {i}");
+                    assert_eq!(h.border.radius, border::Radius::default());
+                    assert_eq!(spans[i].color, Some(t.rc_badge_fg));
+                    assert_eq!(spans[i].font, Some(font_regular()));
+                }
+                assert!(spans[1].highlight.is_none());
+                assert_eq!(
+                    spans[2].link,
+                    Some(RenderMsg::OpenUrl("https://x.org".into()))
+                );
+                assert!(spans[2].underline && !spans[0].underline);
+            }
+            // System messages stay unmarked.
+            let sys = Message {
+                t: Some("uj".into()),
+                ..msg("bob")
+            };
+            let rc = fx.rc();
+            let cx = Cx::new(&rc, "m1", Some(&sys)).with_highlights(&sys);
+            let spans = inline_spans(&value, &cx);
+            assert!(spans.iter().all(|s| s.highlight.is_none()));
+        });
     }
 }

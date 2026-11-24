@@ -17,3 +17,27 @@ rail.signed_out:
   es: "%{name} (sesión cerrada)"
   th: "%{name} (ออกจากระบบแล้ว)"
   zh: "%{name}（已退出登录）"
+rail.rc_suffix_count_one:
+  en: "%{name} — %{count} message"
+  ru: "%{name} — %{count} сообщение"
+  es: "%{name} — %{count} mensaje"
+  th: "%{name} — ข้อความ %{count} รายการ"
+  zh: "%{name} — %{count} 条消息"
+rail.rc_suffix_count_few:
+  en: "%{name} — %{count} messages"
+  ru: "%{name} — %{count} сообщения"
+  es: "%{name} — %{count} mensajes"
+  th: "%{name} — ข้อความ %{count} รายการ"
+  zh: "%{name} — %{count} 条消息"
+rail.rc_suffix_count_many:
+  en: "%{name} — %{count} messages"
+  ru: "%{name} — %{count} сообщений"
+  es: "%{name} — %{count} mensajes"
+  th: "%{name} — ข้อความ %{count} รายการ"
+  zh: "%{name} — %{count} 条消息"
+rail.rc_suffix_alert:
+  en: "%{name} — Unread messages"
+  ru: "%{name} — Непрочитанные сообщения"
+  es: "%{name} — Mensajes no leídos"
+  th: "%{name} — มีข้อความที่ยังไม่ได้อ่าน"
+  zh: "%{name} — 未读消息"

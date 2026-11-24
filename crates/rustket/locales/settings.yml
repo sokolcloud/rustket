@@ -215,6 +215,30 @@ settings.density_condensed:
   es: "Condensada"
   th: "กะทัดรัด"
   zh: "紧凑"
+settings.indicator_scheme:
+  en: "Unread indicators"
+  ru: "Индикаторы непрочитанного"
+  es: "Indicadores de no leídos"
+  th: "ตัวบ่งชี้ข้อความที่ยังไม่ได้อ่าน"
+  zh: "未读指示标记"
+settings.indicator_scheme_help:
+  en: "Rustket: Rustket's own colours (only what is addressed to you is loud). Rocket.Chat: the colours, counters and highlighting of Rocket.Chat's web client and desktop app."
+  ru: "Rustket — собственная схема Rustket (громко только то, что адресовано вам). Rocket.Chat — цвета, счётчики и подсветка как в веб-клиенте и настольном приложении Rocket.Chat."
+  es: "Rustket: los colores propios de Rustket (solo destaca lo que va dirigido a ti). Rocket.Chat: los colores, contadores y resaltados del cliente web y la aplicación de escritorio de Rocket.Chat."
+  th: "Rustket: สีของ Rustket เอง (เน้นเฉพาะสิ่งที่ส่งถึงคุณ) Rocket.Chat: สี ตัวนับ และการไฮไลต์แบบเว็บไคลเอนต์และแอปเดสก์ท็อปของ Rocket.Chat"
+  zh: "Rustket：Rustket 自己的配色（只有与你有关的内容才醒目）。Rocket.Chat：与 Rocket.Chat 网页客户端和桌面应用相同的颜色、计数和高亮。"
+settings.indicator_scheme_rustket:
+  en: "Rustket (original)"
+  ru: "Rustket (оригинальная)"
+  es: "Rustket (original)"
+  th: "Rustket (ต้นฉบับ)"
+  zh: "Rustket（原版）"
+settings.indicator_scheme_rocketchat:
+  en: "Rocket.Chat"
+  ru: "Rocket.Chat"
+  es: "Rocket.Chat"
+  th: "Rocket.Chat"
+  zh: "Rocket.Chat"
 settings.zoom:
   en: "Zoom"
   ru: "Масштаб"

@@ -871,3 +871,33 @@ fn r1_rooms_in_activity() {
     assert_eq!(per(&ws, "r1").mentions, 2);
     assert_eq!(mention_rooms(&ws), [("r1".to_owned(), true, false)]);
 }
+
+#[test]
+fn rc_activity_total_counts_each_thread_once() {
+    // A thread reply that mentions me is one unread thread, not two items.
+    let mut t = unread_sub("t", RoomType::Channel, 1);
+    t.tunread = Some(vec!["t1".into()]);
+    t.tunread_user = Some(vec!["t1".into()]);
+    let ws = ws_with(vec![(t.clone(), Some(10))]);
+    let c = counts(&ws);
+    assert_eq!((c.mentions, c.threads), (1, 1));
+    assert_eq!(rc_activity_total(&ws), 1);
+    // Thread @all is one thread too; main-timeline mentions add up; R1
+    // threads and DM mentions stay out.
+    let mut g = unread_sub("g", RoomType::Channel, 1);
+    g.tunread_group = Some(vec!["g1".into()]);
+    g.user_mentions = 2;
+    g.group_mentions = 1;
+    let mut r1 = unread_sub("r1", RoomType::Channel, 1);
+    r1.tunread = Some(vec!["u1".into()]);
+    r1.disable_notifications = Some(true);
+    let mut dm = unread_sub("d", RoomType::Direct, 1);
+    dm.user_mentions = 3;
+    let ws = ws_with(vec![
+        (t, Some(10)),
+        (g, Some(10)),
+        (r1, Some(10)),
+        (dm, Some(10)),
+    ]);
+    assert_eq!(rc_activity_total(&ws), 1 + 1 + 2 + 1);
+}

@@ -2,7 +2,7 @@
 //! these functions provide the Rocket.Chat row structure, hover behaviour and
 //! states (sequential, highlighted, pending, failed).
 
-use iced::widget::{Column, button, container, row, space, text};
+use iced::widget::{Column, button, container, row, space, stack, text};
 use iced::{Alignment, Element, Length, Padding, Theme, alignment, border};
 
 use super::ellipsis::ellipsis;
@@ -11,8 +11,8 @@ use super::misc::{TooltipPosition, tooltip};
 use crate::icon::{self, Icon};
 use crate::style;
 use crate::theme::{
-    SPACE_1, SPACE_2, SPACE_5, TEXT_BODY, TEXT_CAPTION, TEXT_MICRO, font_bold, font_semibold,
-    radius_sm, tokens,
+    IndicatorLook, SPACE_1, SPACE_2, SPACE_5, TEXT_BODY, TEXT_CAPTION, TEXT_MICRO, font_bold,
+    font_semibold, indicator_look, radius_sm, tokens,
 };
 
 /// Width of the avatar column (avatar 36 + gap).
@@ -44,6 +44,9 @@ pub struct MessageRowProps<'a, Message> {
     pub is_own_highlight: bool,
     /// Selected/jumped-to message.
     pub is_selected: bool,
+    /// Jumped-to message (permalink, search result): Rocket.Chat paints it
+    /// `rc_jump_bg` instead of `selected_bg`.
+    pub is_jump_target: bool,
     /// Floating toolbar shown top-right while the row is hovered.
     pub actions_toolbar: Option<Element<'a, Message>>,
     /// A menu of the toolbar is open: the toolbar stays shown.
@@ -83,6 +86,7 @@ impl<'a, Message> MessageRowProps<'a, Message> {
             is_mention_highlight: false,
             is_own_highlight: false,
             is_selected: false,
+            is_jump_target: false,
             actions_toolbar: None,
             actions_menu_open: false,
             is_pending: false,
@@ -104,17 +108,39 @@ fn marker<'a, Message: 'a>(i: Icon, label: &str) -> Element<'a, Message> {
     )
 }
 
-/// Row background: selected > mention > own > hover.
+/// Row background: selected > mention > own > hover, in the look active
+/// when the row is built.
 fn row_style(
     selected: bool,
+    jump: bool,
     mention: bool,
     own: bool,
     pending: bool,
 ) -> impl Fn(&Theme, bool) -> container::Style {
+    row_style_in(indicator_look(), selected, jump, mention, own, pending)
+}
+
+/// [`row_style`] under `look`. Rocket.Chat: no mention background, and a
+/// selected row that is a jump target (`jump`) takes the pale yellow of its
+/// editing look (`rc_jump_bg`); other selections keep `selected_bg`.
+pub fn row_style_in(
+    look: IndicatorLook,
+    selected: bool,
+    jump: bool,
+    mention: bool,
+    own: bool,
+    pending: bool,
+) -> impl Fn(&Theme, bool) -> container::Style {
+    let rc = look == IndicatorLook::RocketChat;
+    let mention = mention && !rc;
     move |theme, hovered| {
         let t = tokens(theme);
         let background = if selected {
-            Some(t.selected_bg)
+            Some(if rc && jump {
+                t.rc_jump_bg
+            } else {
+                t.selected_bg
+            })
         } else if mention {
             Some(t.highlight_bg)
         } else if hovered {
@@ -263,6 +289,7 @@ pub fn message_row<'a, Message: Clone + 'a>(
         on_hover,
         row_style(
             p.is_selected,
+            p.is_jump_target,
             p.is_mention_highlight,
             p.is_own_highlight,
             p.is_pending,
@@ -318,26 +345,86 @@ pub fn thread_summary<'a, Message: Clone + 'a>(
     unread: bool,
     on_open: Message,
 ) -> Element<'a, Message> {
+    thread_summary_kind(
+        count_label,
+        last_reply,
+        participants,
+        unread.then_some(super::badge::BadgeKind::Thread),
+        false,
+        None,
+        on_open,
+    )
+}
+
+/// [`thread_summary`] with the unread dot of `kind` (content palette).
+/// `filled`: Rocket.Chat's unread thread, a button filled with
+/// `rc_button_primary` and white text, the dot next to it; each avatar gets
+/// a white outline so one in the fill's own blue stays visible.
+/// `dot_tip`: the dot's tooltip (Rocket.Chat's "Mentions you" / "Unread").
+pub fn thread_summary_kind<'a, Message: Clone + 'a>(
+    count_label: impl Into<String>,
+    last_reply: impl Into<String>,
+    participants: Vec<Element<'a, Message>>,
+    kind: Option<super::badge::BadgeKind>,
+    filled: bool,
+    dot_tip: Option<String>,
+    on_open: Message,
+) -> Element<'a, Message> {
     let mut avatars = row![].spacing(2).align_y(Alignment::Center);
     for p in participants.into_iter().take(5) {
+        let p: Element<'a, Message> = if filled {
+            // The first child sizes the stack: the avatar keeps its size.
+            stack![
+                p,
+                container(space())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|theme: &Theme| container::Style {
+                        border: border::rounded(3).width(1).color(tokens(theme).rc_badge_fg),
+                        ..container::Style::default()
+                    }),
+            ]
+            .into()
+        } else {
+            p
+        };
         avatars = avatars.push(p);
     }
+    let last = text(last_reply.into()).size(TEXT_CAPTION);
     let mut content = row![
         icon::sized(Icon::MessageCircle, 14.0),
         avatars,
         text(count_label.into())
             .size(TEXT_CAPTION + 1.0)
             .font(font_semibold()),
-        text(last_reply.into())
-            .size(TEXT_CAPTION)
-            .style(style::text_hint),
+        if filled {
+            last
+        } else {
+            last.style(style::text_hint)
+        },
     ]
     .spacing(SPACE_2)
     .align_y(Alignment::Center);
-    if unread {
-        content = content.push(super::badge::dot(super::badge::BadgeKind::Thread, 8.0));
+    let dot = kind.map(|k| {
+        let d = super::badge::dot_in(k, 8.0, super::badge::BadgePlace::Content);
+        match dot_tip {
+            Some(tip) => tooltip(d, tip, TooltipPosition::Top),
+            None => d,
+        }
+    });
+    if !filled {
+        if let Some(dot) = dot {
+            content = content.push(dot);
+        }
+        return summary_button(content.into(), on_open);
     }
-    summary_button(content.into(), on_open)
+    let mut line = row![filled_summary_button(content.into(), on_open)]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+    if let Some(dot) = dot {
+        line = line.push(dot);
+    }
+    line.into()
 }
 
 /// Discussion summary under a "discussion created" message.
@@ -381,4 +468,134 @@ fn summary_button<'a, Message: Clone + 'a>(
         })
         .on_press(on_open.clone());
     super::focus_ring::focus_ring(b, Some(on_open)).into()
+}
+
+/// The summary button filled like Rocket.Chat's primary "View thread".
+fn filled_summary_button<'a, Message: Clone + 'a>(
+    content: Element<'a, Message>,
+    on_open: Message,
+) -> Element<'a, Message> {
+    let b = button(content)
+        .padding([4, 8])
+        .style(filled_summary_style)
+        .on_press(on_open.clone());
+    super::focus_ring::focus_ring(b, Some(on_open)).into()
+}
+
+/// [`filled_summary_button`]'s style: darker while hovered or pressed, like
+/// Rocket.Chat's primary button.
+fn filled_summary_style(theme: &Theme, status: button::Status) -> button::Style {
+    let t = tokens(theme);
+    let shade = match status {
+        button::Status::Hovered => 0.2,
+        button::Status::Pressed => 0.35,
+        _ => 0.0,
+    };
+    let fill = crate::palette::mix(t.rc_button_primary, iced::Color::BLACK, shade);
+    button::Style {
+        background: Some(fill.into()),
+        text_color: t.rc_badge_fg,
+        border: border::rounded(radius_sm()).width(1).color(fill),
+        ..button::Style::default()
+    }
+}
+
+#[cfg(test)]
+mod rc_tests {
+    use super::*;
+    use crate::theme::with_indicator_look;
+
+    fn bg(style: container::Style) -> Option<iced::Color> {
+        style.background.and_then(|b| match b {
+            iced::Background::Color(c) => Some(c),
+            _ => None,
+        })
+    }
+
+    /// The filled "View thread" darkens on hover and press.
+    #[test]
+    fn filled_summary_gives_feedback() {
+        let theme = Theme::Light;
+        let fill = |status| match filled_summary_style(&theme, status).background {
+            Some(iced::Background::Color(c)) => c,
+            other => panic!("{other:?}"),
+        };
+        let active = fill(button::Status::Active);
+        assert_eq!(active, tokens(&theme).rc_button_primary);
+        let hovered = fill(button::Status::Hovered);
+        let pressed = fill(button::Status::Pressed);
+        assert!(hovered.b < active.b && pressed.b < hovered.b);
+    }
+
+    /// H6/H7: Rocket.Chat drops the mention background and paints the
+    /// jumped-to row `rc_jump_bg`; the own tint stays; Rustket unchanged.
+    #[test]
+    fn row_background_per_look() {
+        let theme = Theme::Light;
+        let t = tokens(&theme);
+        let rk = IndicatorLook::Rustket;
+        let rc = IndicatorLook::RocketChat;
+        let case = |look, selected, jump, mention, own| {
+            bg(row_style_in(look, selected, jump, mention, own, false)(
+                &theme, false,
+            ))
+        };
+        assert_eq!(case(rk, true, false, true, true), Some(t.selected_bg));
+        assert_eq!(case(rk, true, true, true, true), Some(t.selected_bg));
+        assert_eq!(case(rk, false, false, true, true), Some(t.highlight_bg));
+        assert_eq!(case(rk, false, false, false, true), Some(t.own_message_bg));
+        assert_eq!(case(rc, true, true, true, true), Some(t.rc_jump_bg));
+        // A plain selection (the Later cursor) keeps `selected_bg`.
+        assert_eq!(case(rc, true, false, false, false), Some(t.selected_bg));
+        assert_eq!(case(rc, false, false, true, false), None);
+        assert_eq!(case(rc, false, false, true, true), Some(t.own_message_bg));
+        assert_eq!(
+            bg(row_style_in(rc, false, false, true, false, false)(
+                &theme, true
+            )),
+            Some(t.hover_bg)
+        );
+        // `row_style` follows the look active when the row is built.
+        with_indicator_look(rc, || {
+            assert_eq!(
+                bg(row_style(true, true, false, false, false)(&theme, false)),
+                Some(t.rc_jump_bg)
+            );
+            assert_eq!(
+                bg(row_style(true, false, false, false, false)(&theme, false)),
+                Some(t.selected_bg)
+            );
+        });
+    }
+
+    /// H2: the unread summary builds filled (with its dot) and plain.
+    #[test]
+    fn thread_summary_variants_build() {
+        for look in [IndicatorLook::Rustket, IndicatorLook::RocketChat] {
+            with_indicator_look(look, || {
+                for (kind, filled) in [
+                    (None, false),
+                    (Some(super::super::BadgeKind::Thread), false),
+                    (Some(super::super::BadgeKind::Mention), true),
+                ] {
+                    let _: Element<'_, ()> =
+                        thread_summary_kind("2 replies", "", Vec::new(), kind, filled, None, ());
+                }
+                // Filled with avatars (outlined) and a dot tooltip.
+                let avatars = || -> Vec<Element<'_, ()>> {
+                    vec![space().width(18).height(18).into(), text("A").into()]
+                };
+                let _: Element<'_, ()> = thread_summary_kind(
+                    "2 replies",
+                    "",
+                    avatars(),
+                    Some(super::super::BadgeKind::Mention),
+                    true,
+                    Some("Mentions you".into()),
+                    (),
+                );
+                let _: Element<'_, ()> = thread_summary("2 replies", "", Vec::new(), true, ());
+            });
+        }
+    }
 }

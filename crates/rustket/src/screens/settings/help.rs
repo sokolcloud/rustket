@@ -8,7 +8,8 @@ use iced::widget::{Column, Row, column, container, row, space, text};
 use iced::{Alignment, Element, Length};
 use rocketchat::models::UserStatus;
 use rust_i18n::t;
-use rustket_core::config::{AppConfig, Theme as ThemePref, ThreadsMode};
+use rustket_core::config::{AppConfig, IndicatorScheme, Theme as ThemePref, ThreadsMode};
+use rustket_core::indicators::RcBadge;
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
@@ -16,19 +17,20 @@ use rustket_ui::theme::{
     font_semibold,
 };
 use rustket_ui::widget::{
-    AvatarSource, BadgeKind, RailIcon, badge, dot, inert, room_list_item, title_bar_workspace,
-    unread_separator, workspace_rail_item,
+    AvatarSource, BadgeCap, BadgeKind, BadgePlace, RailIcon, WorkspaceBadge, badge, badge_in, dot,
+    dot_in, inert, room_list_item, title_bar_workspace, title_bar_workspace_with, unread_separator,
+    workspace_rail_item, workspace_rail_item_with,
 };
 
 use super::widgets::{action_row, caption, section};
 use super::{Message, Tab};
 use crate::desktop::sound::Platform;
-use crate::desktop::tray::TrayLevel;
+use crate::desktop::tray::{TrayArt, TrayLevel};
 use crate::help::model::{
     self, AccountIcon, Cell, Code, Connection, Family, Feed, Global, HelpEnv, IconPlace, KindUse,
-    Note, Outcome, PLACEHOLDER_USER_ID, PinnedOutcome, Placement, RowOutcome, ServerOutcome, Sound,
-    SoundKind, SoundOff, Surface, ThreadListing, ThreadRowOutcome, Toast, ToastBlocked,
-    WindowOutcome, WorkingHoursState,
+    Note, Outcome, PLACEHOLDER_USER_ID, PinnedOutcome, Placement, RcChip, RcFeed, RcWindowOutcome,
+    RowOutcome, ServerOutcome, Sound, SoundKind, SoundOff, Surface, ThreadListing,
+    ThreadRowOutcome, Toast, ToastBlocked, WindowOutcome, WorkingHoursState,
 };
 use crate::help::server::{DesktopPref, ServerBlock, UnreadCount};
 
@@ -137,9 +139,19 @@ fn line<'a>(label: String, value: String) -> Element<'a, Message> {
     .into()
 }
 
-/// The role name of a badge kind ("mention colour").
-fn kind_name(k: BadgeKind) -> String {
+/// The page follows the Rocket.Chat scheme.
+fn rc(d: &Data<'_>) -> bool {
+    d.cfg.ui.indicator_scheme == IndicatorScheme::RocketChat
+}
+
+/// The role name of a badge kind ("mention colour"; under Rocket.Chat
+/// (`rc`) its colour and Fuselage name, "red (danger)").
+fn kind_name(k: BadgeKind, rc: bool) -> String {
     match k {
+        BadgeKind::Mention if rc => t!("help.kind_rc.mention"),
+        BadgeKind::GroupMention if rc => t!("help.kind_rc.group_mention"),
+        BadgeKind::Thread if rc => t!("help.kind_rc.thread"),
+        BadgeKind::Unread | BadgeKind::Muted if rc => t!("help.kind_rc.unread"),
         BadgeKind::Unread => t!("help.kind.unread"),
         BadgeKind::Mention => t!("help.kind.mention"),
         BadgeKind::GroupMention => t!("help.kind.group_mention"),
@@ -150,9 +162,14 @@ fn kind_name(k: BadgeKind) -> String {
 }
 
 /// What `k` means; on macOS (`mac`) the menu bar glyph is monochrome (a dot
-/// or a ring) and the Dock icon counts mentions.
-fn kind_meaning(k: BadgeKind, mac: bool) -> String {
+/// or a ring) and the Dock icon counts mentions. Under Rocket.Chat (`rc`) the
+/// tray and Dock have no kinds.
+fn kind_meaning(k: BadgeKind, mac: bool, rc: bool) -> String {
     match k {
+        BadgeKind::Mention if rc => t!("help.kind_meaning_rc.mention"),
+        BadgeKind::GroupMention if rc => t!("help.kind_meaning_rc.group_mention"),
+        BadgeKind::Thread if rc => t!("help.kind_meaning_rc.thread"),
+        BadgeKind::Unread | BadgeKind::Muted if rc => t!("help.kind_meaning_rc.unread"),
         BadgeKind::Unread if mac => t!("help.kind_meaning_macos.unread"),
         BadgeKind::Mention if mac => t!("help.kind_meaning_macos.mention"),
         BadgeKind::GroupMention if mac => t!("help.kind_meaning_macos.group_mention"),
@@ -165,33 +182,56 @@ fn kind_meaning(k: BadgeKind, mac: bool) -> String {
     .into_owned()
 }
 
-fn kind_token(k: BadgeKind) -> &'static str {
-    match k {
-        BadgeKind::Unread => "badge_unread",
-        BadgeKind::Mention => "badge_mention",
-        BadgeKind::GroupMention => "badge_group_mention",
-        BadgeKind::Thread => "badge_thread",
-        BadgeKind::Muted => "badge_muted",
+/// The theme token of `k`'s colour; under Rocket.Chat (`rc`) at `place`
+/// (the sidebar's or the room view's shade).
+fn kind_token(k: BadgeKind, rc: bool, place: BadgePlace) -> &'static str {
+    match (rc, place, k) {
+        (false, _, BadgeKind::Unread) => "badge_unread",
+        (false, _, BadgeKind::Mention) => "badge_mention",
+        (false, _, BadgeKind::GroupMention) => "badge_group_mention",
+        (false, _, BadgeKind::Thread) => "badge_thread",
+        (false, _, BadgeKind::Muted) => "badge_muted",
+        (true, BadgePlace::Content, BadgeKind::Mention) => "rc_danger",
+        (true, BadgePlace::Content, BadgeKind::GroupMention) => "rc_warning",
+        (true, BadgePlace::Content, BadgeKind::Thread) => "rc_primary",
+        (true, BadgePlace::Content, BadgeKind::Unread | BadgeKind::Muted) => "rc_secondary",
+        (true, BadgePlace::Shell, _) => "rc_ghost",
+        (true, BadgePlace::Sidebar, BadgeKind::Mention) => "rc_sidebar_danger",
+        (true, BadgePlace::Sidebar, BadgeKind::GroupMention) => "rc_sidebar_warning",
+        (true, BadgePlace::Sidebar, BadgeKind::Thread) => "rc_sidebar_primary",
+        (true, BadgePlace::Sidebar, BadgeKind::Unread | BadgeKind::Muted) => "rc_sidebar_secondary",
     }
 }
 
 /// "counter 3, mention colour" / "dot, thread colour" / "nothing".
-fn badge_text(b: Option<(u64, BadgeKind)>) -> String {
+fn badge_text(b: Option<(u64, BadgeKind)>, rc: bool) -> String {
     match b {
         None => t!("help.badge.none"),
-        Some((0, k)) => t!("help.badge.dot", kind = kind_name(k)),
-        Some((n, k)) => t!("help.badge.counter", n = n, kind = kind_name(k)),
+        Some((0, k)) => t!("help.badge.dot", kind = kind_name(k, rc)),
+        Some((n, k)) => t!("help.badge.counter", n = n, kind = kind_name(k, rc)),
     }
     .into_owned()
 }
 
-/// A badge or dot as the sidebar draws it; `None`: a dash.
-fn badge_sample<'a>(b: Option<(u64, BadgeKind)>) -> Element<'a, Message> {
+/// A badge or dot as the sidebar draws it (under Rocket.Chat (`rc`) the
+/// full number); `None`: a dash.
+fn badge_sample<'a>(b: Option<(u64, BadgeKind)>, rc: bool) -> Element<'a, Message> {
     match b {
         Some((0, k)) => dot(k, 8.0),
+        Some((n, k)) if rc => badge_in(n, k, BadgePlace::Sidebar, BadgeCap::None),
         Some((n, k)) => badge(u32::try_from(n).unwrap_or(u32::MAX), k),
         None => text("—").size(TEXT_SMALL).style(style::text_hint).into(),
     }
+}
+
+/// The workspace icon's grey badge under Rocket.Chat.
+fn ghost_text(b: WorkspaceBadge) -> String {
+    match b {
+        WorkspaceBadge::Ghost(n) => t!("help.badge.ghost_rc", n = n),
+        WorkspaceBadge::GhostBullet => t!("help.badge.ghost_dot_rc"),
+        WorkspaceBadge::None | WorkspaceBadge::Kind(..) => t!("help.badge.none"),
+    }
+    .into_owned()
 }
 
 fn desktop_pref_label(p: Option<DesktopPref>) -> String {
@@ -216,8 +256,14 @@ fn account_sound_label(name: Option<&str>) -> String {
     }
 }
 
-fn count_label(c: UnreadCount) -> String {
+/// Under Rocket.Chat (`rc`) an uncounted message only brightens the name.
+fn count_label(c: UnreadCount, rc: bool) -> String {
     match c {
+        UnreadCount::UserMentionsOnly if rc => t!("help.count.user_mentions_only_rc"),
+        UnreadCount::GroupMentionsOnly if rc => t!("help.count.group_mentions_only_rc"),
+        UnreadCount::UserAndGroupMentionsOnly if rc => {
+            t!("help.count.user_and_group_mentions_only_rc")
+        }
         UnreadCount::AllMessages => t!("help.count.all_messages"),
         UnreadCount::UserMentionsOnly => t!("help.count.user_mentions_only"),
         UnreadCount::GroupMentionsOnly => t!("help.count.group_mentions_only"),
@@ -425,11 +471,13 @@ fn sound_text(s: &Sound, d: &Data<'_>) -> String {
 }
 
 fn row_text(r: &RowOutcome) -> String {
-    let mut parts = vec![badge_text(r.kind.map(|k| (u64::from(r.count), k)))];
-    parts.push(if r.bold {
-        t!("help.row.bold").into_owned()
-    } else {
-        t!("help.row.regular").into_owned()
+    let rc = r.rc.is_some();
+    let mut parts = vec![badge_text(r.kind.map(|k| (u64::from(r.count), k)), rc)];
+    parts.push(match (r.bold, rc) {
+        (true, false) => t!("help.row.bold").into_owned(),
+        (false, false) => t!("help.row.regular").into_owned(),
+        (true, true) => t!("help.row.bold_rc").into_owned(),
+        (false, true) => t!("help.row.regular_rc").into_owned(),
     });
     if r.muted {
         parts.push(t!("help.row.bell_off").into_owned());
@@ -437,13 +485,13 @@ fn row_text(r: &RowOutcome) -> String {
     parts.join(" · ")
 }
 
-fn thread_text(t: &ThreadRowOutcome) -> String {
+fn thread_text(t: &ThreadRowOutcome, rc: bool) -> String {
     let mut s = match t.listing {
         ThreadListing::Threads { limit } => {
             let mut s = format!(
                 "{} · {}",
                 t!("help.thread.listed"),
-                badge_text(t.kind.map(|k| (0, k)))
+                badge_text(t.kind.map(|k| (0, k)), rc)
             );
             if limit > 0 {
                 s = format!("{s} · {}", t!("help.thread.limit", n = limit));
@@ -462,7 +510,7 @@ fn thread_text(t: &ThreadRowOutcome) -> String {
             "{s} · {}",
             t!(
                 "help.thread.header_button",
-                badge = badge_text(t.header_button.map(|k| (0, k)))
+                badge = badge_text(t.header_button.map(|k| (0, k)).or(t.header_counter), rc)
             )
         );
     }
@@ -479,17 +527,32 @@ fn placement_text(p: &Placement) -> String {
 
 fn collapsed_text(k: Option<BadgeKind>) -> String {
     match k {
-        Some(k) => t!("help.collapsed.dot", kind = kind_name(k)).into_owned(),
+        Some(k) => t!("help.collapsed.dot", kind = kind_name(k, false)).into_owned(),
         None => t!("help.collapsed.none").into_owned(),
     }
 }
 
-fn pinned_text(p: Option<&PinnedOutcome>) -> String {
+/// Rocket.Chat's collapsed header: the summed counter, its itemised tooltip.
+fn collapsed_rc_text(b: Option<&RcBadge>) -> String {
+    match b {
+        Some(b) => t!(
+            "help.collapsed.counter_rc",
+            count = b.count,
+            kind = kind_name(crate::workspace::sidebar::widget_kind(b.variant), true),
+            title = crate::workspace::sidebar::rc_unread_title(&b.title)
+        )
+        .into_owned(),
+        None => t!("help.collapsed.none_rc").into_owned(),
+    }
+}
+
+fn pinned_text(p: Option<&PinnedOutcome>, rc: bool) -> String {
     let Some(p) = p else {
         return t!("help.pinned.off").into_owned();
     };
     let mut parts = Vec::new();
-    let item = |label: String, b: Option<(u64, BadgeKind)>| format!("{label}: {}", badge_text(b));
+    let item =
+        |label: String, b: Option<(u64, BadgeKind)>| format!("{label}: {}", badge_text(b, rc));
     if p.later.is_none() && p.drafts.is_none() {
         parts.push(if p.in_all_unreads {
             item(t!("inbox.all_unreads").into_owned(), p.all_unreads)
@@ -559,34 +622,101 @@ fn window_text(w: &WindowOutcome, mac: bool) -> String {
     format!("{title} · {tray}")
 }
 
-fn feed_text(f: &Feed) -> String {
-    let mut parts = vec![
-        if f.highlighted {
-            t!("help.feed.highlighted")
+/// Window title, tray and window icon under Rocket.Chat; on macOS (`mac`)
+/// the menu bar icon (a dot with the number as text) and the Dock icon.
+fn rc_window_text(w: &RcWindowOutcome, mac: bool) -> String {
+    let title = if (1..=999).contains(&w.rc.unread) {
+        t!("help.window.title", title = w.title.clone()).into_owned()
+    } else {
+        t!("help.window.title_same").into_owned()
+    };
+    if mac {
+        let bar = match w.art {
+            None => t!("help.window.menubar_none").into_owned(),
+            Some(TrayArt::Plain) => t!("help.window.menubar_same").into_owned(),
+            Some(_) if w.rc.unread > 0 => {
+                t!("help.window.menubar_count_rc", count = w.rc.unread).into_owned()
+            }
+            Some(_) => t!("help.window.menubar_dot").into_owned(),
+        };
+        let dock = match w.dock.as_str() {
+            "" => t!("help.window.dock_none"),
+            "•" => t!("help.window.dock_bullet_rc"),
+            n => t!("help.window.dock_badge", count = n),
+        };
+        return format!("{title} · {bar} · {dock}");
+    }
+    let tray = match w.art {
+        None => t!("help.window.no_tray").into_owned(),
+        Some(TrayArt::RcDot) => t!("help.window.tray_dot_rc").into_owned(),
+        Some(TrayArt::RcPlus) => t!("help.window.tray_count_rc", count = "+9").into_owned(),
+        Some(TrayArt::RcCount(n)) => t!("help.window.tray_count_rc", count = n).into_owned(),
+        Some(TrayArt::Plain | TrayArt::Level(_)) => t!("help.window.tray_same").into_owned(),
+    };
+    let mut s = format!("{title} · {tray}");
+    let count = match w.icon {
+        Some(TrayArt::RcDot) => Some("•".to_owned()),
+        Some(TrayArt::RcPlus) => Some("+9".to_owned()),
+        Some(TrayArt::RcCount(n)) => Some(n.to_string()),
+        Some(TrayArt::Plain | TrayArt::Level(_)) | None => None,
+    };
+    if let Some(count) = count {
+        let icon = if w.art.is_some() {
+            t!("help.window.icon_rc")
         } else {
-            t!("help.feed.plain")
+            t!("help.window.icon_badge_rc", count = count)
+        };
+        s = format!("{s} · {icon}");
+    }
+    s
+}
+
+fn feed_text(f: &Feed, rc: Option<&RcFeed>) -> String {
+    let mut parts = vec![
+        match (f.highlighted, rc.is_some()) {
+            (true, _) => t!("help.feed.highlighted"),
+            (false, false) => t!("help.feed.plain"),
+            (false, true) => t!("help.feed.plain_rc"),
         }
         .into_owned(),
     ];
-    match f.chip_mine {
-        Some(true) => parts.push(t!("help.feed.chip_mine").into_owned()),
-        Some(false) => parts.push(t!("help.feed.chip_other").into_owned()),
-        None => {}
+    match (rc.map(|r| r.chip), f.chip_mine) {
+        (Some(Some(RcChip::Me)), _) => parts.push(t!("help.feed.chip_me_rc").into_owned()),
+        (Some(Some(RcChip::Other)), _) => parts.push(t!("help.feed.chip_other_rc").into_owned()),
+        (Some(Some(RcChip::All)), _) => parts.push(t!("help.feed.chip_all_rc").into_owned()),
+        (Some(None), _) => {}
+        (None, Some(true)) => parts.push(t!("help.feed.chip_mine").into_owned()),
+        (None, Some(false)) => parts.push(t!("help.feed.chip_other").into_owned()),
+        (None, None) => {}
     }
     if f.word_marked {
-        parts.push(t!("help.feed.word_marked").into_owned());
+        parts.push(
+            if rc.is_some() {
+                t!("help.feed.word_marked_rc")
+            } else {
+                t!("help.feed.word_marked")
+            }
+            .into_owned(),
+        );
     }
     if f.divider {
         parts.push(t!("help.feed.divider").into_owned());
     }
-    if f.thread_dot {
-        parts.push(t!("help.feed.thread_dot").into_owned());
+    match rc {
+        Some(r) => {
+            if let Some(k) = r.thread_dot {
+                parts.push(t!("help.feed.thread_dot_rc", kind = kind_name(k, true)).into_owned());
+            }
+        }
+        None if f.thread_dot => parts.push(t!("help.feed.thread_dot").into_owned()),
+        None => {}
     }
     parts.join(" · ")
 }
 
-/// What the server stores and whether it notifies.
-fn server_lines<'a>(s: &ServerOutcome) -> Vec<Element<'a, Message>> {
+/// What the server stores and whether it notifies (`rc`: under the
+/// Rocket.Chat scheme).
+fn server_lines<'a>(s: &ServerOutcome, rc: bool) -> Vec<Element<'a, Message>> {
     let sub = &s.sub;
     let has = |v: &Option<Vec<String>>| v.as_ref().is_some_and(|v| !v.is_empty());
     let mut parts = Vec::new();
@@ -609,7 +739,9 @@ fn server_lines<'a>(s: &ServerOutcome) -> Vec<Element<'a, Message>> {
         parts.push(t!("help.counter.thread_group").into_owned());
     }
     if parts.is_empty() {
-        parts.push(if sub.alert {
+        parts.push(if sub.alert && rc {
+            t!("help.counter.alert_only_rc").into_owned()
+        } else if sub.alert {
             t!("help.counter.alert_only").into_owned()
         } else {
             t!("help.counter.none").into_owned()
@@ -678,36 +810,36 @@ fn thread_sample<'a>(t: &ThreadRowOutcome) -> Element<'a, Message> {
 
 fn account_sample<'a>(a: &AccountIcon) -> Element<'a, Message> {
     let src = AvatarSource::initials("Dev", "Dev");
-    match a.place {
-        IconPlace::TitleBar => container(title_bar_workspace(
-            &src,
-            "Dev",
-            a.badge,
-            false,
-            false,
-            None::<Message>,
-        ))
-        .padding(SPACE_2)
-        .style(style::container_header)
-        .into(),
-        IconPlace::Rail => container(workspace_rail_item(
-            RailIcon::Avatar(src),
-            "Dev",
-            a.badge,
-            false,
-            Message::Noop,
-        ))
-        .padding(SPACE_2)
-        .style(style::container_rail)
-        .into(),
-    }
+    let icon: Element<'a, Message> = match (a.place, a.rc) {
+        (IconPlace::TitleBar, None) => {
+            title_bar_workspace(&src, "Dev", a.badge, false, false, None::<Message>)
+        }
+        (IconPlace::TitleBar, Some(b)) => {
+            title_bar_workspace_with(&src, "Dev", b, false, false, None::<Message>)
+        }
+        (IconPlace::Rail, None) => {
+            workspace_rail_item(RailIcon::Avatar(src), "Dev", a.badge, false, Message::Noop)
+        }
+        (IconPlace::Rail, Some(b)) => {
+            workspace_rail_item_with(RailIcon::Avatar(src), "Dev", b, false, Message::Noop)
+        }
+    };
+    let frame = match a.place {
+        IconPlace::TitleBar => style::container_header,
+        IconPlace::Rail => style::container_rail,
+    };
+    container(icon).padding(SPACE_2).style(frame).into()
 }
 
-fn pinned_sample<'a>(p: &PinnedOutcome) -> Element<'a, Message> {
-    use crate::workspace::sidebar::pinned_row;
+fn pinned_sample<'a>(p: &PinnedOutcome, rc: bool) -> Element<'a, Message> {
+    use crate::workspace::sidebar::{pinned_row, pinned_row_in};
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
     let mut add = |i: Icon, label: String, b: Option<(u64, BadgeKind)>| {
-        rows.push(pinned_row(i, label, None, b, false, Message::Noop));
+        rows.push(if rc {
+            pinned_row_in(i, label, None, b, BadgeCap::None, false, Message::Noop)
+        } else {
+            pinned_row(i, label, None, b, false, Message::Noop)
+        });
     };
     if p.later.is_none() && p.drafts.is_none() {
         add(
@@ -728,6 +860,59 @@ fn pinned_sample<'a>(p: &PinnedOutcome) -> Element<'a, Message> {
         );
     }
     on_sidebar(Column::with_children(rows).into())
+}
+
+/// The feed sample under Rocket.Chat: mentions as coloured text (no
+/// background, no "@" by default), the highlight word white on red, no row
+/// highlight (`rc_mention_user`, `rc_highlight_word`).
+fn feed_sample_rc<'a>(
+    f: &Feed,
+    rc: &RcFeed,
+    username: &str,
+    word: &str,
+    mode: Mode,
+) -> Element<'a, Message> {
+    let t = rustket_ui::theme::active_tokens(mode);
+    let mut r = row![text("bob").size(TEXT_SMALL).font(font_semibold())]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+    if let Some(chip) = rc.chip {
+        let (name, color) = match chip {
+            RcChip::Me => (username, t.rc_mention_me),
+            RcChip::Other => ("bob", t.rc_mention_other),
+            RcChip::All => ("all", t.rc_mention_all),
+        };
+        r = r.push(
+            text(name.to_owned())
+                .size(TEXT_SMALL)
+                .font(rustket_ui::theme::font_medium())
+                .color(color),
+        );
+    }
+    r = r.push(text(t!("help.sample.text").into_owned()).size(TEXT_SMALL));
+    if f.word_marked {
+        let (fg, bg) = (t.rc_badge_fg, t.rc_danger);
+        r = r.push(
+            container(text(word.to_owned()).size(TEXT_SMALL).color(fg))
+                .padding([0, 2])
+                .style(move |_: &iced::Theme| container::Style {
+                    background: Some(bg.into()),
+                    ..container::Style::default()
+                }),
+        );
+    }
+    let msg = container(r)
+        .padding([SPACE_1, SPACE_3])
+        .width(Length::Fill)
+        .style(style::container_message(false, false));
+    let mut col = Column::new();
+    if f.divider {
+        col = col.push(unread_separator(t!("room_timeline.unread").into_owned()));
+    }
+    container(col.push(msg))
+        .width(Length::Fixed(SAMPLE_WIDTH))
+        .style(style::container_room)
+        .into()
 }
 
 fn feed_sample<'a>(code: Code, f: &Feed, username: &str, word: &str) -> Element<'a, Message> {
@@ -782,13 +967,13 @@ fn header<'a>(d: &Data<'_>) -> Element<'a, Message> {
             .size(TEXT_BODY)
             .style(style::text_danger),
     };
-    section(
-        t!("help.title").into_owned(),
-        vec![
-            text(t!("help.intro").into_owned()).size(TEXT_BODY).into(),
-            account.into(),
-        ],
-    )
+    let mut rows: Vec<Element<'a, Message>> =
+        vec![text(t!("help.intro").into_owned()).size(TEXT_BODY).into()];
+    if rc(d) {
+        rows.push(caption(t!("help.scheme_rc").into_owned()).into());
+    }
+    rows.push(account.into());
+    section(t!("help.title").into_owned(), rows)
 }
 
 /// One input: label, value and a button to the tab where it is changed.
@@ -929,12 +1114,23 @@ fn current_settings<'a>(d: &Data<'_>) -> Element<'a, Message> {
                 t!("help.server_counting").into_owned(),
                 t!(
                     "help.counting_value",
-                    channels = count_label(server.unread_count),
-                    dm = count_label(server.unread_count_dm)
+                    channels = count_label(server.unread_count, rc(d)),
+                    dm = count_label(server.unread_count_dm, rc(d))
                 )
                 .into_owned(),
                 None,
             ));
+            if rc(d) {
+                rows.push(setting(
+                    t!("help.unread_alert").into_owned(),
+                    format!(
+                        "{} · {}",
+                        on_off(a.prefs.unread_alert),
+                        t!("help.change_in_rocketchat")
+                    ),
+                    None,
+                ));
+            }
         }
         None => rows.push(setting(
             t!("help.server_side").into_owned(),
@@ -976,6 +1172,17 @@ fn current_settings<'a>(d: &Data<'_>) -> Element<'a, Message> {
             theme,
             Some(Tab::Appearance),
         ),
+        // The Open button only under Rocket.Chat: the Rustket page keeps
+        // its buttons.
+        setting(
+            t!("settings.indicator_scheme").into_owned(),
+            match ui.indicator_scheme {
+                IndicatorScheme::Rustket => t!("settings.indicator_scheme_rustket"),
+                IndicatorScheme::RocketChat => t!("settings.indicator_scheme_rocketchat"),
+            }
+            .into_owned(),
+            rc(d).then_some(Tab::Appearance),
+        ),
         setting(
             if mac(d) {
                 t!("help.tray_macos")
@@ -997,22 +1204,50 @@ fn current_settings<'a>(d: &Data<'_>) -> Element<'a, Message> {
 
 fn legend<'a>(d: &Data<'_>) -> Element<'a, Message> {
     let tokens = rustket_ui::theme::active_tokens(d.mode);
+    let rc = rc(d);
+    let look = crate::themes::indicator_look(d.cfg.ui.indicator_scheme);
+    // Rocket.Chat's sidebar and room view use different shades of a kind.
+    let places: &[BadgePlace] = if rc {
+        &[BadgePlace::Sidebar, BadgePlace::Content]
+    } else {
+        &[BadgePlace::Sidebar]
+    };
     let mut rows: Vec<Element<'a, Message>> = model::legend(d.cfg, d.env)
         .iter()
         .map(|(k, uses)| {
-            let hex = rustket_ui::theme_file::color_hex(k.colors(tokens).0);
-            row![
+            let tokens_text = places
+                .iter()
+                .map(|&place| {
+                    let hex = rustket_ui::theme_file::color_hex(k.colors_in(tokens, look, place).0);
+                    format!("{} {hex}", kind_token(*k, rc, place))
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let sample: Element<'a, Message> = if rc {
+                row![
+                    badge_in(3, *k, BadgePlace::Sidebar, BadgeCap::None),
+                    dot_in(*k, 8.0, BadgePlace::Sidebar)
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center)
+                .into()
+            } else {
                 row![badge(3, *k), dot(*k, 8.0)]
                     .spacing(SPACE_2)
                     .align_y(Alignment::Center)
-                    .width(Length::Fixed(64.0)),
+                    .into()
+            };
+            row![
+                container(sample).width(Length::Fixed(64.0)),
                 column![
-                    text(kind_name(*k)).size(TEXT_BODY).font(font_semibold()),
-                    text(format!("{} {hex}", kind_token(*k)))
+                    text(kind_name(*k, rc))
+                        .size(TEXT_BODY)
+                        .font(font_semibold()),
+                    text(tokens_text)
                         .size(TEXT_CAPTION)
                         .font(font_mono())
                         .style(style::text_secondary),
-                    caption(kind_meaning(*k, mac(d))),
+                    caption(kind_meaning(*k, mac(d), rc)),
                     uses_by_surface(uses, d),
                 ]
                 .spacing(SPACE_1)
@@ -1022,7 +1257,12 @@ fn legend<'a>(d: &Data<'_>) -> Element<'a, Message> {
             .into()
         })
         .collect();
-    rows.insert(0, caption(t!("help.legend_caption").into_owned()).into());
+    let caption_key = if rc {
+        "help.legend_caption_rc"
+    } else {
+        "help.legend_caption"
+    };
+    rows.insert(0, caption(t!(caption_key).into_owned()).into());
     section(t!("help.legend_title").into_owned(), rows)
 }
 
@@ -1103,6 +1343,19 @@ fn trigger_text(code: Code, d: &Data<'_>) -> String {
         )
         .into_owned(),
         Code::Q1 => t!(code.trigger_key(), dnd = d.env.platform.dnd_text()).into_owned(),
+        Code::M2
+        | Code::M4
+        | Code::M5
+        | Code::T1
+        | Code::T2
+        | Code::T3
+        | Code::R1
+        | Code::R3
+        | Code::R4
+            if rc(d) =>
+        {
+            t!(format!("{}_rc", code.trigger_key())).into_owned()
+        }
         Code::M2 if mac(d) => t!("help.code.m2.trigger_macos").into_owned(),
         _ => t!(code.trigger_key()).into_owned(),
     }
@@ -1146,7 +1399,7 @@ fn samples<'a>(o: &Outcome, d: &Data<'_>) -> Vec<Element<'a, Message>> {
         v.push(on_sidebar(col.into()));
     }
     if let Some(p) = &o.pinned {
-        v.push(pinned_sample(p));
+        v.push(pinned_sample(p, rc(d)));
     }
     if let Some(a) = &o.account_icon {
         v.push(account_sample(a));
@@ -1162,7 +1415,10 @@ fn samples<'a>(o: &Outcome, d: &Data<'_>) -> Vec<Element<'a, Message>> {
             .as_ref()
             .and_then(|a| a.prefs.highlights.first().cloned())
             .unwrap_or_else(|| t!("help.sample.word").into_owned());
-        v.push(feed_sample(o.code, f, &username, &word));
+        v.push(match &o.rc_feed {
+            Some(r) => feed_sample_rc(f, r, &username, &word, d.mode),
+            None => feed_sample(o.code, f, &username, &word),
+        });
     }
     v.into_iter().map(|e| inert(e).into()).collect()
 }
@@ -1173,14 +1429,25 @@ fn surface_lines<'a>(o: &Outcome, d: &Data<'_>) -> Vec<Element<'a, Message>> {
     if let Some(r) = &o.row {
         add(t!("help.surface.row").into_owned(), row_text(r));
     }
+    let rc = o.scheme == IndicatorScheme::RocketChat;
     if let Some(t) = &o.thread_row {
-        add(t!("help.surface.thread_row").into_owned(), thread_text(t));
+        add(
+            t!("help.surface.thread_row").into_owned(),
+            thread_text(t, rc),
+        );
     }
     if let Some(p) = &o.section {
         add(t!("help.surface.section").into_owned(), placement_text(p));
     }
     if o.row.is_some() {
-        let mut s = collapsed_text(o.collapsed);
+        let collapsed = |k: Option<BadgeKind>, b: Option<&RcBadge>| {
+            if rc {
+                collapsed_rc_text(b)
+            } else {
+                collapsed_text(k)
+            }
+        };
+        let mut s = collapsed(o.collapsed, o.rc_collapsed.as_ref());
         if o.thread_row
             .as_ref()
             .is_some_and(|t| matches!(t.listing, ThreadListing::Threads { .. }))
@@ -1188,7 +1455,7 @@ fn surface_lines<'a>(o: &Outcome, d: &Data<'_>) -> Vec<Element<'a, Message>> {
             s = format!(
                 "{s} · {}: {}",
                 t!("settings.threads"),
-                collapsed_text(o.collapsed_threads)
+                collapsed(o.collapsed_threads, o.rc_collapsed_threads.as_ref())
             );
         }
         add(t!("help.surface.collapsed").into_owned(), s);
@@ -1196,14 +1463,15 @@ fn surface_lines<'a>(o: &Outcome, d: &Data<'_>) -> Vec<Element<'a, Message>> {
     if o.row.is_some() || o.pinned.is_some() {
         add(
             t!("help.surface.pinned").into_owned(),
-            pinned_text(o.pinned.as_ref()),
+            pinned_text(o.pinned.as_ref(), rc),
         );
     }
     if let Some(a) = &o.account_icon {
-        add(
-            icon_label(a),
-            badge_text(a.badge.map(|(n, k)| (u64::from(n), k))),
-        );
+        let value = match a.rc {
+            Some(b) => ghost_text(b),
+            None => badge_text(a.badge.map(|(n, k)| (u64::from(n), k)), false),
+        };
+        add(icon_label(a), value);
     }
     if let Some(w) = &o.window {
         let label = if mac(d) {
@@ -1212,6 +1480,14 @@ fn surface_lines<'a>(o: &Outcome, d: &Data<'_>) -> Vec<Element<'a, Message>> {
             t!("help.surface.window")
         };
         add(label.into_owned(), window_text(w, mac(d)));
+    }
+    if let Some(w) = &o.rc_window {
+        let label = if mac(d) {
+            t!("help.surface.window_macos")
+        } else {
+            t!("help.surface.window_rc")
+        };
+        add(label.into_owned(), rc_window_text(w, mac(d)));
     }
     if o.popup {
         add(
@@ -1227,7 +1503,7 @@ fn surface_lines<'a>(o: &Outcome, d: &Data<'_>) -> Vec<Element<'a, Message>> {
         if let Some(p) = &o.pinned {
             add(
                 t!("help.surface.scheduled", row = t!("scheduled.title")).into_owned(),
-                badge_text(p.drafts_on_time),
+                badge_text(p.drafts_on_time, rc),
             );
         }
     }
@@ -1242,10 +1518,13 @@ fn surface_lines<'a>(o: &Outcome, d: &Data<'_>) -> Vec<Element<'a, Message>> {
         add(t!("help.surface.sound").into_owned(), sound_text(s, d));
     }
     if let Some(f) = &o.feed {
-        add(t!("help.surface.feed").into_owned(), feed_text(f));
+        add(
+            t!("help.surface.feed").into_owned(),
+            feed_text(f, o.rc_feed.as_ref()),
+        );
     }
     if let Some(s) = &o.server {
-        v.extend(server_lines(s));
+        v.extend(server_lines(s, rc));
     }
     v
 }
@@ -1271,6 +1550,7 @@ fn usage_text(code: Code, d: &Data<'_>) -> Option<String> {
 }
 
 fn matrix_cell<'a>(c: &Cell) -> Element<'a, Message> {
+    let rc = c.row.rc.is_some();
     let bell = if c.server_toast {
         Icon::Bell
     } else {
@@ -1278,7 +1558,7 @@ fn matrix_cell<'a>(c: &Cell) -> Element<'a, Message> {
     };
     let b = c.row.kind.map(|k| (u64::from(c.row.count), k));
     row![
-        badge_sample(b),
+        badge_sample(b, rc),
         icon::sized(bell, 12.0).style(style::text_hint)
     ]
     .spacing(SPACE_1)

@@ -1,11 +1,18 @@
 use iced::Element;
 use iced::widget::Column;
-use rustket_core::config::AppConfig;
+use rustket_core::config::{AppConfig, IndicatorScheme};
 use rustket_core::quiet::Quiet;
 use rustket_ui::theme::Mode;
 
 use super::*;
 use crate::help::model::{Code, Family, HelpEnv};
+
+/// A default config pinned to the Rustket indicator scheme.
+fn rustket_cfg() -> AppConfig {
+    let mut cfg = AppConfig::default();
+    cfg.ui.indicator_scheme = IndicatorScheme::Rustket;
+    cfg
+}
 
 fn texts(cfg: &AppConfig, env: &HelpEnv) -> Vec<String> {
     let d = Data {
@@ -33,7 +40,7 @@ fn no_raw_keys(texts: &[String]) {
 #[test]
 fn page_shows_the_codes_and_follows_the_settings() {
     rust_i18n::set_locale("en");
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     let env = HelpEnv::default();
     let base = texts(&cfg, &env);
     for c in Code::ALL {
@@ -75,7 +82,7 @@ fn page_shows_the_codes_and_follows_the_settings() {
     no_raw_keys(&off);
 
     // Paused by hand: the toasts and Q1 name it.
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     let until = env.now_ms + 3_600_000;
     cfg.pause.paused_until = Some(until);
     let paused_env = HelpEnv {
@@ -94,7 +101,7 @@ fn page_shows_the_codes_and_follows_the_settings() {
 
     // No account: the server part asks to sign in.
     let none = texts(
-        &AppConfig::default(),
+        &rustket_cfg(),
         &HelpEnv {
             account: None,
             ..HelpEnv::default()
@@ -110,13 +117,13 @@ fn page_shows_the_codes_and_follows_the_settings() {
     // Threads section off (default): no "Threads:" part on the collapsed
     // header line; on: there is one.
     assert!(!has(&base, "· Threads: "));
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     cfg.ui.sidebar_threads = rustket_core::config::ThreadsMode::Unread;
     assert!(has(&texts(&cfg, &env), "· Threads: "));
 
     // D1's on-time line only with the pinned rows.
     assert!(has(&base, "Drafts & scheduled, while on time"));
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     cfg.ui.sidebar_pinned_views = false;
     assert!(!has(&texts(&cfg, &env), "while on time"));
 }
@@ -129,7 +136,7 @@ fn page_shows_the_codes_and_follows_the_settings() {
 #[ignore = "switches the process-wide locale"]
 fn russian_quotes_do_not_nest() {
     rust_i18n::set_locale("ru");
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     let mut all = texts(&cfg, &HelpEnv::default());
     cfg.ui.notification_preview = false;
     all.extend(texts(&cfg, &HelpEnv::default()));
@@ -192,7 +199,7 @@ fn russian_quote_order_is_checked() {
 fn sound_texts_follow_the_platform() {
     use crate::desktop::sound::Platform;
     rust_i18n::set_locale("en");
-    let cfg = AppConfig::default();
+    let cfg = rustket_cfg();
     let env = |platform| HelpEnv {
         platform,
         ..HelpEnv::default()
@@ -257,7 +264,7 @@ fn sound_texts_follow_the_platform() {
 #[test]
 fn account_desktop_preference_shows_whether_it_is_stored() {
     rust_i18n::set_locale("en");
-    let cfg = AppConfig::default();
+    let cfg = rustket_cfg();
     let mut env = HelpEnv::default();
     let not_stored = "All messages (server default) · ";
     assert!(!env.account.as_ref().unwrap().desktop_stored);
@@ -280,7 +287,7 @@ fn account_desktop_preference_shows_whether_it_is_stored() {
 #[test]
 fn large_room_line_names_highlights_only_where_they_help() {
     rust_i18n::set_locale("en");
-    let cfg = AppConfig::default();
+    let cfg = rustket_cfg();
     let count = |env: &HelpEnv, needle: &str| {
         texts(&cfg, env)
             .iter()
@@ -329,7 +336,7 @@ fn narrow_page_fits() {
     }
 
     rust_i18n::set_locale("en");
-    let cfg = AppConfig::default();
+    let cfg = rustket_cfg();
     let env = HelpEnv::default();
     let d = Data {
         cfg: &cfg,
@@ -409,7 +416,7 @@ fn samples_are_inert() {
     }
 
     rust_i18n::set_locale("en");
-    let cfg = AppConfig::default();
+    let cfg = rustket_cfg();
     // The left rail: its workspace sample is a button in the app.
     let env = HelpEnv {
         custom_chrome: false,
@@ -602,7 +609,7 @@ fn screenshots() {
     std::fs::create_dir_all(&dir).unwrap();
     let _english = EnglishAfter;
     load_fonts();
-    let cfg = AppConfig::default();
+    let cfg = rustket_cfg();
     let env = HelpEnv::default();
     for lang in ["en", "ru"] {
         rust_i18n::set_locale(lang);
@@ -674,7 +681,7 @@ fn screenshots() {
 fn tray_texts_follow_the_platform() {
     use crate::desktop::sound::Platform;
     rust_i18n::set_locale("en");
-    let cfg = AppConfig::default();
+    let cfg = rustket_cfg();
     let env = |platform| HelpEnv {
         platform,
         ..HelpEnv::default()
@@ -721,4 +728,246 @@ fn tray_texts_follow_the_platform() {
         "menu bar icon with a dot · no number on the Dock icon"
     ));
     no_raw_keys(&mac);
+}
+
+// --- the Rocket.Chat scheme -------------------------------------------------
+
+fn rc_cfg() -> AppConfig {
+    let mut cfg = AppConfig::default();
+    cfg.ui.indicator_scheme = IndicatorScheme::RocketChat;
+    cfg
+}
+
+/// The page describes the Rocket.Chat scheme: its colour names and tokens,
+/// full counters without dots, the highlighted name, RC's tray, window icon
+/// and workspace badge, the feed without row highlights.
+#[test]
+fn rocketchat_page() {
+    rust_i18n::set_locale("en");
+    let cfg = rc_cfg();
+    let env = HelpEnv::default();
+    let rc = texts(&cfg, &env);
+    no_raw_keys(&rc);
+    assert!(!rc.iter().any(|t| t.contains("%{")), "placeholder left");
+    for c in Code::ALL {
+        assert!(rc.iter().any(|t| t == c.code()), "{} missing", c.code());
+    }
+    for s in [
+        "Indicators follow Rocket.Chat's web client and desktop app",
+        "My account: Unread Tray Icon Alert",
+        // Legend: RC names, both shades, the RC caption.
+        "red (danger)",
+        "blue (primary)",
+        "orange (warning)",
+        "grey (secondary)",
+        "rc_sidebar_danger #B43C4C · rc_danger #EC0D2A",
+        "rc_sidebar_secondary #6C737A · rc_secondary #6C737A",
+        "the sidebar always uses Rocket.Chat's sidebar shades",
+        // Rows: M2 is grey, the name is highlighted, M5 has no counter.
+        "counter 1, grey (secondary) · highlighted name (medium weight)",
+        "nothing · highlighted name (medium weight)",
+        "only mentions (yours, @all, @here); other messages: only the name is highlighted",
+        "only highlights the room's name (no counter)",
+        // Collapsed headers: the counter with the itemised tooltip.
+        "counter 1, red (danger), bold title; tooltip “1 mention”",
+        "counter 1, grey (secondary), bold title; tooltip “1 unread message”",
+        // The header's Threads counter (T3 is orange there).
+        "Threads button in the room header: counter 1, orange (warning)",
+        // Window, tray, window icon, workspace badge.
+        "Window title, tray and window icon",
+        "window title “Rustket (1)” · tray icon with a red badge “1” · the same badge on the window and taskbar icon",
+        "window title unchanged · tray icon with a red badge “•”",
+        "grey counter 1",
+        "grey dot",
+        // The feed.
+        "no row highlight",
+        "your name in the mention colour, no background",
+        "“all” in the @all colour, no background",
+        "the word white on red",
+        "the thread's reply button filled blue, with a dot, orange (warning)",
+        // Codes with their own Rocket.Chat text.
+        "it only highlights the room's name: its row shows no counter and no dot",
+        "When the server counts every direct message (its default), a grey counter in its row",
+        // The @all colour names its thread dots and the Threads counter.
+        "the dot of a thread that has @all",
+        "(plus one for each unread thread)",
+        "the room's counter is blue, because threads go before @all",
+        "The room no longer notifies, but its row counter",
+    ] {
+        assert!(has(&rc, s), "missing: {s}");
+    }
+    for s in [
+        "quiet colour",
+        "counter 1, mention colour",
+        "bold name",
+        "tray icon with a red dot",
+        "row highlighted",
+        "dot, grey",
+        "badge_mention",
+        "@-chip",
+    ] {
+        assert!(!has(&rc, s), "Rustket text under Rocket.Chat: {s}");
+    }
+    // The current scheme is named on both pages.
+    assert!(rc.iter().any(|t| t == "Unread indicators"));
+    assert!(rc.iter().any(|t| t == "Rocket.Chat"));
+    let rk = texts(&rustket_cfg(), &env);
+    assert!(rk.iter().any(|t| t == "Unread indicators"));
+    assert!(!has(&rk, "Indicators follow Rocket.Chat's"));
+    assert!(!has(&rk, "Unread Tray Icon Alert"));
+    // Without an account: placeholders only, no raw keys.
+    let none = texts(
+        &cfg,
+        &HelpEnv {
+            account: None,
+            ..HelpEnv::default()
+        },
+    );
+    no_raw_keys(&none);
+    assert!(!has(&none, "Unread Tray Icon Alert"));
+    // The preference off: the bullet goes, the counted number stays.
+    let mut off = env.clone();
+    off.account.as_mut().unwrap().prefs.unread_alert = false;
+    let off = texts(&cfg, &off);
+    assert!(!has(&off, "red badge “•”"));
+    assert!(has(&off, "tray icon with a red badge “1”"));
+    no_raw_keys(&off);
+}
+
+/// The window icon's badge follows the desktop, not the tray: none on
+/// Wayland, its own text without a tray.
+#[test]
+fn rocketchat_window_icon_texts() {
+    rust_i18n::set_locale("en");
+    let cfg = rc_cfg();
+    let same = "the same badge on the window and taskbar icon";
+    let wayland = texts(
+        &cfg,
+        &HelpEnv {
+            window_icon: false,
+            ..HelpEnv::default()
+        },
+    );
+    assert!(has(&wayland, "tray icon with a red badge “1”"));
+    assert!(!has(&wayland, same));
+    assert!(!has(&wayland, "window and taskbar icon"));
+    let no_tray = texts(
+        &cfg,
+        &HelpEnv {
+            tray: false,
+            ..HelpEnv::default()
+        },
+    );
+    assert!(has(
+        &no_tray,
+        "no tray icon · window and taskbar icon with a red badge “1”"
+    ));
+    assert!(!has(&no_tray, same));
+    no_raw_keys(&no_tray);
+}
+
+/// Under Rocket.Chat the macOS texts name the menu bar count and the Dock's
+/// full number or "•".
+#[test]
+fn rocketchat_macos_texts() {
+    use crate::desktop::sound::Platform;
+    rust_i18n::set_locale("en");
+    let env = HelpEnv {
+        platform: Platform::MacOs,
+        ..HelpEnv::default()
+    };
+    let mac = texts(&rc_cfg(), &env);
+    no_raw_keys(&mac);
+    for s in [
+        "window title “Rustket (1)” · menu bar icon with a dot and “1” next to it · Dock icon with the number “1”",
+        "menu bar icon with a dot · “•” on the Dock icon",
+    ] {
+        assert!(has(&mac, s), "missing on macOS: {s}");
+    }
+    assert!(!has(&mac, "tray icon"));
+    assert!(!has(&mac, "taskbar"));
+}
+
+/// The Rocket.Chat page keeps every text inside the narrowest settings
+/// page and its only extra Tab stop is the Unread indicators row's Open
+/// button (to Appearance).
+#[test]
+fn rocketchat_page_fits_and_opens_appearance() {
+    use iced::advanced::widget::operation::Focusable;
+    use iced::advanced::widget::{Id, Operation};
+    use iced::{Rectangle, Size};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+
+    #[derive(Default)]
+    struct Probe(Vec<Rectangle>, Vec<(String, Rectangle)>);
+    impl Operation for Probe {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn focusable(&mut self, _: Option<&Id>, bounds: Rectangle, _: &mut dyn Focusable) {
+            self.0.push(bounds);
+        }
+        fn text(&mut self, _: Option<&Id>, bounds: Rectangle, text: &str) {
+            self.1.push((text.to_owned(), bounds));
+        }
+    }
+
+    rust_i18n::set_locale("en");
+    let probe = |cfg: &AppConfig, width: f32| {
+        let env = HelpEnv::default();
+        let d = Data {
+            cfg,
+            env: &env,
+            mode: Mode::Light,
+            theme_name: "Rustket".into(),
+        };
+        let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+            rustket_ui::theme::font_regular(),
+            iced::Pixels(rustket_ui::theme::TEXT_BODY),
+        ));
+        let mut ui = UserInterface::build(
+            Column::with_children(view(&d)),
+            Size::new(width, 100_000.0),
+            Cache::default(),
+            &mut renderer,
+        );
+        let mut p = Probe::default();
+        ui.operate(&renderer, &mut p);
+        p
+    };
+    let width = 380.0;
+    let rc = probe(&rc_cfg(), width);
+    for (t, r) in &rc.1 {
+        assert!(r.x + r.width <= width + 0.5, "{t} sticks out: {r:?}");
+    }
+    let rk = probe(&rustket_cfg(), width);
+    assert_eq!(rc.0.len(), rk.0.len() + 1, "Tab stops");
+}
+
+/// The Rocket.Chat trigger keys chosen at runtime.
+#[test]
+fn rocketchat_runtime_keys_are_translated() {
+    let entries = crate::i18n::tests::locale_entries();
+    for c in [
+        Code::M2,
+        Code::M4,
+        Code::M5,
+        Code::T1,
+        Code::T2,
+        Code::T3,
+        Code::R1,
+        Code::R3,
+        Code::R4,
+    ] {
+        let key = format!("{}_rc", c.trigger_key());
+        let texts = entries
+            .get(key.as_str())
+            .unwrap_or_else(|| panic!("{key} missing"));
+        for loc in crate::i18n::tests::BUNDLED_COMPLETE {
+            assert!(
+                texts.get(*loc).is_some_and(|t| !t.is_empty()),
+                "{key}: missing {loc}"
+            );
+        }
+    }
 }

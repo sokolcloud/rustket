@@ -1,7 +1,7 @@
 //! Rustket palette, design tokens, spacing/typography scales and the iced theme.
 
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use iced::font::Weight;
@@ -278,6 +278,43 @@ pub struct Tokens {
     pub badge_fg: Color,
     pub badge_muted_fg: Color,
 
+    // Rocket.Chat indicator scheme: copies of Rocket.Chat 8.9 / its desktop
+    // app, never derived from palette seeds nor nudged for contrast.
+    /// Sidebar-class badges and dots: a mention (RC's sidebar is always dark).
+    pub rc_sidebar_danger: Color,
+    /// Sidebar: @all / @here.
+    pub rc_sidebar_warning: Color,
+    /// Sidebar: unread threads.
+    pub rc_sidebar_primary: Color,
+    /// Sidebar: other unread.
+    pub rc_sidebar_secondary: Color,
+    /// Content-class badges and dots: a mention; the highlight-word mark.
+    pub rc_danger: Color,
+    /// Content: @all / @here.
+    pub rc_warning: Color,
+    /// Content: unread threads.
+    pub rc_primary: Color,
+    /// Content: other unread.
+    pub rc_secondary: Color,
+    /// Text on every Rocket.Chat badge and on the highlight-word mark.
+    pub rc_badge_fg: Color,
+    /// The filled thread-summary button while the thread is unread.
+    pub rc_button_primary: Color,
+    /// Mention text: the current user.
+    pub rc_mention_me: Color,
+    /// Mention text: another user or a team.
+    pub rc_mention_other: Color,
+    /// Mention text: @all / @here.
+    pub rc_mention_all: Color,
+    /// Mention text: #channel.
+    pub rc_mention_channel: Color,
+    /// The message jumped to, for 2 s.
+    pub rc_jump_bg: Color,
+    /// The workspace badge on the rail and title bar (Electron's ghost badge).
+    pub rc_ghost: Color,
+    /// Text and dot on the ghost badge.
+    pub rc_ghost_fg: Color,
+
     // Presence.
     pub presence_online: Color,
     pub presence_away: Color,
@@ -398,6 +435,23 @@ token_colors!(
     badge_muted,
     badge_fg,
     badge_muted_fg,
+    rc_sidebar_danger,
+    rc_sidebar_warning,
+    rc_sidebar_primary,
+    rc_sidebar_secondary,
+    rc_danger,
+    rc_warning,
+    rc_primary,
+    rc_secondary,
+    rc_badge_fg,
+    rc_button_primary,
+    rc_mention_me,
+    rc_mention_other,
+    rc_mention_all,
+    rc_mention_channel,
+    rc_jump_bg,
+    rc_ghost,
+    rc_ghost_fg,
     presence_online,
     presence_away,
     presence_away_ring,
@@ -503,6 +557,24 @@ pub static LIGHT: Tokens = Tokens {
     badge_fg: Color::WHITE,
     badge_muted_fg: hex(0x1A1D22),
 
+    rc_sidebar_danger: hex(0xB43C4C),
+    rc_sidebar_warning: hex(0x955828),
+    rc_sidebar_primary: hex(0x2C65BA),
+    rc_sidebar_secondary: hex(0x6C737A),
+    rc_danger: hex(0xEC0D2A),
+    rc_warning: hex(0xF38C39),
+    rc_primary: hex(0x156FF5),
+    rc_secondary: hex(0x6C737A),
+    rc_badge_fg: Color::WHITE,
+    rc_button_primary: hex(0x156FF5),
+    rc_mention_me: hex(0x9B1325),
+    rc_mention_other: hex(0x8E6300),
+    rc_mention_all: hex(0x974809),
+    rc_mention_channel: hex(0x095AD2),
+    rc_jump_bg: hex(0xFFF8E0),
+    rc_ghost: hex(0x6C737A),
+    rc_ghost_fg: Color::WHITE,
+
     presence_online: BRAND_SUCCESS,
     presence_away: hex(0xF5B000),
     presence_away_ring: hex(0xB45309),
@@ -593,6 +665,24 @@ pub static DARK: Tokens = Tokens {
     badge_muted: hex(0x474C55),
     badge_fg: Color::WHITE,
     badge_muted_fg: hex(0xEEF1F5),
+
+    rc_sidebar_danger: hex(0xB43C4C),
+    rc_sidebar_warning: hex(0x955828),
+    rc_sidebar_primary: hex(0x2C65BA),
+    rc_sidebar_secondary: hex(0x6C737A),
+    rc_danger: hex(0xB43C4C),
+    rc_warning: hex(0x955828),
+    rc_primary: hex(0x2C65BA),
+    rc_secondary: hex(0x6C737A),
+    rc_badge_fg: Color::WHITE,
+    rc_button_primary: hex(0x095AD2),
+    rc_mention_me: hex(0xD88892),
+    rc_mention_other: hex(0xC7AA66),
+    rc_mention_all: hex(0xCA9163),
+    rc_mention_channel: hex(0x739EDE),
+    rc_jump_bg: hex(0x3C3625),
+    rc_ghost: hex(0x9EA2A8),
+    rc_ghost_fg: Color::WHITE,
 
     presence_online: hex(0x1DBF84),
     presence_away: BRAND_WARNING,
@@ -706,7 +796,61 @@ pub fn set_active(id: Option<&str>, light: &Tokens, dark: &Tokens, radius: f32) 
     }
 }
 
-/// Changes whenever [`set_active`] changes the look.
+/// How unread indicators look; mirrors `rustket_core::indicators::IndicatorScheme`
+/// (this crate does not depend on the core). Widgets that draw unread
+/// signals read it through [`indicator_look`]; explicit-look variants
+/// (`colors_in`, `badge_in`, `dot_in`) take it as an argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum IndicatorLook {
+    #[default]
+    Rustket,
+    RocketChat,
+}
+
+static INDICATOR_LOOK: AtomicU8 = AtomicU8::new(0);
+
+/// Sets the indicator look; bumps [`generation`] only when it changes.
+pub fn set_indicator_look(look: IndicatorLook) {
+    let v = look as u8;
+    if INDICATOR_LOOK.swap(v, Ordering::Relaxed) != v {
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// The indicator look in use (see [`set_indicator_look`]).
+pub fn indicator_look() -> IndicatorLook {
+    #[cfg(any(test, feature = "testing"))]
+    if let Some(look) = LOOK_OVERRIDE.with(std::cell::Cell::get) {
+        return look;
+    }
+    match INDICATOR_LOOK.load(Ordering::Relaxed) {
+        1 => IndicatorLook::RocketChat,
+        _ => IndicatorLook::Rustket,
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+thread_local! {
+    static LOOK_OVERRIDE: std::cell::Cell<Option<IndicatorLook>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` with [`indicator_look`] returning `look` on this thread only.
+/// Tests use it instead of [`set_indicator_look`]: it never touches the
+/// process-wide look or [`generation`], so parallel tests stay independent.
+#[cfg(any(test, feature = "testing"))]
+pub fn with_indicator_look<R>(look: IndicatorLook, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<IndicatorLook>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LOOK_OVERRIDE.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(LOOK_OVERRIDE.with(|c| c.replace(Some(look))));
+    f()
+}
+
+/// Changes whenever [`set_active`] or [`set_indicator_look`] changes the look.
 pub fn generation() -> u64 {
     GENERATION.load(Ordering::Relaxed)
 }
@@ -1064,6 +1208,71 @@ mod tests {
             assert_eq!(t.flag_color(0), t.flag[0]);
             assert_eq!(t.flag_color(FLAG_COUNT), t.text_hint);
         }
+    }
+
+    /// The Rocket.Chat tokens copy Rocket.Chat 8.9.1 and the desktop app
+    /// (spec §0.3); several fail AA on purpose, so `contrast_report` skips them.
+    #[test]
+    fn rc_tokens_pin_rocketchat_values() {
+        let pins: [(&str, u32, u32); 17] = [
+            ("rc_sidebar_danger", 0xB43C4C, 0xB43C4C),
+            ("rc_sidebar_warning", 0x955828, 0x955828),
+            ("rc_sidebar_primary", 0x2C65BA, 0x2C65BA),
+            ("rc_sidebar_secondary", 0x6C737A, 0x6C737A),
+            ("rc_danger", 0xEC0D2A, 0xB43C4C),
+            ("rc_warning", 0xF38C39, 0x955828),
+            ("rc_primary", 0x156FF5, 0x2C65BA),
+            ("rc_secondary", 0x6C737A, 0x6C737A),
+            ("rc_badge_fg", 0xFFFFFF, 0xFFFFFF),
+            ("rc_button_primary", 0x156FF5, 0x095AD2),
+            ("rc_mention_me", 0x9B1325, 0xD88892),
+            ("rc_mention_other", 0x8E6300, 0xC7AA66),
+            ("rc_mention_all", 0x974809, 0xCA9163),
+            ("rc_mention_channel", 0x095AD2, 0x739EDE),
+            ("rc_jump_bg", 0xFFF8E0, 0x3C3625),
+            ("rc_ghost", 0x6C737A, 0x9EA2A8),
+            ("rc_ghost_fg", 0xFFFFFF, 0xFFFFFF),
+        ];
+        let get = |t: &Tokens, name: &str| {
+            t.colors()
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, c)| c)
+        };
+        for (name, light, dark) in pins {
+            assert_eq!(get(&LIGHT, name), Some(hex(light)), "{name} light");
+            assert_eq!(get(&DARK, name), Some(hex(dark)), "{name} dark");
+        }
+        let names: Vec<&str> = COLOR_TOKENS
+            .iter()
+            .copied()
+            .filter(|n| n.starts_with("rc_"))
+            .collect();
+        assert_eq!(names, pins.map(|p| p.0));
+        // Not part of the AA report, whatever their values.
+        for t in both() {
+            let mut bad = *t;
+            for (name, _, _) in pins {
+                bad.set_color(name, bad.surface_room);
+            }
+            assert_eq!(contrast_report(&bad), contrast_report(t));
+        }
+    }
+
+    #[test]
+    fn indicator_look_defaults_to_rustket() {
+        assert_eq!(IndicatorLook::default(), IndicatorLook::Rustket);
+        assert_eq!(indicator_look(), IndicatorLook::Rustket);
+        let g = generation();
+        let inner = with_indicator_look(IndicatorLook::RocketChat, || {
+            let nested = with_indicator_look(IndicatorLook::Rustket, indicator_look);
+            (indicator_look(), nested)
+        });
+        assert_eq!(inner, (IndicatorLook::RocketChat, IndicatorLook::Rustket));
+        assert_eq!(indicator_look(), IndicatorLook::Rustket);
+        // Setting the current look again changes nothing.
+        set_indicator_look(IndicatorLook::Rustket);
+        assert_eq!(generation(), g);
     }
 
     #[test]

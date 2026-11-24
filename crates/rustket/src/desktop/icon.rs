@@ -1,8 +1,10 @@
 //! The app icon (`assets/icons`, rendered by `examples/gen_icons.rs`): window
 //! icon and tray pixmaps, with unread variants carrying a dot for each
-//! [`TrayLevel`], and the macOS menu bar template glyphs.
+//! [`TrayLevel`] or the Rocket.Chat desktop app's counter ([`TrayArt`]), and
+//! the macOS menu bar template glyphs.
 
-use super::tray::TrayLevel;
+use super::badge_art;
+use super::tray::{TrayArt, TrayLevel};
 
 /// Sizes shipped in `assets/icons`.
 pub const SIZES: &[u32] = &[16, 22, 24, 32, 48, 64, 128, 256];
@@ -137,9 +139,124 @@ pub fn menubar_rgba(level: TrayLevel) -> Option<(u32, u32, Vec<u8>)> {
     decode(menubar_png(level))
 }
 
+/// The menu bar template for `art`: the Rocket.Chat counter and bullet show
+/// the dot (the number is the menu bar title).
+#[cfg(any(target_os = "macos", test))]
+pub fn menubar_rgba_art(art: TrayArt) -> Option<(u32, u32, Vec<u8>)> {
+    let level = match art {
+        TrayArt::Plain => TrayLevel::None,
+        TrayArt::Level(level) => level,
+        TrayArt::RcCount(_) | TrayArt::RcPlus | TrayArt::RcDot => TrayLevel::Mention,
+    };
+    menubar_rgba(level)
+}
+
 /// The window icon.
 pub fn window_icon() -> Option<iced::window::Icon> {
     let (w, h, px) = rgba(256, TrayLevel::None)?;
+    iced::window::icon::from_rgba(px, w, h).ok()
+}
+
+/// Sizes of the Rocket.Chat counter tray icons (the StatusNotifierItem
+/// sizes; Windows uses 32).
+pub const RC_SIZES: &[u32] = &[22, 32, 48, 64];
+
+macro_rules! rc_icons {
+    ($name:literal) => {
+        [
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/icons/",
+                $name,
+                "-22.png"
+            ))
+            .as_slice(),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/icons/",
+                $name,
+                "-32.png"
+            ))
+            .as_slice(),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/icons/",
+                $name,
+                "-48.png"
+            ))
+            .as_slice(),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/icons/",
+                $name,
+                "-64.png"
+            ))
+            .as_slice(),
+        ]
+    };
+}
+
+/// `rustket-rc-1` … `rustket-rc-9`, `rustket-rc-plus`, `rustket-rc-dot`.
+const RC: [[&[u8]; 4]; 11] = [
+    rc_icons!("rustket-rc-1"),
+    rc_icons!("rustket-rc-2"),
+    rc_icons!("rustket-rc-3"),
+    rc_icons!("rustket-rc-4"),
+    rc_icons!("rustket-rc-5"),
+    rc_icons!("rustket-rc-6"),
+    rc_icons!("rustket-rc-7"),
+    rc_icons!("rustket-rc-8"),
+    rc_icons!("rustket-rc-9"),
+    rc_icons!("rustket-rc-plus"),
+    rc_icons!("rustket-rc-dot"),
+];
+
+/// PNG bytes of the tray icon of `size` with `art`: [`SIZES`] for the plain
+/// icon and the levels, [`RC_SIZES`] for the Rocket.Chat counters.
+pub fn png_art(size: u32, art: TrayArt) -> Option<&'static [u8]> {
+    let set = match art {
+        TrayArt::Plain => return png(size, TrayLevel::None),
+        TrayArt::Level(level) => return png(size, level),
+        TrayArt::RcCount(0) => return None,
+        TrayArt::RcCount(n @ 1..=9) => &RC[usize::from(n) - 1],
+        TrayArt::RcCount(_) | TrayArt::RcPlus => &RC[9],
+        TrayArt::RcDot => &RC[10],
+    };
+    let i = RC_SIZES.iter().position(|s| *s == size)?;
+    Some(set[i])
+}
+
+/// Decoded [`png_art`]: `(width, height, rgba)`.
+pub fn rgba_art(size: u32, art: TrayArt) -> Option<(u32, u32, Vec<u8>)> {
+    decode(png_art(size, art)?)
+}
+
+/// The window icon's pixels with `art` (Linux and Windows, the Rocket.Chat
+/// scheme), as the desktop app draws its window icon: a quarter of the
+/// size is cleared around the bottom right (a disc of radius `size/4`
+/// centred at `size − size/4`, plus the square from that centre to the
+/// corner), and the badge, `size/3` wide, is centred in it. Without a badge
+/// glyph it is the plain icon.
+pub fn window_rgba_art(size: u32, art: TrayArt) -> Option<(u32, u32, Vec<u8>)> {
+    let (w, h, mut px) = rgba(size, art.level())?;
+    let Some(glyph) = art.glyph() else {
+        return Some((w, h, px));
+    };
+    let s = size as f32;
+    let (hole, badge) = (s / 2.0, s / 3.0);
+    let c = s - hole / 2.0;
+    let r = hole / 2.0;
+    badge_art::clear(&mut px, size, size / 2, |x, y| {
+        (x - c).powi(2) + (y - c).powi(2) <= r * r || (x >= c && y >= c)
+    });
+    let at = s - hole + (hole - badge) / 2.0;
+    badge_art::paint(&mut px, size, (at, at, badge), glyph);
+    Some((w, h, px))
+}
+
+/// The window icon with `art` (see [`window_rgba_art`]).
+pub fn window_icon_rc(art: TrayArt) -> Option<iced::window::Icon> {
+    let (w, h, px) = window_rgba_art(256, art)?;
     iced::window::icon::from_rgba(px, w, h).ok()
 }
 
@@ -159,6 +276,20 @@ pub fn tray_pixmaps(level: TrayLevel) -> Vec<ksni::Icon> {
     [22u32, 32, 48, 64]
         .iter()
         .filter_map(|s| rgba(*s, level))
+        .map(|(w, h, px)| ksni::Icon {
+            width: w as i32,
+            height: h as i32,
+            data: rgba_to_argb(&px),
+        })
+        .collect()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+/// Tray pixmaps of `art` (several sizes; the host picks the best one).
+pub fn tray_pixmaps_art(art: TrayArt) -> Vec<ksni::Icon> {
+    [22u32, 32, 48, 64]
+        .iter()
+        .filter_map(|s| rgba_art(*s, art))
         .map(|(w, h, px)| ksni::Icon {
             width: w as i32,
             height: h as i32,
@@ -261,5 +392,113 @@ mod tests {
             let dot = alpha(level);
             assert_eq!((dot(36, 8), dot(31, 13)), (255, 0), "{level:?}");
         }
+    }
+
+    const RC_ARTS: [TrayArt; 11] = [
+        TrayArt::RcCount(1),
+        TrayArt::RcCount(2),
+        TrayArt::RcCount(3),
+        TrayArt::RcCount(4),
+        TrayArt::RcCount(5),
+        TrayArt::RcCount(6),
+        TrayArt::RcCount(7),
+        TrayArt::RcCount(8),
+        TrayArt::RcCount(9),
+        TrayArt::RcPlus,
+        TrayArt::RcDot,
+    ];
+
+    fn pixel(px: &[u8], w: u32, (x, y): (u32, u32)) -> [u8; 4] {
+        let i = ((y * w + x) * 4) as usize;
+        [px[i], px[i + 1], px[i + 2], px[i + 3]]
+    }
+
+    /// The counter icons decode at the tray sizes, each different, with the
+    /// red disc and a white glyph at the bottom right; the plain art and
+    /// the levels are today's icons.
+    #[test]
+    fn rc_tray_art() {
+        for &s in RC_SIZES {
+            let mut seen = std::collections::HashSet::new();
+            for art in RC_ARTS {
+                let (w, h, px) = rgba_art(s, art).unwrap();
+                assert_eq!((w, h), (s, s));
+                assert!(seen.insert(px.clone()), "{art:?} {s}");
+                // The disc's top edge, inside the badge but above the glyph.
+                let top = pixel(&px, w, (s * 3 / 4, s * 3 / 4 - s * 3 / 20));
+                let (r, g, b) = badge_art::DISC;
+                assert!(
+                    top[0].abs_diff(r) < 16 && top[1].abs_diff(g) < 16 && top[2].abs_diff(b) < 16,
+                    "{art:?} {s}: {top:?}"
+                );
+            }
+            assert!(png_art(16, TrayArt::RcDot).is_none());
+        }
+        let (w, _, dot) = rgba_art(64, TrayArt::RcDot).unwrap();
+        assert_eq!(pixel(&dot, w, (48, 48)), [255, 255, 255, 255]);
+        for &s in SIZES {
+            assert_eq!(png_art(s, TrayArt::Plain), png(s, TrayLevel::None));
+            assert_eq!(
+                png_art(s, TrayArt::Level(TrayLevel::Mention)),
+                png(s, TrayLevel::Mention)
+            );
+        }
+        assert!(png_art(32, TrayArt::RcCount(0)).is_none());
+        assert_eq!(
+            png_art(32, TrayArt::RcCount(10)),
+            png_art(32, TrayArt::RcPlus)
+        );
+        #[cfg(all(unix, not(target_os = "macos")))]
+        for art in RC_ARTS {
+            assert_eq!(tray_pixmaps_art(art).len(), 4);
+        }
+    }
+
+    /// The window icon: the desktop app's cut-out (a disc of radius
+    /// `size/4` at three quarters, plus the square to the corner) is clear
+    /// outside the badge, and the badge disc (`size/3`) sits in its centre.
+    #[test]
+    fn window_icon_hole_and_disc() {
+        let size = 256;
+        let (w, _, plain) = rgba(size, TrayLevel::None).unwrap();
+        assert_eq!(
+            window_rgba_art(size, TrayArt::Plain).unwrap().2,
+            plain,
+            "no badge"
+        );
+        for art in RC_ARTS {
+            let (_, _, px) = window_rgba_art(size, art).unwrap();
+            let at = |x, y| pixel(&px, w, (x, y));
+            // The logo under the hole's top edge is opaque in the plain icon.
+            assert_eq!(pixel(&plain, w, (192, 140))[3], 255);
+            // Hole: inside the cut-out disc, outside the badge disc.
+            assert_eq!(at(192, 140)[3], 0, "{art:?}: hole above the badge");
+            assert_eq!(at(140, 192)[3], 0, "{art:?}: hole left of the badge");
+            assert_eq!(at(250, 250)[3], 0, "{art:?}: the corner square");
+            // Disc: the badge's top inside its radius (size/6 ≈ 42.7).
+            let top = at(192, 155);
+            assert_eq!(top[3], 255, "{art:?}");
+            let (r, g, b) = badge_art::DISC;
+            assert_eq!((top[0], top[1], top[2]), (r, g, b), "{art:?}");
+            // Away from the hole the logo is unchanged.
+            assert_eq!(at(128, 40), pixel(&plain, w, (128, 40)));
+        }
+        let (_, _, dot) = window_rgba_art(size, TrayArt::RcDot).unwrap();
+        assert_eq!(pixel(&dot, w, (192, 192)), [255, 255, 255, 255]);
+        assert!(window_icon_rc(TrayArt::RcCount(4)).is_some());
+    }
+
+    /// The macOS menu bar shows the dot template for every Rocket.Chat
+    /// counter and the bullet.
+    #[test]
+    fn rc_menubar_is_the_dot() {
+        let dot = menubar_rgba(TrayLevel::Mention).unwrap();
+        for art in RC_ARTS {
+            assert_eq!(menubar_rgba_art(art).unwrap(), dot);
+        }
+        assert_eq!(
+            menubar_rgba_art(TrayArt::Plain).unwrap(),
+            menubar_rgba(TrayLevel::None).unwrap()
+        );
     }
 }

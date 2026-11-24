@@ -24,6 +24,8 @@ pub use crate::sidebar_layout::{
     GroupType, KeptThread, SectionId, SectionPrefs, SidebarGroup, ThreadsMode,
 };
 
+pub use crate::indicators::IndicatorScheme;
+
 /// Name of the configuration file inside the config directory.
 pub const CONFIG_FILE: &str = "config.toml";
 /// Current schema version written by [`AppConfig::save`].
@@ -528,6 +530,9 @@ pub struct UiPrefs {
     pub unread_on_top: bool,
     pub show_avatars: bool,
     pub density: Density,
+    /// Unread indicators: Rustket's own look or Rocket.Chat's. A missing or
+    /// unknown value gives Rocket.Chat (the default for everyone).
+    pub indicator_scheme: IndicatorScheme,
     /// Overrides the server's `UI_Use_Real_Name` when set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_real_names: Option<bool>,
@@ -639,6 +644,7 @@ impl Default for UiPrefs {
             unread_on_top: false,
             show_avatars: true,
             density: Density::Extended,
+            indicator_scheme: IndicatorScheme::RocketChat,
             use_real_names: None,
             clock_24h: true,
             notification_preview: true,
@@ -772,6 +778,7 @@ const UI_KEYS: &[&str] = &[
     "unread_on_top",
     "show_avatars",
     "density",
+    "indicator_scheme",
     "use_real_names",
     "clock_24h",
     "notification_preview",
@@ -2216,5 +2223,45 @@ mod tests {
         assert_eq!(c.recent_emoji.len(), MAX_RECENT_EMOJI);
         assert_eq!(c.recent_emoji[0], ":e10:");
         assert_eq!(c.recent_emoji.iter().filter(|e| *e == ":e10:").count(), 1);
+    }
+
+    #[test]
+    fn indicator_scheme_defaults_to_rocketchat() {
+        assert_eq!(IndicatorScheme::default(), IndicatorScheme::Rustket);
+        assert_eq!(
+            UiPrefs::default().indicator_scheme,
+            IndicatorScheme::RocketChat
+        );
+        assert_eq!(
+            AppConfig::default().ui.indicator_scheme,
+            IndicatorScheme::RocketChat
+        );
+        // An existing config without the key.
+        let c = AppConfig::parse("version = 1\n[ui]\ndensity = \"condensed\"\n").unwrap();
+        assert_eq!(c.ui.density, Density::Condensed);
+        assert_eq!(c.ui.indicator_scheme, IndicatorScheme::RocketChat);
+        // No `[ui]` table at all.
+        let c = AppConfig::parse("version = 1\n").unwrap();
+        assert_eq!(c.ui.indicator_scheme, IndicatorScheme::RocketChat);
+    }
+
+    #[test]
+    fn indicator_scheme_round_trips_and_rejects_unknown_values() {
+        for scheme in [IndicatorScheme::Rustket, IndicatorScheme::RocketChat] {
+            let mut c = AppConfig::default();
+            c.ui.indicator_scheme = scheme;
+            let text = toml::to_string(&c).unwrap();
+            assert_eq!(AppConfig::parse(&text).unwrap().ui.indicator_scheme, scheme);
+        }
+        let c = AppConfig::parse("[ui]\nindicator_scheme = \"rustket\"\n").unwrap();
+        assert_eq!(c.ui.indicator_scheme, IndicatorScheme::Rustket);
+        let c = AppConfig::parse("[ui]\nindicator_scheme = \"rocketchat\"\n").unwrap();
+        assert_eq!(c.ui.indicator_scheme, IndicatorScheme::RocketChat);
+        let c = AppConfig::parse("[ui]\nindicator_scheme = \"slack\"\ndensity = \"condensed\"\n")
+            .unwrap();
+        assert_eq!(c.ui.indicator_scheme, IndicatorScheme::RocketChat);
+        assert_eq!(c.ui.density, Density::Condensed);
+        let c = AppConfig::parse("[ui]\nindicator_scheme = 3\n").unwrap();
+        assert_eq!(c.ui.indicator_scheme, IndicatorScheme::RocketChat);
     }
 }

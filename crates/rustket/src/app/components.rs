@@ -4,6 +4,8 @@
 use iced::Task;
 use rust_i18n::t;
 use rustket_core::ServerId;
+use rustket_core::config::IndicatorScheme;
+use rustket_core::indicators::RcSignal;
 use rustket_core::workspace::ConnectionState;
 
 use super::{App, Modal, Screen, SecretsMode};
@@ -153,6 +155,7 @@ impl App {
                 // Theme files edited meanwhile show up (and apply) here.
                 self.themes.rescan();
                 self.themes.apply(self.config.ui.theme_name.as_deref());
+                crate::themes::apply_indicator_look(self.config.ui.indicator_scheme);
                 // So are locale files.
                 self.locales.reload(&self.config.ui.language);
                 let load = screen.load().map(Message::Settings);
@@ -338,6 +341,7 @@ impl App {
                         self.themes.rescan();
                     }
                     self.themes.apply(self.config.ui.theme_name.as_deref());
+                    crate::themes::apply_indicator_look(self.config.ui.indicator_scheme);
                     Task::none()
                 }
                 Effect::OpenThemesFolder => self.open_themes_folder(),
@@ -871,14 +875,20 @@ impl App {
             .desktop
             .on_state(&logged_in, self.active.as_ref())
             .map(Message::Desktop);
-        if totals == self.last_unread {
+        let scheme = self.config.ui.indicator_scheme;
+        let rc = match scheme {
+            IndicatorScheme::Rustket => RcSignal::default(),
+            IndicatorScheme::RocketChat => self.rc_signal(),
+        };
+        if (totals, rc, scheme) == self.last_unread {
             return state;
         }
-        self.last_unread = totals;
-        Task::batch([
-            state,
-            self.desktop.on_unread_changed(totals).map(Message::Desktop),
-        ])
+        self.last_unread = (totals, rc, scheme);
+        let changed = match scheme {
+            IndicatorScheme::Rustket => self.desktop.on_unread_changed(totals),
+            IndicatorScheme::RocketChat => self.desktop.on_unread_changed_rc(totals, rc),
+        };
+        Task::batch([state, changed.map(Message::Desktop)])
     }
 
     pub(super) fn settings_view_data(&self) -> settings::SettingsView<'_> {
@@ -951,6 +961,7 @@ impl App {
             &self.config,
             &now,
             self.desktop.tray_support().available,
+            self.desktop.window_icon_badges(),
             self.custom_chrome(),
             account,
         ))

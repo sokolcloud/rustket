@@ -7,7 +7,8 @@
 //! ```
 //!
 //! `LC_ALL=ru_RU.UTF-8` renders the Russian UI, `RUSTKET_SNAPSHOT_WIDTH=1024` a
-//! narrow window.
+//! narrow window. `RUSTKET_SNAPSHOT_ONLY=schemes`: only the indicator-scheme
+//! shots of the seeded `schemeview` account (`snapshot/schemes.rs`).
 //!
 //! Creates throwaway users (one with e-mail 2FA) and two throwaway channels,
 //! posts a few messages and a DM, then renders: add-server, login (with the
@@ -476,6 +477,9 @@ async fn main() {
     let work = {
         let (server, ledger) = (server.clone(), ledger.clone());
         tokio::spawn(async move {
+            if schemes::scheme_shots(&server, &out).await {
+                return;
+            }
             if titlebar::titlebar_shots(&out).await {
                 return;
             }
@@ -968,6 +972,8 @@ mod e2e;
 mod glue;
 #[path = "snapshot/polish.rs"]
 mod polish;
+#[path = "snapshot/schemes.rs"]
+mod schemes;
 #[path = "snapshot/selection.rs"]
 mod selection;
 #[path = "snapshot/shell.rs"]

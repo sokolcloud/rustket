@@ -16,7 +16,7 @@ use rustket::screens::login;
 use rustket::session::ServerEvent;
 use rustket::workspace::sidebar;
 use rustket_core::ServerId;
-use rustket_core::config::{AppConfig, ServerEntry, TokenKind};
+use rustket_core::config::{AppConfig, IndicatorScheme, ServerEntry, TokenKind};
 use rustket_core::secrets::{MemoryStore, SecretBackend, SecretStore, SwitchableStore};
 use rustket_core::sync::InitialData;
 
@@ -87,13 +87,21 @@ fn boot(app: &mut App, tokens: Vec<(ServerId, Option<String>)>, store: Arc<Memor
     }));
 }
 
+/// A default config under the Rustket indicator scheme: the process-wide
+/// indicator look never changes in this binary.
+fn rustket_cfg() -> AppConfig {
+    let mut cfg = AppConfig::default();
+    cfg.ui.indicator_scheme = IndicatorScheme::Rustket;
+    cfg
+}
+
 /// One configured server; logged in as `uid` when `uid` is set.
 fn app_with(
     dir: &std::path::Path,
     uid: Option<&str>,
     urls: Vec<String>,
 ) -> (App, ServerId, Arc<MemoryStore>) {
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     let mut entry = ServerEntry::new(SERVER, "Local");
     entry.user_id = uid.map(str::to_owned);
     let sid = cfg.add_server(entry);
@@ -338,6 +346,7 @@ async fn links_before_boot_are_replayed() {
     let (mut app, _task) = App::new(Flags {
         ephemeral: true,
         secrets: SecretsMode::Memory,
+        indicator_scheme: Some(IndicatorScheme::Rustket),
         ..Flags::default()
     });
     let _ = app.update(Message::DeepLinks(vec![
@@ -835,7 +844,7 @@ async fn own_return_to_queue_keeps_its_toast() {
 #[tokio::test]
 async fn config_saves_keep_the_newest_state() {
     let dir = tempfile::tempdir().unwrap();
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     let mut e1 = ServerEntry::new(SERVER, "One");
     e1.user_id = Some("A".into());
     let s1 = cfg.add_server(e1);
@@ -959,7 +968,7 @@ fn fetched_png() -> rustket::images::FetchResult {
 #[tokio::test]
 async fn confirmations_of_two_servers_do_not_stack() {
     let dir = tempfile::tempdir().unwrap();
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     let s1 = cfg.add_server(ServerEntry::new(SERVER, "One"));
     let s2 = cfg.add_server(ServerEntry::new("http://127.0.0.1:3000", "Two"));
     cfg.save(dir.path()).unwrap();
@@ -2038,7 +2047,7 @@ async fn hidden_room_is_marked_read_only_when_shown_again() {
 #[test]
 fn background_servers_last_room_waits_for_the_server() {
     let dir = tempfile::tempdir().unwrap();
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     let mut e1 = ServerEntry::new(SERVER, "One");
     e1.user_id = Some("A".into());
     let s1 = cfg.add_server(e1);
@@ -3301,7 +3310,7 @@ async fn feed(app: &mut App, task: iced::Task<Message>, keep: fn(&Message) -> bo
 /// One signed-in server whose secrets are in a plain file in `dir/data`.
 fn app_on_file(dir: &std::path::Path) -> (App, ServerId) {
     use rustket_core::secrets::FileStore;
-    let mut cfg = AppConfig::default();
+    let mut cfg = rustket_cfg();
     let mut entry = ServerEntry::new(SERVER, "Local");
     entry.user_id = Some("A".into());
     let sid = cfg.add_server(entry);

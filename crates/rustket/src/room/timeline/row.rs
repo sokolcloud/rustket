@@ -8,6 +8,7 @@ use iced::{Alignment, Element};
 use rocketchat::models::Message as RcMessage;
 use rocketchat::{RcDate, ServerUrl};
 use rust_i18n::t;
+use rustket_core::config::IndicatorScheme;
 use rustket_core::config::UiPrefs;
 use rustket_core::room_list::Avatar;
 use rustket_core::timeline::{DeliveryState, TimelineItem};
@@ -16,10 +17,10 @@ use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, TEXT_CAPTION, TEXT_SMALL, font_semibold};
 use rustket_ui::widget::{
-    AvatarShape, AvatarSource, ChipKind, MESSAGE_AVATAR, MenuEntry, MessageRowProps, Placement,
-    TooltipPosition, avatar, chip, context_menu, discussion_summary, icon_button_with, message_row,
-    message_toolbar, popover_menu, reaction_pill, sanitize_bidi, system_message_row,
-    thread_summary, tooltip,
+    AvatarShape, AvatarSource, BadgeKind, ChipKind, MESSAGE_AVATAR, MenuEntry, MessageRowProps,
+    Placement, TooltipPosition, avatar, chip, context_menu, discussion_summary, icon_button_with,
+    message_row, message_toolbar, popover_menu, reaction_pill, sanitize_bidi, system_message_row,
+    thread_summary_kind, tooltip,
 };
 
 use super::actions::{self, Act};
@@ -63,6 +64,9 @@ pub(crate) struct RowFlags {
     pub sequential: bool,
     pub menu_open: bool,
     pub thread_unread: bool,
+    /// The colour of the thread summary's unread dot (`Some` iff
+    /// `thread_unread`; [`crate::room::timeline::parent_thread_kind`]).
+    pub thread_kind: Option<BadgeKind>,
     /// Jumped-to message (permalink, search result).
     pub selected: bool,
     /// The list is selecting messages: checkboxes instead of the toolbar
@@ -251,7 +255,17 @@ fn author_avatar(env: &Env<'_>, m: &RcMessage, name: &str) -> El {
 }
 
 fn mentions_me(env: &Env<'_>, m: &RcMessage) -> bool {
-    highlights_in(env.ws, m)
+    highlights_for(env.ws, m, env.prefs.indicator_scheme)
+}
+
+/// [`highlights_in`] under `scheme`: Rocket.Chat gives no row its own
+/// background for a mention, `@all` or a highlight word.
+pub(crate) fn highlights_for(
+    ws: &rustket_core::workspace::Workspace,
+    m: &RcMessage,
+    scheme: IndicatorScheme,
+) -> bool {
+    scheme == IndicatorScheme::Rustket && highlights_in(ws, m)
 }
 
 /// [`highlights_row`] for the signed-in user of `ws`, with the room's R4
@@ -365,7 +379,7 @@ fn username_of(env: &Env<'_>, uid: &str) -> Option<String> {
         .and_then(|m| m.u.username.clone())
 }
 
-fn thread_part(env: &Env<'_>, m: &RcMessage, unread: bool) -> Option<El> {
+fn thread_part(env: &Env<'_>, m: &RcMessage, unread: Option<BadgeKind>) -> Option<El> {
     let count = m.tcount.filter(|c| *c > 0)?;
     let label = t!(
         format!("room_timeline.replies_{}", plural(count)),
@@ -400,11 +414,15 @@ fn thread_part(env: &Env<'_>, m: &RcMessage, unread: bool) -> Option<El> {
             avatar(src, 18.0, AvatarShape::Rounded).into()
         })
         .collect();
-    Some(thread_summary(
+    let filled = unread.is_some() && env.prefs.indicator_scheme == IndicatorScheme::RocketChat;
+    Some(thread_summary_kind(
         label,
         last,
         participants,
         unread,
+        filled,
+        unread
+            .and_then(|k| crate::room::timeline::rc_thread_dot_tip(k, env.prefs.indicator_scheme)),
         Message::OpenThread(m.id.clone()),
     ))
 }
@@ -667,6 +685,7 @@ pub(crate) fn build(
     p.starred = env.ws.user_id().is_some_and(|id| m.is_starred_by(id));
     p.is_mention_highlight = mentions_me(env, m);
     p.is_selected = flags.selected;
+    p.is_jump_target = flags.selected;
     p.edited_label = match (&m.edited_by, m.edited_at) {
         (Some(by), Some(at)) => t!(
             "room_timeline.edited_by",
@@ -696,7 +715,7 @@ pub(crate) fn build(
                 p.reactions = reactions(env, m, can_react);
                 // The thread view shows the replies below the parent instead.
                 if *env.source == Source::Room {
-                    p.thread_summary = thread_part(env, m, flags.thread_unread);
+                    p.thread_summary = thread_part(env, m, flags.thread_kind);
                 }
                 if let Some(d) = discussion_part(env, m) {
                     p.attachments.push(d);
@@ -886,5 +905,42 @@ mod tests {
         m.alias = None;
         m.u.name = Some("\u{202E}evil".into());
         assert_eq!(author_name(&m, true), "evil");
+    }
+
+    /// H6: under Rocket.Chat no row gets the mention background (mentions,
+    /// `@all`, highlight words); Rustket is unchanged.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn rocketchat_rows_have_no_mention_background() {
+        let mut ws = Workspace::new();
+        ws.apply_me(
+            serde_json::from_value(serde_json::json!({
+                "_id": "me", "username": "me",
+                "settings": {"preferences": {"highlights": ["deploy"]}}
+            }))
+            .unwrap(),
+        );
+        let msg = |mentions: &[&str], text: &str| RcMessage {
+            msg: text.into(),
+            u: UserRef {
+                id: "bob".into(),
+                ..Default::default()
+            },
+            mentions: Some(
+                mentions
+                    .iter()
+                    .map(|id| rocketchat::models::Mention {
+                        id: (*id).into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        for m in [msg(&["me"], "hi"), msg(&["all"], "hi"), msg(&[], "deploy")] {
+            assert!(highlights_in(&ws, &m));
+            assert!(highlights_for(&ws, &m, IndicatorScheme::Rustket));
+            assert!(!highlights_for(&ws, &m, IndicatorScheme::RocketChat));
+        }
     }
 }

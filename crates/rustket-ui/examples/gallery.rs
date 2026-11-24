@@ -5,7 +5,8 @@
 //! Environment switches for screenshots: `GALLERY_MODE=dark`, `GALLERY_MODAL=1`,
 //! `GALLERY_TOASTS=1`, `GALLERY_MENU=1` (popover open), `GALLERY_CONDENSED=1`,
 //! `GALLERY_TOP=1` (timeline scrolled to the top), `GALLERY_THEME=<file.toml>`
-//! (an external theme, e.g. `docs/themes/forest.toml`; fonts included).
+//! (an external theme, e.g. `docs/themes/forest.toml`; fonts included),
+//! `GALLERY_SCHEME=rocketchat` (Rocket.Chat's unread indicators).
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -46,6 +47,9 @@ fn load_theme(path: &str) {
 pub fn main() -> iced::Result {
     if let Ok(path) = std::env::var("GALLERY_THEME") {
         load_theme(&path);
+    }
+    if rc_scheme() {
+        theme::set_indicator_look(IndicatorLook::RocketChat);
     }
     iced::application(Gallery::new, Gallery::update, Gallery::view)
         .settings(rustket_ui::settings())
@@ -361,6 +365,11 @@ struct Gallery {
     workspace: usize,
     sections: Vec<&'static str>,
     section_sort: std::collections::HashMap<&'static str, u8>,
+}
+
+/// `GALLERY_SCHEME=rocketchat`.
+fn rc_scheme() -> bool {
+    std::env::var("GALLERY_SCHEME").is_ok_and(|v| v == "rocketchat")
 }
 
 fn env_flag(name: &str) -> bool {
@@ -750,16 +759,43 @@ impl Gallery {
             let count = items.len() + threads;
             handles.push((section_key(section), y, HEADER_SLOT));
             y += HEADER_SLOT + if collapsed { 0.0 } else { count as f32 * row_h };
-            list = list.push(context_menu(
-                container(section_header_full(
+            let header = if rc_scheme() {
+                // Rocket.Chat: no row count; a collapsed section shows the
+                // sum of its counters in its strongest colour, title bold.
+                let rank = |k: BadgeKind| match k {
+                    BadgeKind::Mention => 4,
+                    BadgeKind::Thread => 3,
+                    BadgeKind::GroupMention => 2,
+                    BadgeKind::Unread | BadgeKind::Muted => 1,
+                };
+                let badges = items.iter().filter_map(|(_, r)| r.badge);
+                let sum: u64 = badges.clone().map(|(n, _)| u64::from(n)).sum();
+                let status = badges
+                    .map(|(_, k)| k)
+                    .max_by_key(|k| rank(*k))
+                    .filter(|_| collapsed && sum > 0)
+                    .map(|k| badge_in(sum, k, BadgePlace::Sidebar, BadgeCap::None));
+                let emphasis = status.is_some();
+                section_header_rc(
+                    section,
+                    collapsed,
+                    flag,
+                    status.map(|b| tooltip(b, "Unread messages", TooltipPosition::Bottom)),
+                    emphasis,
+                    Message::ToggleSection(section),
+                )
+            } else {
+                section_header_full(
                     section,
                     collapsed,
                     Some(count as u32),
                     flag,
                     None,
                     Message::ToggleSection(section),
-                ))
-                .center_y(HEADER_SLOT),
+                )
+            };
+            list = list.push(context_menu(
+                container(header).center_y(HEADER_SLOT),
                 self.section_menu(section, n == 0, n == last, collapsed),
             ));
             if collapsed {
@@ -779,6 +815,10 @@ impl Gallery {
                 p.time = Some(r.time.into());
                 if let Some((count, kind)) = r.badge {
                     (p.badge, p.count, p.bold) = (Some(kind), count, true);
+                }
+                if rc_scheme() {
+                    p.cap = BadgeCap::None;
+                    p.badge_tip = r.badge.map(|(n, _)| format!("{n} unread messages"));
                 }
                 p.is_muted = r.muted;
                 p.is_selected = i == self.selected;
@@ -1140,7 +1180,7 @@ impl Gallery {
                 .font(font_semibold())
                 .style(style::text_secondary)
         };
-        let badges = row![
+        let mut badges = row![
             badge(3, BadgeKind::Unread),
             badge(12, BadgeKind::Mention),
             badge(150, BadgeKind::GroupMention),
@@ -1150,6 +1190,29 @@ impl Gallery {
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
+        if rc_scheme() {
+            // Rocket.Chat: the content palette, uncapped; the ghost badge.
+            badges = badges
+                .push(badge_in(
+                    150,
+                    BadgeKind::Mention,
+                    BadgePlace::Content,
+                    BadgeCap::None,
+                ))
+                .push(badge_in(
+                    2,
+                    BadgeKind::Thread,
+                    BadgePlace::Content,
+                    BadgeCap::At99,
+                ))
+                .push(badge_in(
+                    7,
+                    BadgeKind::Unread,
+                    BadgePlace::Shell,
+                    BadgeCap::At99,
+                ))
+                .push(bullet_in(BadgeKind::Unread, BadgePlace::Shell));
+        }
         let presences = row![
             presence_dot(Presence::Online, 10.0),
             text("Online").size(TEXT_CAPTION),

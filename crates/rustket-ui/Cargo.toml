@@ -15,6 +15,10 @@ toml = "1.2.1"
 unicode-properties = "0.1"
 unicode-segmentation = "1"
 
+[features]
+# `theme::with_indicator_look`: a thread-local indicator look for tests.
+testing = []
+
 [dev-dependencies]
 iced_runtime = "0.14"
 iced_tiny_skia = "0.14"

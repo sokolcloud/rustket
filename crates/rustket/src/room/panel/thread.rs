@@ -27,9 +27,7 @@ use crate::error::Res;
 use crate::room::composer::{self, Composer};
 use crate::room::render;
 use crate::room::timeline::interact::{self, Interactions, Msg as ItemMsg, Source};
-use crate::room::timeline::{
-    Act, SELECTED_FOR, keep_offer, list, row as trow, row_id, star_thread_offer,
-};
+use crate::room::timeline::{Act, keep_offer, list, row as trow, row_id, star_thread_offer};
 use crate::room::{Action, ComposeIntent, Effect, UpdateCtx, ViewCtx};
 use crate::session::SessionHandle;
 
@@ -683,9 +681,12 @@ impl Thread {
             Task::perform(tokio::time::sleep(Duration::from_millis(60)), move |_| {
                 Msg::Reveal(mid.clone())
             }),
-            Task::perform(tokio::time::sleep(SELECTED_FOR), move |_| {
-                Msg::Unselect(stamp)
-            }),
+            Task::perform(
+                tokio::time::sleep(crate::room::timeline::selected_for(
+                    ctx.prefs.indicator_scheme,
+                )),
+                move |_| Msg::Unselect(stamp),
+            ),
         ])
     }
 

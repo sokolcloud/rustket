@@ -122,8 +122,11 @@ app calls:
   `{uid}/notification` event (after it was applied); `NotifyEnv` carries the
   images, server URL, active server/room/thread and window focus;
 - `on_unread_changed(WorkspaceSignal)` whenever the totals over all
-  servers change (tray icon; on macOS also the Dock badge, `dock.rs`: the
-  number of mentions); `on_state(&[(sid, &Workspace)], active)` after every update
+  servers change under the Rustket scheme (tray icon; on macOS also the Dock
+  badge, `dock.rs`: the number of mentions);
+  `on_unread_changed_rc(WorkspaceSignal, RcSignal)` instead under the
+  Rocket.Chat scheme (the desktop app's total unread, or its bullet, on the
+  tray, the Dock and the Linux/Windows window icon); `on_state(&[(sid, &Workspace)], active)` after every update
   (closes notifications of read rooms, tray status);
 - `on_focus_changed`, `on_close_requested` (close/minimize to tray),
   `show_window` (second launch, tray), `idle_calls`, `test_notification`.

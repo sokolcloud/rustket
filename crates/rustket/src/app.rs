@@ -34,7 +34,8 @@ use rocketchat::rest::LoginResult;
 use rocketchat::{Credentials, ServerUrl};
 use rust_i18n::t;
 use rustket_core::ServerId;
-use rustket_core::config::{AppConfig, Theme as ThemePref, TokenKind};
+use rustket_core::config::{AppConfig, IndicatorScheme, Theme as ThemePref, TokenKind};
+use rustket_core::indicators::{RcSignal, rc_workspace_signal};
 use rustket_core::room_list;
 use rustket_core::secrets::{MemoryStore, SecretBackend, SecretStore, SwitchableStore};
 use rustket_ui::Mode;
@@ -101,6 +102,9 @@ pub struct Flags {
     pub window_decorated: Option<bool>,
     /// Base directory of the offline cache (`crate::cache`); `None`: off.
     pub offline_cache: Option<PathBuf>,
+    /// Starts with this indicator scheme instead of the config's (ephemeral
+    /// runs: tests, snapshots).
+    pub indicator_scheme: Option<IndicatorScheme>,
 }
 
 pub enum Screen {
@@ -202,8 +206,9 @@ pub struct App {
     confirm_queue: VecDeque<(ServerId, Credentials, Box<User>)>,
     save_stamp: u64,
     pub desktop: crate::desktop::Desktop,
-    /// The unread signal over all servers, last given to `desktop`.
-    last_unread: room_list::WorkspaceSignal,
+    /// The unread signals over all servers and the scheme, last given to
+    /// `desktop` (Rocket.Chat's signal is zero under the Rustket scheme).
+    last_unread: (room_list::WorkspaceSignal, RcSignal, IndicatorScheme),
     /// Video calls: ringing, popups, call dialogs (`crate::videoconf`).
     pub calls: crate::videoconf::Calls,
     /// Instance of the create-room / quick-switcher dialog opened last: task
@@ -244,6 +249,17 @@ pub fn window_title(signal: room_list::WorkspaceSignal) -> String {
     }
 }
 
+/// The window title under the Rocket.Chat scheme, for the active account's
+/// signal: "Rustket (N)" with its unread number, none above 999 and never a
+/// bullet (Rocket.Chat's document title).
+pub fn window_title_rc(active: RcSignal) -> String {
+    if (1..=999).contains(&active.unread) {
+        format!("{} ({})", t!("app.title"), active.unread)
+    } else {
+        t!("app.title").into_owned()
+    }
+}
+
 impl App {
     pub fn new(flags: Flags) -> (Self, Task<Message>) {
         let config_dir = if flags.ephemeral {
@@ -254,13 +270,16 @@ impl App {
                 .clone()
                 .or_else(|| AppConfig::default_dir().ok())
         };
-        let config = match &config_dir {
+        let mut config = match &config_dir {
             Some(dir) => AppConfig::load(dir).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "config unreadable; using defaults");
                 AppConfig::default()
             }),
             None => AppConfig::default(),
         };
+        if let Some(s) = flags.indicator_scheme {
+            config.ui.indicator_scheme = s;
+        }
         let mut locales =
             crate::locales::Locales::new(config_dir.as_deref().map(crate::locales::locales_dir));
         locales.reload(&config.ui.language);
@@ -298,6 +317,7 @@ impl App {
             crate::themes::Themes::new(config_dir.as_deref().map(crate::themes::themes_dir));
         themes.rescan();
         themes.apply(config.ui.theme_name.as_deref());
+        crate::themes::apply_indicator_look(config.ui.indicator_scheme);
         let app = Self {
             config,
             config_dir,
@@ -329,7 +349,7 @@ impl App {
             confirm_queue: VecDeque::new(),
             save_stamp: 0,
             desktop,
-            last_unread: room_list::WorkspaceSignal::default(),
+            last_unread: Default::default(),
             calls: crate::videoconf::Calls::default(),
             dialog_instances: (0, 0),
             titlebar: Default::default(),
@@ -412,7 +432,24 @@ impl App {
     }
 
     pub fn title(&self) -> String {
-        window_title(self.unread_signal())
+        match self.config.ui.indicator_scheme {
+            IndicatorScheme::Rustket => window_title(self.unread_signal()),
+            IndicatorScheme::RocketChat => window_title_rc(
+                self.active
+                    .as_ref()
+                    .and_then(|id| self.servers.get(id))
+                    .map(|s| rc_workspace_signal(&s.workspace))
+                    .unwrap_or_default(),
+            ),
+        }
+    }
+
+    /// Rocket.Chat's unread signal summed over all servers.
+    pub(crate) fn rc_signal(&self) -> RcSignal {
+        self.servers
+            .values()
+            .map(|s| rc_workspace_signal(&s.workspace))
+            .sum()
     }
 
     /// The unread signal summed over all servers (signed-out ones have an
@@ -1021,7 +1058,7 @@ impl App {
             &self.ui_state.collapsed_sections,
         )
         .into_iter()
-        .map(|i| (i.rid.as_str(), i.badge.count > 0 || i.badge.dot))
+        .map(|i| (i.rid.as_str(), i.marked(self.config.ui.indicator_scheme)))
         .collect();
         let Some(rid) = crate::desktop::shortcuts::target(&rows, s.active_room.as_deref(), step)
             .map(str::to_owned)
@@ -1207,5 +1244,41 @@ mod tests {
             sig(0, Some(BadgeVariant::GroupMention), 2),
         ];
         assert_eq!(window_title(two.into_iter().sum()), "Rustket (1)");
+    }
+
+    /// Rocket.Chat: "Rustket (N)" for 1…999 of the active account's unread,
+    /// no number above 999 and never a bullet.
+    #[test]
+    fn window_title_rc_counts_unread() {
+        use crate::app::window_title_rc;
+        use rustket_core::indicators::RcSignal;
+        let rc = |unread, bullet| RcSignal { unread, bullet };
+        assert_eq!(window_title_rc(rc(0, false)), "Rustket");
+        assert_eq!(window_title_rc(rc(0, true)), "Rustket");
+        assert_eq!(window_title_rc(rc(1, true)), "Rustket (1)");
+        assert_eq!(window_title_rc(rc(999, false)), "Rustket (999)");
+        assert_eq!(window_title_rc(rc(1000, false)), "Rustket");
+    }
+
+    /// A scheme switch alone pushes the tray again (the unread is unchanged).
+    #[test]
+    fn scheme_switch_alone_repushes_the_desktop() {
+        use crate::app::{App, Flags, SecretsMode};
+        use rustket_core::config::IndicatorScheme;
+        let (mut app, _) = App::new(Flags {
+            ephemeral: true,
+            secrets: SecretsMode::Memory,
+            open_urls: false,
+            indicator_scheme: Some(IndicatorScheme::Rustket),
+            ..Flags::default()
+        });
+        let _ = app.unread_hook();
+        assert_eq!(app.desktop.tray.state().scheme, IndicatorScheme::Rustket);
+        app.config.ui.indicator_scheme = IndicatorScheme::RocketChat;
+        let _ = app.unread_hook();
+        assert_eq!(app.desktop.tray.state().scheme, IndicatorScheme::RocketChat);
+        app.config.ui.indicator_scheme = IndicatorScheme::Rustket;
+        let _ = app.unread_hook();
+        assert_eq!(app.desktop.tray.state().scheme, IndicatorScheme::Rustket);
     }
 }

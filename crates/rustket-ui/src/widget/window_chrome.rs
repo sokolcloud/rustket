@@ -14,7 +14,7 @@ use iced::{
 };
 
 use super::avatar::{AvatarShape, AvatarSource, face};
-use super::badge::{BadgeKind, badge, dot};
+use super::badge::{BadgeKind, WorkspaceAt, WorkspaceBadge, workspace_badge};
 use super::focus_ring::focus_ring;
 use super::misc::{TooltipPosition, tooltip};
 use crate::icon::{self, Icon};
@@ -57,6 +57,19 @@ pub fn title_bar_workspace<'a, Message: Clone + 'a>(
     signed_out: bool,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
+    title_bar_workspace_with(source, name, unread.into(), selected, signed_out, on_press)
+}
+
+/// [`title_bar_workspace`] with any [`WorkspaceBadge`] (the Rocket.Chat
+/// ghost badges included).
+pub fn title_bar_workspace_with<'a, Message: Clone + 'a>(
+    source: &AvatarSource,
+    name: impl Into<String>,
+    unread: WorkspaceBadge,
+    selected: bool,
+    signed_out: bool,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
     let ringed = container(face(source, FACE, AvatarShape::Rounded))
         .padding(2)
         .style(move |theme: &Theme| {
@@ -72,11 +85,8 @@ pub fn title_bar_workspace<'a, Message: Clone + 'a>(
                 ..container::Style::default()
             }
         });
-    let badge_el: Element<'a, Message> = match unread {
-        Some((0, kind)) => dot(kind, 9.0),
-        Some((count, kind)) => badge(count, kind),
-        None => space().into(),
-    };
+    let badge_el: Element<'a, Message> =
+        workspace_badge(unread, WorkspaceAt::TitleBar).unwrap_or_else(|| space().into());
     let emblem: Element<'a, Message> = if signed_out {
         container(icon::sized(Icon::LogOut, 8.0))
             .center(13)

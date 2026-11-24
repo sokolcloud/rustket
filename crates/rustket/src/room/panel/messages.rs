@@ -12,7 +12,7 @@ use rustket_ui::style;
 use rustket_ui::theme::{
     SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_semibold,
 };
-use rustket_ui::widget::{BadgeKind, divider, dot, ellipsis};
+use rustket_ui::widget::{BadgePlace, TooltipPosition, divider, dot_in, ellipsis, tooltip};
 
 use super::api::{self, MessageList, ThreadFilter};
 use super::common;
@@ -238,8 +238,11 @@ impl Messages {
         .align_y(Alignment::Center);
         let mut content = column![head, self.viewer.body(m, ctx).map(Msg::View)].spacing(2);
         if self.mode == Mode::Threads {
-            let unread =
-                crate::room::timeline::parent_thread_unread(ws.subscription(ctx.rid), &m.id);
+            let unread = crate::room::timeline::parent_thread_kind(
+                ws.subscription(ctx.rid),
+                &m.id,
+                ctx.prefs.indicator_scheme,
+            );
             let mut foot = row![
                 icon::sized(Icon::MessageCircle, 13.0).style(style::text_link),
                 text(t!("room_panel.replies", count = m.tcount.unwrap_or(0)).into_owned())
@@ -261,8 +264,15 @@ impl Messages {
                     .style(style::text_hint),
                 );
             }
-            if unread {
-                foot = foot.push(dot(BadgeKind::Thread, 8.0));
+            if let Some(kind) = unread {
+                let dot = dot_in(kind, 8.0, BadgePlace::Content);
+                foot = foot.push(
+                    match crate::room::timeline::rc_thread_dot_tip(kind, ctx.prefs.indicator_scheme)
+                    {
+                        Some(tip) => tooltip(dot, tip, TooltipPosition::Top),
+                        None => dot,
+                    },
+                );
             }
             content = content.push(foot.spacing(SPACE_2));
         }

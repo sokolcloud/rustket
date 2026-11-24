@@ -5,6 +5,7 @@ use std::time::Instant;
 use iced::widget::{column, container, row, text};
 use iced::{Alignment, Element, Length};
 use rust_i18n::t;
+use rustket_core::config::IndicatorScheme;
 use rustket_core::room_list;
 use rustket_core::workspace::ConnectionState;
 use rustket_ui::icon::Icon;
@@ -164,7 +165,7 @@ impl App {
         rail::view(self.rail_entries()).map(Message::Rail)
     }
 
-    fn rail_entries(&self) -> Vec<rail::RailEntry> {
+    pub(crate) fn rail_entries(&self) -> Vec<rail::RailEntry> {
         let adding = !matches!(
             self.screen,
             Screen::Server | Screen::Account(..) | Screen::Directory(..) | Screen::Admin(..)
@@ -178,6 +179,12 @@ impl App {
                 name: s.name.clone(),
                 avatar: AvatarSource::initials(&s.name, s.url.as_str()),
                 signal: room_list::workspace_signal(&s.workspace),
+                rc: match self.config.ui.indicator_scheme {
+                    IndicatorScheme::Rustket => Default::default(),
+                    IndicatorScheme::RocketChat => {
+                        rustket_core::indicators::rc_workspace_signal(&s.workspace)
+                    }
+                },
                 selected: !adding && self.active.as_ref() == Some(&s.id),
                 signed_out: !s.is_logged_in() && !s.restoring,
             })

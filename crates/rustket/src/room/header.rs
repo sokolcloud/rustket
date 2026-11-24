@@ -7,6 +7,7 @@ use iced::widget::{column, container, mouse_area, row};
 use iced::{Alignment, Element, Length, Subscription, Theme};
 use rocketchat::models::{RoomType, UserStatus};
 use rust_i18n::t;
+use rustket_core::config::IndicatorScheme;
 use rustket_core::permissions;
 use rustket_core::room_list;
 use rustket_core::workspace::{Changes, Workspace};
@@ -17,8 +18,8 @@ use rustket_ui::theme::{
     font_semibold, tokens,
 };
 use rustket_ui::widget::{
-    BadgeKind, ChipKind, MenuEntry, MenuItem, Placement, chip, divider, ellipsis, icon_button_with,
-    popover, popover_menu, presence_dot,
+    BadgeCap, BadgeKind, BadgePlace, ChipKind, MenuEntry, MenuItem, Placement, chip, divider,
+    ellipsis, icon_button_with, popover, popover_menu, presence_dot,
 };
 
 use super::panel::common::{self, RoomAction};
@@ -96,6 +97,20 @@ pub fn threads_badge(sub: Option<&rocketchat::models::Subscription>) -> Option<B
         .map(crate::workspace::sidebar::widget_kind)
 }
 
+/// Rocket.Chat's counter on the Threads button (`useThreadRoomAction`):
+/// the number of unread threads, coloured Mention > GroupMention > Thread,
+/// whatever the room's R1–R4. `None` without the button or unread threads.
+pub fn threads_counter(
+    b: &Buttons,
+    sub: Option<&rocketchat::models::Subscription>,
+) -> Option<(u64, BadgeKind)> {
+    if !b.threads {
+        return None;
+    }
+    sub.and_then(rustket_core::indicators::rc_threads_button)
+        .map(|(n, v)| (n, crate::workspace::sidebar::widget_kind(v)))
+}
+
 /// 1:1 direct message partner (username), if `rid` is one.
 pub fn dm_partner(ws: &Workspace, rid: &str) -> Option<String> {
     let e = ws.room(rid)?;
@@ -154,6 +169,17 @@ pub fn menu_entries(
     rid: &str,
     overflow: &[HeaderButton],
 ) -> Vec<MenuEntry<Message>> {
+    menu_entries_counted(ws, rid, overflow, None)
+}
+
+/// [`menu_entries`] where a moved Threads button shows `threads` (the
+/// Rocket.Chat counter, [`threads_counter`]) as a pill in place of its dot.
+pub fn menu_entries_counted(
+    ws: &Workspace,
+    rid: &str,
+    overflow: &[HeaderButton],
+    threads: Option<(u64, BadgeKind)>,
+) -> Vec<MenuEntry<Message>> {
     let mut v: Vec<MenuEntry<Message>> = Vec::new();
     let item = |icon: Icon, key: &str, kind: panel::Kind| -> MenuEntry<Message> {
         MenuItem::new(t!(key).into_owned(), Message::MenuPanel(kind))
@@ -161,12 +187,13 @@ pub fn menu_entries(
             .into()
     };
     for b in overflow {
-        v.push(
-            MenuItem::new(t!(b.key).into_owned(), Message::MenuPanel(b.kind.clone()))
-                .icon(b.icon)
-                .dot(b.dot)
-                .into(),
-        );
+        let item =
+            MenuItem::new(t!(b.key).into_owned(), Message::MenuPanel(b.kind.clone())).icon(b.icon);
+        let item = match threads {
+            Some(c) if b.kind == panel::Kind::Threads => item.badge(Some(c)),
+            _ => item.dot(b.dot),
+        };
+        v.push(item.into());
     }
     if !overflow.is_empty() {
         v.push(MenuEntry::Separator);
@@ -333,11 +360,75 @@ fn with_dot<'a>(button: Element<'a, Message>, dot: Option<BadgeKind>) -> Element
     iced::widget::stack![button, layer].into()
 }
 
+/// Room kept above and right of the Threads button for the counter pill,
+/// which sits over the icon's corner like Rocket.Chat's
+/// `translate(30%, -30%)`.
+const COUNTER_ROOM: f32 = 6.0;
+
+/// `button` with Rocket.Chat's counter pill on its top-right corner (content
+/// palette, `99+`); a stack like [`with_dot`], on a base padded by
+/// [`COUNTER_ROOM`] (bottom too, so the button stays centred in the row).
+fn with_counter<'a>(
+    button: Element<'a, Message>,
+    counter: Option<(u64, BadgeKind)>,
+) -> Element<'a, Message> {
+    let button = container(button).padding(
+        iced::Padding::ZERO
+            .top(COUNTER_ROOM)
+            .bottom(COUNTER_ROOM)
+            .right(COUNTER_ROOM),
+    );
+    let layer: Element<'a, Message> = match counter {
+        Some((n, kind)) => container(rustket_ui::widget::badge_in(
+            n,
+            kind,
+            BadgePlace::Content,
+            BadgeCap::At99,
+        ))
+        .width(Length::Fill)
+        .align_x(Alignment::End)
+        .into(),
+        None => iced::widget::space().into(),
+    };
+    iced::widget::stack![button, layer].into()
+}
+
+/// What an inline header button carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ButtonDecor {
+    /// Rocket.Chat's counter pill (the Threads button under that scheme).
+    Counter(Option<(u64, BadgeKind)>),
+    Dot(Option<BadgeKind>),
+}
+
+/// The decoration of inline button `hb` under `scheme`; `counter` is the
+/// Threads counter ([`threads_counter`]).
+fn button_decor(
+    scheme: IndicatorScheme,
+    hb: &HeaderButton,
+    counter: Option<(u64, BadgeKind)>,
+) -> ButtonDecor {
+    if scheme == IndicatorScheme::RocketChat && hb.kind == panel::Kind::Threads {
+        ButtonDecor::Counter(counter)
+    } else {
+        ButtonDecor::Dot(hb.dot)
+    }
+}
+
 /// The strongest of the dots of header buttons moved into the menu (the
 /// menu trigger shows it).
 fn strongest_dot(dots: impl Iterator<Item = BadgeKind>) -> Option<BadgeKind> {
     room_list::strongest(dots.map(crate::workspace::sidebar::core_kind))
         .map(crate::workspace::sidebar::widget_kind)
+}
+
+/// The dot of the menu trigger: the strongest dot of the buttons moved
+/// into the menu; none under Rocket.Chat (Q23).
+fn trigger_dot(scheme: IndicatorScheme, overflow: &[HeaderButton]) -> Option<BadgeKind> {
+    match scheme {
+        IndicatorScheme::Rustket => strongest_dot(overflow.iter().filter_map(|b| b.dot)),
+        IndicatorScheme::RocketChat => None,
+    }
 }
 
 /// Narrow headers drop the call button: "Video call" moves to the menu top.
@@ -913,10 +1004,22 @@ impl Header {
         // Omnichannel actions come first: the room buttons get the rest, and
         // the omnichannel actions that still do not fit go into the menu too.
         let mut omni = crate::omnichannel::room::header_actions(ctx);
-        let (inline, overflow, call) = layout_buttons(
-            &buttons(ws, &self.rid),
-            width - omni.len() as f32 * BUTTON_SLOT,
-        );
+        let room_buttons = buttons(ws, &self.rid);
+        // Rocket.Chat: a counter on Threads, and no dot on the menu trigger.
+        let rc = ctx.prefs.indicator_scheme == IndicatorScheme::RocketChat;
+        let counter = if rc {
+            threads_counter(&room_buttons, ws.subscription(&self.rid))
+        } else {
+            None
+        };
+        // The counter's room next to the Threads button.
+        let width = if rc && room_buttons.threads {
+            width - COUNTER_ROOM
+        } else {
+            width
+        };
+        let (inline, overflow, call) =
+            layout_buttons(&room_buttons, width - omni.len() as f32 * BUTTON_SLOT);
         let room_slots = inline.len() + 1 + usize::from(call);
         let omni_menu = omni.split_off(omni_inline(width, room_slots, omni.len()));
         let mut actions = row![].spacing(SPACE_1).align_y(Alignment::Center);
@@ -931,17 +1034,18 @@ impl Header {
         }
         for hb in inline {
             let active = ctx.panel == Some(&hb.kind);
-            let dot = hb.dot;
-            actions = actions.push(with_dot(
-                icon_button_with(
-                    hb.icon,
-                    Some(Message::TogglePanel(hb.kind)),
-                    t!(hb.key).into_owned(),
-                    active,
-                    32.0,
-                ),
-                dot,
-            ));
+            let decor = button_decor(ctx.prefs.indicator_scheme, &hb, counter);
+            let button = icon_button_with(
+                hb.icon,
+                Some(Message::TogglePanel(hb.kind)),
+                t!(hb.key).into_owned(),
+                active,
+                32.0,
+            );
+            actions = actions.push(match decor {
+                ButtonDecor::Counter(c) => with_counter(button, c),
+                ButtonDecor::Dot(d) => with_dot(button, d),
+            });
         }
 
         let trigger = with_dot(
@@ -952,7 +1056,7 @@ impl Header {
                 self.menu_open,
                 32.0,
             ),
-            strongest_dot(overflow.iter().filter_map(|b| b.dot)),
+            trigger_dot(ctx.prefs.indicator_scheme, &overflow),
         );
         let kebab: Element<'a, Message> = match self.confirm {
             Some(a) => popover(
@@ -973,7 +1077,12 @@ impl Header {
                 trigger,
                 &omni_entries(
                     omni_menu,
-                    with_call_entry(menu_entries(ws, &self.rid, &overflow), ws, &self.rid, call),
+                    with_call_entry(
+                        menu_entries_counted(ws, &self.rid, &overflow, counter),
+                        ws,
+                        &self.rid,
+                        call,
+                    ),
                 ),
                 self.menu_open,
                 Message::CloseMenu,
@@ -1418,5 +1527,129 @@ mod tests {
         );
         let b = buttons(&w, "r");
         assert!(!b.threads && b.threads_unread.is_none());
+    }
+
+    /// H1 under Rocket.Chat: the Threads counter counts unread threads
+    /// (Mention > GroupMention > Thread, R1–R4 ignored, 99+); moved into
+    /// the menu, its entry carries the pill and the trigger has no dot.
+    #[test]
+    fn rocketchat_threads_counter() {
+        use rustket_ui::theme::{IndicatorLook, with_indicator_look};
+        let mut w = ws("c", json!({}));
+        let counter = |w: &Workspace| threads_counter(&buttons(w, "r"), w.subscription("r"));
+        assert_eq!(counter(&w), None);
+        let mut sub = w.subscription("r").unwrap().clone();
+        sub.tunread = Some(vec!["t1".into(), "t2".into()]);
+        w.apply_subscription(Change::Updated, sub.clone());
+        assert_eq!(counter(&w), Some((2, BadgeKind::Thread)));
+        sub.tunread_group = Some(vec!["t2".into()]);
+        w.apply_subscription(Change::Updated, sub.clone());
+        assert_eq!(counter(&w), Some((2, BadgeKind::GroupMention)));
+        sub.tunread_user = Some(vec!["t1".into()]);
+        // R1–R4 change nothing.
+        sub.disable_notifications = Some(true);
+        sub.hide_unread_status = Some(true);
+        sub.hide_mention_status = Some(true);
+        sub.mute_group_mentions = Some(true);
+        w.apply_subscription(Change::Updated, sub.clone());
+        assert_eq!(counter(&w), Some((2, BadgeKind::Mention)));
+        sub.tunread = Some((0..100).map(|i| format!("t{i}")).collect());
+        w.apply_subscription(Change::Updated, sub.clone());
+        let c = counter(&w);
+        assert_eq!(c, Some((100, BadgeKind::Mention)));
+        assert_eq!(
+            rustket_ui::widget::badge_label_in(100, BadgeCap::At99),
+            "99+"
+        );
+
+        let b = buttons(&w, "r");
+        let w_narrow = 2.0 * SPACE_4 + 32.0 + 2.0 * SPACE_3 + MIN_TITLE_WIDTH + 2.0 * BUTTON_SLOT;
+        let (_, over, _) = layout_buttons(&b, w_narrow);
+        assert!(over.iter().any(|h| h.kind == panel::Kind::Threads));
+        let entries = menu_entries_counted(&w, "r", &over, c);
+        assert!(entries.iter().any(|e| matches!(e, MenuEntry::Item(i)
+            if matches!(i.on_select, Message::MenuPanel(panel::Kind::Threads))
+                && i.badge == Some((100, BadgeKind::Mention))
+                && i.dot.is_none())));
+        assert_eq!(trigger_dot(IndicatorScheme::RocketChat, &over), None);
+        // Rustket keeps its dot rule (here R2 hides it).
+        assert_eq!(
+            trigger_dot(IndicatorScheme::Rustket, &over),
+            b.threads_unread
+        );
+        let lit = [HeaderButton {
+            icon: Icon::MessageCircle,
+            key: "room_header.threads",
+            kind: panel::Kind::Threads,
+            dot: Some(BadgeKind::Thread),
+        }];
+        assert_eq!(
+            trigger_dot(IndicatorScheme::Rustket, &lit),
+            Some(BadgeKind::Thread)
+        );
+        assert_eq!(trigger_dot(IndicatorScheme::RocketChat, &lit), None);
+        // Inline: the Threads button takes the pill under RC only.
+        let pill = Some((3, BadgeKind::Mention));
+        assert_eq!(
+            button_decor(IndicatorScheme::RocketChat, &lit[0], pill),
+            ButtonDecor::Counter(pill)
+        );
+        assert_eq!(
+            button_decor(IndicatorScheme::Rustket, &lit[0], pill),
+            ButtonDecor::Dot(Some(BadgeKind::Thread))
+        );
+        let info = HeaderButton {
+            icon: Icon::Info,
+            key: "room_header.room_info",
+            kind: panel::Kind::Info,
+            dot: None,
+        };
+        assert_eq!(
+            button_decor(IndicatorScheme::RocketChat, &info, pill),
+            ButtonDecor::Dot(None)
+        );
+        assert!(
+            menu_entries(&w, "r", &over)
+                .iter()
+                .all(|e| !matches!(e, MenuEntry::Item(i) if i.badge.is_some()))
+        );
+
+        // The header builds with the pill, inline and in the menu.
+        let sid = rustket_core::ServerId("s".into());
+        let server = rocketchat::ServerUrl::parse("http://localhost:3000").unwrap();
+        let images = crate::images::Images::new(None);
+        let prefs = rustket_core::config::UiPrefs {
+            indicator_scheme: IndicatorScheme::RocketChat,
+            ..Default::default()
+        };
+        let ctx = ViewCtx {
+            server_id: &sid,
+            server: &server,
+            rid: "r",
+            workspace: &w,
+            images: &images,
+            prefs: &prefs,
+            connected: true,
+            panel: None,
+            now: std::time::Instant::now(),
+        };
+        let mut h = Header::new("r");
+        h.menu_open = true;
+        with_indicator_look(IndicatorLook::RocketChat, || {
+            let _ = h.bar(&ctx, 1200.0);
+            let _ = h.bar(&ctx, w_narrow);
+            let _ = with_counter(iced::widget::space().into(), c);
+        });
+
+        // No Threads button, no counter.
+        w.apply_setting(
+            Change::Updated,
+            Setting {
+                id: "Threads_enabled".into(),
+                value: json!(false),
+                ..Default::default()
+            },
+        );
+        assert_eq!(counter(&w), None);
     }
 }

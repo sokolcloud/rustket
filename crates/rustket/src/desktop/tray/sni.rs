@@ -30,7 +30,7 @@ impl ksni::Tray for RustketTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        super::super::icon::tray_pixmaps(self.state.level)
+        super::super::icon::tray_pixmaps_art(self.state.art)
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
