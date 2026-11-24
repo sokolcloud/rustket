@@ -364,6 +364,17 @@ pub(crate) fn row<'a>(
     .into()
 }
 
+/// Row `el` of message `mid` as a jump target: in a container with
+/// [`super::row_id`] so [`reveal`] finds it. Full width on purpose: a `lazy`
+/// row hints `Shrink`, and a `Shrink` container compresses its child, which
+/// then collapses to its side padding.
+pub(crate) fn anchored<'a, M: 'a>(el: Element<'a, M>, mid: &str) -> Element<'a, M> {
+    iced::widget::container(el)
+        .id(super::row_id(mid))
+        .width(Length::Fill)
+        .into()
+}
+
 /// Finds the bounds of a scrollable's viewport and content and of a row in it.
 struct Locate {
     scroll: iced::widget::Id,
@@ -635,6 +646,85 @@ pub(crate) fn with_jump_button<'a, M: Clone + 'a>(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The highlighted (jumped-to) row keeps the list width: wrapped in a
+    /// plain `container` it collapsed to its side padding and grew very
+    /// tall, so the timeline showed only a tinted strip until the highlight
+    /// ended.
+    #[test]
+    fn anchored_row_keeps_the_list_width() {
+        use iced::widget::{container, scrollable, space, text};
+        use iced_runtime::user_interface::{Cache, UserInterface};
+        use rustket_ui::widget::{MessageRowProps, keyed_list, message_row};
+
+        struct Find(iced::widget::Id, Option<Rectangle>);
+        impl Operation for Find {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn container(&mut self, id: Option<&iced::widget::Id>, bounds: Rectangle) {
+                if id == Some(&self.0) {
+                    self.1 = Some(bounds);
+                }
+            }
+        }
+        fn body() -> Element<'static, ()> {
+            message_row(MessageRowProps::new(
+                space().width(36).height(36),
+                "alice",
+                "12:00",
+                text("a message body of a few words"),
+            ))
+        }
+        // Like `row`: a lazy message row, with or without a separator.
+        fn lazy_row(n: u8, separator: bool) -> Element<'static, ()> {
+            lazy((n, separator), move |_| -> Element<'static, ()> {
+                if separator {
+                    iced::widget::column![unread_separator("unread"), body()]
+                        .width(Length::Fill)
+                        .into()
+                } else {
+                    body()
+                }
+            })
+            .into()
+        }
+        let bounds = |separator: bool, wrap: fn(Element<'static, ()>) -> Element<'static, ()>| {
+            let list = keyed_list::<u64, (), _, _>()
+                .width(Length::Fill)
+                .push(1, lazy_row(1, false))
+                .push(2, wrap(lazy_row(2, separator)))
+                .push(3, lazy_row(3, false));
+            let view: Element<'_, ()> = scrollable(list)
+                .anchor_bottom()
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+            let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+                rustket_ui::theme::font_regular(),
+                iced::Pixels(rustket_ui::theme::TEXT_BODY),
+            ));
+            let mut ui = UserInterface::build(
+                view,
+                iced::Size::new(600.0, 400.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            let mut find = Find(super::super::row_id("m2"), None);
+            ui.operate(&renderer, &mut find);
+            find.1.expect("row found")
+        };
+        let plain = |el| container(el).id(super::super::row_id("m2")).into();
+        for separator in [false, true] {
+            // The cause: a plain wrapper compresses the row.
+            let collapsed = bounds(separator, plain);
+            assert!(collapsed.width < 300.0, "{separator}: {collapsed:?}");
+            let fixed = bounds(separator, |el| anchored(el, "m2"));
+            assert!(fixed.width >= 580.0, "{separator}: {fixed:?}");
+            assert!(fixed.height < 100.0, "{separator}: {fixed:?}");
+        }
+        assert_eq!(bounds(true, plain).width, 40.0, "its side padding");
+    }
 
     /// Turning R4 on or off rebuilds the rows: their `@all` highlight
     /// depends on it.

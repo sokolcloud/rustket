@@ -469,7 +469,7 @@ impl Timeline {
             };
             let el = list::row(env, &common, r, flags);
             let el = if flags.selected {
-                container(el).id(row_id(&m.id)).into()
+                list::anchored(el, &m.id)
             } else {
                 el
             };

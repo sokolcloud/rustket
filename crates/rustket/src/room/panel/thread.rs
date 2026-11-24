@@ -931,7 +931,7 @@ impl Thread {
             let f = flags(m, r.sequential);
             let el = list::row(env, &common_, r, f).map(Msg::Item);
             let el = if f.selected {
-                container(el).id(row_id(&m.id)).into()
+                list::anchored(el, &m.id)
             } else {
                 el
             };
