@@ -7,16 +7,24 @@ over IPv4 and IPv6, and with fictional content only.
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | Rocket.Chat (same tag as `dev/docker-compose.yml`), MongoDB 7.0 replica set, Caddy |
+| `docker-compose.yml` | Rocket.Chat (same tag as `dev/docker-compose.yml`), MongoDB 7.0 replica set |
+| `docker-compose.override.yml` | Caddy (default mode); Compose loads it automatically |
 | `Caddyfile` | TLS reverse proxy, Let's Encrypt certificate for `$REVIEW_HOST` |
-| `.env.example` | Copy to `.env`: hostname, ACME email, image tags, review options |
+| `docker-compose.tunnel.yml` | [Tunnel mode](#tunnel-mode-cloudflare-tunnel): no Caddy, Rocket.Chat on `127.0.0.1` only |
+| `tunnel.sh` | Tunnel mode: the Cloudflare Tunnel, its DNS record and its systemd user unit |
+| `.env.example` | Copy to `.env`: proxy mode, hostname, ACME email, image tags, review options |
 | `setup.sh` | Starts the stack, creates the operator admin, applies settings, creates the review accounts, writes the review notes |
 | `seed.sh` | Fictional workspace content ("Quillmoor Labs") |
-| `lib.sh` | Helpers shared by both scripts |
+| `lib.sh` | Helpers shared by the scripts |
 
 Generated files, all `chmod 600` and git-ignored: `credentials.env` (every account and
 password), `admin.env` (the operator account Rocket.Chat creates on its first start),
 `review-notes.txt` (the App Store Connect review notes, filled in).
+
+The default described below is a VM with its own public addresses and Caddy. A host
+without public ports (a workstation, a NAT'ed box) can publish the same stack through a
+Cloudflare Tunnel instead: see [Tunnel mode](#tunnel-mode-cloudflare-tunnel), which
+replaces the firewall, DNS and Docker IPv6 requirements.
 
 ## Requirements
 
@@ -34,8 +42,11 @@ password), `admin.env` (the operator account Rocket.Chat creates on its first st
   - an `A` record to the VM's IPv4 address,
   - an `AAAA` record to the VM's IPv6 address,
   - if the zone has `CAA` records, one must allow `letsencrypt.org`.
-  - No CDN proxy, WAF or bot challenge in front (no Cloudflare orange cloud): the
-    app talks REST and WebSocket directly and cannot solve a challenge page.
+  - No CDN proxy, WAF or bot challenge in front (with Caddy, the record stays
+    "DNS only", no Cloudflare orange cloud: Caddy needs the direct connection for its
+    certificate). The app talks REST and WebSocket and cannot solve a challenge page;
+    tunnel mode goes through Cloudflare's proxy on purpose and turns the challenges
+    off for the hostname instead.
 - **Docker IPv6:** with Docker 27+ the `edge` network gets a private IPv6 subnet
   without further configuration, and published ports are forwarded over IPv6 with
   `ip6tables` (on by default; do not set `"ip6tables": false` in
@@ -83,12 +94,12 @@ Settings applied:
 | Moderation | bad-words filter on with `REVIEW_BAD_WORDS`; the moderation console permissions (`view-moderation-console`, `manage-moderation-actions`) kept on the admin role |
 | Omnichannel | enabled, manual routing (a queued chat waits for the agent), chats accepted with no agent online |
 | E2E | `E2E_Enable` = `REVIEW_E2E` (default true); not on by default for new DMs or groups |
-| Uploads | enabled, `FileUpload_MaxFileSize` = `REVIEW_MAX_UPLOAD_BYTES` (5 MB); Caddy caps bodies at 25 MB |
+| Uploads | enabled, `FileUpload_MaxFileSize` = `REVIEW_MAX_UPLOAD_BYTES` (5 MB); Caddy caps bodies at 25 MB (Cloudflare at 100 MB in tunnel mode) |
 
 Rocket.Chat's own defaults stay as they are for everything else, notably the REST rate
-limiter (Caddy passes the client address through `X-Forwarded-For`,
-`HTTP_FORWARDED_COUNT=1`, so rate limits and failed-login blocking see the real
-client).
+limiter (Caddy, or Cloudflare in tunnel mode, passes the client address through
+`X-Forwarded-For`, `HTTP_FORWARDED_COUNT=1`, so rate limits and failed-login blocking
+see the real client).
 
 `seed.sh` creates, as fictional users of a fictional company:
 
@@ -146,6 +157,125 @@ the queue as `review-agent`, unlock `secure-notes` with the E2E password. Afterw
 unblock `rex.hollis` as `reviewer` (a block outlives `--reset`, and rex's DM could not be
 seeded again), run `./seed.sh --reset` (new rooms and a new chat in the queue), repeat
 E2E step 3, and dismiss the dry-run reports in the moderation console.
+
+## Tunnel mode (Cloudflare Tunnel)
+
+For a host with no public address or open ports, e.g. a workstation behind NAT, when
+the hostname's zone is on Cloudflare. `cloudflared` on the host keeps outbound
+connections to Cloudflare; Cloudflare's edge terminates TLS (its certificate), serves
+IPv4, IPv6 and HTTP/3, and forwards requests for `$REVIEW_HOST` through the tunnel to
+Rocket.Chat on `127.0.0.1:$REVIEW_TUNNEL_PORT`. Nothing listens publicly, Caddy does not
+run, `ACME_EMAIL` and `ACME_CA` play no part, and the A/AAAA, CAA, firewall and Docker
+IPv6 requirements above do not apply. Rocket.Chat keeps `HTTP_FORWARDED_COUNT=1`:
+Cloudflare appends the address that connected to it to `X-Forwarded-For`, and
+`cloudflared` adds no hop, so the last entry is the real client
+(`docker-compose.tunnel.yml`).
+
+Requirements: Docker as above, `cloudflared` 2024 or later, a systemd user session with
+lingering on (`loginctl show-user "$USER" -p Linger` says `yes`, otherwise
+`sudo loginctl enable-linger "$USER"`: the tunnel then starts at boot and survives
+logout), and the Cloudflare account that holds the zone.
+
+```sh
+cp .env.example .env
+$EDITOR .env      # REVIEW_PROXY=tunnel, uncomment COMPOSE_FILE, REVIEW_HOST, REVIEW_SUPPORT_EMAIL
+                  # (REVIEW_TUNNEL_PORT=3010, REVIEW_TUNNEL_NAME=rustket-review by default)
+cloudflared tunnel login     # once: open the URL, pick the zone of REVIEW_HOST -> ~/.cloudflared/cert.pem
+./tunnel.sh       # tunnel, DNS record, ~/.cloudflared/<name>.yml, <name>.service
+./setup.sh
+./seed.sh
+```
+
+`tunnel.sh` (idempotent) reuses a tunnel named `REVIEW_TUNNEL_NAME` or creates it,
+routes `REVIEW_HOST` to it with a proxied CNAME to `<tunnel id>.cfargotunnel.com` (it
+stops if the hostname already has a record that points elsewhere: delete the leftover
+or rerun with `--overwrite-dns`), writes `~/.cloudflared/<name>.yml` (mode 600: the
+tunnel id, the credentials file, the ingress `REVIEW_HOST` → `http://127.0.0.1:<port>`,
+everything else 404), and installs and starts the systemd user unit
+`~/.config/systemd/user/<name>.service` (`cloudflared --no-autoupdate`, `Restart=always`).
+`./tunnel.sh status` shows the unit, the tunnel's connections and the local, public and
+WebSocket checks. The credentials file `~/.cloudflared/<tunnel id>.json` and `cert.pem`
+are secrets outside the repository; back them up with `credentials.env`. Plain
+`docker compose` commands in this README work unchanged because `COMPOSE_FILE` in `.env`
+selects the tunnel file; the scripts pass the files explicitly and stop when
+`COMPOSE_FILE` does not match `REVIEW_PROXY` (otherwise a plain `docker compose up -d`
+would start Caddy on ports 80 and 443 of this host).
+
+Cloudflare settings for the zone, in the dashboard (the app is not a browser and cannot
+solve a challenge or a JavaScript check; a challenged request fails with HTTP 403 and
+the header `cf-mitigated: challenge`):
+
+- **Security → Bots:** Bot Fight Mode off (on the Free plan it cannot be scoped to one
+  hostname); with Super Bot Fight Mode, "Definitely automated" and "Likely automated" set
+  to Allow, or a skip rule for the hostname.
+- **Security → Settings:** Security Level not "I'm Under Attack"; Browser Integrity Check
+  off for the hostname if anything is challenged (a configuration rule can do that).
+- **Security → WAF:** no custom rule, rate limiting rule or managed rule whose action is a
+  (managed, JS or interactive) challenge or block for this hostname; if the zone needs
+  one, add a skip rule for `http.host eq "<REVIEW_HOST>"` above it. Security → Events
+  shows what was challenged and by which rule.
+- **Network:** WebSockets on (the default); the app's DDP connection is a WebSocket to
+  `/websocket`. Cloudflare closes idle WebSockets after 100 s, which Rocket.Chat's and the
+  app's DDP pings stay well under.
+- **Caching → Cache Rules:** a rule for `http.host eq "<REVIEW_HOST>"` with the action
+  "Bypass cache" (available on Free). Rocket.Chat serves uploads with
+  `Cache-Control: max-age=31536000` and no `private`, and Cloudflare caches paths with
+  static extensions (`.png`, `.pdf`, ...) by default regardless of the app's auth headers
+  and cookies: without the rule a private upload, once fetched, is served from the edge
+  to anyone with its URL, even after a moderator deletes it. `./tunnel.sh status` warns
+  when a `/file-upload/….png` path is still cache-eligible.
+- **SSL/TLS:** Edge Certificates, Universal SSL active for the hostname (the default for
+  a first-level subdomain; deeper names need Advanced Certificate Manager). The origin
+  encryption mode does not matter for the tunnel.
+
+Verify from another network, with the app's User-Agent:
+
+```sh
+H=review-rustket.example.com
+UA='Rustket/0.2.11 (Macintosh; Mac OS X)'
+curl -4 -sS -A "$UA" "https://$H/api/info"; echo     # {"version":...,"success":true}
+curl -6 -sS -A "$UA" "https://$H/api/info"; echo     # same over IPv6
+curl -sS -o /dev/null -D - -A "$UA" "https://$H/api/info" | grep -i '^cf-mitigated'   # must print nothing
+curl --http1.1 -sS -o /dev/null -w '%{http_code}\n' --max-time 5 -A "$UA" \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "https://$H/websocket"    # 101 (then a timeout, fine)
+curl -sS -o /dev/null -D - -A "$UA" "https://$H/file-upload/x/probe.png" | grep -i '^cf-cache-status'
+                                                    # DYNAMIC or BYPASS, never HIT/MISS
+```
+
+Once an image is posted in a private room (after `seed.sh`, or by hand), copy its
+`/file-upload/<id>/<name>` URL and fetch it twice without credentials:
+`curl -sS -o /dev/null -D - "https://$H/file-upload/<id>/<name>" | grep -iE '^HTTP|^cf-cache-status'`
+must answer 403 both times, never with `cf-cache-status: HIT`.
+
+Then check that Rocket.Chat sees client addresses, not `127.0.0.1` or the Docker gateway:
+make one failed login from another network (`curl -sS -A "$UA" -H 'content-type:
+application/json' -d '{"user":"reviewer","password":"wrong"}' "https://$H/api/v1/login"`)
+and look at the address it recorded:
+
+```sh
+docker compose exec -T mongo mongosh rocketchat --quiet --eval \
+  'db.rocketchat_server_events.find({t: "failed-login-attempt"}, {ip: 1, ts: 1}).sort({ts: -1}).limit(3).toArray()'
+```
+
+`ip` must be that network's public address. If it is a `172.x`/`127.0.0.1` address,
+blocking by IP would lock everyone out after 50 failures: stop and fix
+`HTTP_FORWARDED_COUNT` before the review.
+
+The host serves the review, so while a review is open it must stay on and online:
+suspend and hibernate off (e.g. `sudo systemctl mask sleep.target suspend.target
+hibernate.target hybrid-sleep.target`, and no lid or idle suspend in the desktop's
+power settings), no reboots, no network changes. The change freeze, backups, uptime
+check and E2E steps below apply as they are; the uptime check also covers the tunnel
+(Cloudflare answers 502 or 530 when the host or the tunnel is down). Cloudflare renews
+the edge certificate by itself.
+
+Teardown: `./tunnel.sh down` stops and removes the unit and the config and keeps the
+tunnel and its DNS record; `./tunnel.sh down --delete-tunnel` also deletes the tunnel and
+its credentials file, and the DNS record too when `CLOUDFLARE_API_TOKEN` (Zone → DNS →
+Edit) is set in the environment (otherwise it says which record to delete in the
+dashboard: `cloudflared` cannot delete DNS records). Then `docker compose down -v` as in
+[Teardown](#teardown).
 
 ## Review notes
 
@@ -212,8 +342,9 @@ From "Submit for Review" (and from an external TestFlight submission) until the 
 
 - no `docker compose pull`, no image tag changes, no `up -d` after editing `.env`
   or `admin.env` (either would recreate containers);
-- no `setup.sh` or `seed.sh` runs, no password changes, no settings changes in the
-  admin UI;
+- no `setup.sh`, `seed.sh` or `tunnel.sh` runs, no password changes, no settings changes
+  in the admin UI, and in tunnel mode no changes to the zone's Cloudflare security
+  settings or `cloudflared` upgrades;
 - no host reboots: disable automatic reboots of unattended upgrades
   (`Unattended-Upgrade::Automatic-Reboot "false";`), apply kernel updates between reviews;
 - watch the uptime check; if the server must be touched, do it, verify with the dry-run
@@ -317,6 +448,6 @@ Review again. When it is no longer needed:
 docker compose down -v        # deletes containers, the database and the certificates
 ```
 
-then delete the DNS records, the VM and its snapshots, and `credentials.env` from wherever
+then delete the DNS records (tunnel mode: `./tunnel.sh down --delete-tunnel`), the VM and its snapshots, and `credentials.env` from wherever
 it was backed up. Remove the review accounts from App Store Connect's App Review
 Information.

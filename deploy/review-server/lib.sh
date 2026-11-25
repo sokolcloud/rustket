@@ -31,11 +31,44 @@ load_env_file() {
 # Loads .env and works out the server URL (REVIEW_SERVER overrides it).
 load_config() {
   load_env_file "$KIT_DIR/.env"
+  REVIEW_PROXY=${REVIEW_PROXY:-caddy}
+  [[ "$REVIEW_PROXY" == caddy || "$REVIEW_PROXY" == tunnel ]] ||
+    die "REVIEW_PROXY must be caddy or tunnel"
+  REVIEW_TUNNEL_PORT=${REVIEW_TUNNEL_PORT:-3010}
+  REVIEW_TUNNEL_NAME=${REVIEW_TUNNEL_NAME:-rustket-review}
+  [[ "$REVIEW_TUNNEL_PORT" =~ ^[0-9]+$ ]] && ((REVIEW_TUNNEL_PORT > 0 && REVIEW_TUNNEL_PORT < 65536)) ||
+    die "REVIEW_TUNNEL_PORT must be a port number"
+  [[ "$REVIEW_TUNNEL_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
+    die "REVIEW_TUNNEL_NAME may contain letters, digits, '.', '_' and '-' only"
   if [[ -z "${REVIEW_SERVER:-}" ]]; then
     [[ -n "${REVIEW_HOST:-}" ]] || die "REVIEW_HOST is not set (copy .env.example to .env)"
     REVIEW_SERVER="https://$REVIEW_HOST"
   fi
   SERVER=${REVIEW_SERVER%/}
+}
+
+# COMPOSE_FILE (.env or environment) must select the files of REVIEW_PROXY:
+# hand-typed `docker compose` commands (README.md) use it, and without it they
+# load docker-compose.override.yml, i.e. Caddy on 0.0.0.0:80/443 next to a
+# tunnel. Fatal, so the mistake shows up at deploy time.
+check_compose_file() {
+  local cf=${COMPOSE_FILE:-}
+  if [[ "$REVIEW_PROXY" == tunnel ]]; then
+    [[ "$cf" == *docker-compose.tunnel.yml* && "$cf" != *docker-compose.override.yml* ]] ||
+      die "REVIEW_PROXY=tunnel needs COMPOSE_FILE=docker-compose.yml:docker-compose.tunnel.yml in .env (see .env.example); without it plain 'docker compose' commands would start Caddy on ports 80/443"
+  elif [[ "$cf" == *docker-compose.tunnel.yml* ]]; then
+    die "COMPOSE_FILE in .env selects docker-compose.tunnel.yml but REVIEW_PROXY is $REVIEW_PROXY: comment COMPOSE_FILE out or set REVIEW_PROXY=tunnel"
+  fi
+}
+
+# Every docker compose call of these scripts: the base file plus the proxy
+# file for REVIEW_PROXY. Explicit -f flags override COMPOSE_FILE, which
+# serves hand-typed `docker compose` commands and must agree (above).
+compose() {
+  local proxy_file=docker-compose.override.yml
+  [[ "$REVIEW_PROXY" == tunnel ]] && proxy_file=docker-compose.tunnel.yml
+  check_compose_file
+  docker compose --project-directory "$KIT_DIR" -f "$KIT_DIR/docker-compose.yml" -f "$KIT_DIR/$proxy_file" "$@"
 }
 
 # A password a reviewer can type: GROUPS (default 4) groups of five characters
@@ -151,13 +184,17 @@ wait_for_server() {
       log "server is up"
       return 0
     fi
-    # 60: the certificate does not validate.
-    if ((rc == 60)) && [[ "${ACME_CA:-}" == *staging* ]]; then
+    # 60: the certificate does not validate. In tunnel mode Cloudflare
+    # provides the certificate and ACME_CA plays no part.
+    if ((rc == 60)) && [[ "$REVIEW_PROXY" == caddy && "${ACME_CA:-}" == *staging* ]]; then
       die "the certificate comes from the Let's Encrypt staging CA (ACME_CA in .env), which is not trusted: remove ACME_CA, run 'docker compose up -d caddy', then rerun this script"
     fi
     ((i % 6 == 0)) && log "still waiting ($((i * 5)) s, curl exit $rc)"
     sleep 5
   done
+  if [[ "$REVIEW_PROXY" == tunnel ]]; then
+    die "$SERVER did not answer within 10 minutes (tunnel down: ./tunnel.sh status; a Cloudflare challenge or block: README.md, \"Tunnel mode\"; or a container problem)"
+  fi
   die "$SERVER did not answer within 10 minutes (DNS, certificate or container problem; see README.md)"
 }
 

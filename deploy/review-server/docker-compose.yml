@@ -1,6 +1,11 @@
 # Always-on Rocket.Chat workspace for Mac App Store review (see README.md).
-# Sized for a 2 vCPU / 4 GB VM. Only Caddy publishes ports (80, 443 TCP and
-# 443 UDP for HTTP/3); MongoDB sits on an internal network without a port.
+# Sized for a 2 vCPU / 4 GB VM. MongoDB sits on an internal network without a
+# port. The proxy in front comes from a second file:
+# - docker-compose.override.yml (default, REVIEW_PROXY=caddy): Caddy with a
+#   Let's Encrypt certificate, the only service with published ports (80, 443
+#   TCP and 443 UDP for HTTP/3). Compose loads it automatically.
+# - docker-compose.tunnel.yml (REVIEW_PROXY=tunnel): no Caddy; Rocket.Chat on
+#   127.0.0.1 only, published through a Cloudflare Tunnel (tunnel.sh).
 name: rustket-review
 
 x-logging: &logging
@@ -55,8 +60,9 @@ services:
       ROOT_URL: https://${REVIEW_HOST:?set REVIEW_HOST in .env}
       PORT: "3000"
       DEPLOY_METHOD: docker
-      # Caddy is the only proxy in front: trust one X-Forwarded-For hop so rate
-      # limits and failed-login blocking see the client address.
+      # One proxy in front (Caddy, or Cloudflare's edge in tunnel mode): trust
+      # one X-Forwarded-For hop so rate limits and failed-login blocking see
+      # the client address.
       HTTP_FORWARDED_COUNT: "1"
       OVERWRITE_SETTING_Show_Setup_Wizard: completed
       NODE_OPTIONS: --max-old-space-size=1536
@@ -78,39 +84,9 @@ services:
           memory: 2G
     logging: *logging
 
-  caddy:
-    image: ${CADDY_IMAGE:-caddy:2-alpine}
-    restart: unless-stopped
-    depends_on: [rocketchat]
-    networks: [edge]
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      REVIEW_HOST: ${REVIEW_HOST:?set REVIEW_HOST in .env}
-      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
-      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    security_opt: ["no-new-privileges:true"]
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-    logging: *logging
-
 networks:
-  # Public side: IPv6 so Caddy sees real client addresses on AAAA connections.
+  # Public side: IPv6 so Caddy sees real client addresses on AAAA connections
+  # (tunnel mode turns it off, nothing public listens there).
   edge:
     enable_ipv6: true
   backend:
@@ -119,5 +95,3 @@ networks:
 volumes:
   mongo-data:
   mongo-config:
-  caddy-data:
-  caddy-config:

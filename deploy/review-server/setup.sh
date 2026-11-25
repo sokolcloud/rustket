@@ -26,6 +26,7 @@ done
 command -v curl >/dev/null || die "curl is required"
 command -v python3 >/dev/null || die "python3 is required"
 load_config
+((UP == 0)) || check_compose_file
 
 REVIEW_E2E=${REVIEW_E2E:-true}
 REVIEW_MAX_UPLOAD_BYTES=${REVIEW_MAX_UPLOAD_BYTES:-5242880}
@@ -104,8 +105,13 @@ write_admin_env
 if ((UP)); then
   [[ -f "$KIT_DIR/.env" ]] || die "$KIT_DIR/.env is missing (copy .env.example)"
   command -v docker >/dev/null || die "docker is required"
-  log "docker compose up -d"
-  docker compose --project-directory "$KIT_DIR" -f "$KIT_DIR/docker-compose.yml" up -d
+  log "docker compose up -d ($REVIEW_PROXY mode)"
+  compose up -d
+fi
+
+if [[ "$REVIEW_PROXY" == tunnel ]] && command -v systemctl >/dev/null &&
+  ! systemctl --user is-active --quiet "$REVIEW_TUNNEL_NAME.service"; then
+  log "warning: $REVIEW_TUNNEL_NAME.service is not running; run ./tunnel.sh first"
 fi
 
 wait_for_server
