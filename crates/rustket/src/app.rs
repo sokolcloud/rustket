@@ -197,7 +197,13 @@ pub struct App {
     pub focused: bool,
     pub handler_registered: bool,
     listener: Option<ListenerSlot>,
+    /// Links that wait for the accounts to start ([`Self::terms_accepted`],
+    /// `booted`).
     queued_links: Vec<String>,
+    /// The tokens read from the secret store while the terms wait for
+    /// acceptance (`App::start_workspaces`).
+    boot_tokens: Option<BTreeMap<ServerId, Option<String>>>,
+    /// The saved accounts were started (`App::start_workspaces`).
     booted: bool,
     open_urls: bool,
     pub secrets_mode: SecretsMode,
@@ -293,13 +299,19 @@ impl App {
         let mut locales =
             crate::locales::Locales::new(config_dir.as_deref().map(crate::locales::locales_dir));
         locales.reload(&config.ui.language);
+        // Pending terms keep the window on screen: they block everything
+        // else that would tell the user Rustket is waiting.
+        let start_minimized = config.ui.start_minimized && !crate::legal::terms_pending(&config);
         let desktop = if flags.desktop {
-            crate::desktop::Desktop::system(&config.ui)
+            crate::desktop::Desktop::system(&rustket_core::config::UiPrefs {
+                start_minimized,
+                ..config.ui.clone()
+            })
         } else {
             crate::desktop::Desktop::new()
         };
         // A window that starts hidden may never report losing the focus.
-        let focused = !(flags.desktop && config.ui.start_minimized);
+        let focused = !(flags.desktop && start_minimized);
         crate::room::emoji_picker::set_recent(&config.recent_emoji);
         let ui_state = config_dir.as_deref().map(UiState::load).unwrap_or_default();
         let writer = config_dir.clone().and_then(ConfigWriter::spawn);
@@ -352,6 +364,7 @@ impl App {
             handler_registered: false,
             listener: flags.listener.clone(),
             queued_links: flags.urls.clone(),
+            boot_tokens: None,
             booted: false,
             open_urls: flags.open_urls,
             secrets_mode: flags.secrets,
@@ -441,7 +454,18 @@ impl App {
         self.config.ui.zoom
     }
 
+    /// The terms of use are accepted. Until then Rustket does not talk to
+    /// any workspace (the accounts start on acceptance) and shows nothing
+    /// of them outside the terms screen: no notifications, no unread
+    /// counts in the title, tray or Dock, no links acted on.
+    pub(crate) fn terms_accepted(&self) -> bool {
+        !crate::legal::terms_pending(&self.config)
+    }
+
     pub fn title(&self) -> String {
+        if !self.terms_accepted() {
+            return t!("app.title").into_owned();
+        }
         match self.config.ui.indicator_scheme {
             IndicatorScheme::Rustket => window_title(self.unread_signal()),
             IndicatorScheme::RocketChat => window_title_rc(
@@ -522,14 +546,18 @@ impl App {
         use crate::screens::terms::Message as T;
         match m {
             T::Accept => {
+                if self.terms_accepted() {
+                    return Task::none();
+                }
                 crate::legal::accept_terms(&mut self.config);
                 let save = self.save_config();
+                let start = self.start_workspaces();
                 let focus = if matches!(self.screen, Screen::AddServer(_)) {
                     iced::widget::operation::focus(add_server::URL_INPUT_ID)
                 } else {
                     Task::none()
                 };
-                Task::batch([save, focus])
+                Task::batch([save, start, focus])
             }
             T::OpenTerms => self.open_url(crate::legal::TERMS_URL.to_owned()),
             T::OpenPrivacy => self.open_url(crate::legal::PRIVACY_URL.to_owned()),
@@ -688,6 +716,18 @@ impl App {
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
+        // The app's own keys and drops act on what the terms screen covers.
+        if !self.terms_accepted()
+            && matches!(
+                message,
+                Message::Shortcut(_)
+                    | Message::CatchUpKey(_)
+                    | Message::LaterKey(_)
+                    | Message::FileDropped(_)
+            )
+        {
+            return Task::none();
+        }
         match message {
             Message::Noop => Task::none(),
             Message::Terms(m) => self.on_terms(m),
@@ -947,7 +987,7 @@ impl App {
                 if urls.is_empty() {
                     return raise;
                 }
-                if !self.booted {
+                if !self.booted || !self.terms_accepted() {
                     self.queued_links.extend(urls);
                     return raise;
                 }
@@ -1388,6 +1428,7 @@ mod tests {
         );
         app.config.accepted_terms = 0;
         assert!(crate::legal::terms_pending(&app.config));
+        assert!(!app.terms_accepted());
         let _ = app.view();
         for nav in [Nav::AboutSettings, Nav::Settings, Nav::HelpSettings] {
             assert!(!app.menu_may_navigate(&nav), "hidden by the terms");
@@ -1397,5 +1438,6 @@ mod tests {
         let _ = app.update(crate::message::Message::Terms(T::Accept));
         assert_eq!(app.config.accepted_terms, crate::legal::TERMS_VERSION);
         assert!(!crate::legal::terms_pending(&app.config));
+        assert!(app.terms_accepted());
     }
 }

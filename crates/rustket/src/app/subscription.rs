@@ -65,7 +65,9 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subs = Vec::new();
-        for s in self.servers.values() {
+        // No workspace connection before the terms are accepted.
+        let live = self.terms_accepted();
+        for s in self.servers.values().filter(|_| live) {
             if let Some(spec) = s.spec() {
                 subs.push(
                     session::subscription(spec)
@@ -239,7 +241,7 @@ impl App {
                 _ => {}
             }
         }
-        for s in self.servers.values() {
+        for s in self.servers.values().filter(|_| live) {
             subs.push(
                 s.status_menu
                     .subscription()

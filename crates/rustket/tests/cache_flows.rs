@@ -74,6 +74,7 @@ fn start(dir: &Path) -> (App, ServerId) {
         AppConfig::load(&cfg_dir).unwrap().servers[0].id.clone()
     } else {
         let mut cfg = AppConfig::default();
+        rustket::legal::accept_terms(&mut cfg);
         // The process-wide indicator look never changes in this binary.
         cfg.ui.indicator_scheme = IndicatorScheme::Rustket;
         let mut entry = ServerEntry::new("http://localhost:3000", "Local");

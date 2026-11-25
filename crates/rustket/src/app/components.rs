@@ -757,8 +757,20 @@ impl App {
     pub(super) fn on_desktop(&mut self, m: desktop::Message) -> Task<Message> {
         let (task, requests) = self.desktop.update(m);
         let mut tasks = vec![task.map(Message::Desktop)];
+        let live = self.terms_accepted();
         for r in requests {
             tasks.push(match r {
+                // Nothing reaches the workspaces before the terms are accepted.
+                desktop::Request::OpenRoom { .. }
+                | desktop::Request::OpenThread { .. }
+                | desktop::Request::JoinCall { .. }
+                | desktop::Request::RoomStep(_)
+                | desktop::Request::SetStatus(_)
+                | desktop::Request::IdleTime(_)
+                    if !live =>
+                {
+                    Task::none()
+                }
                 desktop::Request::OpenRoom { server_id, rid } => self.go(Go::Room {
                     sid: server_id,
                     rid,
@@ -889,12 +901,19 @@ impl App {
     }
 
     /// The unread signal over all servers changed: tell the desktop layer.
+    /// Before the terms are accepted the desktop sees no account and no
+    /// unread (an offline cache may have loaded counts).
     pub(super) fn unread_hook(&mut self) -> Task<Message> {
-        let totals = self.unread_signal();
+        let live = self.terms_accepted();
+        let totals = if live {
+            self.unread_signal()
+        } else {
+            Default::default()
+        };
         let logged_in: Vec<_> = self
             .servers
             .values()
-            .filter(|s| s.is_logged_in())
+            .filter(|s| live && s.is_logged_in())
             .map(|s| (&s.id, &s.workspace))
             .collect();
         let state = self
@@ -903,8 +922,8 @@ impl App {
             .map(Message::Desktop);
         let scheme = self.config.ui.indicator_scheme;
         let rc = match scheme {
-            IndicatorScheme::Rustket => RcSignal::default(),
-            IndicatorScheme::RocketChat => self.rc_signal(),
+            IndicatorScheme::RocketChat if live => self.rc_signal(),
+            _ => RcSignal::default(),
         };
         if (totals, rc, scheme) == self.last_unread {
             return state;

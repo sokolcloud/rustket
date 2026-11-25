@@ -67,19 +67,61 @@ impl App {
                 Message::Go(Go::Nav(Nav::SecretStoreSettings)),
             ));
         }
-        let tokens: BTreeMap<ServerId, Option<String>> = s.tokens.into_iter().collect();
+        // A token of a signed-out account (its delete did not reach this
+        // store) is not a login. Decided now: the purge below may clear the
+        // pending deletion before the accounts start.
+        let tokens = s
+            .tokens
+            .into_iter()
+            .map(|(sid, token)| {
+                let signed_out = self
+                    .config
+                    .server(&sid)
+                    .and_then(|e| e.user_id.as_deref())
+                    .is_some_and(|uid| {
+                        self.config
+                            .is_secret_deletion_pending(&secret_key(&sid, uid))
+                    });
+                (sid, token.filter(|_| !signed_out))
+            })
+            .collect();
+        self.boot_tokens = Some(tokens);
+        tasks.push(self.purge_pending_secrets());
+        #[cfg(feature = "self-update")]
+        tasks.push(crate::updater::app::boot(self));
+        tasks.push(self.start_workspaces());
+        Task::batch(tasks)
+    }
+
+    /// Starts the saved accounts (sessions, login screens) and handles the
+    /// queued links, once the secret store is open and the terms are
+    /// accepted: from [`Self::on_secrets_ready`] or from accepting the
+    /// terms, whichever comes last. The accounts start only once.
+    pub(super) fn start_workspaces(&mut self) -> Task<Message> {
+        if !self.terms_accepted() {
+            return Task::none();
+        }
+        let mut tasks = Vec::new();
+        if let Some(tokens) = self.boot_tokens.take() {
+            tasks.push(self.start_accounts(tokens));
+        }
+        if self.booted {
+            let links = std::mem::take(&mut self.queued_links);
+            for l in links {
+                tasks.push(self.handle_link(&l));
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    fn start_accounts(&mut self, tokens: BTreeMap<ServerId, Option<String>>) -> Task<Message> {
+        let mut tasks = Vec::new();
         let sids: Vec<ServerId> = self.servers.keys().cloned().collect();
         for sid in sids {
             let uid = self.config.server(&sid).and_then(|e| e.user_id.clone());
             let token = tokens.get(&sid).cloned().flatten();
             match (uid, token) {
-                // A token of a signed-out account (its delete did not reach
-                // this store) is not a login.
-                (Some(uid), Some(token))
-                    if !self
-                        .config
-                        .is_secret_deletion_pending(&secret_key(&sid, &uid)) =>
-                {
+                (Some(uid), Some(token)) => {
                     if let Some(st) = self.servers.get_mut(&sid) {
                         st.restoring = false;
                         st.credentials = Some(Credentials::new(uid, token));
@@ -89,19 +131,15 @@ impl App {
                 _ => tasks.push(self.show_login(&sid, None)),
             }
         }
-        self.screen = if self.servers.is_empty() {
-            Screen::AddServer(Box::new(AddServer::new(false)))
-        } else {
-            Screen::Server
-        };
-        self.booted = true;
-        tasks.push(self.purge_pending_secrets());
-        #[cfg(feature = "self-update")]
-        tasks.push(crate::updater::app::boot(self));
-        let links = std::mem::take(&mut self.queued_links);
-        for l in links {
-            tasks.push(self.handle_link(&l));
+        // A screen opened over the terms (a toast's settings link) stays.
+        if matches!(self.screen, Screen::Loading) {
+            self.screen = if self.servers.is_empty() {
+                Screen::AddServer(Box::new(AddServer::new(false)))
+            } else {
+                Screen::Server
+            };
         }
+        self.booted = true;
         Task::batch(tasks)
     }
 }

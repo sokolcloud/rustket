@@ -993,6 +993,28 @@ mod tests {
         assert_eq!(app.rail_entries()[0].rc, RcSignal::default());
     }
 
+    /// Unread counts (from an offline cache, say) stay out of the title,
+    /// tray, Dock and window icon until the terms are accepted.
+    #[test]
+    fn no_unread_before_the_terms() {
+        use crate::desktop::tray::TrayArt;
+        use rustket_core::config::IndicatorScheme;
+        let mut app = app();
+        let sid = app.active.clone().unwrap();
+        let ws = &mut app.servers.get_mut(&sid).unwrap().workspace;
+        ws.apply_subscription(Change::Updated, sub("R1", 4, 2));
+        app.config.ui.indicator_scheme = IndicatorScheme::RocketChat;
+        app.config.accepted_terms = 0;
+        let _ = app.update(AppMsg::Noop);
+        assert_eq!(app.title(), "Rustket");
+        let tray = app.desktop.tray.state();
+        assert_eq!(tray.rc.unread, 0);
+        assert_eq!(tray.art, TrayArt::Plain);
+        let _ = app.update(AppMsg::Terms(crate::screens::terms::Message::Accept));
+        assert_eq!(app.title(), "Rustket (4)");
+        assert_eq!(app.desktop.tray.state().art, TrayArt::RcCount(4));
+    }
+
     /// `view` drawn by the CPU renderer at `size` (light theme), as RGBA.
     fn render(view: Element<'_, Message>, size: iced::Size) -> Vec<u8> {
         use iced::advanced::renderer::{Headless, Style};

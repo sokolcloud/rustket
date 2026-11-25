@@ -158,7 +158,9 @@ impl App {
     }
 
     fn title_bar(&self, interactive: bool) -> Element<'_, Message> {
-        let workspace_buttons = !self.servers.is_empty() && !matches!(self.screen, Screen::Loading);
+        let workspace_buttons = !self.servers.is_empty()
+            && !matches!(self.screen, Screen::Loading)
+            && self.terms_accepted();
         titlebar::view(titlebar::View {
             entries: if workspace_buttons {
                 self.rail_entries()

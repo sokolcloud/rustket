@@ -765,7 +765,21 @@ mod tests {
         signed_out: bool,
         backend: SecretBackend,
     ) -> (App, ServerId, Arc<MemoryStore>) {
+        started_with_terms(dir, uid, signed_out, backend, true)
+    }
+
+    /// [`started`] with the terms accepted earlier or still pending.
+    fn started_with_terms(
+        dir: &std::path::Path,
+        uid: Option<&str>,
+        signed_out: bool,
+        backend: SecretBackend,
+        accepted: bool,
+    ) -> (App, ServerId, Arc<MemoryStore>) {
         let mut cfg = AppConfig::default();
+        if accepted {
+            crate::legal::accept_terms(&mut cfg);
+        }
         let mut entry = ServerEntry::new(SERVER, "Local");
         entry.user_id = uid.map(str::to_owned);
         let sid = cfg.add_server(entry);
@@ -959,6 +973,131 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (app, sid, _) = started(dir.path(), Some("U1"), false, SecretBackend::Keyring);
         assert_eq!(signed_in(&app, &sid).as_deref(), Some("U1"));
+    }
+
+    /// A saved account does not start, and links wait, until the terms are
+    /// accepted; accepting starts them once, as a normal launch would.
+    #[tokio::test]
+    async fn saved_account_waits_for_the_terms() {
+        use crate::screens::terms::Message as T;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, sid, _) =
+            started_with_terms(dir.path(), Some("U1"), false, SecretBackend::Keyring, false);
+        assert!(!app.terms_accepted());
+        assert!(signed_in(&app, &sid).is_none());
+        assert!(app.servers[&sid].spec().is_none(), "no session");
+        assert!(app.servers[&sid].login.is_none(), "no login screen");
+        assert!(matches!(app.screen, Screen::Loading));
+        let _ = app.update(Message::DeepLinks(vec![saml_link("T")]));
+        assert_eq!(app.queued_links, [saml_link("T")]);
+
+        let _ = app.update(Message::Terms(T::Accept));
+        assert!(app.terms_accepted());
+        assert_eq!(signed_in(&app, &sid).as_deref(), Some("U1"));
+        assert!(matches!(app.screen, Screen::Server));
+        assert!(app.queued_links.is_empty(), "handled");
+        // Once: neither a second start nor a second accept restarts it.
+        app.servers.get_mut(&sid).unwrap().credentials = None;
+        let _ = app.start_workspaces();
+        let _ = app.update(Message::Terms(T::Accept));
+        assert!(signed_in(&app, &sid).is_none());
+        // Links now go straight through.
+        let _ = app.update(Message::DeepLinks(vec![saml_link("T2")]));
+        assert!(app.queued_links.is_empty());
+    }
+
+    /// A settings page opened over the terms (a toast's action) is still
+    /// there after accepting them.
+    #[tokio::test]
+    async fn screen_opened_over_the_terms_stays() {
+        use crate::screens::terms::Message as T;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, sid, _) =
+            started_with_terms(dir.path(), Some("U1"), false, SecretBackend::Keyring, false);
+        let _ = app.update(Message::Go(crate::message::Go::Nav(
+            crate::component::Nav::SecretStoreSettings,
+        )));
+        assert!(matches!(app.screen, Screen::Settings(_)));
+        let _ = app.update(Message::Terms(T::Accept));
+        assert_eq!(signed_in(&app, &sid).as_deref(), Some("U1"));
+        assert!(matches!(app.screen, Screen::Settings(_)));
+    }
+
+    /// A notification that shows with the terms accepted shows nothing while
+    /// they are pending.
+    #[tokio::test]
+    async fn no_notification_while_the_terms_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, sid, _) = started(dir.path(), Some("U1"), false, SecretBackend::Keyring);
+        app.servers.get_mut(&sid).unwrap().workspace.apply_me(
+            serde_json::from_value(
+                serde_json::json!({"_id": "U1", "username": "me", "status": "online"}),
+            )
+            .unwrap(),
+        );
+        let n: Box<rocketchat::session::DesktopNotification> = Box::new(
+            serde_json::from_value(serde_json::json!({
+                "title": "bob",
+                "text": "hello there",
+                "payload": {
+                    "_id": "m1", "rid": "r1",
+                    "sender": {"_id": "bobid", "username": "bob", "name": "Bob"},
+                    "type": "d",
+                    "message": {"msg": "hello there"}
+                }
+            }))
+            .unwrap(),
+        );
+        assert!(app.show_notification(&sid, n.clone(), false).units() > 0);
+        app.config.accepted_terms = 0;
+        assert_eq!(app.show_notification(&sid, n, false).units(), 0);
+    }
+
+    /// The terms accepted before the secret store opened: the accounts
+    /// start with it.
+    #[tokio::test]
+    async fn terms_accepted_before_the_secrets() {
+        use crate::screens::terms::Message as T;
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = AppConfig::default();
+        let mut entry = ServerEntry::new(SERVER, "Local");
+        entry.user_id = Some("U1".into());
+        let sid = cfg.add_server(entry);
+        cfg.save(dir.path()).unwrap();
+        let (mut app, _task) = App::new(Flags {
+            config_dir: Some(dir.path().to_owned()),
+            cache_dir: Some(dir.path().join("cache")),
+            secrets: SecretsMode::Memory,
+            ..Flags::default()
+        });
+        let _ = app.update(Message::Terms(T::Accept));
+        assert!(signed_in(&app, &sid).is_none());
+        let _ = app.update(Message::SecretsReady(SecretsReady {
+            store: Arc::new(SwitchableStore::new(
+                Box::new(MemoryStore::new()),
+                SecretBackend::Keyring,
+                None,
+            )),
+            tokens: vec![(sid.clone(), Some("T1".into()))],
+            notices: vec![],
+        }));
+        assert_eq!(signed_in(&app, &sid).as_deref(), Some("U1"));
+    }
+
+    /// A signed-out account whose secrets are purged while the terms wait
+    /// is still not restored from the token read at startup.
+    #[tokio::test]
+    async fn signed_out_account_stays_out_across_the_terms() {
+        use crate::screens::terms::Message as T;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, sid, _) =
+            started_with_terms(dir.path(), Some("U1"), true, SecretBackend::Keyring, false);
+        let keys = account_secret_keys(&sid, "U1").to_vec();
+        let _ = app.on_secrets_purged(&keys, None);
+        assert!(app.config.pending_secret_deletions.is_empty());
+        let _ = app.update(Message::Terms(T::Accept));
+        assert!(signed_in(&app, &sid).is_none());
+        assert!(app.servers[&sid].login.is_some());
     }
 
     /// F17: a sign-out stays recorded until the keyring deleted the secrets.
