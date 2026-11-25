@@ -43,6 +43,7 @@ pub mod timeline;
 pub mod typing;
 pub mod uikit;
 pub mod videoconf;
+pub mod word_filter;
 pub mod workspace;
 
 pub use config::{AppConfig, ServerId};

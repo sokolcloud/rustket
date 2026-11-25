@@ -244,7 +244,7 @@ mod tests {
     fn primary(dir: &Path) -> (Listener, Guard) {
         match acquire(dir, &[]).unwrap() {
             Instance::Primary(listener, guard) => (listener, guard),
-            Instance::Forwarded => panic!("first instance must be primary"),
+            _ => panic!("first instance must be primary"),
         }
     }
 
@@ -285,7 +285,7 @@ mod tests {
         let _squat = ServerOptions::new().create(&stale).unwrap();
         let (listener, _guard) = match acquire(&dir, &[AUTH_LINK.to_owned()]).unwrap() {
             Instance::Primary(listener, guard) => (listener, guard),
-            Instance::Forwarded => panic!("forwarded to a pipe without a primary"),
+            _ => panic!("forwarded to a pipe without a primary"),
         };
         assert_ne!(listener.name, stale);
         assert_eq!(pipe_name::current(&dir), Some(listener.name.clone()));

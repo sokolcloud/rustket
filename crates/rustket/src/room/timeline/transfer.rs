@@ -142,6 +142,8 @@ pub fn purge_media(dir: &Path, stale_only: bool) {
 }
 
 /// [`purge_media`] for the media directory next to `images_dir`, as a task.
+/// The stale purge also takes stale download staging files (a save cut off
+/// by quitting); a full one leaves them, a download may be writing there.
 pub fn purge_media_task<M: Send + 'static>(
     images_dir: Option<&Path>,
     stale_only: bool,
@@ -150,9 +152,16 @@ pub fn purge_media_task<M: Send + 'static>(
     let Some(dir) = media_dir(images_dir) else {
         return iced::Task::none();
     };
+    let staging = stale_only.then(staging_dir).flatten();
     iced::Task::perform(
         async move {
-            let _ = tokio::task::spawn_blocking(move || purge_media(&dir, stale_only)).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                purge_media(&dir, stale_only);
+                if let Some(staging) = staging {
+                    purge_media(&staging, true);
+                }
+            })
+            .await;
         },
         move |()| done,
     )
@@ -180,10 +189,39 @@ async fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Where downloads to a path the user picked are written first
+/// (`<cache>/downloads`): the App Sandbox grants the picked file only, not a
+/// `.part` file next to it.
+pub fn staging_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "rustket").map(|d| d.cache_dir().join("downloads"))
+}
+
+/// A fresh private staging file in `dir` (created 0700); staging files left
+/// for longer than [`MEDIA_TTL`] by an earlier run are deleted first.
+async fn staging_file(dir: &Path) -> std::io::Result<PathBuf> {
+    create_private_dir(dir).await?;
+    let stale = dir.to_owned();
+    let _ = tokio::task::spawn_blocking(move || purge_media(&stale, true)).await;
+    Ok(media_path(dir, "part"))
+}
+
+/// Moves the verified staging file to `dest` (the picked path, replaced):
+/// renamed when that works (an atomic replace on the same volume), else
+/// copied and the staging file deleted, also when the copy fails.
+async fn deliver(staging: &Path, dest: &Path) -> std::io::Result<()> {
+    if tokio::fs::rename(staging, dest).await.is_ok() {
+        return Ok(());
+    }
+    let copied = tokio::fs::copy(staging, dest).await.map(drop);
+    let _ = tokio::fs::remove_file(staging).await;
+    copied
+}
+
 /// Where a download goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
-    /// A path the user picked: written through a `.part` file.
+    /// A path the user picked: staged in [`staging_dir`] (else a `.part`
+    /// file next to it), checked, then moved there.
     Chosen,
     /// A new private media file: created exclusively, never replaced.
     Private,
@@ -256,14 +294,14 @@ async fn run(
     let dl = rest.download(url).await.map_err(net)?;
     let total = dl.content_length;
     let write_path = match target {
-        Target::Chosen => {
-            if let Some(dir) = path.parent() {
-                tokio::fs::create_dir_all(dir).await.map_err(io)?;
+        Target::Chosen => match staging_dir() {
+            Some(dir) => staging_file(&dir).await.map_err(io)?,
+            None => {
+                let mut part = path.as_os_str().to_owned();
+                part.push(".part");
+                PathBuf::from(part)
             }
-            let mut part = path.as_os_str().to_owned();
-            part.push(".part");
-            PathBuf::from(part)
-        }
+        },
         Target::Private => {
             if let Some(dir) = path.parent() {
                 create_private_dir(dir).await.map_err(io)?;
@@ -274,6 +312,8 @@ async fn run(
     let mut opts = tokio::fs::OpenOptions::new();
     opts.write(true);
     match target {
+        // The default mode: the picked file gets it from the staging file
+        // (whose directory is private).
         Target::Chosen => {
             opts.create(true).truncate(true);
         }
@@ -321,7 +361,7 @@ async fn run(
         return Err(crate::e2e::files::hash_mismatch_text());
     }
     if write_path != path {
-        tokio::fs::rename(&write_path, path).await.map_err(io)?;
+        deliver(&write_path, path).await.map_err(io)?;
     }
     Ok(())
 }
@@ -332,9 +372,11 @@ pub async fn open_path(path: PathBuf) -> Result<(), String> {
         tracing::debug!(error = %e, "opening a file failed");
         String::new()
     };
-    tokio::task::spawn_blocking(move || open::that_detached(&path).map_err(|e| quiet(&e)))
-        .await
-        .map_err(|e| quiet(&e))?
+    tokio::task::spawn_blocking(move || {
+        crate::desktop::open::open_path(&path).map_err(|e| quiet(&e))
+    })
+    .await
+    .map_err(|e| quiet(&e))?
 }
 
 #[cfg(test)]
@@ -384,6 +426,57 @@ mod tests {
         }
         assert_eq!(safe_file_name("\u{202E}.\u{202E}hidden"), "hidden");
         assert_eq!(safe_file_name("отчёт.pdf"), "отчёт.pdf");
+    }
+
+    /// A picked path is written from the staging directory: no file appears
+    /// next to it, the staging file is gone afterwards and an existing file
+    /// is replaced.
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn chosen_downloads_are_staged_in_the_cache() {
+        let cache = tempfile::tempdir().unwrap();
+        let picked = tempfile::tempdir().unwrap();
+        let staging = cache.path().join("downloads");
+        let part = staging_file(&staging).await.unwrap();
+        assert_eq!(part.parent(), Some(staging.as_path()));
+        assert_eq!(part.extension().and_then(|e| e.to_str()), Some("part"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&staging).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        std::fs::write(&part, b"new contents").unwrap();
+        let dest = picked.path().join("report.pdf");
+        std::fs::write(&dest, b"old").unwrap();
+        deliver(&part, &dest).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new contents");
+        assert!(!part.exists());
+        let names: Vec<_> = std::fs::read_dir(picked.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["report.pdf"]);
+        // A failed copy still removes the staging file.
+        let part = staging_file(&staging).await.unwrap();
+        std::fs::write(&part, b"x").unwrap();
+        assert!(
+            deliver(&part, &picked.path().join("missing/x.pdf"))
+                .await
+                .is_err()
+        );
+        assert!(!part.exists());
+        // Stale staging files of an earlier run go.
+        let old = staging.join("old.part");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - MEDIA_TTL - Duration::from_secs(60))
+            .unwrap();
+        staging_file(&staging).await.unwrap();
+        assert!(!old.exists());
     }
 
     #[test]

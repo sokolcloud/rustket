@@ -14,7 +14,10 @@ mod dbus;
 pub mod dock;
 pub mod icon;
 pub mod idle;
+pub mod menu_bar;
 pub mod notifications;
+pub mod open;
+pub mod sandbox;
 pub mod shortcuts;
 pub mod sound;
 pub mod tray;
@@ -41,6 +44,8 @@ pub enum Message {
     WindowHidden(bool),
     /// Alt(+Shift)+Up/Down.
     RoomStep(shortcuts::RoomStep),
+    /// The macOS main menu.
+    MenuBar(menu_bar::Message),
 }
 
 /// What the desktop layer asks the app to do.
@@ -56,7 +61,11 @@ pub enum Request {
     },
     /// Show / raise the window.
     ShowWindow,
-    /// Quit the app (tray menu).
+    /// Show the window on this page (macOS main menu).
+    Navigate(crate::component::Nav),
+    /// Open an http(s) URL in the browser (macOS Help menu).
+    OpenUrl(&'static str),
+    /// Quit the app (tray menu, macOS main menu).
     Quit,
     /// Session idle time, sampled every [`idle::POLL_INTERVAL`]: the app runs
     /// [`Desktop::idle_calls`] and sends the presence calls.
@@ -77,6 +86,9 @@ pub enum Request {
         server_id: ServerId,
         call_id: String,
     },
+    /// The test notification was not shown: the system does not allow the
+    /// app's notifications (macOS System Settings).
+    NotificationsBlocked,
 }
 
 /// A value of `me.settings.preferences`.
@@ -301,6 +313,17 @@ impl Desktop {
                 (Task::none(), Vec::new())
             }
             Message::RoomStep(step) => (Task::none(), vec![Request::RoomStep(step)]),
+            Message::MenuBar(menu_bar::Message::Init) => {
+                #[cfg(target_os = "macos")]
+                if self.enabled {
+                    menu_bar::install();
+                }
+                (Task::none(), Vec::new())
+            }
+            Message::MenuBar(menu_bar::Message::Item(item)) => match menu_bar::request(item) {
+                Some(r) => (Task::none(), vec![r]),
+                None => (self.hide_window(), Vec::new()),
+            },
         }
     }
 
@@ -310,8 +333,14 @@ impl Desktop {
             iced::Event::Keyboard(ev) => shortcuts::from_event(&ev).map(Message::RoomStep),
             _ => None,
         });
+        let menu_bar = if self.enabled {
+            menu_bar::subscription().map(Message::MenuBar)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             shortcuts,
+            menu_bar,
             self.tray.subscription().map(Message::Tray),
             self.idle.subscription().map(Message::Idle),
             self.notifications
@@ -485,6 +514,8 @@ impl Desktop {
             if locale != self.locale {
                 self.locale = locale;
                 self.tray.refresh();
+                #[cfg(target_os = "macos")]
+                menu_bar::refresh();
             }
         }
         Task::batch(tasks)

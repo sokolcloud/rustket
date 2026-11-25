@@ -345,6 +345,7 @@ impl State {
                     return self.load(cx);
                 }
             }
+            Msg::Marketplace if cfg!(feature = "mas") => {}
             Msg::Marketplace => {
                 let url = format!(
                     "{}/marketplace/explore",
@@ -362,18 +363,21 @@ impl State {
         if let Some(d) = &self.detail {
             return detail_view(d, can_manage);
         }
-        let mut col = column![title_row(
-            t!("admin.section.apps").into_owned(),
-            vec![
-                secondary_button(t!("admin.refresh"), Some(m(Msg::Reload)))
-                    .icon(Icon::RefreshCw)
-                    .into(),
+        let mut buttons = vec![
+            secondary_button(t!("admin.refresh"), Some(m(Msg::Reload)))
+                .icon(Icon::RefreshCw)
+                .into(),
+        ];
+        // No marketplace link in the App Store build (guideline 3.1.3).
+        if !cfg!(feature = "mas") {
+            buttons.push(
                 primary_button(t!("admin.apps.marketplace"), Some(m(Msg::Marketplace)))
                     .icon(Icon::ExternalLink)
                     .into(),
-            ]
-        )]
-        .spacing(SPACE_4);
+            );
+        }
+        let mut col =
+            column![title_row(t!("admin.section.apps").into_owned(), buttons)].spacing(SPACE_4);
         if let Some(c) = &self.count {
             col = col.push(muted(t!(
                 "admin.apps.count",

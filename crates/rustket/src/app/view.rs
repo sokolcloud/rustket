@@ -17,7 +17,7 @@ use rustket_ui::theme::{
 use rustket_ui::widget::{
     AvatarShape, AvatarSource, BannerKind, Toast, above, avatar, banner, dialog, empty_state,
     loading_placeholder, modal_keyed, primary_button, secondary_button, spinner, split,
-    status_strip, toasts_with, window_frame,
+    status_strip, toasts_with, window_frame, window_titled,
 };
 
 use super::{App, Modal, Screen};
@@ -65,6 +65,9 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        if crate::legal::terms_pending(&self.config) {
+            return self.terms_view();
+        }
         let base: Element<'_, Message> = match &self.screen {
             Screen::Loading => loading_placeholder(None),
             Screen::AddServer(a) => {
@@ -107,19 +110,41 @@ impl App {
             &self.toasts,
             Message::CloseToast,
         );
-        // Counts presses (title bar included) so text selections yield
-        // keyboard shortcuts to whatever was clicked since.
-        if !self.custom_chrome() {
-            return rustket_ui::widget::selectable::press_guard(content);
-        }
-        // Modals cover `content` only: the window can be moved, resized and
-        // closed with one open.
-        rustket_ui::widget::selectable::press_guard(window_frame(
-            self.title_bar(!blocked),
-            content,
-            self.titlebar.maximized,
-            |d| Message::TitleBar(titlebar::Message::Resize(d)),
-        ))
+        self.chrome(content, !blocked)
+    }
+
+    /// `content` in the window chrome. Counts presses (title bar included)
+    /// so text selections yield keyboard shortcuts to whatever was clicked
+    /// since. Under a native frame (macOS) a title row always runs below the
+    /// traffic lights. Modals cover `content` only: the window can be moved,
+    /// resized and closed with one open.
+    fn chrome<'a>(&'a self, content: Element<'a, Message>, enabled: bool) -> Element<'a, Message> {
+        let framed = if self.native_frame {
+            let title = if self.custom_chrome() {
+                self.title_bar(enabled)
+            } else {
+                titlebar::mac_strip(self.title()).map(Message::TitleBar)
+            };
+            window_titled(title, content)
+        } else if self.custom_chrome() {
+            window_frame(
+                self.title_bar(enabled),
+                content,
+                self.titlebar.maximized,
+                |d| Message::TitleBar(titlebar::Message::Resize(d)),
+            )
+        } else {
+            content
+        };
+        rustket_ui::widget::selectable::press_guard(framed)
+    }
+
+    /// The terms of use over the whole window, in the same chrome as the
+    /// rest of the app so the window can still be moved and closed.
+    fn terms_view(&self) -> Element<'_, Message> {
+        let page = crate::screens::terms::view().map(Message::Terms);
+        let content = toasts_with(page, Vec::new(), &self.toasts, Message::CloseToast);
+        self.chrome(content, false)
     }
 
     /// `page` after the left rail (system title bar) or alone (the
@@ -145,6 +170,7 @@ impl App {
             title: self.title(),
             maximized: self.titlebar.maximized,
             interactive,
+            native_frame: self.native_frame,
         })
         .map(Message::TitleBar)
     }

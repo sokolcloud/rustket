@@ -3,6 +3,12 @@
 //! draggable area, the settings gear and the window controls. Workspace
 //! clicks are reported as `rail::Message`s so they take the rail's path
 //! (navigation guards included). Strings: `locales/titlebar.yml`.
+//!
+//! macOS keeps the native frame ([`NATIVE_FRAME`]): the traffic lights sit
+//! over the left end of the row ([`TRAFFIC_LIGHTS_WIDTH`] stays free) and the
+//! window controls are not drawn. With the system title bar preference on,
+//! macOS shows the rail and a plain title strip under the traffic lights
+//! ([`mac_strip`]).
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -31,6 +37,13 @@ pub const DRAG_THRESHOLD: f32 = 4.0;
 pub const WORKSPACES_MAX_WIDTH: f32 = TITLE_BAR_ITEM * 12.0;
 /// Empty bar after the workspaces that always stays free to drag by.
 pub const DRAG_RESERVE: f32 = 48.0;
+/// The window keeps the system frame and its buttons in either layout
+/// (macOS: the traffic lights over a transparent title bar).
+pub const NATIVE_FRAME: bool = cfg!(target_os = "macos");
+/// Room on the left of the title row for the macOS traffic lights.
+pub const TRAFFIC_LIGHTS_WIDTH: f32 = 72.0;
+/// Height of the macOS title strip: the standard title bar's.
+pub const MAC_TITLE_STRIP_HEIGHT: f32 = 28.0;
 /// Smallest window size: the window controls, the gear, a few workspaces and
 /// the drag reserve fit in the title bar.
 pub const MIN_WINDOW_SIZE: iced::Size = iced::Size::new(480.0, 400.0);
@@ -184,6 +197,9 @@ pub struct View {
     /// buttons are inert (their presses do nothing, not even start a drag);
     /// dragging and the window controls still work.
     pub interactive: bool,
+    /// The system draws the window buttons ([`NATIVE_FRAME`]): room for
+    /// them on the left instead of our controls on the right.
+    pub native_frame: bool,
 }
 
 pub fn view<'a>(v: View) -> Element<'a, Message> {
@@ -289,25 +305,53 @@ pub fn view<'a>(v: View) -> Element<'a, Message> {
     } else {
         guard(space().into())
     };
-    let controls = window_controls(
-        v.maximized,
-        labels(),
-        Message::Minimize,
-        Message::ToggleMaximize,
-        Message::Close,
-    );
-    let bar = row![
-        space().width(SPACE_1),
-        middle,
-        gear,
-        space().width(SPACE_2),
-        controls,
-    ]
+    let bar = if v.native_frame {
+        row![
+            space().width(TRAFFIC_LIGHTS_WIDTH),
+            middle,
+            gear,
+            space().width(SPACE_2),
+        ]
+    } else {
+        let controls = window_controls(
+            v.maximized,
+            labels(),
+            Message::Minimize,
+            Message::ToggleMaximize,
+            Message::Close,
+        );
+        row![
+            space().width(SPACE_1),
+            middle,
+            gear,
+            space().width(SPACE_2),
+            controls,
+        ]
+    }
     .height(TITLE_BAR_HEIGHT)
     .align_y(Alignment::Center);
     // Buttons capture their presses; the rest of the bar moves the window.
     let area = mouse_area(bar).on_press(Message::Press);
     container(column![area, divider()])
+        .width(Length::Fill)
+        .style(style::container_rail)
+        .into()
+}
+
+/// The macOS title strip with the system title bar preference on: the
+/// window title on an area that moves the window, under the traffic lights.
+pub fn mac_strip<'a>(title: String) -> Element<'a, Message> {
+    let bar = container(
+        text(title)
+            .size(TEXT_SMALL)
+            .style(style::text_secondary)
+            .wrapping(text::Wrapping::None),
+    )
+    .padding(iced::Padding::ZERO.left(TRAFFIC_LIGHTS_WIDTH))
+    .center_x(Length::Fill)
+    .center_y(MAC_TITLE_STRIP_HEIGHT)
+    .clip(true);
+    container(column![mouse_area(bar).on_press(Message::Press), divider()])
         .width(Length::Fill)
         .style(style::container_rail)
         .into()
@@ -490,6 +534,7 @@ mod tests {
                 title: "Rustket".into(),
                 maximized,
                 interactive,
+                native_frame: false,
             })
         };
         let a = view_of(
@@ -556,7 +601,8 @@ mod tests {
         ws
     }
 
-    /// An app with signed-in server "One" showing room R1, custom title bar.
+    /// An app with signed-in server "One" showing room R1, custom title bar
+    /// and window frame (the Linux and Windows layout, on every platform).
     fn app() -> App {
         let (mut app, _) = App::new(Flags {
             ephemeral: true,
@@ -565,6 +611,8 @@ mod tests {
             ..Flags::default()
         });
         assert!(app.custom_chrome(), "custom title bar by default");
+        assert_eq!(app.native_frame, NATIVE_FRAME);
+        app.native_frame = false;
         let sid = add_server(&mut app, "One", 0, true);
         let s = app.servers.get_mut(&sid).unwrap();
         let mut ctx = crate::room::UpdateCtx {
@@ -832,6 +880,78 @@ mod tests {
         assert!(rail.iter().any(|m| m.contains("Rail(Select")), "{rail:?}");
     }
 
+    /// With a native frame (macOS) the system draws the window buttons and
+    /// edges: the title row keeps room for the traffic lights and has no
+    /// window controls or resize edges; with the system title bar a plain
+    /// strip above the rail moves the window.
+    #[test]
+    fn native_frame_layout() {
+        let mut app = app();
+        app.native_frame = true;
+        add_server(&mut app, "Two", 1, true);
+        let w = 1024.0;
+        let y = TITLE_BAR_HEIGHT / 2.0;
+        let has = |out: &[String], what: &str| out.iter().any(|m| m.contains(what));
+        let lights = click(&app, w, Point::new(TRAFFIC_LIGHTS_WIDTH / 2.0, y));
+        assert_eq!(lights, ["TitleBar(Press)"]);
+        let ws = click(
+            &app,
+            w,
+            Point::new(TRAFFIC_LIGHTS_WIDTH + TITLE_BAR_ITEM * 1.5, y),
+        );
+        assert!(has(&ws, "TitleBar(Rail(Select("), "{ws:?}");
+        let gear = click(&app, w, Point::new(w - 8.0 - 16.0, y));
+        assert_eq!(gear, ["TitleBar(Rail(Settings))"]);
+        let corner = click(&app, w, Point::new(w - 2.0, y));
+        assert_eq!(corner, ["TitleBar(Press)"], "no window controls");
+        let top = click(&app, w, Point::new(w / 2.0, 1.0));
+        assert_eq!(top, ["TitleBar(Press)"], "no resize edge");
+        let side = click(&app, w, Point::new(w - 1.0, 400.0));
+        assert!(!has(&side, "TitleBar"), "{side:?}");
+
+        app.config.ui.system_title_bar = true;
+        let _ = app.update(AppMsg::Settings(
+            crate::screens::settings::Message::SetSystemTitleBar(true),
+        ));
+        assert!(!app.custom_chrome());
+        let strip = click(&app, w, Point::new(w - 2.0, MAC_TITLE_STRIP_HEIGHT / 2.0));
+        assert_eq!(strip, ["TitleBar(Press)"]);
+        let rail = click(&app, w, Point::new(32.0, MAC_TITLE_STRIP_HEIGHT + 30.0));
+        assert!(has(&rail, "Rail(Select"), "{rail:?}");
+        app.config.ui.system_title_bar = false;
+        let _ = app.update(AppMsg::Settings(
+            crate::screens::settings::Message::SetSystemTitleBar(false),
+        ));
+        assert!(app.custom_chrome());
+    }
+
+    /// The first-launch terms screen keeps the native frame's chrome: a
+    /// title row below the traffic lights and no app-drawn resize edges.
+    #[test]
+    fn native_frame_terms() {
+        let mut app = app();
+        app.native_frame = true;
+        app.config.accepted_terms = 0;
+        let w = 1024.0;
+        let has = |out: &[String], what: &str| out.iter().any(|m| m.contains(what));
+        let bar = click(&app, w, Point::new(w / 2.0, TITLE_BAR_HEIGHT / 2.0));
+        assert_eq!(bar, ["TitleBar(Press)"]);
+        let top = click(&app, w, Point::new(w / 2.0, 1.0));
+        assert_eq!(top, ["TitleBar(Press)"], "no resize edge");
+        for p in [Point::new(1.0, 400.0), Point::new(w - 1.0, 400.0)] {
+            let side = click(&app, w, p);
+            assert!(!has(&side, "Resize"), "{side:?}");
+        }
+
+        app.config.ui.system_title_bar = true;
+        let _ = app.update(AppMsg::Settings(
+            crate::screens::settings::Message::SetSystemTitleBar(true),
+        ));
+        assert!(!app.custom_chrome());
+        let strip = click(&app, w, Point::new(w / 2.0, MAC_TITLE_STRIP_HEIGHT / 2.0));
+        assert_eq!(strip, ["TitleBar(Press)"]);
+    }
+
     /// The window title follows the scheme: Rustket counts mentions over all
     /// accounts, Rocket.Chat the active account's unread.
     #[test]
@@ -930,6 +1050,7 @@ mod tests {
                 title: "Rustket".into(),
                 maximized: false,
                 interactive: true,
+                native_frame: false,
             })
         };
         let shots = with_indicator_look(IndicatorLook::RocketChat, || {
@@ -993,6 +1114,7 @@ mod tests {
                 title: "Rustket".into(),
                 maximized: false,
                 interactive: true,
+                native_frame: false,
             })
         };
         let rail = || rail::view(entries());

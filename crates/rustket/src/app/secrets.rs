@@ -48,6 +48,15 @@ impl App {
         for n in &s.notices {
             tasks.push(self.toast(BannerKind::Warning, t!("app.secrets_notice"), n.clone()));
         }
+        if backend == SecretBackend::MemoryForced {
+            tasks.push(self.toast_with_action(
+                BannerKind::Warning,
+                t!("settings.secrets_keychain_title"),
+                t!("settings.secrets_keychain_memory"),
+                t!("app.keyring_file_action"),
+                Message::Go(Go::Nav(Nav::SecretStoreSettings)),
+            ));
+        }
         // Memory by policy is the user's choice: the settings card shows it.
         if backend == SecretBackend::File {
             tasks.push(self.toast_with_action(
@@ -160,7 +169,7 @@ impl App {
             return save;
         };
         self.secrets_switching = true;
-        let policy = FilePolicy::memory_only(on);
+        let policy = file_policy(on);
         let apply = Task::perform(
             async move {
                 let sw = store.clone();
@@ -200,6 +209,16 @@ impl App {
             tasks.push(self.save_config());
         }
         Task::batch(tasks)
+    }
+}
+
+/// The secret file policy of the `secrets_memory_only` preference: the Mac
+/// App Store flavor never writes the plaintext file, whatever it says.
+pub(super) fn file_policy(memory_only: bool) -> FilePolicy {
+    if cfg!(feature = "mas") {
+        FilePolicy::Forbidden
+    } else {
+        FilePolicy::memory_only(memory_only)
     }
 }
 
@@ -274,5 +293,22 @@ pub(super) fn open_secrets(
         store: Arc::new(store),
         tokens,
         notices,
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    /// The store flavor never falls back to the plaintext file; the others
+    /// follow the preference.
+    #[test]
+    fn file_policy_follows_the_flavor() {
+        let got = [file_policy(false), file_policy(true)];
+        if cfg!(feature = "mas") {
+            assert_eq!(got, [FilePolicy::Forbidden; 2]);
+        } else {
+            assert_eq!(got, [FilePolicy::Allowed, FilePolicy::Never]);
+        }
     }
 }

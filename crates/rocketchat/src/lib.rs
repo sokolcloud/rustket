@@ -15,7 +15,7 @@ pub mod tls;
 pub mod uikit;
 
 pub use date::RcDate;
-pub use error::{Error, MethodError, Result, TwoFactorChallenge, TwoFactorMethod};
+pub use error::{Error, LastOwnerRooms, MethodError, Result, TwoFactorChallenge, TwoFactorMethod};
 pub use rest::{Credentials, RestClient};
 pub use server_url::ServerUrl;
 pub use session::{

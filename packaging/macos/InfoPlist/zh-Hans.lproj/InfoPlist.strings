@@ -1,0 +1,2 @@
+/* Localized Info.plist values (packaging/macos/build.sh copies them into the bundle). */
+"NSLocalNetworkUsageDescription" = "Rustket 会连接你添加的工作区服务器，包括本地网络中的服务器。";

@@ -1,12 +1,15 @@
-//! About tab: updates (with the `self-update` feature) and the version.
+//! About tab: updates (with the `self-update` feature), the version, the
+//! developer, support and legal links (`crate::legal`).
 
 use iced::Element;
-use iced::widget::{row, text};
+use iced::widget::{button, row, text};
 use rust_i18n::t;
+use rustket_ui::style;
 use rustket_ui::theme::{SPACE_4, TEXT_BODY};
 
 use super::widgets::{caption, link, section};
-use super::{DOCS, Message, SettingsView, WEBSITE};
+use super::{Message, SettingsView};
+use crate::legal;
 
 pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
     let mut cards = Vec::new();
@@ -14,22 +17,62 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
     cards.push(updates_card(&v.config.ui, &v.updater));
     #[cfg(not(feature = "self-update"))]
     let _ = v;
+    let mut secondary = row![].spacing(SPACE_4);
+    if legal::third_party_notices().is_some() {
+        secondary = secondary.push(
+            button(
+                text(t!("legal.third_party").into_owned())
+                    .size(TEXT_BODY)
+                    .style(style::text_link),
+            )
+            .padding(0)
+            .style(style::button_link)
+            .on_press(Message::OpenNotices),
+        );
+    }
+    secondary = secondary.push(link(
+        t!("legal.rocket_chat_docs").into_owned(),
+        legal::ROCKET_CHAT_DOCS_URL,
+    ));
     cards.push(section(
         t!("settings.about").into_owned(),
         vec![
             text(t!("settings.version", version = env!("CARGO_PKG_VERSION")))
                 .size(TEXT_BODY)
                 .into(),
-            caption(t!("settings.about_text").into_owned()).into(),
+            caption(t!("legal.by_entity", entity = legal::LEGAL_ENTITY).into_owned()).into(),
+            caption(t!("legal.about_text").into_owned()).into(),
             row![
-                link(t!("settings.website").into_owned(), WEBSITE),
-                link(t!("settings.docs").into_owned(), DOCS),
+                link(t!("legal.support").into_owned(), legal::SUPPORT_URL),
+                link(t!("legal.privacy").into_owned(), legal::PRIVACY_URL),
+                link(t!("legal.terms").into_owned(), legal::TERMS_URL),
+            ]
+            .spacing(SPACE_4)
+            .into(),
+            secondary.into(),
+            caption(t!("legal.disclaimer").into_owned()).into(),
+            caption(legal::COPYRIGHT.to_owned()).into(),
+        ],
+    ));
+    cards
+}
+
+/// Contact and legal links (Help tab): Rustket's own support, and who to
+/// ask about a workspace.
+pub(super) fn support_card<'a>() -> Element<'a, Message> {
+    section(
+        t!("legal.support_title").into_owned(),
+        vec![
+            caption(t!("legal.support_help").into_owned()).into(),
+            row![
+                link(t!("legal.support").into_owned(), legal::SUPPORT_URL),
+                link(t!("legal.privacy").into_owned(), legal::PRIVACY_URL),
+                link(t!("legal.terms").into_owned(), legal::TERMS_URL),
             ]
             .spacing(SPACE_4)
             .into(),
         ],
-    ));
-    cards
+    )
 }
 
 /// The "Updates" card: automatic checks, pre-releases, how this copy is

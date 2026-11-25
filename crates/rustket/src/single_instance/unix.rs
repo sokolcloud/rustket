@@ -3,10 +3,12 @@
 //! The socket lives in a directory only the user can access:
 //! `$XDG_RUNTIME_DIR` (checked: owned by the user, mode 0700) or a private
 //! `<cache dir>/rustket/run` created with mode 0700 (the usual case on macOS,
-//! where `XDG_RUNTIME_DIR` is unset). There is no fallback to a shared
-//! directory; without a private one, or when the socket path is too long for
-//! `sun_path`, the app runs without single-instance. Both sides check that the
-//! peer is the same user.
+//! where `XDG_RUNTIME_DIR` is unset; on macOS also a private
+//! `$TMPDIR/rustket-run`). There is no fallback to a shared directory; without
+//! a private one the app runs without single-instance. When no socket path fits
+//! `sun_path` (the App Sandbox container's cache path can be too long), the
+//! instance lock alone is taken: the primary runs without forwarding and a
+//! second launch exits. Both sides check that the peer is the same user.
 
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -18,20 +20,34 @@ use iced::futures::SinkExt;
 
 use super::{Instance, MAX_PAYLOAD, encode_payload, parse_payload, read_payload};
 
-/// The socket path.
-pub type Endpoint = PathBuf;
+/// The socket's file name.
+const SOCKET: &str = "rustket.sock";
+/// The instance lock's file name, next to the socket.
+const LOCK: &str = "rustket.lock";
+
+/// Where the instance lock and the socket live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoint {
+    /// A private directory holding the lock.
+    pub dir: PathBuf,
+    /// `<dir>/rustket.sock`; `None`: too long for `sun_path`, lock only.
+    pub socket: Option<PathBuf>,
+}
+
 pub type Listener = UnixListener;
 
 /// Held by the primary instance: the instance lock. Dropping it removes the
 /// socket (only the lock holder may), then releases the lock.
 pub struct Guard {
-    path: PathBuf,
+    path: Option<PathBuf>,
     _lock: std::fs::File,
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -57,32 +73,61 @@ pub fn is_private_dir(path: &Path, uid: u32) -> bool {
         .is_ok_and(|m| m.is_dir() && m.uid() == uid && m.permissions().mode() & 0o077 == 0)
 }
 
-/// [`socket_path`] when it fits `sun_path`; `None` (with a warning) otherwise.
-pub fn endpoint() -> Option<PathBuf> {
-    let path = socket_path()?;
-    if !fits_sun_path(&path, SUN_PATH_LEN) {
-        tracing::warn!(path = %path.display(), "single-instance socket path is too long");
-        return None;
-    }
-    Some(path)
-}
-
-/// `$XDG_RUNTIME_DIR/rustket.sock` when that directory is private, else
-/// `<cache dir>/rustket/run/rustket.sock` (created 0700). `None` when neither
-/// is usable.
-pub fn socket_path() -> Option<PathBuf> {
+/// The endpoint in the first private directory whose socket path fits
+/// `sun_path`: `$XDG_RUNTIME_DIR` when it is private, else
+/// `<cache dir>/rustket/run` (created 0700), on macOS then
+/// `$TMPDIR/rustket-run`. When none fits, lock only in the first one. `None`
+/// when no private directory is usable.
+pub fn endpoint() -> Option<Endpoint> {
     let uid = current_uid().ok()?;
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
-        let dir = PathBuf::from(dir);
+    let xdg = move || {
+        let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?);
         if is_private_dir(&dir, uid) {
-            return Some(dir.join("rustket.sock"));
+            return Some(dir);
         }
         tracing::warn!("XDG_RUNTIME_DIR is not private; not using it");
+        None
+    };
+    let cache = move || {
+        let base = directories::ProjectDirs::from("", "", "rustket")?
+            .cache_dir()
+            .to_owned();
+        private_run_dir(&base, uid)
+    };
+    let tmp = move || tmp_run_dir(uid);
+    let candidates: [&dyn Fn() -> Option<PathBuf>; 3] = [&xdg, &cache, &tmp];
+    choose_endpoint(candidates.iter().filter_map(|f| f()), SUN_PATH_LEN)
+}
+
+/// `$TMPDIR/rustket-run`, created 0700 and checked (macOS, where `TMPDIR` is
+/// a per-user directory).
+fn tmp_run_dir(uid: u32) -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
     }
-    let base = directories::ProjectDirs::from("", "", "rustket")?
-        .cache_dir()
-        .to_owned();
-    private_run_dir(&base, uid).map(|d| d.join("rustket.sock"))
+    let dir =
+        PathBuf::from(std::env::var_os("TMPDIR").filter(|d| !d.is_empty())?).join("rustket-run");
+    crate::images::private_dir(&dir).ok()?;
+    is_private_dir(&dir, uid).then_some(dir)
+}
+
+/// The first of the private directories `dirs` whose socket path fits a
+/// `sun_path` of `limit` bytes; lock only in the first one when none does.
+/// Later directories are not looked at once one fits.
+pub fn choose_endpoint(dirs: impl IntoIterator<Item = PathBuf>, limit: usize) -> Option<Endpoint> {
+    let mut first = None;
+    for dir in dirs {
+        let socket = dir.join(SOCKET);
+        if fits_sun_path(&socket, limit) {
+            return Some(Endpoint {
+                dir,
+                socket: Some(socket),
+            });
+        }
+        tracing::warn!(path = %socket.display(), "single-instance socket path is too long");
+        first.get_or_insert(dir);
+    }
+    first.map(|dir| Endpoint { dir, socket: None })
 }
 
 /// `<base>/run`, created with mode 0700 and checked.
@@ -109,20 +154,20 @@ fn forward(path: &Path, urls: &[String]) -> io::Result<()> {
 /// An exclusive lock on `rustket.lock` next to the socket decides who is
 /// primary, so two simultaneous launches never both run and nobody removes a
 /// socket another instance just bound. The directory must be private and the
-/// socket owned by this user.
-pub fn acquire(path: &Path, urls: &[String]) -> io::Result<Instance> {
+/// socket owned by this user. Without a socket the lock alone decides:
+/// [`Instance::LockOnly`] or [`Instance::AlreadyRunning`].
+pub fn acquire(endpoint: &Endpoint, urls: &[String]) -> io::Result<Instance> {
     use std::os::unix::fs::OpenOptionsExt;
     let uid = current_uid()?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("socket path has no directory"))?;
+    let parent = endpoint.dir.as_path();
     if !is_private_dir(parent, uid) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "socket directory is not private",
         ));
     }
-    if let Ok(meta) = std::fs::symlink_metadata(path)
+    if let Some(path) = &endpoint.socket
+        && let Ok(meta) = std::fs::symlink_metadata(path)
         && meta.uid() != uid
     {
         return Err(io::Error::new(
@@ -136,7 +181,17 @@ pub fn acquire(path: &Path, urls: &[String]) -> io::Result<Instance> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .open(parent.join("rustket.lock"))?;
+        .open(parent.join(LOCK))?;
+    let Some(path) = endpoint.socket.as_deref() else {
+        return match lock.try_lock() {
+            Ok(()) => Ok(Instance::LockOnly(Guard {
+                path: None,
+                _lock: lock,
+            })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(Instance::AlreadyRunning),
+            Err(std::fs::TryLockError::Error(e)) => Err(e),
+        };
+    };
     // The primary may still be binding right after taking the lock: retry.
     for _ in 0..30 {
         match lock.try_lock() {
@@ -148,7 +203,7 @@ pub fn acquire(path: &Path, urls: &[String]) -> io::Result<Instance> {
                 let listener = UnixListener::bind(path)?;
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
                 let guard = Guard {
-                    path: path.to_owned(),
+                    path: Some(path.to_owned()),
                     _lock: lock,
                 };
                 return Ok(Instance::Primary(listener, guard));
@@ -248,11 +303,19 @@ mod tests {
         (dir, run)
     }
 
+    /// The endpoint with the socket `path`.
+    fn ep(path: &Path) -> Endpoint {
+        Endpoint {
+            dir: path.parent().unwrap().to_owned(),
+            socket: Some(path.to_owned()),
+        }
+    }
+
     #[test]
     fn forwards_to_primary() {
         let (_d, run) = private_tmp();
         let path = run.join("rustket.sock");
-        let Instance::Primary(listener, guard) = acquire(&path, &[]).unwrap() else {
+        let Instance::Primary(listener, guard) = acquire(&ep(&path), &[]).unwrap() else {
             panic!("first instance must be primary");
         };
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -260,7 +323,11 @@ mod tests {
         let p2 = path.clone();
         let client = std::thread::spawn(move || {
             matches!(
-                acquire(&p2, &["rocketchat://room?host=a&rid=1".into(), "x".into()]).unwrap(),
+                acquire(
+                    &ep(&p2),
+                    &["rocketchat://room?host=a&rid=1".into(), "x".into()]
+                )
+                .unwrap(),
                 Instance::Forwarded
             )
         });
@@ -281,7 +348,7 @@ mod tests {
         } // dropped: file stays, nobody listens
         assert!(path.exists());
         assert!(matches!(
-            acquire(&path, &[]).unwrap(),
+            acquire(&ep(&path), &[]).unwrap(),
             Instance::Primary(..)
         ));
     }
@@ -292,8 +359,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = dir.path().join("rustket.sock");
-        assert!(acquire(&path, &[]).is_err());
-        assert!(acquire(Path::new("/tmp/rustket-test.sock"), &[]).is_err());
+        assert!(acquire(&ep(&path), &[]).is_err());
+        assert!(acquire(&ep(Path::new("/tmp/rustket-test.sock")), &[]).is_err());
         let uid = current_uid().unwrap();
         assert!(!is_private_dir(Path::new("/tmp"), uid));
         let (_d, run) = private_tmp();
@@ -311,11 +378,63 @@ mod tests {
         assert_eq!(current_uid().unwrap(), uid);
     }
 
+    /// The App Sandbox container's cache path is one byte too long for
+    /// macOS's `sun_path` with a five-letter user name; `$TMPDIR` fits.
+    #[test]
+    fn container_paths_fall_back_to_tmpdir_or_lock_only() {
+        let cache = PathBuf::from(
+            "/Users/sokol/Library/Containers/io.github.sokolcloud.rustket/Data/Library/Caches/rustket/run",
+        );
+        assert_eq!(cache.join(SOCKET).as_os_str().len(), 105);
+        let tmp = PathBuf::from("/var/folders/9x/abcdefgh1234567_ijklmnop0000gn/T/rustket-run");
+        let e = choose_endpoint([cache.clone(), tmp.clone()], 104).unwrap();
+        assert_eq!(e.dir, tmp);
+        assert_eq!(e.socket, Some(tmp.join(SOCKET)));
+        // Nothing fits: lock only, in the first directory.
+        let e = choose_endpoint([cache.clone()], 104).unwrap();
+        assert_eq!(
+            e,
+            Endpoint {
+                dir: cache.clone(),
+                socket: None
+            }
+        );
+        // Linux's longer `sun_path` fits the same path.
+        assert!(choose_endpoint([cache], 108).unwrap().socket.is_some());
+        assert!(choose_endpoint(Vec::new(), 104).is_none());
+    }
+
+    /// Lock only: the first instance runs without a listener, the second
+    /// exits; once the first is gone the next one is primary again.
+    #[test]
+    fn lock_only_primary() {
+        let (_d, run) = private_tmp();
+        let e = Endpoint {
+            dir: run.clone(),
+            socket: None,
+        };
+        let Instance::LockOnly(guard) = acquire(&e, &[]).unwrap() else {
+            panic!("lock-only primary expected");
+        };
+        let e2 = e.clone();
+        let second = std::thread::spawn(move || acquire(&e2, &["x".into()]).unwrap());
+        assert!(matches!(second.join().unwrap(), Instance::AlreadyRunning));
+        drop(guard);
+        assert!(run.join(LOCK).exists() && !run.join(SOCKET).exists());
+        assert!(matches!(acquire(&e, &[]).unwrap(), Instance::LockOnly(_)));
+    }
+
     #[test]
     fn sun_path_limit() {
         // macOS: 104 bytes including the NUL.
         let typical = Path::new("/Users/someone/Library/Caches/rustket/run/rustket.sock");
         assert!(fits_sun_path(typical, 104));
+        // The App Sandbox container moves the cache directory.
+        let container = Path::new(
+            "/Users/sokol/Library/Containers/io.github.sokolcloud.rustket/Data/Library/Caches/rustket/run/rustket.sock",
+        );
+        assert!(!fits_sun_path(container, 104));
+        assert!(fits_sun_path(container, 108));
         let at_limit = PathBuf::from(format!("/{}", "a".repeat(102)));
         assert!(fits_sun_path(&at_limit, 104));
         let over = PathBuf::from(format!("/{}", "a".repeat(103)));
@@ -333,7 +452,7 @@ mod tests {
     async fn async_listener_receives_arguments() {
         let (_d, run) = private_tmp();
         let path = run.join("rustket.sock");
-        let Instance::Primary(listener, _guard) = acquire(&path, &[]).unwrap() else {
+        let Instance::Primary(listener, _guard) = acquire(&ep(&path), &[]).unwrap() else {
             panic!("primary expected");
         };
         let (tx, mut rx) = iced::futures::channel::mpsc::channel(4);
@@ -341,7 +460,7 @@ mod tests {
         // A silent client must not block the next one.
         let _idle = tokio::net::UnixStream::connect(&path).await.unwrap();
         let p = path.clone();
-        tokio::task::spawn_blocking(move || acquire(&p, &["rocketchat://a".into()]).unwrap())
+        tokio::task::spawn_blocking(move || acquire(&ep(&p), &["rocketchat://a".into()]).unwrap())
             .await
             .unwrap();
         let got = tokio::time::timeout(
@@ -365,7 +484,7 @@ mod tests {
                 let (p, b) = (path.clone(), barrier.clone());
                 std::thread::spawn(move || {
                     b.wait();
-                    match acquire(&p, &[format!("arg{i}")]).unwrap() {
+                    match acquire(&ep(&p), &[format!("arg{i}")]).unwrap() {
                         Instance::Primary(l, guard) => {
                             // Serve the others, then report.
                             let mut got = Vec::new();
@@ -376,6 +495,9 @@ mod tests {
                             Some(got)
                         }
                         Instance::Forwarded => None,
+                        Instance::LockOnly(_) | Instance::AlreadyRunning => {
+                            panic!("the socket fits")
+                        }
                     }
                 })
             })

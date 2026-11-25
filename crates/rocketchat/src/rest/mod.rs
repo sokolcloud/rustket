@@ -31,9 +31,11 @@ pub use livechat::{
     AgentQuery, CannedResponseQuery, DepartmentQuery, LivechatPage, LivechatRoomsQuery,
 };
 pub use messages::{HistoryCursor, HistoryOptions};
-pub use rooms::{CreateRoom, RoomMembersOptions};
+pub use rooms::{
+    CreateRoom, IM_BLOCK_USER_SINCE, RoomMembersOptions, block_user_method, im_block_user_body,
+};
 pub use teams::{ChildKind, CreateTeam, MemberFilter, Page, TeamRef};
-pub use users::UserLookup;
+pub use users::{UserLookup, delete_own_account_body};
 
 use std::fmt;
 use std::sync::{Arc, RwLock};

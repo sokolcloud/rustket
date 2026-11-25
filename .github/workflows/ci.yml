@@ -33,7 +33,10 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # Release builds enable the self-updater; lint and test it too.
       - run: cargo clippy --locked -p rustket --all-targets --features self-update -- -D warnings
+      # cfg hygiene of the Mac App Store flavor (.github/workflows/app-store.yml).
+      - run: cargo clippy --locked --workspace --all-targets --features rustket/mas -- -D warnings
       - run: bash -n packaging/release-notes.sh
+      - run: bash -n packaging/macos/build.sh
       - name: Test
         shell: bash
         run: |
@@ -104,12 +107,16 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets --target x86_64-apple-darwin -- -D warnings
       - run: cargo clippy --locked -p rustket --all-targets --features self-update -- -D warnings
       - run: cargo clippy --locked -p rustket --all-targets --features self-update --target x86_64-apple-darwin -- -D warnings
+      # The Mac App Store flavor (.github/workflows/app-store.yml).
+      - run: cargo clippy --locked --workspace --all-targets --features rustket/mas -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets --features rustket/mas --target x86_64-apple-darwin -- -D warnings
       - name: Test
         shell: bash
         run: |
           set -o pipefail
           cargo test --locked --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test.log"
           cargo test --locked -p rustket --features self-update --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/test.log"
+          cargo test --locked --workspace --features rustket/mas --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/test.log"
       - name: Annotate test failures
         if: failure()
         shell: bash

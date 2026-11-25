@@ -133,7 +133,7 @@ Privacy & Security → Open Anyway**. Alternatively remove the quarantine flag:
 xattr -dr com.apple.quarantine /Applications/Rustket.app
 ```
 
-Third-party licenses are in `Rustket.app/Contents/Resources/THIRD-PARTY-NOTICES`.
+Third-party licenses are in `Rustket.app/Contents/Resources/THIRD-PARTY-NOTICES.txt`.
 
 ### Build from source
 

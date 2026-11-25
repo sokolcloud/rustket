@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/meteor-ddp", "crates/rocketchat", "crates/rustket-core", "crates/rustket", "crates/rustket-ui"]
+# Patched dependencies (vendor/*/README.rustket.md) are not workspace members.
+exclude = ["vendor/winit"]
 
 [workspace.package]
 version = "0.2.11"
@@ -26,3 +28,8 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 panic = "unwind"
+
+# winit without the private CGS* symbols the Mac App Store rejects (guideline
+# 2.5.1); vendor/winit/README.rustket.md has the diff and when to drop it.
+[patch.crates-io]
+winit = { path = "vendor/winit" }

@@ -1,0 +1,2 @@
+/* Localized Info.plist values (packaging/macos/build.sh copies them into the bundle). */
+"NSLocalNetworkUsageDescription" = "Rustket เชื่อมต่อกับเซิร์ฟเวอร์ของเวิร์กสเปซที่คุณเพิ่ม รวมถึงเซิร์ฟเวอร์ในเครือข่ายท้องถิ่นของคุณ";

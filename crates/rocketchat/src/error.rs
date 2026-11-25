@@ -116,6 +116,16 @@ impl std::fmt::Display for MethodError {
     }
 }
 
+/// `details` of a `user-last-owner` error: room names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LastOwnerRooms {
+    /// Rooms where another member becomes owner.
+    pub should_change_owner: Vec<String>,
+    /// Rooms that are removed (the user is their only member).
+    pub should_be_removed: Vec<String>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("HTTP request failed: {0}")]
@@ -241,6 +251,33 @@ impl Error {
             self.api_error_code(),
             Some("error-duplicate-channel-name" | "error-archived-duplicate-name")
         )
+    }
+
+    /// Unknown REST endpoint (an older server): HTTP 404.
+    pub fn is_endpoint_not_found(&self) -> bool {
+        matches!(
+            self,
+            Error::Status { status: 404, .. } | Error::Api { status: 404, .. }
+        )
+    }
+
+    /// `user-last-owner` of `users.deleteOwnAccount`: the user is the last
+    /// owner of rooms (names) that would change owner or be removed.
+    pub fn last_owner_rooms(&self) -> Option<LastOwnerRooms> {
+        let details = match self {
+            Error::Api {
+                error_type,
+                details,
+                ..
+            } if error_type.as_deref() == Some("user-last-owner") => details.as_ref(),
+            Error::Method(m) if m.code().as_deref() == Some("user-last-owner") => {
+                m.details.as_ref()
+            }
+            _ => return None,
+        };
+        Some(details.map_or_else(LastOwnerRooms::default, |d| {
+            serde_json::from_value(d.clone()).unwrap_or_default()
+        }))
     }
 
     pub fn is_unauthorized(&self) -> bool {

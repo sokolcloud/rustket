@@ -3,6 +3,7 @@
 //! (`account.*`).
 
 pub mod api;
+pub mod delete;
 pub mod e2e;
 pub mod preferences;
 pub mod profile;
@@ -58,6 +59,8 @@ pub enum Message {
     Profile(profile::Msg),
     Prefs(preferences::Msg),
     Security(security::Msg),
+    /// "Delete my account" (Security tab).
+    Delete(delete::Msg),
     Tokens(tokens::Msg),
     Tfa(two_factor::Msg),
     /// A call that may ask for a second factor finished.
@@ -140,6 +143,7 @@ impl Account {
             Message::Profile(m) => self.profile.update(m, ctx),
             Message::Prefs(m) => self.prefs.update(m, ctx),
             Message::Security(m) => self.security.update(m, ctx),
+            Message::Delete(m) => self.security.delete.update(m, ctx),
             Message::Tokens(m) => self.tokens.update(m, ctx),
             Message::Tfa(m) => self.on_prompt(m, ctx),
             Message::Guarded(op, r) => match r {

@@ -87,11 +87,12 @@ fn boot(app: &mut App, tokens: Vec<(ServerId, Option<String>)>, store: Arc<Memor
     }));
 }
 
-/// A default config under the Rustket indicator scheme: the process-wide
-/// indicator look never changes in this binary.
+/// A default config under the Rustket indicator scheme (the process-wide
+/// indicator look never changes in this binary), past the terms screen.
 fn rustket_cfg() -> AppConfig {
     let mut cfg = AppConfig::default();
     cfg.ui.indicator_scheme = IndicatorScheme::Rustket;
+    rustket::legal::accept_terms(&mut cfg);
     cfg
 }
 
@@ -3288,6 +3289,7 @@ async fn sidebar_flags_and_rename_through_settings() {
 }
 
 /// Runs `task` and feeds back the outputs `keep` accepts.
+#[cfg(not(feature = "mas"))]
 async fn feed(app: &mut App, task: iced::Task<Message>, keep: fn(&Message) -> bool) {
     use iced::futures::StreamExt;
     let Some(stream) = iced_runtime::task::into_stream(task) else {
@@ -3344,7 +3346,9 @@ fn app_on_file(dir: &std::path::Path) -> (App, ServerId) {
 
 /// Turning "never store secrets in a file" on asks first (warning about the
 /// unsaved E2E password), then moves the secrets into memory and deletes the
-/// file; turning it off writes them back without asking.
+/// file; turning it off writes them back without asking. The Mac App Store
+/// flavor never uses the file, so there is nothing to switch.
+#[cfg(not(feature = "mas"))]
 #[tokio::test]
 async fn memory_only_switch_confirms_then_moves_the_secrets() {
     use rustket::screens::settings::Message as Sm;
@@ -3663,6 +3667,52 @@ async fn shortcuts_behind_a_dialog() {
         rustket::room::Message::Composer(rustket::room::composer::Message::AskReadAll),
     ));
     assert_eq!(app.toasts.len(), toasts + 1, "not connected");
+}
+
+/// The macOS main menu's About, Settings… and Help keep the rules of
+/// Ctrl/Cmd+, (AppKit takes ⌘, for the menu): nothing while loading or over
+/// a dialog, and "Settings…" leaves an open preferences page alone. About
+/// and Help also work before the first server is added.
+#[tokio::test]
+async fn menu_bar_picks_follow_the_settings_shortcut() {
+    use rustket::app::Screen;
+    use rustket::desktop::menu_bar::{Item, Message as MenuMsg};
+    use rustket::screens::settings::Tab;
+    let pick = |i| Message::Desktop(rustket::desktop::Message::MenuBar(MenuMsg::Item(i)));
+    let tab = |app: &App| match &app.screen {
+        Screen::Settings(s) => Some(s.tab),
+        _ => None,
+    };
+
+    let (mut app, _) = App::new(Flags {
+        ephemeral: true,
+        secrets: SecretsMode::Memory,
+        ..Flags::default()
+    });
+    assert!(matches!(app.screen, Screen::Loading));
+    let _ = app.update(pick(Item::About));
+    assert!(matches!(app.screen, Screen::Loading), "not while loading");
+    boot(&mut app, vec![], Arc::new(MemoryStore::new()));
+    assert!(matches!(app.screen, Screen::AddServer(_)));
+    let _ = app.update(pick(Item::About));
+    assert_eq!(tab(&app), Some(Tab::About));
+    let _ = app.update(Message::Settings(
+        rustket::screens::settings::Message::Close,
+    ));
+    assert!(matches!(app.screen, Screen::AddServer(_)));
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let _ = app.update(Message::Sidebar(sid.clone(), sidebar::Message::Create));
+    let _ = app.update(pick(Item::Settings));
+    assert!(matches!(app.screen, Screen::Server), "not over a dialog");
+    let _ = app.update(Message::CloseModal);
+    let _ = app.update(pick(Item::Help));
+    assert_eq!(tab(&app), Some(Tab::Help));
+    let _ = app.update(pick(Item::Settings));
+    assert_eq!(tab(&app), Some(Tab::Help), "the open page stays");
+    let _ = app.update(pick(Item::About));
+    assert_eq!(tab(&app), Some(Tab::About));
 }
 
 /// "Mark all as read": a running dialog cannot be dismissed, a failed run

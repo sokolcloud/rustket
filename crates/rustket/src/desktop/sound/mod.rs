@@ -3,18 +3,21 @@
 //! into cached WAV files); calls use the platform's sounds. Players: on
 //! Linux `pw-play`, `paplay` or `canberra-gtk-play` (with a sound theme file
 //! for theme sounds); on Windows PowerShell's `System.Media.SoundPlayer`
-//! (theme sounds map to `%SystemRoot%\Media`); on macOS `afplay` (theme
-//! sounds map to system sounds). When a Rocket.Chat sound cannot be decoded
-//! or written, the platform's message sound plays instead. The player is
-//! looked up once on a background thread at startup; playing never blocks:
+//! (theme sounds map to `%SystemRoot%\Media`); on macOS NSSound in-process
+//! (theme sounds map to system sounds). When a Rocket.Chat sound cannot be
+//! decoded or written, the platform's message sound plays instead. The player
+//! is looked up once on a background thread at startup; playing never blocks:
 //! the player runs detached and is reaped (or killed after a timeout) on a
 //! blocking thread. [`route`] decides whether a notification's backend
 //! plays a message or reminder sound instead.
 
 use std::path::PathBuf;
+#[cfg(not(target_os = "macos"))]
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_os = "macos"))]
+use std::time::Instant;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 mod freedesktop;
@@ -36,7 +39,7 @@ pub use route::{OsSound, Platform, Route, Toast, route};
 
 /// Freedesktop sound id of an incoming instant message.
 pub const MESSAGE_SOUND: &str = "message-new-instant";
-/// A player taking longer than this is killed.
+/// A player taking longer than this is killed (macOS: the sound is stopped).
 const PLAY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The first executable `name` in the `PATH`-style list `path` (on Windows
@@ -161,7 +164,7 @@ impl Sound {
                 }
                 .or_else(|| backend::play_command(&resolved, None));
                 match cmd {
-                    Some(cmd) => run_reaped(cmd),
+                    Some(cmd) => backend::run(cmd),
                     None => tracing::debug!("no sound to play"),
                 }
             })
@@ -196,7 +199,7 @@ impl Sound {
                 tracing::debug!("no sound to play");
                 return;
             };
-            run_reaped(cmd);
+            backend::run(cmd);
         });
     }
 }
@@ -255,6 +258,7 @@ async fn desktop_quiet() -> bool {
 const DEFAULT_SOUND: &str = "chime";
 
 /// Runs the player, killing it after [`PLAY_TIMEOUT`]. Blocking.
+#[cfg(not(target_os = "macos"))]
 fn run_reaped(mut cmd: Command) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,

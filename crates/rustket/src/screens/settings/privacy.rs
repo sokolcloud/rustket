@@ -1,6 +1,6 @@
 //! Privacy & storage tab: where login tokens and E2E keys are kept (and
-//! whether they may go to a file), what the profile shares, the offline
-//! cache and the image cache.
+//! whether they may go to a file), what the profile shares, hidden words,
+//! the offline cache and the image cache.
 
 use iced::widget::{container, text};
 use iced::{Element, Length};
@@ -10,10 +10,17 @@ use rustket_ui::theme::TEXT_BODY;
 use rustket_ui::widget::{BannerKind, banner};
 
 use super::widgets::{action_row, caption, field, section, segmented, switch};
-use super::{IMAGE_CACHE_CHOICES, Message, SECRET_STORE_CARD, STORAGE_CARD, SettingsView};
+use super::{
+    IMAGE_CACHE_CHOICES, Message, SECRET_STORE_CARD, STORAGE_CARD, Settings, SettingsView,
+};
 
-pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
-    vec![secret_store_card(v), profile_card(v), storage_card(v)]
+pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
+    vec![
+        secret_store_card(v),
+        profile_card(v),
+        super::hidden_words::card(s, v),
+        storage_card(v),
+    ]
 }
 
 /// What Rustket publishes to the user's profile (the local time zone).
@@ -46,6 +53,11 @@ fn secret_store_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
             t!("settings.secret_store_memory_policy"),
             None,
         ),
+        Some(SecretBackend::MemoryForced) => banner(
+            BannerKind::Warning,
+            t!("settings.secrets_keychain_memory"),
+            None,
+        ),
         Some(SecretBackend::Memory) if v.secrets_system => {
             banner(BannerKind::Warning, t!("settings.secrets_memory"), None)
         }
@@ -63,12 +75,15 @@ fn secret_store_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
         v.config.ui.secrets_memory_only,
         ready.then_some(Message::SetSecretsMemoryOnly as fn(bool) -> Message),
     );
-    container(section(
-        t!("settings.secret_store").into_owned(),
-        vec![status, toggle],
-    ))
-    .id(SECRET_STORE_CARD)
-    .into()
+    // The Mac App Store flavor never writes the file: nothing to choose.
+    let rows = if cfg!(feature = "mas") {
+        vec![status]
+    } else {
+        vec![status, toggle]
+    };
+    container(section(t!("settings.secret_store").into_owned(), rows))
+        .id(SECRET_STORE_CARD)
+        .into()
 }
 
 fn storage_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {

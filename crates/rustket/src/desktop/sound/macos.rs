@@ -1,10 +1,8 @@
-//! macOS sounds: `afplay` with a `/System/Library/Sounds` sound or one of
-//! Rocket.Chat's sounds (a cached WAV file); notifications play a copy of
-//! the latter in `~/Library/Sounds` by name ([`install_in`]).
+//! macOS sounds, played in-process by NSSound: a system sound by name or
+//! one of Rocket.Chat's sounds (a cached WAV file); notifications play a
+//! copy of the latter in `~/Library/Sounds` by name ([`install_in`]).
 
 use std::path::PathBuf;
-
-pub const SOUNDS_DIR: &str = "/System/Library/Sounds";
 
 /// System sound of a freedesktop sound id (`None`: the message sound).
 pub fn system_sound(id: Option<&str>) -> &'static str {
@@ -15,60 +13,73 @@ pub fn system_sound(id: Option<&str>) -> &'static str {
     }
 }
 
-pub fn sound_file(name: &str) -> PathBuf {
-    PathBuf::from(SOUNDS_DIR).join(format!("{name}.aiff"))
-}
-
-/// The `afplay` binary.
+/// Nothing to look up: NSSound is always there.
 #[cfg(target_os = "macos")]
-pub type Resolved = Option<PathBuf>;
+#[derive(Debug, Clone)]
+pub struct Resolved;
 
 #[cfg(target_os = "macos")]
 pub fn lookup() -> Resolved {
-    std::env::var_os("PATH")
-        .and_then(|p| super::find_in_path("afplay", &p))
-        .or_else(|| {
-            let p = PathBuf::from("/usr/bin/afplay");
-            p.is_file().then_some(p)
-        })
+    Resolved
 }
 
+/// What one play request plays.
 #[cfg(target_os = "macos")]
-pub fn play_command(
-    resolved: &Resolved,
-    id: Option<&'static str>,
-) -> Option<std::process::Command> {
-    use std::process::{Command, Stdio};
-    let Some(afplay) = resolved else {
-        tracing::debug!("afplay not found");
-        return None;
-    };
-    let file = [system_sound(id), system_sound(None)]
-        .iter()
-        .map(|s| sound_file(s))
-        .find(|p| p.is_file())?;
-    let mut c = Command::new(afplay);
-    c.arg(file)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    Some(c)
+#[derive(Debug)]
+pub enum Job {
+    /// A system sound by name (`Glass`, …).
+    Named(&'static str),
+    /// A sound file.
+    File(PathBuf),
 }
 
-/// The command playing the sound file `file`.
+/// The system sound of freedesktop sound id `id`.
 #[cfg(target_os = "macos")]
-pub fn file_command(resolved: &Resolved, file: &std::path::Path) -> Option<std::process::Command> {
-    use std::process::{Command, Stdio};
-    let Some(afplay) = resolved else {
-        tracing::debug!("afplay not found");
-        return None;
+pub fn play_command(_: &Resolved, id: Option<&'static str>) -> Option<Job> {
+    Some(Job::Named(system_sound(id)))
+}
+
+/// The sound file `file`.
+#[cfg(target_os = "macos")]
+pub fn file_command(_: &Resolved, file: &std::path::Path) -> Option<Job> {
+    Some(Job::File(file.to_owned()))
+}
+
+/// Plays `job` and keeps the sound alive until it ends or
+/// `super::PLAY_TIMEOUT` passes. Blocking.
+#[cfg(target_os = "macos")]
+pub fn run(job: Job) {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::NSSound;
+    use objc2_foundation::{NSCopying, NSString};
+    use std::time::{Duration, Instant};
+    let sound = match &job {
+        // `soundNamed` returns a shared instance: a copy plays on its own.
+        Job::Named(name) => NSSound::soundNamed(&NSString::from_str(name))
+            .or_else(|| NSSound::soundNamed(&NSString::from_str(system_sound(None))))
+            .map(|s| s.copy()),
+        Job::File(path) => NSSound::initWithContentsOfFile_byReference(
+            NSSound::alloc(),
+            &NSString::from_str(&path.to_string_lossy()),
+            true,
+        ),
     };
-    let mut c = Command::new(afplay);
-    c.arg(file)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    Some(c)
+    let Some(sound) = sound else {
+        tracing::debug!(?job, "sound not found");
+        return;
+    };
+    if !sound.play() {
+        tracing::debug!("NSSound did not start");
+        return;
+    }
+    let started = Instant::now();
+    while sound.isPlaying() {
+        if started.elapsed() >= super::PLAY_TIMEOUT {
+            sound.stop();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Prefix of Rustket's sound files in `~/Library/Sounds`.
@@ -225,9 +236,6 @@ mod tests {
     fn sound_mapping() {
         assert_eq!(system_sound(None), "Glass");
         assert_eq!(system_sound(Some("phone-incoming-call")), "Submarine");
-        assert_eq!(
-            sound_file("Glass"),
-            PathBuf::from("/System/Library/Sounds/Glass.aiff")
-        );
+        assert_eq!(system_sound(Some("phone-outgoing-calling")), "Purr");
     }
 }

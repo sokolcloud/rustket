@@ -70,9 +70,10 @@ def linked_crates(target):
     crates = set()
     for line in out.splitlines():
         parts = line.split()
-        # Workspace members print their path: "rocketchat v0.1.0 (/…)";
-        # proc macros run at build time only.
-        if len(parts) >= 2 and not any(p.startswith("(/") or p == "(proc-macro)" for p in parts):
+        # Path crates print their path: "winit v0.30.13 (/…/vendor/winit)";
+        # main() drops the workspace members among them. Proc macros run at
+        # build time only.
+        if len(parts) >= 2 and "(proc-macro)" not in parts:
             crates.add((parts[0], parts[1].lstrip("v")))
     return crates
 
@@ -100,8 +101,11 @@ def main():
     order = []
     missing = []
     crates = []
+    # Vendored, patched crates (vendor/, [patch.crates-io]) have no source but
+    # are third-party code like the registry crates.
+    members = set(meta["workspace_members"])
     for pkg in meta["packages"]:
-        if (pkg["name"], pkg["version"]) not in wanted or pkg.get("source") is None:
+        if (pkg["name"], pkg["version"]) not in wanted or pkg["id"] in members:
             continue
         label = f"{pkg['name']} {pkg['version']}"
         crates.append((label, pkg.get("license") or "see license file"))

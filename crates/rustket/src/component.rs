@@ -117,6 +117,8 @@ pub enum Nav {
     MentionGroupSettings,
     /// App preferences on the Help tab (the indicators reference).
     HelpSettings,
+    /// App preferences on the About tab (macOS menu "About Rustket").
+    AboutSettings,
     /// Account of the active server (`screens/account.rs`).
     Account,
     /// Directory of the active server (`screens/directory.rs`).
@@ -154,6 +156,8 @@ pub enum Effect {
     },
     /// Open a URL in the browser (absolute http/https/mailto only).
     OpenUrl(String),
+    /// Open a file shipped with the app (the third-party notices).
+    OpenFile(std::path::PathBuf),
     /// Close this screen/dialog.
     Close,
     /// The component changed `AppConfig`/`UiState`: persist them.
@@ -162,6 +166,9 @@ pub enum Effect {
     Logout {
         everywhere: bool,
     },
+    /// The account was deleted on the component's server: its tokens are
+    /// gone there, so it is signed out here without a call or a warning.
+    AccountDeleted,
     /// Remove the component's server (asks for confirmation).
     RemoveServer,
     /// Open the "register rocketchat:// handler" dialog.
@@ -172,6 +179,8 @@ pub enum Effect {
     ClearOfflineCache,
     /// Show a test desktop notification.
     TestNotification,
+    /// Open the app's notification settings in System Settings (macOS).
+    OpenNotificationSettings,
     /// Play Rocket.Chat sound `name` at the volume of the component's
     /// account (a sound picked in Account → Preferences).
     PreviewSound(String),
@@ -182,6 +191,8 @@ pub enum Effect {
     },
     /// Open the themes folder in the file manager (created if missing).
     OpenThemesFolder,
+    /// Pick theme or locale files and copy them into their folder.
+    Import(crate::import::Kind),
     /// Read the locale files again and re-apply `UiPrefs::language`.
     ReloadLocales,
     /// Open the locales folder in the file manager (created if missing).

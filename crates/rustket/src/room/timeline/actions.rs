@@ -48,6 +48,8 @@ pub enum Act {
     KeepInSidebar,
     RemoveFromSidebar,
     Report,
+    /// Report the message's author to the workspace's moderators.
+    ReportUser,
     Delete,
 }
 
@@ -78,6 +80,7 @@ impl Act {
             Act::KeepInSidebar => Icon::Bookmark,
             Act::RemoveFromSidebar => Icon::BookmarkX,
             Act::Report => Icon::Flag,
+            Act::ReportUser => Icon::UserX,
             Act::Delete => Icon::Trash2,
         }
     }
@@ -110,6 +113,7 @@ impl Act {
             Act::KeepInSidebar => "sidebar.keep_thread",
             Act::RemoveFromSidebar => "sidebar.unkeep_thread",
             Act::Report => "room_timeline.act_report",
+            Act::ReportUser => "moderation.act_report_user",
             Act::Delete => "room_timeline.act_delete",
         };
         t!(key).into_owned()
@@ -127,7 +131,7 @@ impl Act {
         match self {
             Act::React | Act::ReplyInThread | Act::Quote | Act::Reactions => 0,
             Act::CopyText | Act::CopyLink | Act::Forward | Act::Select => 1,
-            Act::Report | Act::Delete => 3,
+            Act::Report | Act::ReportUser | Act::Delete => 3,
             _ => 2,
         }
     }
@@ -247,6 +251,7 @@ pub fn available(ws: &Workspace, m: &Message, now: DateTime<Utc>) -> Vec<Act> {
     }
     if subscribed && !own && me.is_some() && !omnichannel {
         v.push(Act::Report);
+        v.push(Act::ReportUser);
     }
     if perm::can_delete_message(ws, m, now) {
         v.push(Act::Delete);
@@ -312,7 +317,7 @@ pub fn menu_entries<M: Clone>(acts: &[Act], msg: impl Fn(Act) -> M) -> Vec<MenuE
         out.push(MenuEntry::Item(
             MenuItem::new(a.label(), msg(*a))
                 .icon(a.icon())
-                .danger(matches!(a, Act::Delete | Act::Report)),
+                .danger(matches!(a, Act::Delete | Act::Report | Act::ReportUser)),
         ));
     }
     out
@@ -474,11 +479,13 @@ mod tests {
         assert!(own.contains(&Act::Star));
         assert!(!own.contains(&Act::Pin), "pin needs pin-message");
         assert!(!own.contains(&Act::Report), "no reporting own messages");
+        assert!(!own.contains(&Act::ReportUser), "no reporting oneself");
         assert!(!own.contains(&Act::MarkUnread));
         let other = available(&w, &msg("b", "bob"), now());
         assert!(!other.contains(&Act::Edit));
         assert!(!other.contains(&Act::Delete));
         assert!(other.contains(&Act::Report));
+        assert!(other.contains(&Act::ReportUser), "next to Report");
         assert!(other.contains(&Act::MarkUnread));
         assert!(other.contains(&Act::CopyLink));
         // Any message can be followed; following shows unfollow.
@@ -561,6 +568,7 @@ mod tests {
         let acts = available(&w, &msg("x", "bob"), now());
         assert!(!acts.contains(&Act::MarkUnread));
         assert!(!acts.contains(&Act::Report));
+        assert!(!acts.contains(&Act::ReportUser));
         assert!(!acts.contains(&Act::Follow));
     }
 

@@ -169,23 +169,37 @@ fn set_handlers() {
             send(Message::Activate);
         }
     }));
-    MenuEvent::set_event_handler(Some(|e: MenuEvent| {
-        let id = e.id.0.as_str();
-        let m = match id {
-            ID_OPEN => Some(Message::Show),
-            ID_QUIT => Some(Message::Quit),
-            ID_RESUME => Some(Message::Resume),
-            _ => status_from_id(id).map(Message::SetStatus).or_else(|| {
-                let i: usize = id.strip_prefix(PAUSE_PREFIX)?.parse().ok()?;
-                rustket_core::quiet::PausePreset::ALL
-                    .get(i)
-                    .map(|p| Message::Pause(*p))
-            }),
-        };
-        if let Some(m) = m {
-            send(m);
-        }
-    }));
+    install_menu_handler();
+}
+
+/// Sets muda's process-wide menu event handler (once: muda keeps the first
+/// one). It serves the tray menu and, on macOS, the main menu
+/// (`menu_bar`).
+pub(crate) fn install_menu_handler() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        MenuEvent::set_event_handler(Some(|e: MenuEvent| {
+            let id = e.id.0.as_str();
+            #[cfg(target_os = "macos")]
+            if super::super::menu_bar::dispatch(id) {
+                return;
+            }
+            let m = match id {
+                ID_OPEN => Some(Message::Show),
+                ID_QUIT => Some(Message::Quit),
+                ID_RESUME => Some(Message::Resume),
+                _ => status_from_id(id).map(Message::SetStatus).or_else(|| {
+                    let i: usize = id.strip_prefix(PAUSE_PREFIX)?.parse().ok()?;
+                    rustket_core::quiet::PausePreset::ALL
+                        .get(i)
+                        .map(|p| Message::Pause(*p))
+                }),
+            };
+            if let Some(m) = m {
+                send(m);
+            }
+        }));
+    });
 }
 
 /// Drops the icon of the current thread (Windows would otherwise leave a

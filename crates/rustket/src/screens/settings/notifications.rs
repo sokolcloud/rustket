@@ -8,7 +8,7 @@ use rust_i18n::t;
 use rustket_core::config::REMINDER_MORNING_HOURS;
 use rustket_core::quiet::DayHours;
 use rustket_ui::style;
-use rustket_ui::theme::{SPACE_2, SPACE_3, TEXT_BODY};
+use rustket_ui::theme::{SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION};
 use rustket_ui::widget::secondary_button;
 
 use super::widgets::{Choice, action_row, caption, field, section, switch};
@@ -127,6 +127,22 @@ fn test_button<'a>(ui: &rustket_core::config::UiPrefs) -> Element<'a, Message> {
     .into()
 }
 
+/// While the system blocks the app's notifications (macOS): why nothing
+/// shows, with a button to System Settings.
+fn blocked_row<'a>(blocked: bool) -> Option<Element<'a, Message>> {
+    (blocked && cfg!(target_os = "macos")).then(|| {
+        action_row(
+            t!("desktop.blocked_title").into_owned(),
+            text(t!("desktop.blocked_body").into_owned())
+                .size(TEXT_CAPTION)
+                .style(style::text_danger)
+                .into(),
+            t!("desktop.open_system_settings").into_owned(),
+            Some(Message::OpenNotificationSettings),
+        )
+    })
+}
+
 pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
     let ui = &v.config.ui;
     let notify_on = ui.desktop_notifications;
@@ -138,33 +154,33 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
             label: hour_label(h),
         })
         .collect();
-    vec![
-        section(
-            t!("settings.notifications").into_owned(),
-            vec![
-                switch(
-                    t!("settings.notifications_enable").into_owned(),
-                    Some(t!("settings.notifications_help").into_owned()),
-                    notify_on,
-                    Some(Message::SetNotifications),
-                ),
-                switch(
-                    t!("settings.notifications_preview").into_owned(),
-                    None,
-                    ui.notification_preview,
-                    // Reminder notifications show the message too.
-                    (notify_on || reminders_on).then_some(Message::SetPreview),
-                ),
-                sound_switch(ui),
-                test_button(ui),
-                action_row(
-                    t!("help.link_title").into_owned(),
-                    caption(t!("help.link_caption").into_owned()).into(),
-                    t!("help.open").into_owned(),
-                    Some(Message::Tab(Tab::Help)),
-                ),
-            ],
+    let mut general = vec![switch(
+        t!("settings.notifications_enable").into_owned(),
+        Some(t!("settings.notifications_help").into_owned()),
+        notify_on,
+        Some(Message::SetNotifications),
+    )];
+    // Only while the app itself sends notifications.
+    general.extend(blocked_row(notify_on && v.notifications_blocked));
+    general.extend([
+        switch(
+            t!("settings.notifications_preview").into_owned(),
+            None,
+            ui.notification_preview,
+            // Reminder notifications show the message too.
+            (notify_on || reminders_on).then_some(Message::SetPreview),
         ),
+        sound_switch(ui),
+        test_button(ui),
+        action_row(
+            t!("help.link_title").into_owned(),
+            caption(t!("help.link_caption").into_owned()).into(),
+            t!("help.open").into_owned(),
+            Some(Message::Tab(Tab::Help)),
+        ),
+    ]);
+    vec![
+        section(t!("settings.notifications").into_owned(), general),
         section(
             t!("settings.reminders").into_owned(),
             vec![
@@ -277,6 +293,22 @@ mod tests {
             out_all.push(out);
         }
         out_all
+    }
+
+    /// The blocked line's button opens System Settings; it shows only on
+    /// macOS while the system blocks notifications.
+    #[test]
+    fn blocked_row_opens_system_settings() {
+        assert!(blocked_row(false).is_none());
+        assert_eq!(blocked_row(true).is_some(), cfg!(target_os = "macos"));
+        let Some(row) = blocked_row(true) else {
+            return;
+        };
+        let sent: Vec<Message> = clicks(row).into_iter().flatten().collect();
+        assert!(
+            matches!(sent.as_slice(), [Message::OpenNotificationSettings]),
+            "{sent:?}"
+        );
     }
 
     /// Item 10: with desktop notifications off, "Play a sound" stays

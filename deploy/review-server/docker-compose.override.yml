@@ -1,0 +1,46 @@
+# Caddy, the default proxy (REVIEW_PROXY=caddy, see README.md). Compose loads
+# this file automatically next to docker-compose.yml; tunnel mode lists its
+# files in COMPOSE_FILE (.env) instead and so leaves Caddy, and the ACME_EMAIL
+# it requires, out.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    restart: unless-stopped
+    depends_on: [rocketchat]
+    networks: [edge]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      REVIEW_HOST: ${REVIEW_HOST:?set REVIEW_HOST in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging: *logging
+
+volumes:
+  caddy-data:
+  caddy-config:

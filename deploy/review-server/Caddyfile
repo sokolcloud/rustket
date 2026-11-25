@@ -1,0 +1,29 @@
+# TLS reverse proxy for the review workspace. The certificate comes from
+# Let's Encrypt over HTTP-01/TLS-ALPN-01, so ports 80 and 443 must be reachable.
+{
+	email {$ACME_EMAIL}
+	acme_ca {$ACME_CA}
+}
+
+{$REVIEW_HOST} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# A little above Rocket.Chat's FileUpload_MaxFileSize set by setup.sh.
+	request_body {
+		max_size 25MB
+	}
+
+	# WebSocket upgrades (DDP) pass through reverse_proxy unchanged.
+	reverse_proxy rocketchat:3000
+
+	# No access log: Caddy logs request headers and redacts only the standard
+	# credential headers, so Rocket.Chat's X-Auth-Token and x-2fa-code would
+	# end up in the Docker logs.
+}

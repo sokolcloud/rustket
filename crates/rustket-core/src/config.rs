@@ -549,7 +549,10 @@ pub struct UiPrefs {
     /// Render with the GPU (wgpu); `false` restarts with the CPU renderer.
     pub hardware_acceleration: bool,
     /// Use the window manager's title bar; `false` draws Rustket's own title
-    /// bar with the workspace switcher in it.
+    /// bar with the workspace switcher in it. On macOS the window always
+    /// keeps the native frame and traffic lights: `false` puts the
+    /// workspace switcher in the title row next to them, `true` keeps the
+    /// workspaces in the left rail under a plain title strip.
     pub system_title_bar: bool,
     /// Size cap of the image disk cache in MiB (oldest files are evicted).
     pub image_cache_mb: u32,
@@ -618,6 +621,8 @@ pub struct UiPrefs {
     /// The row of links from the topic, announcement and description under
     /// the room header (`crate::bookmarks`).
     pub room_bookmarks: bool,
+    /// Messages containing these phrases are collapsed (`crate::word_filter`).
+    pub hidden_words: crate::word_filter::HiddenWords,
 }
 
 /// Hours the reminder presets may start at.
@@ -677,6 +682,7 @@ impl Default for UiPrefs {
             pause_sets_busy: true,
             working_hours: crate::quiet::WorkingHours::default(),
             room_bookmarks: true,
+            hidden_words: crate::word_filter::HiddenWords::default(),
         }
     }
 }
@@ -734,6 +740,9 @@ pub struct AppConfig {
     pub pending_secret_deletions: Vec<String>,
     /// Notifications paused by hand (`crate::quiet`).
     pub pause: crate::quiet::PauseState,
+    /// Version of the in-app terms of use the user accepted (0: none).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub accepted_terms: u32,
     #[serde(skip)]
     unknown: Unknown,
 }
@@ -751,9 +760,14 @@ impl Default for AppConfig {
             device_id: None,
             pending_secret_deletions: Vec::new(),
             pause: crate::quiet::PauseState::default(),
+            accepted_terms: 0,
             unknown: Unknown::default(),
         }
     }
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 /// Keys of each table this version understands (the rest is preserved).
@@ -768,6 +782,7 @@ const APP_KEYS: &[&str] = &[
     "device_id",
     "pending_secret_deletions",
     "pause",
+    "accepted_terms",
 ];
 const UI_KEYS: &[&str] = &[
     "theme",
@@ -811,6 +826,7 @@ const UI_KEYS: &[&str] = &[
     "pause_sets_busy",
     "working_hours",
     "room_bookmarks",
+    "hidden_words",
 ];
 const SERVER_KEYS: &[&str] = &[
     "id",
@@ -1003,6 +1019,11 @@ impl AppConfig {
         if let Some(t) = doc.get("pause").and_then(toml::Value::as_table) {
             cfg.pause = lenient(t, "pause");
         }
+        cfg.accepted_terms = doc
+            .get("accepted_terms")
+            .and_then(toml::Value::as_integer)
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(0);
         if let Some(list) = doc
             .get("pending_secret_deletions")
             .and_then(toml::Value::as_array)
@@ -1547,6 +1568,7 @@ mod tests {
         c.mark_secret_deletion("rustket:s:u");
         c.ui.use_real_names = Some(true);
         c.ui.theme_name = Some("forest".into());
+        c.accepted_terms = 1;
         crate::sidebar_layout::apply(
             &mut c.ui,
             crate::sidebar_layout::LayoutEdit::AddGroup {
@@ -2263,5 +2285,26 @@ mod tests {
         assert_eq!(c.ui.density, Density::Condensed);
         let c = AppConfig::parse("[ui]\nindicator_scheme = 3\n").unwrap();
         assert_eq!(c.ui.indicator_scheme, IndicatorScheme::RocketChat);
+    }
+
+    #[test]
+    fn hidden_words_and_terms_roundtrip() {
+        let mut c = AppConfig::default();
+        assert_eq!(c.accepted_terms, 0);
+        assert!(c.ui.hidden_words.phrases.is_empty() && c.ui.hidden_words.whole_word);
+        c.accepted_terms = 3;
+        c.ui.hidden_words.add("Spoiler").unwrap();
+        c.ui.hidden_words.whole_word = false;
+        let text = toml::to_string(&c).unwrap();
+        let back = AppConfig::parse(&text).unwrap();
+        assert_eq!(back.accepted_terms, 3);
+        assert_eq!(back.ui.hidden_words, c.ui.hidden_words);
+        // Bad values fall back to the defaults without losing the rest.
+        let back =
+            AppConfig::parse("accepted_terms = -1\n[ui]\nhidden_words = 5\nclock_24h = false\n")
+                .unwrap();
+        assert_eq!(back.accepted_terms, 0);
+        assert!(back.ui.hidden_words.phrases.is_empty());
+        assert!(!back.ui.clock_24h);
     }
 }

@@ -1,0 +1,20 @@
+# Tunnel mode (REVIEW_PROXY=tunnel, see README.md): no Caddy, Rocket.Chat
+# published on IPv4 loopback only, for cloudflared (tunnel.sh). Used instead of
+# docker-compose.override.yml: .env sets
+# COMPOSE_FILE=docker-compose.yml:docker-compose.tunnel.yml.
+services:
+  rocketchat:
+    ports:
+      # 127.0.0.1 only: never 0.0.0.0 or [::], nothing listens publicly.
+      - "127.0.0.1:${REVIEW_TUNNEL_PORT:-3010}:3000"
+    environment:
+      # Cloudflare's edge sets X-Forwarded-For to the address that connected to
+      # it, appending it to any value the client sent; cloudflared passes the
+      # header on without adding a hop. The last entry is the real client, so
+      # one hop, as with Caddy. 0 would make every visitor the Docker gateway
+      # address, and 50 failed logins from anyone would block everyone.
+      HTTP_FORWARDED_COUNT: "1"
+
+networks:
+  edge:
+    enable_ipv6: false

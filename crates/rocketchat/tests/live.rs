@@ -1633,3 +1633,122 @@ async fn keycap_reactions() {
     assert_eq!(keys, [":keycap_ten:", ":one:"]);
     a.rooms_delete(&room.id).await.unwrap();
 }
+
+#[tokio::test]
+async fn dm_block_and_unblock() {
+    let Some(s) = server() else { return };
+    let a = TempUser::create(&s, "rkblka").await;
+    let b = TempUser::create(&s, "rkblkb").await;
+    let ca = a.login(&s).await;
+    let cb = b.login(&s).await;
+    let rid = ca.im_create(&b.username).await.unwrap().id;
+    let version = ca.info().await.unwrap().version_tuple();
+    // The version's own API, then the pre-8.6 methods.
+    for v in [version, Some((8, 5, 0))] {
+        ca.dm_set_blocked(&rid, &b.id, true, v).await.unwrap();
+        let sa = ca.subscriptions_get_one(&rid).await.unwrap();
+        let sb = cb.subscriptions_get_one(&rid).await.unwrap();
+        assert_eq!(sa.blocker, Some(true), "{v:?}");
+        assert_eq!(sb.blocked, Some(true), "{v:?}");
+        ca.dm_set_blocked(&rid, &b.id, false, v).await.unwrap();
+        let sa = ca.subscriptions_get_one(&rid).await.unwrap();
+        let sb = cb.subscriptions_get_one(&rid).await.unwrap();
+        assert_ne!(sa.blocker, Some(true), "{v:?}");
+        assert_ne!(sb.blocked, Some(true), "{v:?}");
+    }
+    let e = ca
+        .dm_set_blocked("no-such-room", &b.id, true, version)
+        .await
+        .unwrap_err();
+    assert!(e.api_error_code().is_some(), "{e:?}");
+    a.delete().await;
+    b.delete().await;
+}
+
+#[tokio::test]
+async fn report_user_reaches_moderation() {
+    let Some(s) = server() else { return };
+    let a = TempUser::create(&s, "rkrepa").await;
+    let b = TempUser::create(&s, "rkrepb").await;
+    let ca = a.login(&s).await;
+    ca.moderation_report_user(&b.id, "rustket live test")
+        .await
+        .unwrap();
+    a.delete().await;
+    b.delete().await;
+}
+
+/// Turns on `Accounts_AllowDeleteOwnAccount` for the test and back to its
+/// previous value afterwards.
+async fn set_allow_delete_own_account(admin: &RestClient, on: bool) {
+    let tfa = TwoFactorCode::password("adminpass");
+    let _: Value = admin
+        .post_with(
+            "settings/Accounts_AllowDeleteOwnAccount",
+            &json!({ "value": on }),
+            Some(&tfa),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn delete_own_account_flow() {
+    let Some(s) = server() else { return };
+    let admin = login(&s, "admin").await;
+    let before = admin
+        .settings_public_by_ids(&["Accounts_AllowDeleteOwnAccount"])
+        .await
+        .unwrap()
+        .first()
+        .and_then(|x| x.value.as_bool())
+        .unwrap_or(false);
+    let user = TempUser::create(&s, "rkdel").await;
+    let other = TempUser::create(&s, "rkdelo").await;
+    let c = user.login(&s).await;
+    // Owner of a group with another member: `user-last-owner` first.
+    c.groups_create(&CreateRoom {
+        name: unique("rkdel-g"),
+        members: vec![other.username.clone()],
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let not_allowed = if before {
+        None
+    } else {
+        Some(c.users_delete_own_account(&user.password, false).await)
+    };
+    set_allow_delete_own_account(&admin, true).await;
+    let wrong = c.users_delete_own_account("not-the-password", false).await;
+    let last_owner = c.users_delete_own_account(&user.password, false).await;
+    let done = c.users_delete_own_account(&user.password, true).await;
+    if !before {
+        set_allow_delete_own_account(&admin, false).await;
+    }
+
+    if let Some(r) = not_allowed {
+        assert_eq!(r.unwrap_err().api_error_code(), Some("error-not-allowed"));
+    }
+    assert_eq!(
+        wrong.unwrap_err().api_error_code(),
+        Some("error-invalid-password")
+    );
+    let rooms = last_owner.unwrap_err().last_owner_rooms().unwrap();
+    assert_eq!(rooms.should_change_owner.len(), 1, "{rooms:?}");
+    done.unwrap();
+    // The account's tokens went with it: the app signs out without a
+    // logout call.
+    let after = c.me().await.unwrap_err();
+    assert!(after.is_unauthorized(), "{after:?}");
+    let gone = admin
+        .users_info(UserLookup::Id(&user.id))
+        .await
+        .unwrap_err();
+    assert!(
+        gone.api_error_code().is_some() || !gone.is_transient(),
+        "{gone:?}"
+    );
+    other.delete().await;
+}

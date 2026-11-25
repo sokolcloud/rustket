@@ -15,19 +15,28 @@ use crate::url_handler;
 impl App {
     // --- custom title bar ------------------------------------------------------
 
-    /// Whether the app draws its own title bar and window frame.
+    /// Whether the app draws its own title bar (with the workspaces) and,
+    /// without `native_frame`, the window frame.
     pub fn custom_chrome(&self) -> bool {
         !self.decorated
     }
 
     /// Applies `UiPrefs::system_title_bar` to the window. iced can only flip
     /// decorations, so the current state is tracked and only a difference
-    /// issues a toggle.
+    /// issues a toggle. With `native_frame` (macOS) only the layout changes:
+    /// the window keeps its decorations.
     pub(super) fn sync_decorations(&mut self) -> Task<Message> {
         if self.config.ui.system_title_bar == self.decorated {
             return Task::none();
         }
         self.decorated = self.config.ui.system_title_bar;
+        if self.native_frame {
+            return if self.decorated {
+                Task::none()
+            } else {
+                query_maximized()
+            };
+        }
         let toggle = window::latest().and_then(window::toggle_decorations);
         if self.decorated {
             return toggle;
@@ -127,6 +136,9 @@ impl App {
                 window::resize_events()
                     .map(|_| Message::TitleBar(crate::workspace::titlebar::Message::Resized)),
             );
+        }
+        // The title strip under a native frame moves the window too.
+        if self.custom_chrome() || self.native_frame {
             subs.push(self.titlebar.subscription().map(Message::TitleBar));
         }
         // Files dropped onto the window go to the active composer.

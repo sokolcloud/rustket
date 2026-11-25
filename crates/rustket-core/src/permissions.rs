@@ -143,6 +143,34 @@ pub fn room_state_block(ws: &Workspace, rid: &str) -> Option<PostBlock> {
     None
 }
 
+/// Whether the current user blocked the other member of DM `rid`
+/// (`subscription.blocker`).
+pub fn blocked_by_me(ws: &Workspace, rid: &str) -> bool {
+    ws.room(rid)
+        .filter(|e| e.room_type() == RoomType::Direct)
+        .and_then(|e| e.sub.as_ref())
+        .is_some_and(|s| s.blocker == Some(true))
+}
+
+/// Whether a message by `author` (user id) in `rid` comes from a user the
+/// current user blocked: anyone but the user in a DM they blocked.
+pub fn is_blocked_author(ws: &Workspace, rid: &str, author: &str) -> bool {
+    ws.user_id() != Some(author) && blocked_by_me(ws, rid)
+}
+
+/// Whether Block/Unblock is offered for DM `rid`: a 1:1 direct message the
+/// user is subscribed to.
+pub fn can_block_in(ws: &Workspace, rid: &str) -> bool {
+    ws.room(rid).is_some_and(|e| {
+        e.room_type() == RoomType::Direct
+            && e.sub.is_some()
+            && e.room
+                .as_ref()
+                .and_then(|r| r.uids.as_ref())
+                .is_none_or(|u| u.len() <= 2)
+    })
+}
+
 /// `canEditMessage` as the web client's Edit action and the server's
 /// `updateMessage` apply it: not for pending or system messages, only with a
 /// subscription (web client); `edit-message`, or own message with
@@ -655,6 +683,28 @@ mod tests {
         assert!(!can_edit_message(&ws, &own, now()));
         set_sub(&mut ws, "d", |s| s.blocker = None);
         assert!(can_edit_message(&ws, &own, now()));
+    }
+
+    #[test]
+    fn blocked_authors_follow_the_blocker_flag() {
+        let mut ws = base();
+        ws.apply_subscription(Change::Inserted, sub("d", "bob", RoomType::Direct));
+        assert!(can_block_in(&ws, "d"));
+        assert!(!can_block_in(&ws, "r"), "channels have no blocking");
+        assert!(!blocked_by_me(&ws, "d"));
+        set_sub(&mut ws, "d", |s| s.blocker = Some(true));
+        assert!(blocked_by_me(&ws, "d"));
+        assert!(is_blocked_author(&ws, "d", "bob-id"));
+        assert!(!is_blocked_author(&ws, "d", "me"), "own messages stay");
+        // Being blocked does not hide the partner's messages.
+        set_sub(&mut ws, "d", |s| {
+            s.blocker = None;
+            s.blocked = Some(true);
+        });
+        assert!(!is_blocked_author(&ws, "d", "bob-id"));
+        // A channel subscription with a stray flag is not a block.
+        set_sub(&mut ws, "r", |s| s.blocker = Some(true));
+        assert!(!blocked_by_me(&ws, "r"));
     }
 
     #[test]

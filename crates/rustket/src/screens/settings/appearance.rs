@@ -129,6 +129,10 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
                 ui.clock_24h,
                 Some(Message::SetClock24),
             ),
+        ]
+        .into_iter()
+        // The Mac App Store flavor cannot restart itself with the CPU renderer.
+        .chain((!cfg!(feature = "mas")).then(|| {
             switch(
                 t!("settings.hardware_acceleration").into_owned(),
                 Some(format!(
@@ -141,14 +145,15 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
                 )),
                 ui.hardware_acceleration,
                 Some(Message::SetHardwareAcceleration),
-            ),
-            switch(
-                t!("titlebar.setting").into_owned(),
-                Some(t!("titlebar.setting_help").into_owned()),
-                ui.system_title_bar,
-                Some(Message::SetSystemTitleBar),
-            ),
-        ],
+            )
+        }))
+        .chain([switch(
+            t!("titlebar.setting").into_owned(),
+            Some(t!("titlebar.setting_help").into_owned()),
+            ui.system_title_bar,
+            Some(Message::SetSystemTitleBar),
+        )])
+        .collect(),
     )]
 }
 

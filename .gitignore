@@ -7,3 +7,7 @@
 *.deb
 *.AppImage
 /CLAUDE-SECURITY-*/
+# Review server kit: generated secrets (deploy/review-server/README.md)
+/deploy/review-server/credentials.env*
+/deploy/review-server/admin.env
+/deploy/review-server/review-notes.txt

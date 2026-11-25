@@ -24,6 +24,7 @@ mod about;
 mod appearance;
 mod general;
 pub(crate) mod help;
+mod hidden_words;
 mod mentions;
 mod notifications;
 mod pickers;
@@ -171,8 +172,6 @@ fn theme_name(v: &SettingsView<'_>) -> String {
 
 /// Zoom step of the −/+ buttons.
 pub const ZOOM_STEP: f32 = 0.1;
-pub const WEBSITE: &str = "https://rocket.chat";
-pub const DOCS: &str = "https://docs.rocket.chat";
 /// Choices of the image disk cache cap (MiB).
 pub const IMAGE_CACHE_CHOICES: [u32; 5] = [100, 250, 500, 1000, 2000];
 
@@ -183,6 +182,8 @@ pub enum Message {
     SetThemeName(Option<String>),
     ReloadThemes,
     OpenThemesFolder,
+    /// Import theme or locale files picked in a file dialog.
+    Import(crate::import::Kind),
     SetDensity(Density),
     /// Unread indicators: Rustket's own or Rocket.Chat's.
     SetIndicatorScheme(IndicatorScheme),
@@ -201,6 +202,8 @@ pub enum Message {
     SetPreview(bool),
     SetSound(bool),
     TestNotification,
+    /// Open the app's notification settings in System Settings (macOS).
+    OpenNotificationSettings,
     SetReminderNotifications(bool),
     SetReminderSound(bool),
     SetReminderMorningHour(u8),
@@ -228,9 +231,9 @@ pub enum Message {
     SetHardwareAcceleration(bool),
     SetSystemTitleBar(bool),
     SetAutostart(bool),
-    /// Whether the autostart entry exists (`None`: unknown).
-    AutostartLoaded(Option<bool>),
-    AutostartSet(bool, Result<(), String>),
+    /// The launch-at-login state (`None`: unknown).
+    AutostartLoaded(Option<autostart::State>),
+    AutostartSet(bool, Result<autostart::State, String>),
     RegisterHandler,
     ClearImageCache,
     /// Disk cache cap in MiB (`UiPrefs::image_cache_mb`).
@@ -250,6 +253,13 @@ pub enum Message {
     /// The Mentions tab: mention groups and their editor.
     Mentions(MentionsMessage),
     OpenUrl(String),
+    /// Open the third-party notices shipped with the app (About).
+    OpenNotices,
+    /// The "Hidden words" editor (Privacy tab): the phrase being typed.
+    HiddenWordDraft(String),
+    AddHiddenWord,
+    RemoveHiddenWord(usize),
+    SetHiddenWholeWord(bool),
     Close,
     /// Nothing (the Help tab's refresh tick; its inert samples need a
     /// message but never send it).
@@ -280,6 +290,8 @@ pub struct SettingsView<'a> {
     pub themes: &'a crate::themes::Themes,
     pub locales: &'a crate::locales::Locales,
     pub handler_registered: bool,
+    /// The system does not allow the app's notifications (macOS).
+    pub notifications_blocked: bool,
     pub secret_backend: Option<SecretBackend>,
     /// The secret store is the system one (keyring / file / memory fallback),
     /// not a test's memory store.
@@ -314,6 +326,8 @@ pub struct Settings {
     autostart_at: Option<Autostart>,
     /// Launch at login (`None` until read).
     pub autostart: Option<bool>,
+    /// Launch at login waits for the user's approval in System Settings.
+    pub autostart_approval: bool,
     pub autostart_busy: bool,
     /// Id of the sidebar group whose deletion awaits confirmation.
     pub confirm_delete: Option<String>,
@@ -334,6 +348,10 @@ pub struct Settings {
     pub mention_draft: Option<mentions::Draft>,
     /// The deletion of this account's mention group awaits confirmation.
     pub confirm_mention_delete: Option<(rustket_core::ServerId, String)>,
+    /// The phrase typed into the "Hidden words" editor.
+    pub hidden_word_draft: String,
+    /// Why the last phrase was not added.
+    pub hidden_word_error: Option<rustket_core::word_filter::AddError>,
 }
 
 impl Default for Settings {
@@ -361,6 +379,7 @@ impl Settings {
             tab: Tab::default(),
             autostart_at: at,
             autostart: None,
+            autostart_approval: false,
             autostart_busy: false,
             confirm_delete: None,
             group_draft: None,
@@ -370,7 +389,15 @@ impl Settings {
             confirm_star_kept: false,
             mention_draft: None,
             confirm_mention_delete: None,
+            hidden_word_draft: String::new(),
+            hidden_word_error: None,
         }
+    }
+
+    /// The Mac App Store flavor has no launch at login before macOS 13: the
+    /// switch is left out instead of showing "Not available".
+    pub fn autostart_hidden(&self) -> bool {
+        cfg!(feature = "mas") && self.autostart_at.is_none()
     }
 
     /// The same screen showing `tab` first (deep links reveal cards in it).
@@ -385,11 +412,7 @@ impl Settings {
             return Task::done(Message::AutostartLoaded(None));
         };
         Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || at.is_enabled())
-                    .await
-                    .ok()
-            },
+            async move { tokio::task::spawn_blocking(move || at.state()).await.ok() },
             Message::AutostartLoaded,
         )
     }
@@ -407,6 +430,7 @@ impl Settings {
             }
             Message::ReloadThemes => Action::effect(Effect::ApplyTheme { rescan: true }),
             Message::OpenThemesFolder => Action::effect(Effect::OpenThemesFolder),
+            Message::Import(kind) => Action::effect(Effect::Import(kind)),
             Message::SetDensity(v) => Self::pref(ctx, |p| p.density = v),
             Message::SetIndicatorScheme(v) => Self::pref(ctx, |p| p.indicator_scheme = v)
                 .with(Effect::ApplyTheme { rescan: false }),
@@ -437,6 +461,7 @@ impl Settings {
                 }
             }),
             Message::TestNotification => Action::effect(Effect::TestNotification),
+            Message::OpenNotificationSettings => Action::effect(Effect::OpenNotificationSettings),
             Message::Tab(tab) => {
                 self.tab = tab;
                 Action::task(iced::widget::operation::snap_to(
@@ -470,7 +495,8 @@ impl Settings {
                     async move {
                         tokio::task::spawn_blocking(move || {
                             let exe = autostart::executable().map_err(|e| e.to_string())?;
-                            at.set_enabled(on, &exe).map_err(|e| e.to_string())
+                            at.set_enabled(on, &exe).map_err(|e| e.to_string())?;
+                            Ok(at.state())
                         })
                         .await
                         .unwrap_or_else(|e| Err(e.to_string()))
@@ -479,14 +505,16 @@ impl Settings {
                 ))
             }
             Message::AutostartLoaded(v) => {
-                self.autostart = v;
+                self.autostart = v.map(autostart::State::is_on);
+                self.autostart_approval = v == Some(autostart::State::NeedsApproval);
                 Action::none()
             }
-            Message::AutostartSet(on, r) => {
+            Message::AutostartSet(_, r) => {
                 self.autostart_busy = false;
                 match r {
-                    Ok(()) => {
-                        self.autostart = Some(on);
+                    Ok(state) => {
+                        self.autostart = Some(state.is_on());
+                        self.autostart_approval = state == autostart::State::NeedsApproval;
                         Action::none()
                     }
                     Err(e) => Action::effect(Effect::Toast(
@@ -510,6 +538,30 @@ impl Settings {
             // The app stores the preference once the store follows it.
             Message::SetSecretsMemoryOnly(on) => Action::effect(Effect::SetSecretsMemoryOnly(on)),
             Message::OpenUrl(url) => Action::effect(Effect::OpenUrl(url)),
+            Message::OpenNotices => match crate::legal::third_party_notices() {
+                Some(path) => Action::effect(Effect::OpenFile(path)),
+                None => Action::none(),
+            },
+            Message::HiddenWordDraft(s) => {
+                self.hidden_word_draft = s;
+                self.hidden_word_error = None;
+                Action::none()
+            }
+            Message::AddHiddenWord => {
+                match ctx.config.ui.hidden_words.add(&self.hidden_word_draft) {
+                    Ok(()) => {
+                        self.hidden_word_draft.clear();
+                        self.hidden_word_error = None;
+                        Action::effect(Effect::SaveConfig)
+                    }
+                    Err(e) => {
+                        self.hidden_word_error = Some(e);
+                        Action::none()
+                    }
+                }
+            }
+            Message::RemoveHiddenWord(i) => Self::pref(ctx, |p| p.hidden_words.remove(i)),
+            Message::SetHiddenWholeWord(v) => Self::pref(ctx, |p| p.hidden_words.whole_word = v),
             Message::Close => Action::effect(Effect::Close),
             Message::Noop => Action::none(),
             Message::SetGroupByType(v) => Self::pref(ctx, |p| p.group_by_type = v),
@@ -573,17 +625,21 @@ impl Settings {
             Tab::Notifications => notifications::view(v),
             Tab::Sidebar => self.sidebar_cards(&v.config.ui, &v.flags, v.star_kept_busy),
             Tab::Mentions => mentions::view(self, v),
-            Tab::Privacy => privacy::view(v),
+            Tab::Privacy => privacy::view(self, v),
             // `App::help_env` builds the env whenever this tab is shown.
-            Tab::Help => match &v.help {
-                Some(env) => help::view(&help::Data {
-                    cfg: v.config,
-                    env,
-                    mode: v.mode,
-                    theme_name: theme_name(v),
-                }),
-                None => Vec::new(),
-            },
+            Tab::Help => {
+                let mut cards = match &v.help {
+                    Some(env) => help::view(&help::Data {
+                        cfg: v.config,
+                        env,
+                        mode: v.mode,
+                        theme_name: theme_name(v),
+                    }),
+                    None => Vec::new(),
+                };
+                cards.push(about::support_card());
+                cards
+            }
             Tab::About => about::view(v),
         };
         container(Column::with_children(cards).spacing(SPACE_6).max_width(720))
@@ -1442,6 +1498,39 @@ mod tests {
     }
 
     #[test]
+    fn hidden_words_editor() {
+        use rustket_core::word_filter::AddError;
+        let mut s = Settings::with_autostart(None);
+        let mut cfg = AppConfig::default();
+        run(
+            &mut s,
+            &mut cfg,
+            Message::HiddenWordDraft("  Spoiler ".into()),
+        );
+        let a = run(&mut s, &mut cfg, Message::AddHiddenWord);
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert_eq!(cfg.ui.hidden_words.phrases, vec!["Spoiler".to_owned()]);
+        assert!(s.hidden_word_draft.is_empty());
+        // A duplicate is refused with a reason and nothing is saved.
+        run(&mut s, &mut cfg, Message::HiddenWordDraft("spoiler".into()));
+        let a = run(&mut s, &mut cfg, Message::AddHiddenWord);
+        assert!(a.effects.is_empty());
+        assert_eq!(s.hidden_word_error, Some(AddError::Duplicate));
+        // Typing clears the reason.
+        run(
+            &mut s,
+            &mut cfg,
+            Message::HiddenWordDraft("spoilers".into()),
+        );
+        assert_eq!(s.hidden_word_error, None);
+        let a = run(&mut s, &mut cfg, Message::SetHiddenWholeWord(false));
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
+        assert!(!cfg.ui.hidden_words.whole_word);
+        run(&mut s, &mut cfg, Message::RemoveHiddenWord(0));
+        assert!(cfg.ui.hidden_words.phrases.is_empty());
+    }
+
+    #[test]
     fn zoom_steps_are_clamped() {
         assert!((zoom_step(1.0, 1) - 1.1).abs() < 1e-4);
         assert!((zoom_step(1.0, -1) - 0.9).abs() < 1e-4);
@@ -1485,8 +1574,9 @@ mod tests {
         assert!(matches!(a.effects[0], Effect::ClearImageCache));
         let a = run(&mut s, &mut cfg, Message::RegisterHandler);
         assert!(matches!(a.effects.as_slice(), [Effect::RegisterUrlHandler]));
-        let a = run(&mut s, &mut cfg, Message::OpenUrl(DOCS.into()));
-        assert!(matches!(a.effects.as_slice(), [Effect::OpenUrl(u)] if u == DOCS));
+        let url = crate::legal::SUPPORT_URL;
+        let a = run(&mut s, &mut cfg, Message::OpenUrl(url.into()));
+        assert!(matches!(a.effects.as_slice(), [Effect::OpenUrl(u)] if u == url));
         // No autostart directory: the switch does nothing.
         let a = run(&mut s, &mut cfg, Message::SetAutostart(true));
         assert!(a.effects.is_empty() && !s.autostart_busy);

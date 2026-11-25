@@ -1,6 +1,6 @@
 //! The theme picker (Appearance) and the language picker (General): a pick
-//! list with "Open … folder" and "Reload", and below it what is wrong with
-//! the selected file.
+//! list with "Open … folder", "Import…" and "Reload", and below it what is
+//! wrong with the selected file.
 
 use iced::widget::{Column, column, pick_list, row, text};
 use iced::{Alignment, Element, Length};
@@ -16,13 +16,15 @@ use super::widgets::{Choice, field};
 /// Most theme or locale warnings listed before "and N more".
 const WARNINGS_SHOWN: usize = 5;
 
-/// A pick list with "Open folder" and "Reload" (both off without a folder).
+/// A pick list with "Open folder", "Import…" and "Reload" (all off without a
+/// folder).
 fn controls<'a, T: Clone + PartialEq + std::fmt::Display + 'a>(
     choices: Vec<T>,
     current: T,
     on_select: impl Fn(T) -> Message + 'a,
     folder_label: String,
     on_folder: Option<Message>,
+    on_import: Option<Message>,
     on_reload: Option<Message>,
 ) -> Element<'a, Message> {
     row![
@@ -32,6 +34,7 @@ fn controls<'a, T: Clone + PartialEq + std::fmt::Display + 'a>(
             .style(style::pick_list)
             .menu_style(style::menu),
         secondary_button(folder_label, on_folder),
+        secondary_button(t!("settings.import_files"), on_import),
         secondary_button(t!("settings.themes_reload"), on_reload),
     ]
     .spacing(SPACE_2)
@@ -60,8 +63,6 @@ pub(super) fn theme_picker<'a>(
     ui: &UiPrefs,
     themes: &crate::themes::Themes,
 ) -> Element<'a, Message> {
-    use crate::themes::LoadError;
-    use rustket_ui::theme_file::ThemeFileError;
     let builtin = Choice {
         value: None,
         label: t!("settings.theme_builtin").into_owned(),
@@ -97,6 +98,10 @@ pub(super) fn theme_picker<'a>(
         |c: Choice<Option<String>>| Message::SetThemeName(c.value),
         t!("settings.themes_folder").into_owned(),
         themes.dir.is_some().then_some(Message::OpenThemesFolder),
+        themes
+            .dir
+            .is_some()
+            .then_some(Message::Import(crate::import::Kind::Themes)),
         themes.dir.is_some().then_some(Message::ReloadThemes),
     )]
     .spacing(SPACE_2);
@@ -104,19 +109,8 @@ pub(super) fn theme_picker<'a>(
     match themes.resolve(selected) {
         None => {}
         Some(Err(e)) => {
-            let msg = match e {
-                LoadError::NotFound => t!(
-                    "settings.theme_not_found",
-                    file = format!("{}.toml", selected.unwrap_or_default())
-                ),
-                LoadError::Read(e) => t!("settings.theme_unreadable", error = e),
-                LoadError::TooLarge(size) => t!("settings.theme_too_large", size = size),
-                LoadError::Parse(ThemeFileError::MissingName) => t!("settings.theme_no_name"),
-                LoadError::Parse(ThemeFileError::NoVariants) => t!("settings.theme_no_variants"),
-                LoadError::Parse(ThemeFileError::Syntax(e)) => {
-                    t!("settings.theme_invalid", error = e)
-                }
-            };
+            let file = format!("{}.toml", selected.unwrap_or_default());
+            let msg = crate::themes::load_error_text(&e, &file);
             col = col.push(banner(BannerKind::Error, msg, None));
         }
         Some(Ok(file)) => {
@@ -228,6 +222,10 @@ pub(super) fn language_picker<'a>(
         |c: Choice<Language>| Message::SetLanguage(c.value),
         t!("settings.locales_folder").into_owned(),
         locales.dir.is_some().then_some(Message::OpenLocalesFolder),
+        locales
+            .dir
+            .is_some()
+            .then_some(Message::Import(crate::import::Kind::Locales)),
         locales.dir.is_some().then_some(Message::ReloadLocales),
     )]
     .spacing(SPACE_2);

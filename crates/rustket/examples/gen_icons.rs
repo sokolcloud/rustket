@@ -13,6 +13,8 @@
 //! cargo run -p rustket --example gen_icons -- crates/rustket/assets/icons
 //! # only the rustket-rc-* icons:
 //! cargo run -p rustket --example gen_icons -- crates/rustket/assets/icons --rc-only
+//! # only the asset catalog icon set (Assets.car, packaging/macos/build.sh):
+//! cargo run -p rustket --example gen_icons -- packaging/macos/AppIcon.appiconset --appiconset
 //! ```
 
 use std::path::PathBuf;
@@ -403,6 +405,51 @@ fn bmp(pm: &Pixmap) -> Vec<u8> {
     out
 }
 
+/// The `AppIcon.appiconset` entries (point size, scale), from [`mac_tile`]
+/// like the icns; the catalog also needs the 16 pt @1x the icns lacks.
+const APPICONSET: &[(u32, u32)] = &[
+    (16, 1),
+    (16, 2),
+    (32, 1),
+    (32, 2),
+    (128, 1),
+    (128, 2),
+    (256, 1),
+    (256, 2),
+    (512, 1),
+    (512, 2),
+];
+
+/// Writes the icon set's PNGs and `Contents.json` into `dir`.
+fn appiconset(dir: &std::path::Path) {
+    let mut images = Vec::new();
+    for &(points, scale) in APPICONSET {
+        let suffix = if scale == 1 {
+            String::new()
+        } else {
+            format!("@{scale}x")
+        };
+        let file = format!("icon_{points}x{points}{suffix}.png");
+        let path = dir.join(&file);
+        mac_tile(points * scale).save_png(&path).expect("save png");
+        println!("wrote {}", path.display());
+        images.push(serde_json::json!({
+            "filename": file,
+            "idiom": "mac",
+            "scale": format!("{scale}x"),
+            "size": format!("{points}x{points}"),
+        }));
+    }
+    let json = serde_json::json!({
+        "images": images,
+        "info": { "author": "xcode", "version": 1 },
+    });
+    let text = serde_json::to_string_pretty(&json).expect("json") + "\n";
+    let path = dir.join("Contents.json");
+    std::fs::write(&path, text).expect("write Contents.json");
+    println!("wrote {}", path.display());
+}
+
 /// ICNS made of PNG elements (macOS 10.7+), from [`mac_tile`].
 fn icns() -> Vec<u8> {
     let mut body = Vec::new();
@@ -421,12 +468,17 @@ fn icns() -> Vec<u8> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rc_only = args.iter().any(|a| a == "--rc-only");
+    let iconset_only = args.iter().any(|a| a == "--appiconset");
     let out: PathBuf = args
         .iter()
         .find(|a| !a.starts_with("--"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("crates/rustket/assets/icons"));
     std::fs::create_dir_all(&out).expect("out dir");
+    if iconset_only {
+        appiconset(&out);
+        return;
+    }
     for &size in RC_SIZES {
         for (name, glyph) in RC_ART {
             let path = out.join(format!("rustket-rc-{name}-{size}.png"));

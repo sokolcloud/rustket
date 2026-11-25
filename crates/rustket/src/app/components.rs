@@ -85,6 +85,7 @@ impl App {
                 | Nav::SecretStoreSettings
                 | Nav::MentionGroupSettings
                 | Nav::HelpSettings
+                | Nav::AboutSettings
                 | Nav::Workspace
                 | Nav::Account
                 | Nav::Directory
@@ -132,7 +133,8 @@ impl App {
                 | Nav::SidebarSettings { .. }
                 | Nav::SecretStoreSettings
                 | Nav::MentionGroupSettings
-                | Nav::HelpSettings),
+                | Nav::HelpSettings
+                | Nav::AboutSettings),
                 _,
             ) => {
                 // The real autostart location only with real desktop integration.
@@ -148,6 +150,7 @@ impl App {
                     Nav::SecretStoreSettings => settings::Tab::Privacy,
                     Nav::MentionGroupSettings => settings::Tab::Mentions,
                     Nav::HelpSettings => settings::Tab::Help,
+                    Nav::AboutSettings => settings::Tab::About,
                     _ => self.settings_tab,
                 };
                 self.settings_tab = tab;
@@ -288,6 +291,7 @@ impl App {
                     None => Task::none(),
                 },
                 Effect::OpenUrl(url) => self.open_url(url),
+                Effect::OpenFile(path) => self.open_file(path),
                 Effect::Close => match source {
                     Source::Screen => self.navigate(Nav::Workspace),
                     Source::CreateRoom => {
@@ -309,6 +313,10 @@ impl App {
                     }),
                     None => Task::none(),
                 },
+                Effect::AccountDeleted => match sid {
+                    Some(sid) => self.logged_out(&sid.clone(), None),
+                    None => Task::none(),
+                },
                 Effect::RemoveServer => {
                     if let Some(sid) = sid {
                         self.modals.push(Modal::ConfirmRemove(sid.clone()));
@@ -318,6 +326,7 @@ impl App {
                 Effect::RegisterUrlHandler => self.open_register_handler(),
                 Effect::ClearImageCache => self.clear_image_cache(),
                 Effect::ClearOfflineCache => crate::cache::clear_all(self),
+                Effect::OpenNotificationSettings => self.open_notification_settings(),
                 Effect::TestNotification => {
                     let account = self
                         .active
@@ -345,6 +354,7 @@ impl App {
                     Task::none()
                 }
                 Effect::OpenThemesFolder => self.open_themes_folder(),
+                Effect::Import(kind) => self.import_files(kind),
                 Effect::ReloadLocales => {
                     self.locales.reload(&self.config.ui.language);
                     Task::none()
@@ -764,6 +774,15 @@ impl App {
                     tmid: Some(tmid),
                 }),
                 desktop::Request::ShowWindow => self.desktop.show_window().map(Message::Desktop),
+                desktop::Request::Navigate(nav) => {
+                    let show = self.desktop.show_window().map(Message::Desktop);
+                    if self.menu_may_navigate(&nav) {
+                        Task::batch([show, self.navigate(nav)])
+                    } else {
+                        show
+                    }
+                }
+                desktop::Request::OpenUrl(url) => self.open_url(url.to_owned()),
                 // Unsaved admin settings: the window comes back for the question.
                 desktop::Request::Quit if self.admin_dirty() => Task::batch([
                     self.desktop.show_window().map(Message::Desktop),
@@ -784,6 +803,13 @@ impl App {
                     ))
                 }
                 desktop::Request::ForeignSignal(id, signal) => self.on_foreign_signal(id, signal),
+                desktop::Request::NotificationsBlocked => self.toast_with_action(
+                    rustket_ui::widget::BannerKind::Warning,
+                    t!("desktop.blocked_title"),
+                    t!("desktop.blocked_body"),
+                    t!("desktop.open_system_settings"),
+                    Message::OpenNotificationSettings,
+                ),
             });
         }
         Task::batch(tasks)
@@ -897,6 +923,7 @@ impl App {
             themes: &self.themes,
             locales: &self.locales,
             handler_registered: self.handler_registered,
+            notifications_blocked: self.desktop.notifications.os_blocked(),
             secret_backend: self.secret_backend,
             secrets_system: self.secrets_mode == SecretsMode::System,
             secrets_switching: self.secrets_switching,

@@ -14,6 +14,9 @@ mod native;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod sni;
 
+#[cfg(target_os = "macos")]
+pub(crate) use native::install_menu_handler;
+
 #[cfg(all(unix, not(target_os = "macos")))]
 use std::sync::Arc;
 

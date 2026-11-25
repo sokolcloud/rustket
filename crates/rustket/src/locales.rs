@@ -291,6 +291,15 @@ fn read(path: &Path) -> Result<String, LoadError> {
     std::fs::read_to_string(path).map_err(|e| LoadError::Read(e.to_string()))
 }
 
+/// Whether `path` is a usable locale file (Settings → Import); its name is
+/// checked by the caller.
+pub fn check_file(path: &Path) -> Result<(), LoadError> {
+    let text = read(path)?;
+    LocaleFile::parse(&text, i18n::english())
+        .map(drop)
+        .map_err(LoadError::Parse)
+}
+
 /// Every `<code>.toml` in `dir` whose stem is a valid locale code, sorted
 /// by code; a missing directory is an empty list.
 pub fn scan(dir: &Path) -> Vec<LocaleEntry> {

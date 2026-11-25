@@ -56,6 +56,23 @@ impl App {
         }
     }
 
+    /// Whether a macOS main menu pick may open settings page `nav`. AppKit
+    /// takes ⌘, for the menu before the app's listener sees it, so the menu
+    /// keeps the shortcut's rules: not while starting up or under a dialog,
+    /// and "Settings…" not again on the settings screen. Unlike the
+    /// shortcut it works on the add-server screen, so About and Help are
+    /// reachable before the first server is added. Nothing while the terms
+    /// screen covers the window: the change would not show.
+    pub(super) fn menu_may_navigate(&self, nav: &Nav) -> bool {
+        if matches!(self.screen, Screen::Loading)
+            || self.overlay_shown()
+            || crate::legal::terms_pending(&self.config)
+        {
+            return false;
+        }
+        !(*nav == Nav::Settings && matches!(self.screen, Screen::Settings(_)))
+    }
+
     /// A dialog or overlay is on screen: an app modal, or the screen's own
     /// (certificate prompt, E2E password, login code, UIKit modal). The same
     /// check the view makes, so the two cannot drift apart.
