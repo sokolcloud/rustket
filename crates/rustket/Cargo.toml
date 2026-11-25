@@ -66,7 +66,7 @@ windows-registry = "0.6"
 block2 = "0.6.2"
 objc2 = "0.6.3"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSImage", "NSResponder", "NSSound", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSLocale", "NSNotification", "NSObject", "NSSet", "NSString", "NSThread", "NSURL", "objc2-core-services"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSLocale", "NSNotification", "NSObject", "NSProcessInfo", "NSSet", "NSString", "NSThread", "NSURL", "objc2-core-services"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEventSource", "CGEventTypes"] }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "bitflags", "block2", "UNNotification", "UNNotificationAction", "UNNotificationAttachment", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 

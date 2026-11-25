@@ -202,6 +202,8 @@ pub enum Message {
     SetPreview(bool),
     SetSound(bool),
     TestNotification,
+    /// Open the app's notification settings in System Settings (macOS).
+    OpenNotificationSettings,
     SetReminderNotifications(bool),
     SetReminderSound(bool),
     SetReminderMorningHour(u8),
@@ -288,6 +290,8 @@ pub struct SettingsView<'a> {
     pub themes: &'a crate::themes::Themes,
     pub locales: &'a crate::locales::Locales,
     pub handler_registered: bool,
+    /// The system does not allow the app's notifications (macOS).
+    pub notifications_blocked: bool,
     pub secret_backend: Option<SecretBackend>,
     /// The secret store is the system one (keyring / file / memory fallback),
     /// not a test's memory store.
@@ -457,6 +461,7 @@ impl Settings {
                 }
             }),
             Message::TestNotification => Action::effect(Effect::TestNotification),
+            Message::OpenNotificationSettings => Action::effect(Effect::OpenNotificationSettings),
             Message::Tab(tab) => {
                 self.tab = tab;
                 Action::task(iced::widget::operation::snap_to(

@@ -179,11 +179,7 @@ impl Viewer {
                     if open_after {
                         Action::task(Task::perform(transfer::open_path(path), ViewerMsg::Opened))
                     } else {
-                        Action::effect(Effect::Toast(
-                            BannerKind::Success,
-                            t!("room_timeline.downloaded").into_owned(),
-                            path.display().to_string(),
-                        ))
+                        Action::effect(Effect::Downloaded(path))
                     }
                 }
                 DlEvent::Failed(e) => {
@@ -384,6 +380,17 @@ mod tests {
             &mut ctx,
         );
         assert!(matches!(a.effects.as_slice(), [Effect::Toast(..)]));
+        // A finished "Save as…" asks for the toast that shows the file.
+        let saved = PathBuf::from("/tmp/x/f.pdf");
+        let a = v.update(
+            ViewerMsg::Transfer(f.clone(), DlEvent::Done(saved.clone()), false),
+            &mut ctx,
+        );
+        assert!(matches!(a.effects.as_slice(), [Effect::Downloaded(p)] if *p == saved));
+        assert_eq!(
+            v.render.transfer("m", &f.url),
+            Some(&Transfer::Done(saved.clone()))
+        );
         // Mentions become effects.
         let a = v.update(
             ViewerMsg::Render(RenderMsg::OpenUser("bob".into())),

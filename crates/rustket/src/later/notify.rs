@@ -229,8 +229,8 @@ impl ReminderNotifier {
                     },
                 }
             }
-            Msg::Shown(key, Event::Failed(e), sound) => {
-                tracing::debug!(error = %e, "reminder notification not shown");
+            Msg::Shown(key, event @ (Event::Failed(_) | Event::NotAllowed), sound) => {
+                tracing::debug!(?event, "reminder notification not shown");
                 let current = self.shown.remove(&key).is_some();
                 (Task::none(), sound.filter(|_| current))
             }

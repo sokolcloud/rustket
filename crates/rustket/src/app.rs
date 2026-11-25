@@ -755,6 +755,8 @@ impl App {
                 t!("settings.locales_folder_open_failed"),
                 path,
             ),
+            Message::RevealFile(path) => self.reveal_file(path),
+            Message::OpenNotificationSettings => self.open_notification_settings(),
             Message::FileNotOpened(path) => {
                 self.toast(BannerKind::Error, t!("room_timeline.open_failed"), path)
             }

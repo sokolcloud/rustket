@@ -161,3 +161,21 @@ desktop.reminders_missed_body:
   es: "Abre Más tarde para verlos"
   th: "เปิดภายหลังเพื่อดู"
   zh: "打开稍后查看"
+desktop.blocked_title:
+  en: "Notifications are turned off for Rustket in System Settings"
+  ru: "Уведомления Rustket выключены в Системных настройках"
+  es: "Las notificaciones de Rustket están desactivadas en Ajustes del Sistema"
+  th: "การแจ้งเตือนของ Rustket ถูกปิดอยู่ในการตั้งค่าระบบ"
+  zh: "Rustket 的通知已在“系统设置”中关闭"
+desktop.blocked_body:
+  en: "Allow them in System Settings → Notifications → Rustket."
+  ru: "Разрешите их в Системных настройках → Уведомления → Rustket."
+  es: "Permítelas en Ajustes del Sistema → Notificaciones → Rustket."
+  th: "อนุญาตได้ที่การตั้งค่าระบบ → การแจ้งเตือน → Rustket"
+  zh: "请在“系统设置”→“通知”→“Rustket”中允许。"
+desktop.open_system_settings:
+  en: "Open System Settings"
+  ru: "Открыть Системные настройки"
+  es: "Abrir Ajustes del Sistema"
+  th: "เปิดการตั้งค่าระบบ"
+  zh: "打开系统设置"

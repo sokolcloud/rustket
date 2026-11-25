@@ -11,7 +11,7 @@
 //! the app only opens the app.
 //!
 //! Authorization is asked for with the first notification (alerts and
-//! sounds). While it is denied, posting fails ([`Event::Failed`]) and the
+//! sounds). While it is denied, posting ends [`Event::NotAllowed`] and the
 //! app plays the sound itself; the user can allow notifications later in
 //! System Settings, which the next notification picks up.
 //!
@@ -397,7 +397,7 @@ impl Notifier for MacNotifier {
                 return Event::Failed("no notification center".into());
             }
             if !authorized().await {
-                return Event::Failed("notifications are not allowed".into());
+                return Event::NotAllowed;
             }
             let posted = tokio::task::spawn_blocking(move || {
                 let file = n.sound.as_ref().and_then(sound::notification_sound);

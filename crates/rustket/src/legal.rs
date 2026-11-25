@@ -2,7 +2,7 @@
 //! tab, the first-launch terms screen and (on macOS) the Help menu. The URLs
 //! live only here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rustket_core::config::AppConfig;
 
@@ -66,7 +66,7 @@ pub fn third_party_notices() -> Option<PathBuf> {
         .clone()
 }
 
-fn notice_candidates(exe_dir: &std::path::Path) -> Vec<PathBuf> {
+fn notice_candidates(exe_dir: &Path) -> Vec<PathBuf> {
     let up = exe_dir.join("..");
     vec![
         up.join("Resources").join("THIRD-PARTY-NOTICES.txt"),
@@ -75,10 +75,72 @@ fn notice_candidates(exe_dir: &std::path::Path) -> Vec<PathBuf> {
     ]
 }
 
+/// Copies `src` (a file of the app bundle) to `dir`, replacing an older
+/// copy, read-only, and returns the copy. macOS opens the copy: a viewer
+/// touching a file inside the app bundle raises the "App Management"
+/// privacy prompt.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn viewer_copy(src: &Path, dir: &Path) -> std::io::Result<PathBuf> {
+    let name = src
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no file name"))?;
+    std::fs::create_dir_all(dir)?;
+    let dst = dir.join(name);
+    match std::fs::remove_file(&dst) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::fs::write(&dst, std::fs::read(src)?)?;
+    let mut perms = std::fs::metadata(&dst)?.permissions();
+    #[cfg(unix)]
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o444);
+    #[cfg(not(unix))]
+    perms.set_readonly(true);
+    std::fs::set_permissions(&dst, perms)?;
+    Ok(dst)
+}
+
+/// Where [`viewer_copy`] puts the notices: `<cache>/notices`.
+#[cfg(target_os = "macos")]
+pub fn notices_copy_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "rustket").map(|d| d.cache_dir().join("notices"))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn viewer_copy_replaces_a_read_only_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("THIRD-PARTY-NOTICES.txt");
+        std::fs::write(&src, "first").unwrap();
+        let dir = tmp.path().join("cache").join("notices");
+        let dst = viewer_copy(&src, &dir).unwrap();
+        assert_eq!(dst, dir.join("THIRD-PARTY-NOTICES.txt"));
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "first");
+        assert!(std::fs::metadata(&dst).unwrap().permissions().readonly());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dst).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o444);
+        }
+        // The read-only older copy is replaced.
+        std::fs::write(&src, "second").unwrap();
+        let again = viewer_copy(&src, &dir).unwrap();
+        assert_eq!(again, dst);
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "second");
+    }
+
+    #[test]
+    fn viewer_copy_fails_without_the_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing.txt");
+        assert!(viewer_copy(&missing, &tmp.path().join("out")).is_err());
+    }
 
     #[test]
     fn terms_are_gated_by_version() {

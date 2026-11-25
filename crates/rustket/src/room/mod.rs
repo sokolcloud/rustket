@@ -180,6 +180,9 @@ fn no_session() -> rocketchat::Error {
 pub enum Effect {
     /// Transient notification (title, body).
     Toast(BannerKind, String, String),
+    /// A "Save as…" download finished at this path (a toast that can show
+    /// it in the file manager).
+    Downloaded(std::path::PathBuf),
     /// Open another room of the same server.
     OpenRoom(String),
     /// Load the next older history page of this room.

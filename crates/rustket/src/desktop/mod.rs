@@ -86,6 +86,9 @@ pub enum Request {
         server_id: ServerId,
         call_id: String,
     },
+    /// The test notification was not shown: the system does not allow the
+    /// app's notifications (macOS System Settings).
+    NotificationsBlocked,
 }
 
 /// A value of `me.settings.preferences`.

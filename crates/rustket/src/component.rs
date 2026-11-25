@@ -179,6 +179,8 @@ pub enum Effect {
     ClearOfflineCache,
     /// Show a test desktop notification.
     TestNotification,
+    /// Open the app's notification settings in System Settings (macOS).
+    OpenNotificationSettings,
     /// Play Rocket.Chat sound `name` at the volume of the component's
     /// account (a sound picked in Account → Preferences).
     PreviewSound(String),

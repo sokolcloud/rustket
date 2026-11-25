@@ -109,8 +109,8 @@ pub fn update(n: &mut CallNotifier, m: Msg) -> (Option<(ServerId, String, bool)>
             }
             None
         }
-        Msg::Shown(sid, call_id, Event::Failed(e)) => {
-            tracing::debug!(error = %e, "call notification not shown");
+        Msg::Shown(sid, call_id, event @ (Event::Failed(_) | Event::NotAllowed)) => {
+            tracing::debug!(?event, "call notification not shown");
             n.shown.remove(&(sid, call_id));
             None
         }

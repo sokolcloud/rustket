@@ -46,13 +46,32 @@ impl App {
         )
     }
 
-    /// Opens a file shipped with the app with the system's viewer.
+    /// Opens a file shipped with the app (the third-party notices) with the
+    /// system's viewer.
     pub(crate) fn open_file(&mut self, path: std::path::PathBuf) -> Task<Message> {
         if !self.open_urls {
             return Task::none();
         }
         let shown = path.display().to_string();
-        Task::perform(crate::room::timeline::transfer::open_path(path), move |r| {
+        let open = async move {
+            // macOS: a copy outside the bundle (see `legal::viewer_copy`).
+            #[cfg(target_os = "macos")]
+            let path = {
+                let src = path.clone();
+                tokio::task::spawn_blocking(move || {
+                    let dir = crate::legal::notices_copy_dir()?;
+                    crate::legal::viewer_copy(&src, &dir)
+                        .inspect_err(|e| tracing::debug!(error = %e, "cannot copy a bundled file"))
+                        .ok()
+                })
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(path)
+            };
+            crate::room::timeline::transfer::open_path(path).await
+        };
+        Task::perform(open, move |r| {
             if r.is_err() {
                 tracing::warn!("cannot open a bundled file");
                 Message::FileNotOpened(shown.clone())
@@ -60,6 +79,66 @@ impl App {
                 Message::Noop
             }
         })
+    }
+
+    /// The toast of a finished "Save as…" download, with a button that
+    /// shows the file in the file manager.
+    pub(super) fn toast_downloaded(&mut self, path: std::path::PathBuf) -> Task<Message> {
+        let label = if cfg!(target_os = "macos") {
+            t!("room_timeline.show_in_finder")
+        } else {
+            t!("room_timeline.show_in_folder")
+        };
+        self.toast_with_action(
+            BannerKind::Success,
+            t!("room_timeline.downloaded"),
+            path.display().to_string(),
+            label,
+            Message::RevealFile(path),
+        )
+    }
+
+    /// Shows a downloaded file in the file manager.
+    pub(crate) fn reveal_file(&mut self, path: std::path::PathBuf) -> Task<Message> {
+        if !self.open_urls {
+            return Task::none();
+        }
+        let shown = path.display().to_string();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || crate::desktop::open::reveal(&path))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            move |r| match r {
+                Ok(()) => Message::Noop,
+                Err(e) => {
+                    tracing::debug!(error = %e, "cannot show a downloaded file");
+                    Message::FileNotOpened(shown.clone())
+                }
+            },
+        )
+    }
+
+    /// Opens the app's notification settings in System Settings (macOS; the
+    /// button is not offered elsewhere).
+    pub(crate) fn open_notification_settings(&mut self) -> Task<Message> {
+        if !self.open_urls {
+            return Task::none();
+        }
+        Task::perform(
+            async {
+                tokio::task::spawn_blocking(crate::desktop::open::notification_settings)
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            |r| {
+                if let Err(e) = r {
+                    tracing::warn!(error = %e, "cannot open the notification settings");
+                }
+                Message::Noop
+            },
+        )
     }
 
     /// A URL clicked in a room: permalinks to messages of this server open

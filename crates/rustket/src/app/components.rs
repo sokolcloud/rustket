@@ -326,6 +326,7 @@ impl App {
                 Effect::RegisterUrlHandler => self.open_register_handler(),
                 Effect::ClearImageCache => self.clear_image_cache(),
                 Effect::ClearOfflineCache => crate::cache::clear_all(self),
+                Effect::OpenNotificationSettings => self.open_notification_settings(),
                 Effect::TestNotification => {
                     let account = self
                         .active
@@ -802,6 +803,13 @@ impl App {
                     ))
                 }
                 desktop::Request::ForeignSignal(id, signal) => self.on_foreign_signal(id, signal),
+                desktop::Request::NotificationsBlocked => self.toast_with_action(
+                    rustket_ui::widget::BannerKind::Warning,
+                    t!("desktop.blocked_title"),
+                    t!("desktop.blocked_body"),
+                    t!("desktop.open_system_settings"),
+                    Message::OpenNotificationSettings,
+                ),
             });
         }
         Task::batch(tasks)
@@ -915,6 +923,7 @@ impl App {
             themes: &self.themes,
             locales: &self.locales,
             handler_registered: self.handler_registered,
+            notifications_blocked: self.desktop.notifications.os_blocked(),
             secret_backend: self.secret_backend,
             secrets_system: self.secrets_mode == SecretsMode::System,
             secrets_switching: self.secrets_switching,

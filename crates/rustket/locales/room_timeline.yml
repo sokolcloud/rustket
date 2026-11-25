@@ -383,6 +383,18 @@ room_timeline.downloaded:
   es: "Descarga completada"
   th: "ดาวน์โหลดเสร็จแล้ว"
   zh: "下载完成"
+room_timeline.show_in_finder:
+  en: "Show in Finder"
+  ru: "Показать в Finder"
+  es: "Mostrar en Finder"
+  th: "แสดงใน Finder"
+  zh: "在 Finder 中显示"
+room_timeline.show_in_folder:
+  en: "Show in folder"
+  ru: "Показать в папке"
+  es: "Mostrar en la carpeta"
+  th: "แสดงในโฟลเดอร์"
+  zh: "在文件夹中显示"
 room_timeline.download_failed:
   en: "Couldn't download %{name}"
   ru: "Не удалось скачать %{name}"

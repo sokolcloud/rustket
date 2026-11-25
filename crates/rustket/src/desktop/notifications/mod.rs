@@ -94,6 +94,9 @@ pub enum Event {
         server_sound: bool,
     },
     Failed(String),
+    /// Not shown: the system does not allow the app's notifications (macOS,
+    /// System Settings). Otherwise like [`Event::Failed`].
+    NotAllowed,
 }
 
 /// A notification server signal.
@@ -252,6 +255,9 @@ pub struct Notifications {
     /// Id of the shown test notification.
     test_id: Option<u32>,
     seq: u64,
+    /// The system blocks the app's notifications: the last showing ended
+    /// [`Event::NotAllowed`] (cleared by the next shown one).
+    os_blocked: bool,
 }
 
 impl std::fmt::Debug for Notifications {
@@ -493,7 +499,13 @@ impl Notifications {
             shown: HashMap::new(),
             test_id: None,
             seq: 0,
+            os_blocked: false,
         }
+    }
+
+    /// The system does not allow the app's notifications (as last seen).
+    pub fn os_blocked(&self) -> bool {
+        self.os_blocked
     }
 
     /// Shows `notification` unless a local rule suppresses it; returns the
@@ -674,6 +686,7 @@ impl Notifications {
                 event,
             } => match event {
                 Event::Shown { id, server_sound } => {
+                    self.os_blocked = false;
                     let play = sound.filter(|_| !server_sound);
                     let Some(t) = target else {
                         self.test_id = Some(id);
@@ -691,8 +704,17 @@ impl Notifications {
                         None => (self.close_ids(vec![id]), Vec::new(), None),
                     }
                 }
-                Event::Failed(e) => {
-                    tracing::debug!(error = %e, "notification not shown");
+                Event::Failed(_) | Event::NotAllowed => {
+                    let mut requests = Vec::new();
+                    if let Event::Failed(e) = &event {
+                        tracing::debug!(error = %e, "notification not shown");
+                    } else {
+                        self.os_blocked = true;
+                        // Only the test (asked for in the settings) says why.
+                        if target.is_none() {
+                            requests.push(Request::NotificationsBlocked);
+                        }
+                    }
                     let current = match &target {
                         Some(t) => self.shown.get(t).is_some_and(|e| e.seq == seq),
                         None => true,
@@ -701,7 +723,7 @@ impl Notifications {
                         self.shown.remove(t);
                     }
                     // Not shown: the sound plays alone.
-                    (Task::none(), Vec::new(), sound.filter(|_| current))
+                    (Task::none(), requests, sound.filter(|_| current))
                 }
             },
             Message::Signal { id, signal } => {
@@ -1237,6 +1259,67 @@ mod tests {
         );
         let (_, req, _) = n.update(signal(10, Signal::Action("join".into())));
         assert!(matches!(&req[2], Request::JoinCall { call_id, .. } if call_id == "c1"));
+    }
+
+    /// Not allowed by the system: like a failure (the sound plays alone, the
+    /// room's entry is dropped), remembered until a notification shows, and
+    /// only the test asks the app to say why.
+    #[test]
+    fn not_allowed_is_remembered_and_explained_for_the_test() {
+        use crate::desktop::sound::RcSound;
+        let chime = Some(RcSound {
+            name: "chime".into(),
+            volume: 100,
+        });
+        let mut n = Notifications::default();
+        let target = Target {
+            server_id: ServerId("s1".into()),
+            rid: "r1".into(),
+        };
+        let msg = |target: Option<Target>, seq, event| Message::Shown {
+            target,
+            seq,
+            sound: chime.clone(),
+            event,
+        };
+        assert!(!n.os_blocked());
+        n.shown.insert(
+            target.clone(),
+            Entry {
+                id: None,
+                seq: 1,
+                tmid: None,
+                seen_unread: false,
+                mid: String::new(),
+                about: None,
+                conference_id: None,
+                on_screen: false,
+            },
+        );
+        // A room's notification: the sound alone, no request.
+        let (_, req, sound) = n.update(msg(Some(target.clone()), 1, Event::NotAllowed));
+        assert!(req.is_empty());
+        assert_eq!(sound, chime);
+        assert!(n.is_empty());
+        assert!(n.os_blocked());
+        // The test notification: the sound alone and the explanation.
+        let (_, req, sound) = n.update(msg(None, 2, Event::NotAllowed));
+        assert!(matches!(req.as_slice(), [Request::NotificationsBlocked]));
+        assert_eq!(sound, chime);
+        assert!(n.os_blocked());
+        // Another failure neither explains nor clears it.
+        let (_, req, _) = n.update(msg(None, 3, Event::Failed("x".into())));
+        assert!(req.is_empty());
+        assert!(n.os_blocked());
+        // A shown notification clears it.
+        let shown = Event::Shown {
+            id: 1,
+            server_sound: true,
+        };
+        let (_, req, sound) = n.update(msg(None, 4, shown));
+        assert!(req.is_empty());
+        assert_eq!(sound, None);
+        assert!(!n.os_blocked());
     }
 
     /// The app plays a notification's sound only when its backend did not:

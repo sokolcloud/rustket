@@ -406,6 +406,7 @@ impl App {
             tasks.push(match e {
                 room::Effect::CloseRoom => self.close_room_view(sid, rid),
                 room::Effect::Toast(kind, title, body) => self.toast(kind, title, body),
+                room::Effect::Downloaded(path) => self.toast_downloaded(path),
                 room::Effect::OpenRoom(rid) => self.open_room(sid, &rid),
                 room::Effect::OpenUrl(url) => self.open_room_url(sid, url),
                 // Handled by RoomView.
