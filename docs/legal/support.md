@@ -1,18 +1,13 @@
 # Rustket support
 
-Draft for the hosted page `https://sokolcloud.github.io/rustket/support/`
-(`crates/rustket/src/legal.rs`). Values marked TODO(user) must be filled in
-before publication.
-
 ## Contact the developer
 
 Rustket is developed by SOKOL CLOUD & PRODUCTION COMPANY LIMITED.
 
-- Email: TODO(user) support email
-- Phone: TODO(user) phone number with country code
-- Address: TODO(user) registered legal address
+- Email: [contact@sokolcloud.com](mailto:contact@sokolcloud.com)
+- Address: No. 340/6, Moo 12, Nong Prue Subdistrict, Bang Lamung District, Chon Buri 20150, Thailand
 
-We usually answer within TODO(user) business days.
+We usually answer within 5 business days.
 
 ## Who to ask
 

@@ -1,15 +1,6 @@
 # Rustket terms of use
 
-Draft for the hosted page `https://sokolcloud.github.io/rustket/terms/`
-(`crates/rustket/src/legal.rs`). The in-app terms screen
-(`crates/rustket/src/screens/terms.rs`, `legal.terms_*` strings) is the short
-form of this text; when its meaning changes, bump
-`crate::legal::TERMS_VERSION` so everyone accepts it again. Values marked
-TODO(user) must be filled in before publication. This text is a
-plain-language draft, not legal advice; have it reviewed before you rely
-on it.
-
-Last updated: TODO(user) date of publication.
+Last updated: 25 November 2026.
 
 ## 1. About these terms
 
@@ -81,8 +72,8 @@ to accept the new terms before you continue.
 ## 8. Contact
 
 - Support page: https://sokolcloud.github.io/rustket/support/
-- Email: TODO(user) support email
-- Address: TODO(user) registered legal address
+- Email: [contact@sokolcloud.com](mailto:contact@sokolcloud.com)
+- Address: No. 340/6, Moo 12, Nong Prue Subdistrict, Bang Lamung District, Chon Buri 20150, Thailand
 
 Rocket.Chat is a trademark of Rocket.Chat Technologies Corp. Rustket is an
 independent client and is not affiliated with or endorsed by Rocket.Chat

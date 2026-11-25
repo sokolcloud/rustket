@@ -1,20 +1,14 @@
 # Rustket privacy policy
 
-Draft for the hosted page `https://sokolcloud.github.io/rustket/privacy/`
-(`crates/rustket/src/legal.rs`). Values marked TODO(user) must be filled in
-before it is published. This text is a plain-language draft, not legal
-advice; have it reviewed before you rely on it.
-
-Last updated: TODO(user) date of publication.
+Last updated: 25 November 2026.
 
 ## Who we are
 
 Rustket is a desktop chat client developed and distributed by
 SOKOL CLOUD & PRODUCTION COMPANY LIMITED ("we", "us").
 
-- Address: TODO(user) registered legal address
-- Email: TODO(user) support email
-- Phone: TODO(user) phone number with country code
+- Address: No. 340/6, Moo 12, Nong Prue Subdistrict, Bang Lamung District, Chon Buri 20150, Thailand
+- Email: [contact@sokolcloud.com](mailto:contact@sokolcloud.com)
 
 ## The short version
 
@@ -91,4 +85,4 @@ announced in the app's release notes.
 
 ## Contact
 
-Questions about this policy: TODO(user) support email, or the address above.
+Questions about this policy: [contact@sokolcloud.com](mailto:contact@sokolcloud.com), or the address above.
