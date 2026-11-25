@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-11-25
+
+### Added
+
+- Two schemes for unread indicators, in Settings → Appearance → Unread
+  indicators. **Rocket.Chat**, the new default (existing installs included),
+  looks like the Rocket.Chat 8.9 web client and the official desktop app.
+  **Rustket (original)** keeps the previous, quieter look unchanged.
+  Notifications and sounds are the same in both.
+- Under Rocket.Chat:
+  - Room badges are red for mentions of you, blue for unread threads,
+    orange for `@all`/`@here` and grey for everything else counted. They
+    show full numbers and no dots. Unread room names are brighter, and a
+    room's notification settings leave its badge alone, as in Rocket.Chat.
+  - Collapsed sidebar sections show the summed counter, and their tooltip
+    lists what is unread.
+  - In a room:
+    - The Threads button shows a counter.
+    - An unread thread summary is filled blue.
+    - Mentions are coloured text, without `@` unless your account's
+      preferences show the symbol.
+    - Highlight words are white on red.
+    - A message you jump to is pale yellow for two seconds.
+  - The window title, tray, Dock, menu bar and workspace icons count all
+    unread messages, like Rocket.Chat. The tray, the Dock and the workspace
+    icons show `•` when there are only alerts.
+  - The tray icon and the window icon (X11 and Windows) get Rocket.Chat's
+    red badge (1–9, `+9` or a dot). Workspace icons get a grey badge.
+  - The colours come from new `rc_*` theme tokens that themes may override.
+- Settings → Help, the README and the theme documentation describe both
+  schemes.
+
+### Fixed
+
+- The "…" menu of a message in a room or thread no longer vanishes on the
+  first mouse move when it opens above the message, and no longer blinks
+  when it opens below it.
+
+### Changed
+
+- macOS: the dmg and the app are signed with a Developer ID certificate and
+  notarized by Apple, so Gatekeeper no longer blocks the first start.
+  Signing and notarization run in the release workflow (see
+  `docs/release-signing.md`). The first start after updating from an
+  unsigned version may ask once for access to the saved login in the
+  keychain.
+
 ## [0.2.10] - 2026-11-24
 
 ### Fixed
@@ -426,7 +473,8 @@ First public release.
 - Auth tokens and end-to-end encryption keys are kept in the desktop keyring,
   with a warned-about private file fallback when no keyring is available.
 
-[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.10...HEAD
+[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.11...HEAD
+[0.2.11]: https://github.com/sokolcloud/rustket/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/sokolcloud/rustket/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/sokolcloud/rustket/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/sokolcloud/rustket/compare/v0.2.7...v0.2.8
