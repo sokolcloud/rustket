@@ -51,7 +51,7 @@ ORIGIN=http://127.0.0.1:$REVIEW_TUNNEL_PORT
 # What the Mac app sends (crates/rocketchat/src/lib.rs USER_AGENT), so
 # Cloudflare rules are checked against the real client.
 RUSTKET_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$KIT_DIR/../../Cargo.toml" 2>/dev/null | head -n 1) || true
-RUSTKET_UA="Rustket/${RUSTKET_VERSION:-0.2.11} (Macintosh; Mac OS X)"
+RUSTKET_UA="Rustket/${RUSTKET_VERSION:-0.3.0} (Macintosh; Mac OS X)"
 
 ERR=$(mktemp)
 trap 'rm -f "$ERR"' EXIT

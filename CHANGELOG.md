@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-25
+
+### Added
+
+- A terms of use screen ("Before you start") on the first launch, shown
+  once to existing users too: what is not tolerated, how reports and
+  moderation work, the tools you have, how your data is handled, and links
+  to the full terms and the privacy policy. Rustket does not connect to
+  your workspaces, show notifications or open links until you click
+  **I agree**, and the window stays on screen until then even with
+  **Start minimized**; **Quit** closes the app.
+- Block and unblock in direct messages: **Block** / **Unblock** in the User
+  info panel of the other member (Block asks first). Neither of you can
+  send messages in that direct message, and their messages in it are
+  collapsed behind "Message from a blocked user" (a click shows one).
+- **Report user** sends a report about a person to the workspace's
+  moderators, from the "…" menu of their message (next to Report) or from
+  their User info panel.
+- Hidden words, in Settings → Privacy & storage: messages from others that
+  contain one of your words or phrases (in the text, a file's name or
+  description, or a quoted message) are collapsed in every room behind
+  "Hidden by your hidden words", and their notifications show "New message"
+  instead of the text. **Whole words only** is on by default; case is
+  always ignored.
+- **Delete my account…** in My account → Security, when the workspace
+  allows it. You confirm with your password (or your username for accounts
+  without one); if you are the last owner of some rooms, Rustket lists which
+  rooms get a new owner and which are removed, and asks again.
+- **Import…** next to the theme picker (Settings → Appearance) and the
+  language picker (Settings → General): copies the theme or locale `.toml`
+  files you pick into the right folder, after checking them. Nothing is
+  copied if one of them is not usable.
+- Downloads you save to a place you choose: the "Download finished" toast
+  has **Show in Finder** (macOS, the file is selected) or **Show in folder**
+  (Linux, Windows).
+- Settings → Help has a "Support and contact" card with links to the
+  support page, the privacy policy and the terms of use.
+- macOS: the menu bar follows the interface language, and Rustket adds its
+  own items and menus to it.
+  - **Rustket**: Settings… (⌘,); About Rustket now opens Settings → About.
+  - **View**: Enter Full Screen.
+  - **Window**: Minimize, Zoom, Close (⌘W, hides the window), Rustket (⌘0,
+    brings it back, as does a click on the Dock icon) and Bring All to
+    Front.
+  - **Help**: Rustket Help (Settings → Help), Support, Privacy Policy and
+    Terms of Use.
+- macOS: when notifications are turned off for Rustket in System Settings,
+  **Send test notification** says so instead of only playing the sound, and
+  Settings → Notifications shows a row; both have **Open System Settings**,
+  which opens Rustket's notification page there.
+- macOS: a Mac App Store build of Rustket (in the App Store once Apple has
+  reviewed it). It updates through the App Store instead of the built-in
+  updater, runs in the App Sandbox, keeps login tokens only in the Keychain
+  (or in memory), and "Launch at login" registers Rustket as a login item
+  (macOS 13 and later), which macOS may ask you to allow in System
+  Settings → General → Login Items. The dmg from the release page keeps
+  the built-in updater.
+
+### Changed
+
+- About (Settings → About) shows the developer, links to support, the
+  privacy policy and the terms of use, **Third-party notices** (where the
+  package includes them; not in the .deb), the Rocket.Chat server
+  documentation and a note that Rustket is an independent client, not
+  affiliated with Rocket.Chat. The "Rocket.Chat website" link is gone and
+  "Documentation" is now "Rocket.Chat server documentation"; the tagline
+  no longer calls Rustket a Rocket.Chat client. On macOS the notices are a
+  `.txt` file that opens as a read-only copy outside the app, so macOS does
+  not ask for "App Management" permission.
+- A file you download to a place you choose is written to Rustket's cache
+  first and moved there when complete, so no `.part` file appears next to
+  it while it downloads.
+- macOS: the window keeps the native traffic-light buttons. Rustket's own
+  title row (workspaces and the settings gear) runs next to them; with
+  "Use system window title bar" on, the workspaces stay in the left column
+  under a plain title strip.
+- macOS: notifications go through the current macOS notification system.
+  macOS asks once whether Rustket may send notifications, with the first
+  one; you can change it later in System Settings → Notifications → Rustket.
+- macOS: with Language set to "System" (Settings → General), the interface
+  follows the macOS preferred languages (System Settings → General →
+  Language & Region) when Rustket is started from Finder or the Dock.
+- macOS: the app lists its five languages to the system, the local network
+  permission prompt explains why Rustket asks, in those languages, and the
+  app is in the Business category.
+- macOS: sounds, idle detection (automatic away) and opening downloaded
+  files, folders and the third-party notices no longer start helper
+  programs.
+
+### Fixed
+
+- macOS: Quit Rustket (⌘Q) quits like the tray's Quit: settings are saved
+  and unsaved administration settings are asked about first.
+
 ## [0.2.11] - 2026-11-25
 
 ### Added
@@ -473,7 +567,8 @@ First public release.
 - Auth tokens and end-to-end encryption keys are kept in the desktop keyring,
   with a warned-about private file fallback when no keyring is available.
 
-[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sokolcloud/rustket/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/sokolcloud/rustket/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/sokolcloud/rustket/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/sokolcloud/rustket/compare/v0.2.8...v0.2.9

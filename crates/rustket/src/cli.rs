@@ -20,7 +20,7 @@ pub enum Action {
     Fail(String),
 }
 
-/// `rustket 0.2.11`.
+/// `rustket 0.3.0`.
 pub fn version_line() -> String {
     format!("{BIN} {VERSION}")
 }
