@@ -83,6 +83,8 @@ N="$(zcat "$X/usr/share/doc/rustket/THIRD-PARTY-NOTICES.gz")"
 check "notices: Noto Sans OFL" "grep -q 'SIL Open Font License' <<<\"\$N\""
 check "notices: Lucide" "grep -q 'Copyright (c) 2013-2022 Cole Bemis' <<<\"\$N\""
 check "notices: crate license texts" "grep -q 'Apache License' <<<\"\$N\" && grep -q '^serde [0-9.]* |' <<<\"\$N\""
+# Vendored crates (vendor/, [patch.crates-io]) are path crates; workspace members are not listed.
+check "notices: vendored winit" "grep -q '^winit [0-9.]* |' <<<\"\$N\" && ! grep -q '^rocketchat [0-9.]* |' <<<\"\$N\""
 V="$("$X/usr/bin/rustket" --version)"
 check "packaged binary --version ($V)" "[[ '$V' =~ ^rustket\ [0-9]+\.[0-9]+\.[0-9]+ ]]"
 HELP="$("$X/usr/bin/rustket" --help)"
