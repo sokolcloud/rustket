@@ -209,6 +209,10 @@ impl Settings {
     pub fn allow_password_change(&self) -> bool {
         self.bool_or("Accounts_AllowPasswordChange", true)
     }
+    /// `Accounts_AllowDeleteOwnAccount` (public): "Delete my account".
+    pub fn allow_delete_own_account(&self) -> bool {
+        self.bool_or("Accounts_AllowDeleteOwnAccount", false)
+    }
     pub fn allow_avatar_change(&self) -> bool {
         self.bool_or("Accounts_AllowUserAvatarChange", true)
     }
@@ -260,8 +264,14 @@ mod tests {
     fn from_fixture() {
         let v: Value = crate::test_util::fixture("settings_public_page.json");
         let list: Vec<Setting> = serde_json::from_value(v["settings"].clone()).unwrap();
-        let s = Settings::from_list(list);
+        let mut s = Settings::from_list(list);
         assert!(!s.is_empty());
+        // Off on the dev server, and off when unknown.
+        assert!(!s.allow_delete_own_account());
+        s.remove("Accounts_AllowDeleteOwnAccount");
+        assert!(!s.allow_delete_own_account());
+        s.set_value("Accounts_AllowDeleteOwnAccount", json!(true));
+        assert!(s.allow_delete_own_account());
     }
 
     #[test]

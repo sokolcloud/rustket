@@ -73,6 +73,12 @@ pub fn play_command(
     file_command(resolved, &file)
 }
 
+/// Runs a player command to its end (or the timeout). Blocking.
+#[cfg(windows)]
+pub fn run(cmd: std::process::Command) {
+    super::run_reaped(cmd);
+}
+
 /// The command playing the WAV file `file`.
 #[cfg(windows)]
 pub fn file_command(resolved: &Resolved, file: &Path) -> Option<std::process::Command> {

@@ -84,6 +84,8 @@ pub enum Message {
     WindowFocused(bool),
     Tick,
     AddServer(add_server::Message),
+    /// The terms of use screen (`crate::screens::terms`).
+    Terms(crate::screens::terms::Message),
     ShowAddServer,
     Login(ServerId, login::Message),
     Rail(rail::Message),
@@ -274,6 +276,11 @@ pub enum Message {
     ThemesFolderNotOpened(String),
     /// The file manager could not open the locales folder (its path).
     LocalesFolderNotOpened(String),
+    /// No viewer opened a file shipped with the app (its path).
+    FileNotOpened(String),
+    /// Theme or locale files were imported (their names; empty: cancelled)
+    /// or not (why).
+    Imported(crate::import::Kind, Result<Vec<String>, String>),
     /// Offline cache (`crate::cache`).
     Cache(crate::cache::Msg),
     /// In-app updates (`crate::updater`).

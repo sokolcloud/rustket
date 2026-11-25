@@ -16,7 +16,8 @@ pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a,
     let autostart: Element<'a, Message> = match s.autostart {
         Some(on) => switch(
             t!("settings.autostart").into_owned(),
-            None,
+            s.autostart_approval
+                .then(|| t!("settings.autostart_approval").into_owned()),
             on,
             (!s.autostart_busy && s.autostart_at.is_some()).then_some(Message::SetAutostart),
         ),
@@ -62,8 +63,10 @@ pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a,
                 ui.start_minimized,
                 Some(Message::SetStartMinimized),
             ),
-            autostart,
-        ],
+        ]
+        .into_iter()
+        .chain((!s.autostart_hidden()).then_some(autostart))
+        .collect(),
     );
 
     // macOS: the app bundle declares the scheme; nothing to register.

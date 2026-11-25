@@ -1,12 +1,17 @@
 //! Start on login: on Linux `$XDG_CONFIG_HOME/autostart/rustket.desktop`
 //! (XDG Autostart spec), on macOS a launchd agent
-//! `~/Library/LaunchAgents/<bundle id>.plist`, on Windows the `Rustket` value
+//! `~/Library/LaunchAgents/<bundle id>.plist` (the Mac App Store flavor:
+//! `SMAppService.mainApp` on macOS 13+, nothing before, because the sandbox
+//! redirects the agent into its container), on Windows the `Rustket` value
 //! of `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. The file-based
 //! locations take their base directory so tests use temporary directories.
 //! Everything blocks (call it from `spawn_blocking`).
 
 use std::io;
 use std::path::{Path, PathBuf};
+
+#[cfg(target_os = "macos")]
+mod macos;
 
 /// The XDG autostart file name.
 pub const FILE: &str = "rustket.desktop";
@@ -27,13 +32,49 @@ pub enum Autostart {
     /// The current user's `Run` registry key.
     #[cfg(windows)]
     RunKey,
+    /// The app itself as a login item (`SMAppService.mainApp`, macOS 13+).
+    #[cfg(target_os = "macos")]
+    LoginItem,
+}
+
+/// Whether the app starts at login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    Off,
+    On,
+    /// Registered, but the user has to allow it in System Settings → Login
+    /// Items first.
+    NeedsApproval,
+}
+
+impl State {
+    /// The switch shows "on" (the user asked for it).
+    pub fn is_on(self) -> bool {
+        self != Self::Off
+    }
+}
+
+/// The state of an `SMAppServiceStatus` value: `notRegistered` (0),
+/// `enabled` (1), `requiresApproval` (2), `notFound` (3).
+#[cfg(any(target_os = "macos", test))]
+pub fn login_item_state(status: isize) -> State {
+    match status {
+        1 => State::On,
+        2 => State::NeedsApproval,
+        _ => State::Off,
+    }
 }
 
 impl Autostart {
-    /// This platform's location (`None`: unknown home directory).
+    /// This platform's location (`None`: unknown home directory; in the Mac
+    /// App Store flavor, macOS before 13).
     pub fn system() -> Option<Self> {
         #[cfg(all(unix, not(target_os = "macos")))]
         return config_home().map(|config_home| Self::Xdg { config_home });
+        #[cfg(target_os = "macos")]
+        if cfg!(feature = "mas") {
+            return macos::supported().then_some(Self::LoginItem);
+        }
         #[cfg(target_os = "macos")]
         return directories::BaseDirs::new().map(|d| Self::LaunchAgent {
             home: d.home_dir().to_owned(),
@@ -57,6 +98,18 @@ impl Autostart {
             ),
             #[cfg(windows)]
             Self::RunKey => None,
+            #[cfg(target_os = "macos")]
+            Self::LoginItem => None,
+        }
+    }
+
+    /// Whether the app starts at login, including a pending approval.
+    pub fn state(&self) -> State {
+        match self {
+            #[cfg(target_os = "macos")]
+            Self::LoginItem => macos::state(),
+            _ if self.is_enabled() => State::On,
+            _ => State::Off,
         }
     }
 
@@ -80,6 +133,8 @@ impl Autostart {
                 .open(RUN_KEY)
                 .and_then(|k| k.get_string(RUN_VALUE))
                 .is_ok_and(|v| !v.trim().is_empty()),
+            #[cfg(target_os = "macos")]
+            Self::LoginItem => macos::state().is_on(),
         }
     }
 
@@ -104,6 +159,8 @@ impl Autostart {
                     Ok(())
                 }
             }
+            #[cfg(target_os = "macos")]
+            Self::LoginItem => macos::set_enabled(enabled),
         }
     }
 
@@ -291,6 +348,16 @@ mod tests {
         a.set_enabled(false, exe).unwrap();
         assert!(!path.exists() && !a.is_enabled());
         a.set_enabled(false, exe).unwrap();
+    }
+
+    #[test]
+    fn login_item_status_mapping() {
+        assert_eq!(login_item_state(0), State::Off);
+        assert_eq!(login_item_state(1), State::On);
+        assert_eq!(login_item_state(2), State::NeedsApproval);
+        assert_eq!(login_item_state(3), State::Off);
+        assert_eq!(login_item_state(-1), State::Off);
+        assert!(State::NeedsApproval.is_on() && !State::Off.is_on());
     }
 
     #[test]

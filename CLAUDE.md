@@ -43,6 +43,34 @@ Build directories: a full build of this workspace is ~2–10 GB. Agents must reu
 `CARGO_TARGET_DIR` they were given (never invent new ones per probe) and set
 `CARGO_BUILD_JOBS=6`; RAM is shared with other heavy workloads on this machine.
 
+## Mac App Store flavor
+
+Full guide: `docs/app-store.md`. The `mas` cargo feature of `crates/rustket` (off by default)
+builds the sandboxed Mac App Store flavor; it refuses `self-update` at compile time
+(`compile_error!` in `lib.rs`). `packaging/macos/build.sh` with `MAS=1` packages it and
+`.github/workflows/app-store.yml` signs and uploads it.
+
+- MAS-only behaviour goes behind `cfg(feature = "mas")`; changes that help both flavors go
+  into both. Type-check it with `dev/cross-check.sh aarch64-apple-darwin x86_64-apple-darwin
+  -- --features rustket/mas` (and without the feature).
+- Code that runs on macOS (all builds): no child processes (use in-process APIs, not `open`,
+  `afplay`, `ioreg`, re-exec), no writes outside the app container except files the user picks
+  in a panel, no downloaded or interpreted code. Deliberate dmg-only exceptions (not in the MAS
+  build): the software-rendering re-exec, the self-updater's tools (`hdiutil`, `ditto`,
+  `codesign`, `xattr`, and a `/bin/sh` helper that runs `osascript` and `open`) and the
+  autostart LaunchAgent. The MAS build shows no Windows, Linux, GitHub download or updater
+  strings.
+- No private Apple API in Rustket's code: no `CGS*`/`SLS*` symbols, no underscore selectors,
+  no undocumented delegate methods. The MAS build fails on `nm -u` private symbols and on
+  known markers (`packaging/macos/build.sh` `check_binary`).
+- `vendor/winit` is winit from crates.io with the private CGS blur calls removed, wired in for
+  all builds by `[patch.crates-io]` and excluded from the workspace (fmt and clippy skip it).
+  Do not edit it beyond that patch; to update, re-copy the release iced uses and re-apply the
+  diff in `vendor/winit/README.rustket.md`; drop it once iced's winit has no such symbols.
+- Entitlements (`packaging/macos/rustket-mas.entitlements`) are exactly app-sandbox,
+  network.client, files.user-selected.read-write and the identity keys; adding one is a review
+  decision.
+
 ## Running the GUI from an agent
 
 The user's desktop is a live X11 session on an AMD GPU that has reset (taking the
@@ -86,10 +114,12 @@ spectacle -b -n -a -o <scratchpad>/shot.png
   (no openssl, gtk, alsa, dbus C libs). TLS is rustls everywhere; reuse the shared
   `ClientConfig` from `rocketchat::tls`.
 - Libraries use `thiserror` error enums; no `unwrap()`/`expect()` outside tests except
-  for documented invariants. No `unsafe`, with two exceptions: `crates/rustket/src/macos_events.rs`
-  (Apple Event handlers through objc2) and `crates/rustket/src/desktop/notifications/macos.rs`
-  (`NSUserNotificationCenter` backend through objc2); both `#![allow(unsafe_code)]` at module
-  level, a `// SAFETY:` comment on every unsafe block. Keep them that small.
+  for documented invariants. No `unsafe`, with three exceptions: `crates/rustket/src/macos_events.rs`
+  (Apple Event handlers through objc2), `crates/rustket/src/desktop/notifications/macos.rs`
+  (macOS notification backend through objc2) and `crates/rustket/src/desktop/autostart/macos.rs`
+  (launch at login through `SMAppService`); each `#![allow(unsafe_code)]` at module
+  level, a `// SAFETY:` comment on every unsafe block. Keep them that small. The vendored
+  `vendor/winit` keeps its own `unsafe` (see Mac App Store flavor below).
 - `tracing` for logs. Never log passwords, auth tokens, credential secrets, E2E keys
   or message bodies at info level or above.
 - Secrets (auth tokens) only through the secret store abstraction in `rustket-core`.

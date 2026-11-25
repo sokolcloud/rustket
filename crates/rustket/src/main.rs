@@ -24,7 +24,12 @@ fn log_filter(user: Option<&str>) -> String {
 
 /// Restarts the process with the CPU renderer when hardware acceleration is
 /// off. Returns only when no restart is needed or it failed (the error).
+/// Never in the Mac App Store flavor: a sandboxed exec of itself is not
+/// supported there (and the switch is hidden).
 fn software_reexec() -> Option<std::io::Error> {
+    if cfg!(feature = "mas") {
+        return None;
+    }
     let backend_set = std::env::var_os(renderer::BACKEND_VAR).is_some();
     let marker_set = std::env::var_os(renderer::REEXEC_MARKER).is_some();
     if backend_set || marker_set {
@@ -64,7 +69,9 @@ fn software_reexec() -> Option<std::io::Error> {
     }
 }
 
-/// Linux: the application id (`WM_CLASS`, Wayland `app_id`).
+/// Linux: the application id (`WM_CLASS`, Wayland `app_id`). macOS: the
+/// traffic lights over the content (a transparent, untitled title bar and a
+/// full-size content view); the app draws its title row under them.
 fn platform_specific() -> iced::window::settings::PlatformSpecific {
     #[cfg(target_os = "linux")]
     {
@@ -73,7 +80,15 @@ fn platform_specific() -> iced::window::settings::PlatformSpecific {
             ..Default::default()
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        iced::window::settings::PlatformSpecific {
+            title_hidden: true,
+            titlebar_transparent: true,
+            fullsize_content_view: true,
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     iced::window::settings::PlatformSpecific::default()
 }
 
@@ -113,6 +128,8 @@ fn main() -> iced::Result {
         tracing::warn!(error = %e, "cannot restart with the software renderer; using the default");
     }
     tracing::info!(renderer = ?renderer::active(), "renderer requested");
+    #[cfg(target_os = "macos")]
+    rustket::desktop::sandbox::check_flavor();
 
     let urls: Vec<String> = std::env::args()
         .skip(1)
@@ -135,6 +152,14 @@ fn main() -> iced::Result {
                 return Ok(());
             }
             Ok(Instance::Primary(l, g)) => (Some(ListenerSlot::new(l)), Some(g)),
+            Ok(Instance::LockOnly(g)) => {
+                tracing::info!("single instance without forwarding (socket path too long)");
+                (None, Some(g))
+            }
+            Ok(Instance::AlreadyRunning) => {
+                tracing::info!("another instance is running and cannot be reached; exiting");
+                return Ok(());
+            }
             Err(e) => {
                 tracing::warn!(?endpoint, error = %e, "single-instance endpoint unavailable");
                 (None, None)
@@ -153,13 +178,16 @@ fn main() -> iced::Result {
     // After the theme's font check: Medium/SemiBold CJK, Thai, … text then
     // falls back to the script's family instead of any face with that weight.
     rustket_ui::fonts::alias_missing_weights();
-    let decorations = rustket::workspace::titlebar::saved_system_title_bar(config_dir.as_deref());
+    let system_title_bar =
+        rustket::workspace::titlebar::saved_system_title_bar(config_dir.as_deref());
+    // macOS keeps the native frame and traffic lights in either layout.
+    let decorations = system_title_bar || rustket::workspace::titlebar::NATIVE_FRAME;
     let flags = Flags {
         urls,
         listener,
         open_urls: true,
         desktop: true,
-        window_decorated: Some(decorations),
+        window_decorated: Some(system_title_bar),
         offline_cache: rustket::cache::default_base(),
         ..Flags::default()
     };

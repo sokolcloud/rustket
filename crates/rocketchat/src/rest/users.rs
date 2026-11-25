@@ -14,6 +14,17 @@ pub enum UserLookup<'a> {
     Username(&'a str),
 }
 
+/// Body of `users.deleteOwnAccount`: the secret as SHA-256 hex, as the web
+/// client sends it.
+pub fn delete_own_account_body(secret: &str, confirm_relinquish: bool) -> Value {
+    let password = crate::auth::sha256_hex(secret);
+    if confirm_relinquish {
+        json!({ "password": password, "confirmRelinquish": true })
+    } else {
+        json!({ "password": password })
+    }
+}
+
 impl RestClient {
     pub async fn users_info(&self, user: UserLookup<'_>) -> Result<User> {
         let q = match user {
@@ -96,6 +107,23 @@ impl RestClient {
         Ok(())
     }
 
+    /// Deletes the signed-in user's account (`users.deleteOwnAccount`,
+    /// needs `Accounts_AllowDeleteOwnAccount`). `secret`: the password, or the
+    /// username for accounts without one. Without `confirm_relinquish` a
+    /// last owner of rooms gets `user-last-owner`
+    /// ([`crate::Error::last_owner_rooms`]).
+    pub async fn users_delete_own_account(
+        &self,
+        secret: &str,
+        confirm_relinquish: bool,
+    ) -> Result<()> {
+        self.post_ok(
+            "users.deleteOwnAccount",
+            &delete_own_account_body(secret, confirm_relinquish),
+        )
+        .await
+    }
+
     /// Back to the default avatar (`users.resetAvatar`).
     pub async fn users_reset_avatar(&self, user_id: &str) -> Result<()> {
         self.post_ok("users.resetAvatar", &json!({ "userId": user_id }))
@@ -114,5 +142,23 @@ impl RestClient {
             )
             .await?;
         field(v, "items")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_own_account_hashes_the_secret() {
+        let b = delete_own_account_body("pw", false);
+        assert_eq!(
+            b,
+            json!({"password": "30c952fab122c3f9759f02a6d95c3758b246b4fee239957b2d4fee46e26170c4"})
+        );
+        assert_eq!(
+            delete_own_account_body("pw", true)["confirmRelinquish"],
+            true
+        );
     }
 }

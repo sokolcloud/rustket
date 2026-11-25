@@ -61,6 +61,8 @@ pub enum Msg {
     /// the timeline, like `Act::Select`).
     Pick(String),
     Reported(String, Res<()>),
+    /// `moderation.reportUser` of user `uid` finished.
+    UserReported(String, Res<()>),
     /// An app action button of the message menu (`crate::uikit::buttons`).
     UiKit(Box<crate::uikit::UiKitMsg>),
     /// The reminder dialog's time picker.
@@ -138,6 +140,16 @@ impl Interactions {
             Some(Dialog::Report {
                 description, busy, ..
             }) => Some((2, dialogs::report(description, *busy), Msg::CloseDialog)),
+            Some(Dialog::ReportUser {
+                username,
+                description,
+                busy,
+                ..
+            }) => Some((
+                6,
+                dialogs::report_user(username, description, *busy),
+                Msg::CloseDialog,
+            )),
             Some(Dialog::Remind { mid, picker, .. }) => {
                 let excerpt = find_item(ctx.workspace, ctx.rid, &self.source, mid)
                     .map(|i| crate::room::ForwardRef::of(&i.message).excerpt)
@@ -302,10 +314,56 @@ impl Interactions {
                 }
             }
             Msg::ReportText(s) => {
-                if let Some(Dialog::Report { description, .. }) = &mut self.dialog {
+                if let Some(
+                    Dialog::Report { description, .. } | Dialog::ReportUser { description, .. },
+                ) = &mut self.dialog
+                {
                     *description = s;
                 }
                 Action::none()
+            }
+            Msg::SubmitReport if matches!(self.dialog, Some(Dialog::ReportUser { .. })) => {
+                let Some(Dialog::ReportUser {
+                    uid,
+                    description,
+                    busy,
+                    ..
+                }) = &mut self.dialog
+                else {
+                    return Action::none();
+                };
+                if description.trim().is_empty() || *busy {
+                    return Action::none();
+                }
+                *busy = true;
+                let (uid, text) = (uid.clone(), description.trim().to_owned());
+                let done = uid.clone();
+                Action::task(ctx.rest_task(
+                    move |rest| async move { rest.moderation_report_user(&uid, &text).await },
+                    move |r| Msg::UserReported(done.clone(), r),
+                ))
+            }
+            Msg::UserReported(uid, r) => {
+                let ours = |d: &Option<Dialog>| matches!(d, Some(Dialog::ReportUser { uid: u, .. }) if *u == uid);
+                match r {
+                    Ok(()) => {
+                        if ours(&self.dialog) {
+                            self.dialog = None;
+                        }
+                        Action::effect(toast_ok(t!("moderation.user_reported").into_owned()))
+                    }
+                    Err(e) => {
+                        if ours(&self.dialog)
+                            && let Some(Dialog::ReportUser { busy, .. }) = &mut self.dialog
+                        {
+                            *busy = false;
+                        }
+                        Action::effect(toast_error(
+                            t!("moderation.report_user_failed").into_owned(),
+                            e.user_text(),
+                        ))
+                    }
+                }
             }
             Msg::SubmitReport => {
                 let Some(Dialog::Report {
@@ -430,6 +488,15 @@ impl Interactions {
             Act::Report => {
                 self.dialog = Some(Dialog::Report {
                     mid,
+                    description: String::new(),
+                    busy: false,
+                });
+                Action::task(iced::widget::operation::focus(dialogs::REPORT_INPUT_ID))
+            }
+            Act::ReportUser => {
+                self.dialog = Some(Dialog::ReportUser {
+                    uid: m.u.id.clone(),
+                    username: m.u.username.clone().unwrap_or_default(),
                     description: String::new(),
                     busy: false,
                 });

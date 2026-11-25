@@ -34,6 +34,13 @@ pub enum Dialog {
         description: String,
         busy: bool,
     },
+    /// Report the author `uid` (`username`) of a message to the moderators.
+    ReportUser {
+        uid: String,
+        username: String,
+        description: String,
+        busy: bool,
+    },
     /// Who reacted to `mid`; `tab` is one emoji, `None` all of them.
     Reactions {
         mid: String,
@@ -98,6 +105,34 @@ pub fn remind<'a>(
 }
 
 pub fn report(description: &str, busy: bool) -> Element<'static, Message> {
+    report_dialog(
+        t!("room_timeline.report_title").into_owned(),
+        t!("room_timeline.report_body").into_owned(),
+        description,
+        busy,
+    )
+}
+
+/// "Report user": why, sent to the workspace's moderators.
+pub fn report_user(username: &str, description: &str, busy: bool) -> Element<'static, Message> {
+    report_dialog(
+        t!(
+            "moderation.report_user_title",
+            user = sanitize_bidi(username)
+        )
+        .into_owned(),
+        t!("moderation.report_user_body").into_owned(),
+        description,
+        busy,
+    )
+}
+
+fn report_dialog(
+    title: String,
+    body: String,
+    description: &str,
+    busy: bool,
+) -> Element<'static, Message> {
     let ready = !description.trim().is_empty() && !busy;
     let input = text_input(&t!("room_timeline.report_placeholder"), description)
         .id(REPORT_INPUT_ID)
@@ -106,11 +141,9 @@ pub fn report(description: &str, busy: bool) -> Element<'static, Message> {
         .padding([SPACE_2, SPACE_3])
         .style(style::text_input);
     dialog(
-        t!("room_timeline.report_title").into_owned(),
+        title,
         column![
-            text(t!("room_timeline.report_body").into_owned())
-                .size(TEXT_SMALL)
-                .style(style::text_secondary),
+            text(body).size(TEXT_SMALL).style(style::text_secondary),
             input,
         ]
         .spacing(SPACE_3),

@@ -1,6 +1,6 @@
 //! Pure helpers of the Windows and macOS backends (unit-tested everywhere):
-//! toast XML, and the identifiers, buttons and click routing of macOS
-//! notifications.
+//! toast XML, and the identifiers, categories, response routing and sound
+//! names of macOS notifications.
 
 #[cfg(any(windows, test))]
 use std::path::Path;
@@ -115,8 +115,8 @@ pub fn launch_nonce(pid: u32, unix_millis: u128) -> String {
 }
 
 #[cfg(any(target_os = "macos", test))]
-/// `NSUserNotification.identifier` of notification `id`: posting again with
-/// the same identifier replaces the delivered notification.
+/// `UNNotificationRequest.identifier` of notification `id`: posting again
+/// with the same identifier replaces the delivered notification.
 pub fn mac_identifier(nonce: &str, id: u32) -> String {
     format!("{MAC_PREFIX}{nonce}-{id}")
 }
@@ -135,54 +135,65 @@ pub fn parse_mac_identifier(nonce: &str, identifier: &str) -> Option<u32> {
 }
 
 #[cfg(any(target_os = "macos", test))]
-/// Buttons of a macOS notification: the action button and, with more than
-/// one, the menu of additional actions (all of them, as `(key, label)`).
+/// Prefix of our `UNNotificationCategory` identifiers.
+pub const MAC_CATEGORY_PREFIX: &str = "rustket";
+
+#[cfg(any(target_os = "macos", test))]
+/// The `UNNotificationCategory` of a notification's actions: every action
+/// but the default (clicking the notification) is a button, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MacButtons<'a> {
-    pub main: (&'a str, &'a str),
-    pub more: Vec<(&'a str, &'a str)>,
+pub struct MacCategory<'a> {
+    /// `rustket` plus `.<key>` per button: one category per button set.
+    pub id: String,
+    /// `(key, label)`.
+    pub buttons: Vec<(&'a str, &'a str)>,
 }
 
 #[cfg(any(target_os = "macos", test))]
-/// Every action but the default (clicking the notification) is a button.
-pub fn mac_buttons(actions: &[(String, String)]) -> Option<MacButtons<'_>> {
+pub fn mac_category(actions: &[(String, String)]) -> MacCategory<'_> {
     let buttons: Vec<(&str, &str)> = actions
         .iter()
         .filter(|(k, _)| k != super::ACTION_DEFAULT)
         .map(|(k, l)| (k.as_str(), l.as_str()))
         .collect();
-    let main = *buttons.first()?;
-    let more = if buttons.len() > 1 {
-        buttons
-    } else {
-        Vec::new()
-    };
-    Some(MacButtons { main, more })
+    let mut id = MAC_CATEGORY_PREFIX.to_owned();
+    for (k, _) in &buttons {
+        id.push('.');
+        id.push_str(k);
+    }
+    MacCategory { id, buttons }
 }
 
 #[cfg(any(target_os = "macos", test))]
-/// `NSUserNotificationActivationType`, with what each one carries.
+/// A `UNNotificationResponse`'s `actionIdentifier`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MacActivation<'a> {
-    Contents,
-    ActionButton,
-    /// The identifier of the chosen additional action.
-    Additional(Option<&'a str>),
-    Replied,
-    None,
+pub enum MacResponse<'a> {
+    /// `UNNotificationDefaultActionIdentifier`: the notification was clicked.
+    Default,
+    /// `UNNotificationDismissActionIdentifier`: it was dismissed (sent for
+    /// categories with `CustomDismissAction`).
+    Dismiss,
+    /// A button: our action key.
+    Action(&'a str),
 }
 
 #[cfg(any(target_os = "macos", test))]
-/// The signal of an activation; `main_key`: the action button's key.
-pub fn mac_signal(activation: MacActivation<'_>, main_key: Option<&str>) -> Option<super::Signal> {
+/// The signal of a response.
+pub fn mac_signal(response: MacResponse<'_>) -> super::Signal {
     use super::{ACTION_DEFAULT, Signal};
-    let key = match activation {
-        MacActivation::Contents | MacActivation::Replied => ACTION_DEFAULT,
-        MacActivation::ActionButton => main_key.unwrap_or(ACTION_DEFAULT),
-        MacActivation::Additional(id) => id.or(main_key).unwrap_or(ACTION_DEFAULT),
-        MacActivation::None => return None,
-    };
-    Some(Signal::Action(key.to_owned()))
+    match response {
+        MacResponse::Default => Signal::Action(ACTION_DEFAULT.to_owned()),
+        MacResponse::Dismiss => Signal::Closed,
+        MacResponse::Action(key) => Signal::Action(key.to_owned()),
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+/// The `UNNotificationSound` name of a sound the notification plays: the
+/// file name (with its extension) in `Library/Sounds`; `None`: the default
+/// sound.
+pub fn mac_sound_name(file: &std::path::Path) -> Option<&str> {
+    file.file_name().and_then(|n| n.to_str())
 }
 
 #[cfg(test)]
@@ -267,48 +278,45 @@ mod tests {
     }
 
     #[test]
-    fn mac_buttons_and_activation_routing() {
+    fn mac_categories_and_response_routing() {
         use super::super::Signal;
         let open = (ACTION_DEFAULT.to_owned(), "Open".to_owned());
         let join = (ACTION_JOIN.to_owned(), "Join".to_owned());
         let other = ("other".to_owned(), "Other".to_owned());
-        assert_eq!(mac_buttons(std::slice::from_ref(&open)), None);
         assert_eq!(
-            mac_buttons(&[open.clone(), join.clone()]),
-            Some(MacButtons {
-                main: ("join", "Join"),
-                more: Vec::new()
-            })
+            mac_category(std::slice::from_ref(&open)),
+            MacCategory {
+                id: "rustket".into(),
+                buttons: Vec::new()
+            }
         );
         assert_eq!(
-            mac_buttons(&[open, join, other]),
-            Some(MacButtons {
-                main: ("join", "Join"),
-                more: vec![("join", "Join"), ("other", "Other")]
-            })
-        );
-        let act = |k: &str| Some(Signal::Action(k.to_owned()));
-        assert_eq!(
-            mac_signal(MacActivation::Contents, Some("join")),
-            act("default")
-        );
-        assert_eq!(mac_signal(MacActivation::Replied, None), act("default"));
-        assert_eq!(
-            mac_signal(MacActivation::ActionButton, Some("join")),
-            act("join")
+            mac_category(&[open.clone(), join.clone()]),
+            MacCategory {
+                id: "rustket.join".into(),
+                buttons: vec![("join", "Join")]
+            }
         );
         assert_eq!(
-            mac_signal(MacActivation::ActionButton, None),
-            act("default")
+            mac_category(&[open, join, other]),
+            MacCategory {
+                id: "rustket.join.other".into(),
+                buttons: vec![("join", "Join"), ("other", "Other")]
+            }
         );
         assert_eq!(
-            mac_signal(MacActivation::Additional(Some("other")), Some("join")),
-            act("other")
+            mac_signal(MacResponse::Default),
+            Signal::Action("default".into())
+        );
+        assert_eq!(mac_signal(MacResponse::Dismiss), Signal::Closed);
+        assert_eq!(
+            mac_signal(MacResponse::Action("join")),
+            Signal::Action("join".into())
         );
         assert_eq!(
-            mac_signal(MacActivation::Additional(None), Some("join")),
-            act("join")
+            mac_sound_name(Path::new("/Users/u/Library/Sounds/rustket-chime-v1-80.wav")),
+            Some("rustket-chime-v1-80.wav")
         );
-        assert_eq!(mac_signal(MacActivation::None, Some("join")), None);
+        assert_eq!(mac_sound_name(Path::new("/")), None);
     }
 }

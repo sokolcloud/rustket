@@ -246,8 +246,8 @@ struct RowKey {
     minute: i64,
     /// Current day for rows with a day separator ("Today"/"Yesterday").
     today: i32,
-    /// Collapsed: the author is ignored and the row was not revealed.
-    ignored: bool,
+    /// Collapsed (and why), unless the row was revealed.
+    collapse: Option<Collapse>,
     /// Thread-parent excerpt of a `tshow` reply (`row::thread_parent_excerpt`).
     thread_parent: u64,
     /// Keep-in-sidebar entry of the context menu: 0 none, 1 keep, 2 remove.
@@ -270,7 +270,7 @@ impl Hash for RowKey {
         self.locale.hash(h);
         self.minute.hash(h);
         self.today.hash(h);
-        self.ignored.hash(h);
+        self.collapse.hash(h);
         self.thread_parent.hash(h);
         self.keep.hash(h);
     }
@@ -287,9 +287,20 @@ pub(super) fn keep_key(ws: &Workspace, m: &RcMessage) -> u8 {
     keep + 3 * state(super::actions::star_thread_offer(ws, m))
 }
 
-/// `RenderState` toggle index of "show the ignored message" (the toggles
+/// `RenderState` toggle index of "show the collapsed message" (the toggles
 /// of attachments use small indices).
 pub(crate) const IGNORED_REVEAL: usize = usize::MAX;
+
+/// Why a message is collapsed behind a "show" line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Collapse {
+    /// The author is ignored in this room.
+    Ignored,
+    /// The author is the DM partner the user blocked.
+    Blocked,
+    /// The text contains one of the user's hidden words.
+    Filtered,
+}
 
 /// Whether `m` comes from a user the current user ignores in room `rid`
 /// (`subscription.ignored`); system messages are never hidden (web
@@ -300,6 +311,39 @@ pub(crate) fn is_ignored(ws: &Workspace, rid: &str, m: &RcMessage) -> bool {
             .subscription(rid)
             .and_then(|s| s.ignored.as_ref())
             .is_some_and(|list| list.contains(&m.u.id))
+}
+
+/// Why `m` is collapsed, if it is: an ignored or blocked author, or one of
+/// the hidden `words` in someone else's message. System messages never are.
+pub(crate) fn collapse_reason(
+    ws: &Workspace,
+    rid: &str,
+    m: &RcMessage,
+    words: &rustket_core::word_filter::HiddenWords,
+) -> Option<Collapse> {
+    if m.is_system() {
+        return None;
+    }
+    if is_ignored(ws, rid, m) {
+        return Some(Collapse::Ignored);
+    }
+    if rustket_core::permissions::is_blocked_author(ws, rid, &m.u.id) {
+        return Some(Collapse::Blocked);
+    }
+    if words.is_empty() || ws.user_id() == Some(m.u.id.as_str()) {
+        return None;
+    }
+    let mut attachments = m.attachments.iter().flatten().flat_map(|a| {
+        [
+            a.description.as_deref(),
+            a.text.as_deref(),
+            a.title.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+    });
+    (words.matches(&m.plain_text()) || attachments.any(|t| words.matches(t)))
+        .then_some(Collapse::Filtered)
 }
 
 /// The `lazy` widget of planned row `r` (with its day separator and the
@@ -336,7 +380,8 @@ pub(crate) fn row<'a>(
         locale: common.locale,
         minute: if own { common.minute } else { 0 },
         today: if r.new_day { common.today } else { 0 },
-        ignored: is_ignored(env.ws, env.rid, m) && !env.render.is_toggled(&m.id, IGNORED_REVEAL),
+        collapse: collapse_reason(env.ws, env.rid, m, &env.prefs.hidden_words)
+            .filter(|_| !env.render.is_toggled(&m.id, IGNORED_REVEAL)),
         thread_parent: row::thread_parent_excerpt(&env, m).map_or(0, |s| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             s.hash(&mut h);
@@ -346,9 +391,9 @@ pub(crate) fn row<'a>(
     };
     let unread_before = r.unread_before;
     let now = common.now;
-    let ignored = dep.ignored;
+    let collapse = dep.collapse;
     lazy(dep, move |_| {
-        let row = row::build(&env, item, flags, ignored, now);
+        let row = row::build(&env, item, flags, collapse, now);
         if day.is_none() && !unread_before {
             return row;
         }
@@ -801,6 +846,83 @@ mod tests {
         )));
         assert!(st.is_toggled("m", IGNORED_REVEAL));
         assert_ne!(st.key("m"), before);
+    }
+
+    #[test]
+    fn blocked_and_filtered_messages_collapse() {
+        use rocketchat::models::{RoomType, Subscription, UserRef};
+        use rustket_core::word_filter::HiddenWords;
+        use rustket_core::workspace::Change;
+        let mut ws = Workspace::new();
+        ws.apply_me(
+            serde_json::from_value(serde_json::json!({"_id": "me", "username": "me"})).unwrap(),
+        );
+        let dm = |blocker: Option<bool>| Subscription {
+            id: "s".into(),
+            rid: "d".into(),
+            name: "bob".into(),
+            t: RoomType::Direct,
+            blocker,
+            u: UserRef {
+                id: "me".into(),
+                username: None,
+                name: None,
+            },
+            ..Default::default()
+        };
+        ws.apply_subscription(Change::Inserted, dm(None));
+        let msg = |user: &str, text: &str, t: Option<&str>| RcMessage {
+            id: "m".into(),
+            rid: "d".into(),
+            msg: text.into(),
+            t: t.map(str::to_owned),
+            u: UserRef {
+                id: user.into(),
+                username: Some(user.into()),
+                name: None,
+            },
+            ..Default::default()
+        };
+        let none = HiddenWords::default();
+        assert_eq!(
+            collapse_reason(&ws, "d", &msg("bob", "hi", None), &none),
+            None
+        );
+        let mut words = HiddenWords::default();
+        words.add("spoiler").unwrap();
+        assert_eq!(
+            collapse_reason(&ws, "d", &msg("bob", "a SPOILER!", None), &words),
+            Some(Collapse::Filtered)
+        );
+        // Own messages and system messages are never filtered.
+        assert_eq!(
+            collapse_reason(&ws, "d", &msg("me", "spoiler", None), &words),
+            None
+        );
+        assert_eq!(
+            collapse_reason(&ws, "d", &msg("bob", "spoiler", Some("uj")), &words),
+            None
+        );
+        // Attachment descriptions count too.
+        let mut with_file = msg("bob", "", None);
+        with_file.attachments = Some(vec![rocketchat::models::MessageAttachment {
+            description: Some("spoiler pic".into()),
+            ..Default::default()
+        }]);
+        assert_eq!(
+            collapse_reason(&ws, "d", &with_file, &words),
+            Some(Collapse::Filtered)
+        );
+        // Blocking hides the partner's messages, not the user's own.
+        ws.apply_subscription(Change::Updated, dm(Some(true)));
+        assert_eq!(
+            collapse_reason(&ws, "d", &msg("bob", "hi", None), &none),
+            Some(Collapse::Blocked)
+        );
+        assert_eq!(
+            collapse_reason(&ws, "d", &msg("me", "hi", None), &none),
+            None
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ use rustket_ui::widget::{
 
 use super::actions::{self, Act};
 use super::interact::{self, Msg as Message, Source};
+use super::list::Collapse;
 use crate::images::Images;
 use crate::room::render::{self, RenderCtx, RenderState, emoji_element, emoji_piece, system};
 
@@ -565,17 +566,23 @@ fn system_row(env: &Env<'_>, m: &RcMessage) -> El {
     )
 }
 
-/// The body of an ignored user's message: "This message was ignored", a
-/// click shows it (web `IgnoredContent`).
-fn ignored_body(mid: &str) -> El {
+/// The body of a collapsed message: "This message was ignored" (web
+/// `IgnoredContent`), "from a blocked user" or "hidden word"; a click shows
+/// it.
+fn collapsed_body(mid: &str, why: Collapse) -> El {
     let reveal = Message::render(render::RenderMsg::ToggleCollapsed(
         mid.to_owned(),
         super::list::IGNORED_REVEAL,
     ));
+    let label = match why {
+        Collapse::Ignored => t!("room_timeline.message_ignored"),
+        Collapse::Blocked => t!("moderation.message_blocked"),
+        Collapse::Filtered => t!("moderation.message_filtered"),
+    };
     button(
         row![
             icon::sized(Icon::ChevronLeft, 14.0).style(style::text_hint),
-            text(t!("room_timeline.message_ignored").into_owned())
+            text(label.into_owned())
                 .size(TEXT_CAPTION)
                 .style(style::text_hint),
         ]
@@ -612,15 +619,16 @@ fn pick_row(el: El, mid: &str, pickable: bool, picked: bool) -> El {
         .into()
 }
 
-/// Builds the row of `item`. `ignored`: the author is ignored and the row is
-/// not revealed; the header and toolbar stay, the content is collapsed.
+/// Builds the row of `item`. `collapse`: the row is collapsed and not
+/// revealed; the header and toolbar stay, the content is hidden.
 pub(crate) fn build(
     env: &Env<'_>,
     item: &TimelineItem,
     flags: RowFlags,
-    ignored: bool,
+    collapse: Option<Collapse>,
     now: DateTime<Utc>,
 ) -> El {
+    let ignored = collapse.is_some();
     let m = &item.message;
     if m.is_system() {
         let el = system_row(env, m);
@@ -635,8 +643,8 @@ pub(crate) fn build(
     // Encrypted messages: the renderer shows their placeholder until decrypted.
     let can_vote = matches!(item.state, DeliveryState::Sent)
         && rustket_core::permissions::can_react(env.ws, env.rid);
-    let body: El = if ignored {
-        ignored_body(&m.id)
+    let body: El = if let Some(why) = collapse {
+        collapsed_body(&m.id, why)
     } else if let Some(card) = super::poll_card::card(env, m, can_vote) {
         // The card replaces the text only: previews and the E2E plaintext
         // note stay under it.

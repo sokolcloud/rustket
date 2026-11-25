@@ -4,7 +4,7 @@
 //! (`users.2fa.enableEmail` / `disableEmail`); active sessions / devices
 //! (`sessions/list`, `sessions/logout.me`: the `device-management` license
 //! module, so Community servers answer "enterprise feature" and the section
-//! says it is not available).
+//! says it is not available); "Delete my account" (`super::delete`).
 
 use iced::widget::{column, container, qr_code, row, text};
 use iced::{Alignment, Color, Element, Length};
@@ -234,6 +234,8 @@ pub struct Security {
     pub logging_out: Option<String>,
     /// End-to-end encryption section.
     pub e2e: super::e2e::E2eSection,
+    /// "Delete my account" (when the server allows it).
+    pub delete: super::delete::DeleteAccount,
 }
 
 /// Flags of the second factors on the workspace user. `services.*` changes
@@ -575,6 +577,9 @@ impl Security {
                 body = body.push(e2e);
             }
             body = body.push(self.sessions_view());
+            if let Some(d) = self.delete.view(ws) {
+                body = body.push(d);
+            }
             return above(notices, SPACE_4, body).max_width(640).into();
         }
 
@@ -699,6 +704,9 @@ impl Security {
             body = body.push(e2e);
         }
         body = body.push(self.sessions_view());
+        if let Some(d) = self.delete.view(ws) {
+            body = body.push(d);
+        }
         above(notices, SPACE_4, body).max_width(640).into()
     }
 

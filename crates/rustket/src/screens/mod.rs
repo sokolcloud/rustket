@@ -8,6 +8,7 @@ pub mod directory;
 pub mod login;
 pub mod page;
 pub mod settings;
+pub mod terms;
 
 use iced::widget::{column, container, text};
 use iced::{Alignment, Element, Length};

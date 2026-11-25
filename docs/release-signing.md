@@ -6,6 +6,9 @@ dmg with the Developer ID Application certificate of team `D6JXBXV9Q5`
 secure timestamp, and has both notarized by Apple and stapled. Everything runs
 in CI; no Mac is needed except to create the certificate.
 
+The Mac App Store build is a separate flavor with its own workflow,
+certificates and environment: see [app-store.md](app-store.md).
+
 ## Repository settings
 
 Settings → Environments → **New environment** `macos-signing`:
@@ -73,9 +76,8 @@ unlocked signing key:
 The app has no entitlements: it uses no JIT, loads no third-party libraries,
 sets no `DYLD_*` variables, does not use the camera or microphone (video calls
 open in the browser) and sends no Apple Events (it only receives
-`rocketchat://` URL events). Tools it runs (`afplay`, `osascript` for the
-updater's admin prompt, `hdiutil`, `ditto`) are separate Apple-signed
-processes.
+`rocketchat://` URL events). Tools the updater runs (`osascript` for its
+admin prompt, `hdiutil`, `ditto`) are separate Apple-signed processes.
 
 Pushing the `release-dry-run` branch with the secrets set signs and notarizes
 too: use it to test a new certificate or key before tagging.
@@ -125,6 +127,10 @@ Team Keys → **+**, role **Developer** (enough for notarization). Download
 `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID`. The key does not expire; to
 rotate, create a new key, replace the three secrets, push `release-dry-run`,
 then revoke the old key.
+
+The same three values are also set in the `app-store` environment, which the
+Mac App Store workflow uses for uploads (docs/app-store.md); rotate them in
+both environments, then push `app-store-dry-run` too.
 
 ## Escape hatch: MACOS_ALLOW_UNSIGNED
 

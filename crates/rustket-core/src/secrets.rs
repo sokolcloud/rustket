@@ -11,6 +11,11 @@
 //!   memory for this session only ([`SecretBackend::MemoryByPolicy`]); no file is
 //!   created. A `secrets.json` left by an earlier fallback is loaded into memory
 //!   and deleted together with any `secrets.json.broken-*`.
+//! - [`FilePolicy::Forbidden`] (the Mac App Store flavor, set by the app): as
+//!   `Never`, but the keyring failure is reported and the backend is
+//!   [`SecretBackend::MemoryForced`], so the UI warns instead of the plaintext
+//!   file appearing silently. An unsigned build's keychain error -34018
+//!   (`errSecMissingEntitlement`) takes this path like any other failure.
 //!
 //! The rest:
 //!
@@ -119,6 +124,9 @@ pub enum FilePolicy {
     Allowed,
     /// Never write secrets to a file: keep them in memory for this session.
     Never,
+    /// This build may never write the file (the user cannot change it): as
+    /// [`Self::Never`], and an unusable keyring is reported.
+    Forbidden,
 }
 
 impl FilePolicy {
@@ -140,6 +148,9 @@ pub enum SecretBackend {
     /// The keyring is unusable and [`FilePolicy::Never`] forbids the file:
     /// secrets are kept in memory for this session only.
     MemoryByPolicy,
+    /// The keyring is unusable and [`FilePolicy::Forbidden`] rules the file
+    /// out: secrets are kept in memory for this session only; the UI warns.
+    MemoryForced,
 }
 
 impl SecretBackend {
@@ -147,13 +158,16 @@ impl SecretBackend {
         match self {
             Self::Keyring => "keyring",
             Self::File => "file",
-            Self::Memory | Self::MemoryByPolicy => "memory",
+            Self::Memory | Self::MemoryByPolicy | Self::MemoryForced => "memory",
         }
     }
 
     /// Secrets are lost when the app quits.
     pub fn is_memory(self) -> bool {
-        matches!(self, Self::Memory | Self::MemoryByPolicy)
+        matches!(
+            self,
+            Self::Memory | Self::MemoryByPolicy | Self::MemoryForced
+        )
     }
 }
 
@@ -729,7 +743,7 @@ fn select(
             {
                 notices.push(SecretNotice::FileRecovered { moved_to });
             }
-            if policy == FilePolicy::Never {
+            if policy != FilePolicy::Allowed {
                 let _ = remove_files(leftover_files(&dir));
             }
             write_backend_record(&dir, SecretBackend::Keyring);
@@ -739,8 +753,15 @@ fn select(
                 notices,
             }
         }
-        Err(e) if policy == FilePolicy::Never => {
-            tracing::warn!(error = %e, "OS keyring unavailable; keeping secrets in memory (no file by preference)");
+        Err(e) if policy != FilePolicy::Allowed => {
+            let backend = if policy == FilePolicy::Forbidden {
+                tracing::warn!(error = %e, "OS keyring unavailable; keeping secrets in memory (no file in this build)");
+                notices.push(SecretNotice::KeyringUnavailable(e.to_string()));
+                SecretBackend::MemoryForced
+            } else {
+                tracing::warn!(error = %e, "OS keyring unavailable; keeping secrets in memory (no file by preference)");
+                SecretBackend::MemoryByPolicy
+            };
             if previous.as_deref() == Some(SecretBackend::Keyring.as_str()) {
                 notices.push(SecretNotice::KeyringTokensUnreachable);
             }
@@ -750,7 +771,7 @@ fn select(
             }
             OpenedSecrets {
                 store: Box::new(memory),
-                backend: SecretBackend::MemoryByPolicy,
+                backend,
                 notices,
             }
         }
@@ -928,9 +949,9 @@ impl SwitchableStore {
     pub fn apply_policy(&self, policy: FilePolicy) -> PolicySwitch {
         let backend = self.backend();
         match (policy, backend) {
-            (FilePolicy::Never, SecretBackend::File)
+            (FilePolicy::Never | FilePolicy::Forbidden, SecretBackend::File)
             | (FilePolicy::Allowed, SecretBackend::MemoryByPolicy) => {}
-            (FilePolicy::Never, SecretBackend::Keyring) => {
+            (FilePolicy::Never | FilePolicy::Forbidden, SecretBackend::Keyring) => {
                 // Readers only: secret access goes on while the keyring is slow.
                 let cur = self.read();
                 let error = self
@@ -951,7 +972,7 @@ impl SwitchableStore {
         }
         let mut cur = self.write();
         let error = match (policy, cur.backend) {
-            (FilePolicy::Never, SecretBackend::File) => {
+            (FilePolicy::Never | FilePolicy::Forbidden, SecretBackend::File) => {
                 let entries = match cur.store.list_entries() {
                     Ok(Some(e)) => e,
                     Ok(None) => BTreeMap::new(),
@@ -963,7 +984,11 @@ impl SwitchableStore {
                     }
                 };
                 cur.store = Box::new(MemoryStore::from_entries(entries));
-                cur.backend = SecretBackend::MemoryByPolicy;
+                cur.backend = if policy == FilePolicy::Forbidden {
+                    SecretBackend::MemoryForced
+                } else {
+                    SecretBackend::MemoryByPolicy
+                };
                 self.dir
                     .as_deref()
                     .and_then(|d| remove_secret_files(d).err())
@@ -1220,6 +1245,75 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    /// The keychain error of an unsigned sandboxed build (-34018,
+    /// `errSecMissingEntitlement`), as the keyring crate reports it.
+    fn missing_entitlement() -> Result<Box<dyn SecretStore>> {
+        Err(SecretError::Keyring(
+            "Platform secure storage failure: A required entitlement isn't present. (-34018)"
+                .into(),
+        ))
+    }
+
+    #[test]
+    fn forbidden_file_goes_to_memory_and_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("data");
+        let o = select(
+            Some(sub.clone()),
+            missing_entitlement(),
+            FilePolicy::Forbidden,
+        );
+        assert_eq!(o.backend, SecretBackend::MemoryForced);
+        assert!(o.backend.is_memory());
+        assert!(
+            matches!(o.notices.as_slice(), [SecretNotice::KeyringUnavailable(why)] if why.contains("-34018")),
+            "{:?}",
+            o.notices
+        );
+        o.store.set("rustket:a:u", "T").unwrap();
+        assert_eq!(o.store.get("rustket:a:u").unwrap().as_deref(), Some("T"));
+        assert!(!sub.exists(), "nothing written");
+        // The same failure in the default policy still falls back to the file.
+        let o = select(
+            Some(sub.clone()),
+            missing_entitlement(),
+            FilePolicy::Allowed,
+        );
+        assert_eq!(o.backend, SecretBackend::File);
+        // A left-over file is read into memory and deleted.
+        FileStore::new(&sub).set("rustket:a:u", "T-file").unwrap();
+        let o = select(
+            Some(sub.clone()),
+            missing_entitlement(),
+            FilePolicy::Forbidden,
+        );
+        assert_eq!(o.backend, SecretBackend::MemoryForced);
+        assert!(o.notices.contains(&SecretNotice::FileRemoved { count: 1 }));
+        assert_eq!(
+            o.store.get("rustket:a:u").unwrap().as_deref(),
+            Some("T-file")
+        );
+        assert!(!sub.join(SECRETS_FILE).exists());
+    }
+
+    #[test]
+    fn forbidden_policy_with_a_working_keyring() {
+        let dir = tempfile::tempdir().unwrap();
+        let kr = Arc::new(MemoryStore::new());
+        let o = select(
+            Some(dir.path().to_owned()),
+            keyring(&kr),
+            FilePolicy::Forbidden,
+        );
+        assert_eq!(o.backend, SecretBackend::Keyring);
+        assert!(o.notices.is_empty(), "{:?}", o.notices);
+        let sw = SwitchableStore::new(o.store, o.backend, Some(dir.path().to_owned()));
+        assert_eq!(
+            sw.apply_policy(FilePolicy::Forbidden).backend,
+            SecretBackend::Keyring
+        );
     }
 
     #[test]

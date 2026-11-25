@@ -235,9 +235,67 @@ pub fn resolve(lang: &Language) -> String {
     system()
 }
 
-/// The locale of the environment among the available ones.
+/// The locale of the environment among the available ones. On macOS, when
+/// no locale variable is set (an app started from Finder), the user's
+/// preferred languages decide.
 pub fn system() -> String {
-    from_env(|k| std::env::var(k).ok(), &available())
+    let get = |k: &str| std::env::var(k).ok();
+    let available = available();
+    #[cfg(target_os = "macos")]
+    if !env_has_locale(get)
+        && let Some(code) = from_preferred(&macos_preferred_languages(), &available)
+    {
+        return code;
+    }
+    from_env(get, &available)
+}
+
+/// Whether one of `LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, `LANG` names a locale
+/// (`C` and `POSIX` do not).
+pub fn env_has_locale(get: impl Fn(&str) -> Option<String>) -> bool {
+    ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"]
+        .iter()
+        .any(|k| get(k).is_some_and(|v| !v.is_empty() && v != "C" && v != "POSIX"))
+}
+
+/// `NSLocale.preferredLanguages` (BCP 47 tags, most preferred first).
+#[cfg(target_os = "macos")]
+fn macos_preferred_languages() -> Vec<String> {
+    objc2_foundation::NSLocale::preferredLanguages()
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// The first of the BCP 47 language tags `preferred` (`zh-Hans-CN`, `pt-BR`,
+/// `ru`) that matches an available locale: exactly without the script
+/// (`pt-BR` → `pt_BR`), Simplified Chinese as `zh`, else by its language
+/// (`ru-RU` → `ru`). `None` when no tag matches.
+pub fn from_preferred(preferred: &[String], available: &[String]) -> Option<String> {
+    let norm = |s: &str| s.replace('-', "_").to_ascii_lowercase();
+    for tag in preferred {
+        let parts: Vec<&str> = tag.split(['-', '_']).filter(|p| !p.is_empty()).collect();
+        let Some((lang, rest)) = parts.split_first() else {
+            continue;
+        };
+        let script = rest
+            .first()
+            .filter(|p| p.len() == 4 && p.chars().all(|c| c.is_ascii_alphabetic()));
+        let region = rest.get(usize::from(script.is_some())).copied();
+        // Simplified Chinese is `zh` whatever the region.
+        let hans = lang.eq_ignore_ascii_case("zh")
+            && script.is_some_and(|s| s.eq_ignore_ascii_case("hans"));
+        if let Some(region) = region.filter(|_| !hans) {
+            let code = norm(&format!("{lang}_{region}"));
+            if let Some(exact) = available.iter().find(|a| norm(a) == code) {
+                return Some(exact.clone());
+            }
+        }
+        if let Some(m) = available.iter().find(|a| norm(a) == norm(lang)) {
+            return Some(m.clone());
+        }
+    }
+    None
 }
 
 /// Locale from `LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, `LANG`: the first
@@ -346,6 +404,49 @@ pub(crate) mod tests {
         zh_tw.push("zh_TW".into());
         assert_eq!(from(&[("LANG", "zh_TW.UTF-8")], &zh_tw), "zh_TW");
         assert_eq!(from(&[("LANG", "zh_CN.UTF-8")], &zh_tw), "zh");
+    }
+
+    #[test]
+    fn macos_preferred_languages_map_to_locales() {
+        let bundled = codes(&["en", "ru", "es", "th", "zh"]);
+        let pref = |tags: &[&str]| from_preferred(&codes(tags), &bundled);
+        assert_eq!(pref(&["zh-Hans-CN"]).as_deref(), Some("zh"));
+        assert_eq!(pref(&["zh-Hans"]).as_deref(), Some("zh"));
+        assert_eq!(pref(&["ru-RU", "en-US"]).as_deref(), Some("ru"));
+        assert_eq!(pref(&["th"]).as_deref(), Some("th"));
+        assert_eq!(pref(&["es-419"]).as_deref(), Some("es"));
+        // The first tag with a match wins; unknown ones are skipped.
+        assert_eq!(pref(&["de-DE", "es-ES", "ru"]).as_deref(), Some("es"));
+        assert_eq!(pref(&["de-DE", "fr"]), None);
+        assert_eq!(pref(&[]), None);
+        // External locales match exactly first, without the script.
+        let mut ext = bundled.clone();
+        ext.extend(codes(&["pt_BR", "zh_TW"]));
+        assert_eq!(
+            from_preferred(&codes(&["pt-BR"]), &ext).as_deref(),
+            Some("pt_BR")
+        );
+        assert_eq!(
+            from_preferred(&codes(&["zh-Hant-TW"]), &ext).as_deref(),
+            Some("zh_TW")
+        );
+        assert_eq!(
+            from_preferred(&codes(&["zh-Hans-TW"]), &ext).as_deref(),
+            Some("zh")
+        );
+        assert_eq!(from_preferred(&codes(&["pt-PT"]), &ext).as_deref(), None);
+        // Only an empty environment defers to the preferred languages.
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        assert!(!env_has_locale(env(&[])));
+        assert!(!env_has_locale(env(&[("LANG", ""), ("LC_ALL", "C")])));
+        assert!(env_has_locale(env(&[("LANG", "en_US.UTF-8")])));
     }
 
     #[test]

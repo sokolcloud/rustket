@@ -4,7 +4,7 @@
 //! `org.gnome.Mutter.IdleMonitor`, the X11 screensaver extension on X11
 //! sessions (pure-Rust `x11rb`), then `org.freedesktop.ScreenSaver`
 //! `GetSessionIdleTime` (KDE Wayland); `GetLastInputInfo` on Windows;
-//! IOHIDSystem's `HIDIdleTime` (from `ioreg`) on macOS. When the user is idle longer than their
+//! `CGEventSourceSecondsSinceLastEventType` on macOS. When the user is idle longer than their
 //! `idleTimeLimit` preference (default 300 s) and `enableAutoAway` is on, the
 //! app calls `UserPresence:away` once on every connected server whose status
 //! is `online`, and `UserPresence:online` once the user is back. These change
@@ -25,7 +25,7 @@ use super::Request;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 mod freedesktop;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
 mod win;
@@ -37,7 +37,7 @@ pub async fn query_idle() -> Option<Duration> {
     #[cfg(windows)]
     return win::query_idle().await;
     #[cfg(target_os = "macos")]
-    return macos::query_idle().await;
+    return macos::query_idle();
     #[cfg(not(any(unix, windows)))]
     return None;
 }
@@ -46,7 +46,7 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
 pub const DEFAULT_LIMIT: Duration = Duration::from_secs(300);
 /// Shortest accepted `idleTimeLimit`.
 const MIN_LIMIT: Duration = Duration::from_secs(30);
-#[cfg(not(windows))]
+#[cfg(all(unix, not(target_os = "macos")))]
 const QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]

@@ -217,8 +217,14 @@ pub struct App {
     /// Custom title bar pointer and maximize state.
     pub titlebar: crate::workspace::titlebar::TitleBar,
     /// Whether the window has system decorations now (kept in step with
-    /// `UiPrefs::system_title_bar` by `sync_decorations`).
+    /// `UiPrefs::system_title_bar` by `sync_decorations`); with
+    /// `native_frame`, which always keeps them, whether the layout is the
+    /// system title bar's.
     pub decorated: bool,
+    /// The window keeps the system frame and its buttons in either layout
+    /// ([`crate::workspace::titlebar::NATIVE_FRAME`]: macOS). A field so tests
+    /// cover both layouts on every platform.
+    pub native_frame: bool,
     /// Offline cache (`crate::cache`).
     pub offline: crate::cache::Caches,
     /// The paced star queue ("Move kept threads to Favorites", Later).
@@ -279,6 +285,10 @@ impl App {
         };
         if let Some(s) = flags.indicator_scheme {
             config.ui.indicator_scheme = s;
+        }
+        // Tests and snapshots start past the terms screen.
+        if flags.ephemeral {
+            crate::legal::accept_terms(&mut config);
         }
         let mut locales =
             crate::locales::Locales::new(config_dir.as_deref().map(crate::locales::locales_dir));
@@ -354,6 +364,7 @@ impl App {
             dialog_instances: (0, 0),
             titlebar: Default::default(),
             decorated,
+            native_frame: crate::workspace::titlebar::NATIVE_FRAME,
             offline: crate::cache::Caches::new(flags.offline_cache.clone()),
             star_kept: Default::default(),
             reminder_timer: Default::default(),
@@ -369,8 +380,7 @@ impl App {
             .filter_map(|s| Some((s.id.clone(), s.user_id.clone()?)))
             .collect();
         let mode = flags.secrets;
-        let policy =
-            rustket_core::secrets::FilePolicy::memory_only(app.config.ui.secrets_memory_only);
+        let policy = secrets::file_policy(app.config.ui.secrets_memory_only);
         let open = Task::perform(
             async move { tokio::task::spawn_blocking(move || open_secrets(mode, policy, wanted)).await },
             |r| match r {
@@ -508,6 +518,25 @@ impl App {
         Task::perform(tokio::time::sleep(ttl), move |_| Message::CloseToast(id))
     }
 
+    fn on_terms(&mut self, m: crate::screens::terms::Message) -> Task<Message> {
+        use crate::screens::terms::Message as T;
+        match m {
+            T::Accept => {
+                crate::legal::accept_terms(&mut self.config);
+                let save = self.save_config();
+                let focus = if matches!(self.screen, Screen::AddServer(_)) {
+                    iced::widget::operation::focus(add_server::URL_INPUT_ID)
+                } else {
+                    Task::none()
+                };
+                Task::batch([save, focus])
+            }
+            T::OpenTerms => self.open_url(crate::legal::TERMS_URL.to_owned()),
+            T::OpenPrivacy => self.open_url(crate::legal::PRIVACY_URL.to_owned()),
+            T::Quit => self.go(crate::message::Go::Quit),
+        }
+    }
+
     /// Queues the current config + UI state for the single writer thread.
     pub(crate) fn save_config(&self) -> Task<Message> {
         if let Some(w) = &self.writer {
@@ -574,6 +603,57 @@ impl App {
         })
     }
 
+    /// Settings → Import…: picks `.toml` files and copies them into the
+    /// themes or locales folder.
+    pub(crate) fn import_files(&mut self, kind: crate::import::Kind) -> Task<Message> {
+        use crate::import::Kind;
+        let dir = match kind {
+            Kind::Themes => self.themes.dir.clone(),
+            Kind::Locales => self.locales.dir.clone(),
+        };
+        let Some(dir) = dir else {
+            return Task::none();
+        };
+        Task::perform(
+            async move {
+                let Some(files) = crate::import::pick().await else {
+                    return Ok(Vec::new());
+                };
+                tokio::task::spawn_blocking(move || crate::import::import(&dir, kind, &files))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            move |r| Message::Imported(kind, r),
+        )
+    }
+
+    fn on_imported(
+        &mut self,
+        kind: crate::import::Kind,
+        r: Result<Vec<String>, String>,
+    ) -> Task<Message> {
+        match r {
+            Ok(names) if names.is_empty() => Task::none(),
+            Ok(names) => {
+                match kind {
+                    crate::import::Kind::Themes => {
+                        self.themes.rescan();
+                        self.themes.apply(self.config.ui.theme_name.as_deref());
+                    }
+                    crate::import::Kind::Locales => {
+                        self.locales.reload(&self.config.ui.language);
+                    }
+                }
+                self.toast(
+                    BannerKind::Success,
+                    t!("settings.import_done"),
+                    names.join(", "),
+                )
+            }
+            Err(e) => self.toast(BannerKind::Error, t!("settings.import_failed"), e),
+        }
+    }
+
     fn server_urls(&self) -> Vec<ServerUrl> {
         self.servers.values().map(|s| s.url.clone()).collect()
     }
@@ -610,6 +690,7 @@ impl App {
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Noop => Task::none(),
+            Message::Terms(m) => self.on_terms(m),
             Message::FileDropped(path) => self.route_file_drop(path),
             Message::Go(go) => self.go(go),
             Message::Dialog(instance, m) => self.on_dialog_result(instance, *m),
@@ -674,6 +755,10 @@ impl App {
                 t!("settings.locales_folder_open_failed"),
                 path,
             ),
+            Message::FileNotOpened(path) => {
+                self.toast(BannerKind::Error, t!("room_timeline.open_failed"), path)
+            }
+            Message::Imported(kind, r) => self.on_imported(kind, r),
             Message::ShowAddServer if !self.may_leave(Message::ShowAddServer) => Task::none(),
             Message::ShowAddServer => {
                 self.screen = Screen::AddServer(Box::new(AddServer::new(!self.servers.is_empty())));
@@ -1280,5 +1365,35 @@ mod tests {
         app.config.ui.indicator_scheme = IndicatorScheme::Rustket;
         let _ = app.unread_hook();
         assert_eq!(app.desktop.tray.state().scheme, IndicatorScheme::Rustket);
+    }
+
+    /// The terms screen covers the app until accepted; accepting stores the
+    /// current version.
+    #[test]
+    fn terms_gate() {
+        use crate::app::{App, Flags, SecretsMode};
+        use crate::component::Nav;
+        use crate::screens::terms::Message as T;
+        let (mut app, _) = App::new(Flags {
+            ephemeral: true,
+            secrets: SecretsMode::Memory,
+            open_urls: false,
+            ..Flags::default()
+        });
+        assert!(
+            !crate::legal::terms_pending(&app.config),
+            "tests start past it"
+        );
+        app.config.accepted_terms = 0;
+        assert!(crate::legal::terms_pending(&app.config));
+        let _ = app.view();
+        for nav in [Nav::AboutSettings, Nav::Settings, Nav::HelpSettings] {
+            assert!(!app.menu_may_navigate(&nav), "hidden by the terms");
+        }
+        let _ = app.update(crate::message::Message::Terms(T::OpenTerms));
+        assert!(crate::legal::terms_pending(&app.config));
+        let _ = app.update(crate::message::Message::Terms(T::Accept));
+        assert_eq!(app.config.accepted_terms, crate::legal::TERMS_VERSION);
+        assert!(!crate::legal::terms_pending(&app.config));
     }
 }

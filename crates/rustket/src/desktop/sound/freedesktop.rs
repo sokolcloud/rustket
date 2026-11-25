@@ -138,6 +138,11 @@ pub fn lookup() -> Resolved {
     }
 }
 
+/// Runs a player command to its end (or the timeout). Blocking.
+pub fn run(cmd: Command) {
+    super::run_reaped(cmd);
+}
+
 /// The command playing the sound file `file`.
 pub fn file_command(resolved: &Resolved, file: &Path) -> Option<Command> {
     let Some(player) = &resolved.file else {

@@ -1,0 +1,123 @@
+# Always-on Rocket.Chat workspace for Mac App Store review (see README.md).
+# Sized for a 2 vCPU / 4 GB VM. Only Caddy publishes ports (80, 443 TCP and
+# 443 UDP for HTTP/3); MongoDB sits on an internal network without a port.
+name: rustket-review
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  mongo:
+    image: ${MONGO_IMAGE:-mongo:7.0}
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.5"]
+    networks: [backend]
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+    healthcheck:
+      # Initiates the single-node replica set on first start; healthy once it is primary.
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - "try { rs.status() } catch (e) { try { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]}) } catch (e2) {} } quit(db.hello().isWritablePrimary ? 0 : 1)"
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1200M
+    logging: *logging
+
+  rocketchat:
+    image: ${ROCKETCHAT_IMAGE:-rocketchat/rocket.chat:8.9.1}
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks: [backend, edge]
+    # Written by setup.sh: ADMIN_USERNAME / ADMIN_PASS / ADMIN_EMAIL / ADMIN_NAME
+    # create the operator account on the very first start only.
+    env_file:
+      - path: ./admin.env
+        required: false
+    environment:
+      MONGO_URL: mongodb://mongo:27017/rocketchat?replicaSet=rs0
+      ROOT_URL: https://${REVIEW_HOST:?set REVIEW_HOST in .env}
+      PORT: "3000"
+      DEPLOY_METHOD: docker
+      # Caddy is the only proxy in front: trust one X-Forwarded-For hop so rate
+      # limits and failed-login blocking see the client address.
+      HTTP_FORWARDED_COUNT: "1"
+      OVERWRITE_SETTING_Show_Setup_Wizard: completed
+      NODE_OPTIONS: --max-old-space-size=1536
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/info').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2G
+    logging: *logging
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    restart: unless-stopped
+    depends_on: [rocketchat]
+    networks: [edge]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      REVIEW_HOST: ${REVIEW_HOST:?set REVIEW_HOST in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging: *logging
+
+networks:
+  # Public side: IPv6 so Caddy sees real client addresses on AAAA connections.
+  edge:
+    enable_ipv6: true
+  backend:
+    internal: true
+
+volumes:
+  mongo-data:
+  mongo-config:
+  caddy-data:
+  caddy-config:

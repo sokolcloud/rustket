@@ -5,6 +5,13 @@
 //! runs [`app::App`]. Everything else lives here so examples and tests can drive
 //! the real `App::update` paths headlessly.
 
+// App Store guideline 2.4.5(vii): the store build must not contain an updater.
+#[cfg(all(feature = "mas", feature = "self-update"))]
+compile_error!(
+    "the `mas` (Mac App Store) and `self-update` features exclude each other: \
+     store builds update only through the App Store (docs/app-store.md)"
+);
+
 // External locale files override the bundled strings (`i18n::Overrides`).
 rust_i18n::i18n!("locales", fallback = "en", backend = crate::i18n::Overrides);
 
@@ -32,9 +39,11 @@ pub mod format;
 pub mod help;
 pub mod i18n;
 pub mod images;
+pub mod import;
 pub mod inbox;
 pub mod keymap;
 pub mod later;
+pub mod legal;
 pub mod locales;
 #[cfg(target_os = "macos")]
 pub mod macos_events;

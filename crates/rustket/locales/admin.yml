@@ -1428,11 +1428,11 @@ admin.premium:
   th: "Premium"
   zh: "高级版"
 admin.premium_body:
-  en: "This area is only available with an enterprise license module this workspace does not have. You can still open it in the browser."
-  ru: "Этот раздел доступен только с модулем корпоративной лицензии, которого нет у рабочего пространства. Его можно открыть в браузере."
-  es: "Esta sección solo está disponible con un módulo de licencia empresarial que este espacio de trabajo no tiene. Aun así, puedes abrirla en el navegador."
-  th: "ส่วนนี้ใช้ได้เฉพาะกับโมดูลไลเซนส์องค์กรที่เวิร์กสเปซนี้ไม่มี คุณยังเปิดในเบราว์เซอร์ได้"
-  zh: "此区域需要企业许可证模块，而此工作区没有该模块。你仍可以在浏览器中打开它。"
+  en: "This area is only available with an enterprise license module this workspace does not have."
+  ru: "Этот раздел доступен только с модулем корпоративной лицензии, которого нет у рабочего пространства."
+  es: "Esta sección solo está disponible con un módulo de licencia empresarial que este espacio de trabajo no tiene."
+  th: "ส่วนนี้ใช้ได้เฉพาะกับโมดูลไลเซนส์องค์กรที่เวิร์กสเปซนี้ไม่มี"
+  zh: "此区域需要企业许可证模块，而此工作区没有该模块。"
 admin.premium_title:
   en: "%{section} needs a Premium license"
   ru: "Для раздела «%{section}» нужна лицензия Premium"

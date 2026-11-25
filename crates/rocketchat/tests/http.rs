@@ -632,3 +632,131 @@ async fn set_utc_offset_posts_the_preference() {
         .expect("users.setPreferences");
     assert_eq!(body_json(req), json!({"data": {"utcOffset": -3.5}}));
 }
+
+fn ugc_fixture(name: &str) -> &'static str {
+    match name {
+        "invalid_channel" => include_str!("fixtures/ugc/im_block_user_invalid_channel.json"),
+        "method_ok" => include_str!("fixtures/ugc/method_call_block_user.json"),
+        "not_allowed" => include_str!("fixtures/ugc/users_delete_own_account_not_allowed.json"),
+        "invalid_password" => {
+            include_str!("fixtures/ugc/users_delete_own_account_invalid_password.json")
+        }
+        "last_owner" => include_str!("fixtures/ugc/users_delete_own_account_last_owner.json"),
+        _ => unreachable!(),
+    }
+}
+
+fn bad_request(body: &str) -> String {
+    http_response(
+        "400 Bad Request",
+        &[("Content-Type", "application/json")],
+        body,
+    )
+}
+
+#[tokio::test]
+async fn dm_block_picks_the_api_by_server_version() {
+    let (pa, log) = serve(|req| {
+        Some(if req.contains("im.blockUser") && req.contains("old") {
+            http_response(
+                "404 Not Found",
+                &[("Content-Type", "text/plain")],
+                "Not Found",
+            )
+        } else if req.contains("im.blockUser") {
+            json_ok(r#"{"success":true}"#)
+        } else {
+            json_ok(ugc_fixture("method_ok"))
+        })
+    })
+    .await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    c.dm_set_blocked("r1", "u2", true, Some((8, 9, 1)))
+        .await
+        .unwrap();
+    {
+        let reqs = log.lock().unwrap();
+        assert_eq!(reqs.len(), 1);
+        assert!(
+            reqs[0].starts_with("POST /api/v1/im.blockUser"),
+            "{}",
+            reqs[0]
+        );
+        assert_eq!(body_json(&reqs[0]), json!({"roomId": "r1", "block": true}));
+    }
+    log.lock().unwrap().clear();
+    c.dm_set_blocked("r1", "u2", false, Some((8, 5, 2)))
+        .await
+        .unwrap();
+    {
+        let reqs = log.lock().unwrap();
+        assert_eq!(reqs.len(), 1);
+        assert!(
+            reqs[0].starts_with("POST /api/v1/method.call/unblockUser"),
+            "{}",
+            reqs[0]
+        );
+        let frame: Value =
+            serde_json::from_str(body_json(&reqs[0])["message"].as_str().unwrap()).unwrap();
+        assert_eq!(frame["method"], "unblockUser");
+        assert_eq!(frame["params"], json!([{"rid": "r1", "blocked": "u2"}]));
+    }
+    // Unknown version: the endpoint first, the method when it is missing.
+    log.lock().unwrap().clear();
+    c.dm_set_blocked("old", "u2", true, None).await.unwrap();
+    let reqs = log.lock().unwrap().join("\n");
+    assert!(reqs.contains("POST /api/v1/im.blockUser"), "{reqs}");
+    assert!(
+        reqs.contains("POST /api/v1/method.call/blockUser"),
+        "{reqs}"
+    );
+}
+
+#[tokio::test]
+async fn dm_block_errors_do_not_fall_back() {
+    let (pa, log) = serve(|_| Some(bad_request(ugc_fixture("invalid_channel")))).await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    let e = c.dm_set_blocked("x", "u2", true, None).await.unwrap_err();
+    assert_eq!(e.api_error_code(), Some("invalid-channel"));
+    assert!(!joined(&log).contains("method.call"));
+}
+
+#[tokio::test]
+async fn delete_own_account_body_and_errors() {
+    let (pa, log) = serve(|req| {
+        let body = body_json(req);
+        Some(if body.get("confirmRelinquish").is_some() {
+            json_ok(r#"{"success":true}"#)
+        } else if body["password"] == rocketchat::auth::sha256_hex("right") {
+            bad_request(ugc_fixture("last_owner"))
+        } else if body["password"] == rocketchat::auth::sha256_hex("off") {
+            bad_request(ugc_fixture("not_allowed"))
+        } else {
+            bad_request(ugc_fixture("invalid_password"))
+        })
+    })
+    .await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    let e = c
+        .users_delete_own_account("wrong", false)
+        .await
+        .unwrap_err();
+    assert_eq!(e.api_error_code(), Some("error-invalid-password"));
+    assert!(e.last_owner_rooms().is_none());
+    let e = c.users_delete_own_account("off", false).await.unwrap_err();
+    assert_eq!(e.api_error_code(), Some("error-not-allowed"));
+    let e = c
+        .users_delete_own_account("right", false)
+        .await
+        .unwrap_err();
+    let rooms = e.last_owner_rooms().unwrap();
+    assert_eq!(rooms.should_change_owner, vec!["rkprobe-g5851".to_owned()]);
+    assert!(rooms.should_be_removed.is_empty());
+    c.users_delete_own_account("right", true).await.unwrap();
+    let reqs = log.lock().unwrap();
+    assert!(reqs[0].starts_with("POST /api/v1/users.deleteOwnAccount"));
+    assert_eq!(
+        body_json(&reqs[3]),
+        json!({"password": rocketchat::auth::sha256_hex("right"), "confirmRelinquish": true})
+    );
+}

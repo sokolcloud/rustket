@@ -486,3 +486,612 @@ fn release_notes_script_extracts_the_section() {
         assert!(!run(version).status.success(), "{version}");
     }
 }
+
+// Mac App Store flavor (docs/app-store.md, .github/workflows/app-store.yml).
+
+/// The lines of `text` without YAML/shell comment lines.
+fn without_comments(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// The text of job `name` in a workflow (up to the next job), comments removed.
+fn job(workflow: &str, name: &str, next: Option<&str>) -> String {
+    let start = index_of(workflow, &format!("\n  {name}:\n"), name);
+    let end = next.map_or(workflow.len(), |n| {
+        index_of(workflow, &format!("\n  {n}:\n"), n)
+    });
+    assert!(start < end, "{name} comes before {next:?}");
+    without_comments(&workflow[start..end])
+}
+
+#[test]
+fn app_store_workflow() {
+    let wf = read(".github/workflows/app-store.yml");
+    let code = without_comments(&wf);
+    assert!(wf.contains("\n  RUSTKET_CARGO_FEATURES: mas\n"));
+    // Dependency build scripts in mas-build get a read-only token.
+    assert!(wf.contains("\npermissions:\n  contents: read\n\n"));
+    // A leading zero in the offset is not octal.
+    assert_eq!(wf.matches("GITHUB_RUN_NUMBER + 10#$offset").count(), 2);
+    assert!(
+        !wf.contains("self-update"),
+        "no updater in the store workflow"
+    );
+    assert!(!wf.contains("RUSTKET_UPDATE_REPO:"));
+    assert!(wf.contains("\n  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer\n"));
+    assert!(wf.contains("\n    branches: ['app-store-dry-run']\n"));
+    assert!(
+        !wf.contains("\n  release:"),
+        "releases made with GITHUB_TOKEN trigger nothing"
+    );
+    assert!(wf.contains("\n  group: app-store-${{ github.ref }}\n  cancel-in-progress: false\n"));
+
+    let build = job(&wf, "mas-build", Some("mas-upload"));
+    let upload = job(&wf, "mas-upload", Some("mas-sandbox-test"));
+    let sandbox = job(&wf, "mas-sandbox-test", None);
+    for (name, text) in [
+        ("mas-build", &build),
+        ("mas-upload", &upload),
+        ("mas-sandbox-test", &sandbox),
+    ] {
+        assert!(text.contains("\n    runs-on: macos-26\n"), "{name} runs-on");
+        assert!(
+            text.contains("persist-credentials: false"),
+            "{name} checkout"
+        );
+    }
+
+    // The build job runs the app's code and gets no secrets.
+    assert!(!build.contains("secrets."));
+    assert!(!build.contains("environment:"));
+    assert!(
+        build.contains("MAS: 1\n          APP_ONLY: 1\n        run: packaging/macos/build.sh\n")
+    );
+    assert!(build.contains("-C \"$app/MacOS\" rustket -C ../Resources THIRD-PARTY-NOTICES.txt"));
+    assert!(build.contains("retention-days: 7"));
+
+    // The signing jobs run no cargo and never execute the binary.
+    for (name, text) in [("mas-upload", &upload), ("mas-sandbox-test", &sandbox)] {
+        for banned in ["cargo", "rustup", "--version", "--deep"] {
+            assert!(!text.contains(banned), "{name} contains {banned}");
+        }
+        for run in text.match_indices("run: packaging/macos/build.sh") {
+            let step = &text[text[..run.0].rfind("- name:").unwrap()..run.0];
+            assert!(step.contains("MAS: 1\n"), "{name}: {step}");
+            assert!(step.contains("PREBUILT_APP: 1\n"), "{name}: {step}");
+            assert!(step.contains("MAS_BINARY: ${{ runner.temp }}/mas-binary/rustket\n"));
+        }
+        assert!(text.contains("if [ \"$listing\" != \"THIRD-PARTY-NOTICES.txt rustket \" ]; then"));
+        assert!(text.contains("if: always()"), "{name} cleans up");
+    }
+    assert!(upload.contains("\n    environment: app-store\n"));
+    assert!(upload.contains("\n    needs: [mas-build]\n"));
+    assert!(upload.contains(
+        "\n    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/app-store-dry-run'\n"
+    ));
+    assert!(sandbox.contains("\n    environment: macos-signing\n"));
+    assert!(sandbox.contains("MAS_SANDBOX_TEST: 1\n"));
+    assert!(sandbox.contains("github.ref == 'refs/heads/app-store-dry-run'"));
+
+    // Upload only from v* tags, or on request from the dry-run branch.
+    assert!(upload.contains(
+        "      UPLOAD: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/app-store-dry-run' && inputs.upload) }}\n"
+    ));
+    assert!(upload.contains("if: steps.signing.outputs.sign == 'true' && env.UPLOAD == 'true'"));
+    assert_eq!(code.matches("xcrun altool --upload-package").count(), 1);
+    assert_eq!(code.matches("xcrun altool --validate-app").count(), 1);
+    assert_eq!(code.matches("--apple-id \"$MAS_APPLE_ID\"").count(), 2);
+    assert_eq!(
+        code.matches("python3 -I packaging/macos/altool_result.py \"$log\" \"$code\"")
+            .count(),
+        2
+    );
+    for banned in ["--auth-string", "--upload-app"] {
+        assert!(!wf.contains(banned), "{banned}");
+    }
+    // The installer identity is not filtered by the codesigning policy.
+    assert!(upload.contains("all=\"$(security find-identity -v \"$SIGNING_KEYCHAIN\")\""));
+    assert!(upload.contains("-T /usr/bin/codesign -T /usr/bin/productbuild"));
+
+    // Actions are pinned to the same commits as the release workflow.
+    let release = read(".github/workflows/release.yml");
+    for line in wf
+        .lines()
+        .filter(|l| l.trim_start().starts_with("- uses:") || l.trim_start().starts_with("uses:"))
+    {
+        let action = line.split("uses:").nth(1).unwrap().trim();
+        let sha = action.split('@').nth(1).unwrap().split(' ').next().unwrap();
+        assert_eq!(sha.len(), 40, "{action} is pinned to a commit");
+        assert!(release.contains(action), "{action} as in release.yml");
+    }
+}
+
+#[test]
+fn release_pins_the_macos_toolchain() {
+    let release = read(".github/workflows/release.yml");
+    for name in ["macos-build", "macos"] {
+        let start = index_of(&release, &format!("\n  {name}:\n"), name) + 1;
+        // Up to the next job key or the comment above it.
+        let job: String = release[start..]
+            .lines()
+            .enumerate()
+            .take_while(|(i, l)| *i == 0 || !(l.starts_with("  ") && !l.starts_with("   ")))
+            .map(|(_, l)| format!("{l}\n"))
+            .collect();
+        assert!(job.contains("\n    runs-on: macos-26\n"), "{name}");
+        assert!(
+            job.contains(
+                "\n      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer\n"
+            ),
+            "{name}"
+        );
+    }
+    assert!(!release.contains("rustket/mas"));
+    let ci = read(".github/workflows/ci.yml");
+    assert_eq!(ci.matches("--features rustket/mas").count(), 4);
+    assert!(ci.contains("- run: bash -n packaging/macos/build.sh\n"));
+}
+
+/// `<key>` → value lines of a flat XML plist (entitlements files).
+fn plist_entries(text: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let key = l.strip_prefix("<key>")?.strip_suffix("</key>")?;
+            Some((key.to_owned(), lines[i + 1].to_owned()))
+        })
+        .collect()
+}
+
+#[test]
+fn mas_entitlements() {
+    let id = rustket::BUNDLE_ID;
+    let text = read("packaging/macos/rustket-mas.entitlements");
+    let entries = plist_entries(&text);
+    let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "com.apple.application-identifier",
+            "com.apple.developer.team-identifier",
+            "com.apple.security.app-sandbox",
+            "com.apple.security.files.user-selected.read-write",
+            "com.apple.security.network.client",
+        ]
+    );
+    let value = |k: &str| entries.iter().find(|(key, _)| key == k).unwrap().1.clone();
+    let team = value("com.apple.developer.team-identifier");
+    let team = team
+        .strip_prefix("<string>")
+        .and_then(|t| t.strip_suffix("</string>"))
+        .unwrap();
+    assert_eq!(team, "D6JXBXV9Q5");
+    assert_eq!(
+        value("com.apple.application-identifier"),
+        format!("<string>{team}.{id}</string>")
+    );
+    for key in &keys[2..] {
+        assert_eq!(value(key), "<true/>", "{key}");
+    }
+
+    let test = read("packaging/macos/rustket-sandbox-test.entitlements");
+    let test_keys: Vec<String> = plist_entries(&test).into_iter().map(|(k, _)| k).collect();
+    assert_eq!(test_keys, keys[2..]);
+    for text in [&text, &test] {
+        for banned in [
+            "network.server",
+            "temporary-exception",
+            "automation.apple-events",
+            "files.all",
+            "get-task-allow",
+            "security.cs.",
+            "inherit",
+        ] {
+            assert!(!text.contains(banned), "{banned}");
+        }
+    }
+    let mac = read("packaging/macos/build.sh");
+    assert!(mac.contains("ENTITLEMENTS=\"$MACOS/rustket-mas.entitlements\""));
+    assert!(mac.contains("ENTITLEMENTS=\"$MACOS/rustket-sandbox-test.entitlements\""));
+}
+
+/// `LOCALIZATIONS="…"` of packaging/macos/build.sh.
+fn mac_localizations() -> Vec<String> {
+    read("packaging/macos/build.sh")
+        .lines()
+        .find_map(|l| l.strip_prefix("LOCALIZATIONS=\""))
+        .and_then(|l| l.strip_suffix('"'))
+        .expect("LOCALIZATIONS in build.sh")
+        .split(' ')
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The bundle localizations follow the bundled UI languages (both flavors
+/// share `write_info_plist` and `install_localizations`).
+#[test]
+fn mac_localizations_in_sync() {
+    let i18n = read("crates/rustket/src/i18n.rs");
+    let complete: Vec<String> = i18n
+        .lines()
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix("pub(crate) const BUNDLED_COMPLETE: &[&str] = &[")
+        })
+        .and_then(|l| l.strip_suffix("];"))
+        .expect("BUNDLED_COMPLETE")
+        .split(", ")
+        .map(|s| match s.trim_matches('"') {
+            "zh" => "zh-Hans".to_owned(),
+            other => other.to_owned(),
+        })
+        .collect();
+    let langs = mac_localizations();
+    assert_eq!(langs, complete);
+
+    let mut dirs: Vec<String> = std::fs::read_dir(root().join("packaging/macos/InfoPlist"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    dirs.sort();
+    let mut want: Vec<String> = langs.iter().map(|l| format!("{l}.lproj")).collect();
+    want.sort();
+    assert_eq!(dirs, want);
+    for l in &langs {
+        let strings = read(&format!(
+            "packaging/macos/InfoPlist/{l}.lproj/InfoPlist.strings"
+        ));
+        let line = strings
+            .lines()
+            .find(|s| s.starts_with("\"NSLocalNetworkUsageDescription\" = \""))
+            .unwrap_or_else(|| panic!("{l}: NSLocalNetworkUsageDescription"));
+        assert!(
+            line.ends_with("\";") && line.contains("Rustket"),
+            "{l}: {line}"
+        );
+    }
+
+    let mac = read("packaging/macos/build.sh");
+    assert!(mac.contains(
+        "    for l in $LOCALIZATIONS; do\n        langs+=\"        <string>$l</string>\"$'\\n'\n"
+    ));
+    assert!(
+        mac.contains("    <key>CFBundleLocalizations</key>\n    <array>\n${langs}    </array>\n")
+    );
+    // Both assembly branches (MAS and dmg) install them.
+    assert_eq!(mac.matches("\n    install_localizations\n").count(), 2);
+    assert_eq!(mac.matches("\n    compile_assets\n").count(), 2);
+    assert_eq!(
+        mac.matches("\n    write_info_plist \"$APP/Contents/Info.plist\"\n")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn mas_info_plist() {
+    let mac = read("packaging/macos/build.sh");
+    let id = rustket::BUNDLE_ID;
+    for want in [
+        format!("            <key>CFBundleURLName</key>\n            <string>{id}</string>\n"),
+        format!("    <key>CFBundleIdentifier</key>\n    <string>{id}</string>\n"),
+        format!("BUNDLE_ID={id}\n"),
+        "    <key>LSApplicationCategoryType</key>\n    <string>public.app-category.business</string>\n".to_owned(),
+        "    <key>ITSAppUsesNonExemptEncryption</key>\n    <false/>".to_owned(),
+        "    <key>CFBundleSupportedPlatforms</key>\n    <array>\n        <string>MacOSX</string>\n    </array>\n".to_owned(),
+        "    <key>CFBundleIconFile</key>\n    <string>rustket</string>\n".to_owned(),
+        "    <key>CFBundleIconName</key>\n    <string>AppIcon</string>".to_owned(),
+        "    <key>CFBundleVersion</key>\n    <string>$bundle_version</string>\n".to_owned(),
+        "        bundle_version=\"$BUILD_NUMBER\"\n".to_owned(),
+        "    BUILD_NUMBER=\"${MAS_BUILD_NUMBER:-}\"\n".to_owned(),
+        "    [[ \"$VERSION\" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]] ||\n".to_owned(),
+        "    <key>LSMinimumSystemVersion</key>\n    <string>$MACOSX_DEPLOYMENT_TARGET</string>\n".to_owned(),
+        "    <key>NSHumanReadableCopyright</key>\n    <string>Copyright © 2026 Sergey Sokolov. MIT License.</string>\n".to_owned(),
+        "    <key>NSLocalNetworkUsageDescription</key>\n".to_owned(),
+        "STAGE=\"$OUT/macos-mas\"".to_owned(),
+    ] {
+        assert!(mac.contains(&want), "missing {want}");
+    }
+    for key in [
+        "BuildMachineOSBuild",
+        "DTCompiler",
+        "DTPlatformBuild",
+        "DTPlatformName",
+        "DTPlatformVersion",
+        "DTSDKBuild",
+        "DTSDKName",
+        "DTXcode",
+        "DTXcodeBuild",
+    ] {
+        assert!(mac.contains(&format!("    <key>{key}</key>\n")), "{key}");
+    }
+    // The DT probe runs only when packaging/macos/xcode-probe exists.
+    assert!(mac.contains(
+        "    if [ ! -d \"$dir\" ]; then\n        echo \"notice: packaging/macos/xcode-probe"
+    ));
+
+    // The MAS branch writes no install-kind marker and runs the binary only
+    // when it built it.
+    let mas = index_of(
+        &mac,
+        "if [ \"$MAS\" = 1 ]; then\n    dt_values\n",
+        "build.sh",
+    );
+    let dmg = index_of(&mac, "\nelif [ \"$PREBUILT\" = 1 ]; then\n", "build.sh");
+    let branch = &mac[mas..dmg];
+    assert!(!branch.contains("install_marker"));
+    assert!(branch.contains("die \"install-kind marker in an App Store build\""));
+    assert_eq!(mac.matches("install_marker \"").count(), 1);
+    assert!(branch.contains(
+        "    if [ \"$PREBUILT\" != 1 ]; then\n        \"$APP/Contents/MacOS/rustket\" --version"
+    ));
+    assert!(
+        branch.contains("        install -m755 \"$MAS_BINARY\" \"$APP/Contents/MacOS/rustket\"\n")
+    );
+    assert!(branch.contains("    check_binary \"$APP/Contents/MacOS/rustket\"\n"));
+}
+
+#[test]
+fn mas_signing_and_gates() {
+    let mac = read("packaging/macos/build.sh");
+    let sign = &mac[index_of(
+        &mac,
+        "    ENTITLEMENTS=\"$MACOS/rustket-mas.entitlements\"",
+        "build.sh",
+    )..];
+    let sign = &sign[..index_of(sign, "    echo \"$PKG\"", "build.sh")];
+    let order = [
+        "    check_profile \"$MAS_PROVISIONING_PROFILE\"\n",
+        "    install -m644 \"$MAS_PROVISIONING_PROFILE\" \"$APP/Contents/embedded.provisionprofile\"\n",
+        "    xattr -cr \"$APP\"\n",
+        "    codesign --force -o runtime --entitlements \"$ENTITLEMENTS\" --sign \"$IDENTITY\" \"$APP\"\n",
+        "    codesign --verify --strict --verbose=2 \"$APP\"",
+        "    check_entitlements \"$ENTITLEMENTS\"\n",
+        "    productbuild --component \"$APP\" /Applications --sign \"$MAS_INSTALLER_IDENTITY\" \"$PKG\"",
+        "    pkgutil --check-signature \"$PKG\"",
+    ];
+    let mut at = 0;
+    for step in order {
+        let i = index_of(sign, step, "MAS signing");
+        assert!(i >= at, "{step} out of order");
+        at = i;
+    }
+    assert_eq!(sign.matches("codesign --force").count(), 1, "one signature");
+    assert!(!sign.contains("--deep"));
+    assert!(!sign.contains("notarize"));
+    // Profile checks.
+    for want in [
+        "\"com.apple.application-identifier\") != app_id",
+        "\"ProvisionedDevices\" in p",
+        "if days < 0:",
+        "team not in (p.get(\"TeamIdentifier\") or [])",
+    ] {
+        assert!(mac.contains(want), "{want}");
+    }
+    assert!(mac.contains("TEAM_ID=\"${APPLE_TEAM_ID:-D6JXBXV9Q5}\"\n"));
+    // Static gates on both slices; a failing nm fails the build.
+    for want in [
+        "    lipo \"$bin\" -verify_arch arm64 x86_64 ||",
+        "    for arch in arm64 x86_64; do\n",
+        "info=\"$(vtool -arch \"$arch\" -show-build \"$bin\")\" || die",
+        "syms=\"$(nm -u -arch \"$arch\" \"$bin\")\" || die",
+        "grep -E '^_(CGS|SLS)[A-Z]'",
+        "for marker in didDismissAlert api.github.com install-kind SHA256SUMS; do",
+        "[ \"$minos\" = \"$MACOSX_DEPLOYMENT_TARGET\" ]",
+    ] {
+        assert!(mac.contains(want), "{want}");
+    }
+    // Assets.car next to the icns.
+    assert!(mac.contains(
+        "xcrun actool --compile \"$APP/Contents/Resources\" --platform macosx --target-device mac \\\n        --app-icon AppIcon --minimum-deployment-target \"$MACOSX_DEPLOYMENT_TARGET\""
+    ));
+}
+
+#[test]
+fn mas_feature_excludes_updater() {
+    let manifest: toml::Table = toml::from_str(&read("crates/rustket/Cargo.toml")).unwrap();
+    let features = manifest["features"].as_table().unwrap();
+    assert_eq!(features["mas"].as_array().map(Vec::len), Some(0));
+    assert!(
+        features.get("default").is_none(),
+        "mas stays off by default"
+    );
+    let lib = read("crates/rustket/src/lib.rs");
+    assert!(
+        lib.contains("#[cfg(all(feature = \"mas\", feature = \"self-update\"))]\ncompile_error!(")
+    );
+    // The App Store build compiles with exactly the mas feature.
+    let mac = read("packaging/macos/build.sh");
+    assert!(
+        mac.contains(
+            "*\" self-update \"*) die \"the App Store build must not enable self-update\""
+        )
+    );
+}
+
+#[test]
+fn winit_patch() {
+    let manifest: toml::Table = toml::from_str(&read("Cargo.toml")).unwrap();
+    assert_eq!(
+        manifest["patch"]["crates-io"]["winit"]["path"].as_str(),
+        Some("vendor/winit")
+    );
+    let exclude = manifest["workspace"]["exclude"].as_array().unwrap();
+    assert!(exclude.iter().any(|e| e.as_str() == Some("vendor/winit")));
+    let members = manifest["workspace"]["members"].as_array().unwrap();
+    assert!(
+        !members
+            .iter()
+            .any(|m| m.as_str().unwrap().starts_with("vendor/"))
+    );
+
+    let vendored: toml::Table = toml::from_str(&read("vendor/winit/Cargo.toml")).unwrap();
+    let version = vendored["package"]["version"].as_str().unwrap();
+    let lock = read("Cargo.lock");
+    let entry = index_of(&lock, "[[package]]\nname = \"winit\"\n", "Cargo.lock");
+    let entry = &lock[entry..];
+    let entry = &entry[..entry[1..]
+        .find("[[package]]")
+        .map_or(entry.len(), |i| i + 1)];
+    assert!(entry.contains(&format!("version = \"{version}\"\n")));
+    assert!(
+        !entry.contains("source = "),
+        "Cargo.lock uses the path source"
+    );
+
+    for file in ["ffi.rs", "window_delegate.rs"] {
+        let text = read(&format!("vendor/winit/src/platform_impl/macos/{file}"));
+        assert!(!text.contains("fn CGSMainConnectionID"), "{file}");
+        assert!(!text.contains("ffi::CGSMainConnectionID"), "{file}");
+        assert!(
+            !text.contains("ffi::CGSSetWindowBackgroundBlurRadius("),
+            "{file}"
+        );
+        assert!(
+            !text.contains("fn CGSSetWindowBackgroundBlurRadius"),
+            "{file}"
+        );
+    }
+    assert!(
+        read("vendor/winit/src/platform_impl/macos/window_delegate.rs")
+            .contains("    pub fn set_blur(&self, _blur: bool) {}\n")
+    );
+    assert!(read("vendor/winit/LICENSE").contains("Apache License"));
+    assert!(read("vendor/winit/README.rustket.md").contains("```diff\n"));
+}
+
+/// The asset catalog icon set renders the same squircle tile as the icns
+/// (examples/gen_icons.rs `--appiconset`).
+#[test]
+fn app_icon_set() {
+    let dir = "packaging/macos/AppIcon.appiconset";
+    let json: serde_json::Value =
+        serde_json::from_str(&read(&format!("{dir}/Contents.json"))).unwrap();
+    let images = json["images"].as_array().unwrap();
+    let mut pixels = Vec::new();
+    for image in images {
+        assert_eq!(image["idiom"], "mac");
+        let size = image["size"].as_str().unwrap();
+        let points: u32 = size.split_once('x').unwrap().0.parse().unwrap();
+        let scale: u32 = image["scale"]
+            .as_str()
+            .unwrap()
+            .trim_end_matches('x')
+            .parse()
+            .unwrap();
+        let file = image["filename"].as_str().unwrap();
+        let data = bytes(&format!("{dir}/{file}"));
+        let info = png::Decoder::new(std::io::Cursor::new(&data))
+            .read_info()
+            .unwrap();
+        let px = points * scale;
+        assert_eq!((info.info().width, info.info().height), (px, px), "{file}");
+        pixels.push((px, data));
+    }
+    let mut points: Vec<String> = images
+        .iter()
+        .map(|i| {
+            format!(
+                "{}@{}",
+                i["size"].as_str().unwrap(),
+                i["scale"].as_str().unwrap()
+            )
+        })
+        .collect();
+    points.sort();
+    assert_eq!(
+        points,
+        [
+            "128x128@1x",
+            "128x128@2x",
+            "16x16@1x",
+            "16x16@2x",
+            "256x256@1x",
+            "256x256@2x",
+            "32x32@1x",
+            "32x32@2x",
+            "512x512@1x",
+            "512x512@2x",
+        ]
+    );
+    // Every PNG the icns has is byte-identical to the catalog's (ic10 is 1024).
+    let icns = bytes("crates/rustket/assets/icons/rustket.icns");
+    let len = |at: usize| u32::from_be_bytes(icns[at..at + 4].try_into().unwrap()) as usize;
+    let mut at = 8;
+    let mut compared = 0;
+    while at < icns.len() {
+        let element = &icns[at + 8..at + len(at + 4)];
+        let info = png::Decoder::new(std::io::Cursor::new(element))
+            .read_info()
+            .unwrap();
+        let px = info.info().width;
+        let (_, data) = pixels.iter().find(|(p, _)| *p == px).unwrap();
+        assert!(data == element, "{px} px differs from the icns");
+        compared += 1;
+        at += len(at + 4);
+    }
+    assert_eq!(compared, 8);
+    assert!(read("packaging/macos/build.sh").contains("cp -R \"$MACOS/AppIcon.appiconset\""));
+}
+
+/// packaging/macos/altool_result.py fails on errors whatever the exit code.
+#[cfg(unix)]
+#[test]
+fn altool_result_script() {
+    if std::process::Command::new("python3")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("python3 not found; skipped");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let run = |log: &str, code: i32| {
+        let file = dir.path().join("log");
+        std::fs::write(&file, log).unwrap();
+        std::process::Command::new("python3")
+            .arg("-I")
+            .arg(root().join("packaging/macos/altool_result.py"))
+            .arg(&file)
+            .arg(code.to_string())
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    let ok = r#"{"tool-version":"26.0","os-version":"26.1","success-message":"No errors validating archive"}"#;
+    assert!(run(ok, 0));
+    assert!(run("2026-11-25 No errors uploading. 0 errors.\n", 0));
+    assert!(!run(ok, 1));
+    assert!(!run("", 0));
+    assert!(!run("ERROR: [ContentDelivery.Uploader] failed\n", 0));
+    assert!(!run("*** Error: Validation failed (409)\n", 0));
+    // Errors behind a log prefix, and JSON after other braces.
+    assert!(!run(
+        "2026-11-25 10:00:00.000 altool[123:456] *** Error: Error uploading 'Rustket.pkg'.\n",
+        0
+    ));
+    assert!(!run(
+        "2026-11-25 10:00:00.000 ERROR: [ContentDelivery.Uploader.0x1] failed\n",
+        0
+    ));
+    assert!(!run(
+        "2026-11-25 10:00:00.000 altool[1:2] ERROR ITMS-90296: \"App sandbox not enabled.\"\n",
+        0
+    ));
+    assert!(!run(
+        r#"{"product-errors":[{"code":-19208,"message":"Invalid Provisioning Profile"}]}"#,
+        0
+    ));
+    assert!(!run(
+        "note {not json}\n{\"product-errors\":[{\"code\":409}]}\n",
+        0
+    ));
+    assert!(run(&format!("note {{not json}}\n{ok}\n"), 0));
+}

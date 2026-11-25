@@ -342,6 +342,19 @@ pub fn window_frame<'a, Message: Clone + 'a>(
     )
 }
 
+/// `title` above `content` without a frame (the window keeps the system's,
+/// as on macOS): like [`window_frame`], overlays of `content` cover only
+/// `content`.
+pub fn window_titled<'a, Message: Clone + 'a>(
+    title: Element<'a, Message>,
+    content: Element<'a, Message>,
+) -> Element<'a, Message> {
+    column![title, scope(content, Scope::Viewport)]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
 /// What a [`ScopeWidget`] changes for the overlays of its content.
 #[derive(Debug, Clone, Copy)]
 enum Scope {

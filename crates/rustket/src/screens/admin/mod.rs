@@ -369,6 +369,7 @@ impl Admin {
                 }
                 self.select(s, ctx)
             }
+            Message::OpenInBrowser(s) if !browser_offered(s) => Action::none(),
             Message::OpenInBrowser(s) => {
                 let url = format!(
                     "{}/{}",
@@ -854,7 +855,12 @@ pub fn section_icon(s: AdminSection) -> Icon {
 
 /// EE-only or not native: explanation and "Open in browser".
 fn fallback<'a>(s: AdminSection, premium: bool) -> Element<'a, Message> {
-    let (title, body) = if premium {
+    let (title, body) = if !browser_offered(s) {
+        (
+            section_title(s),
+            t!("legal.subscription_unavailable").into_owned(),
+        )
+    } else if premium {
         (
             t!("admin.premium_title", section = section_title(s)).into_owned(),
             t!("admin.premium_body").into_owned(),
@@ -862,14 +868,45 @@ fn fallback<'a>(s: AdminSection, premium: bool) -> Element<'a, Message> {
     } else {
         (section_title(s), t!("admin.browser_body").into_owned())
     };
-    column![
+    let mut col = column![
         common::title_row(title, vec![]),
         text(body).size(TEXT_BODY).style(style::text_secondary),
-        primary_button(t!("admin.open_in_browser"), Some(Message::OpenInBrowser(s)))
-            .icon(Icon::ExternalLink),
     ]
-    .spacing(SPACE_4)
-    .into()
+    .spacing(SPACE_4);
+    // The store build sends nobody to the web client's upgrade prompts.
+    if browser_offered(s) && !(cfg!(feature = "mas") && premium) {
+        col = col.push(
+            primary_button(t!("admin.open_in_browser"), Some(Message::OpenInBrowser(s)))
+                .icon(Icon::ExternalLink),
+        );
+    }
+    col.into()
+}
+
+/// Whether a section's fallback page links to the web client. The App Store
+/// build links nowhere for the subscription (guideline 3.1.3).
+pub(crate) fn browser_offered(s: AdminSection) -> bool {
+    !(cfg!(feature = "mas") && s == AdminSection::Subscription)
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+
+    fn offers_browser(s: AdminSection, premium: bool) -> bool {
+        let label = t!("admin.open_in_browser").into_owned();
+        crate::tree_probe::texts(fallback(s, premium)).contains(&label)
+    }
+
+    /// The store build links to the web client for no Premium or
+    /// subscription page; the others do for every section.
+    #[test]
+    fn browser_button_per_flavor() {
+        let mas = cfg!(feature = "mas");
+        assert!(offers_browser(AdminSection::Engagement, false));
+        assert_eq!(offers_browser(AdminSection::Engagement, true), !mas);
+        assert_eq!(offers_browser(AdminSection::Subscription, false), !mas);
+    }
 }
 
 #[cfg(test)]

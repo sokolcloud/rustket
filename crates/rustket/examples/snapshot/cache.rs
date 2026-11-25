@@ -75,6 +75,7 @@ pub async fn cache_shots(server: &ServerUrl, out: &Path, user: &(String, String,
     let tmp = tempfile::tempdir().expect("tmp");
     let cfg_dir = tmp.path().join("config");
     let mut cfg = AppConfig::default();
+    rustket::legal::accept_terms(&mut cfg);
     let mut entry = ServerEntry::new(server.as_str(), "Rustket dev");
     entry.user_id = Some(user.0.clone());
     let sid = cfg.add_server(entry);

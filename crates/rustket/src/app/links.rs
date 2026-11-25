@@ -46,6 +46,22 @@ impl App {
         )
     }
 
+    /// Opens a file shipped with the app with the system's viewer.
+    pub(crate) fn open_file(&mut self, path: std::path::PathBuf) -> Task<Message> {
+        if !self.open_urls {
+            return Task::none();
+        }
+        let shown = path.display().to_string();
+        Task::perform(crate::room::timeline::transfer::open_path(path), move |r| {
+            if r.is_err() {
+                tracing::warn!("cannot open a bundled file");
+                Message::FileNotOpened(shown.clone())
+            } else {
+                Message::Noop
+            }
+        })
+    }
+
     /// A URL clicked in a room: permalinks to messages of this server open
     /// in the app (a channel the user has not joined as a preview, like the
     /// directory does), everything else in the browser, as does a permalink

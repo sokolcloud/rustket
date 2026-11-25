@@ -78,6 +78,7 @@ shot() {
   cat >"$PROFILE/config/rustket/config.toml" <<EOF
 version = 1
 active_server = "demo"
+accepted_terms = 1
 
 [[servers]]
 id = "demo"

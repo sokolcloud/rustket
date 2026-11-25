@@ -10,7 +10,7 @@
 //! come back from one app-wide subscription and are routed by id. The
 //! backend is a [`Notifier`] so tests use a mock: freedesktop
 //! (`org.freedesktop.Notifications` over D-Bus) on Linux and the BSDs, toasts
-//! on Windows, `NSUserNotificationCenter` on macOS. Every backend replaces a
+//! on Windows, `UNUserNotificationCenter` on macOS. Every backend replaces a
 //! room's notification in place and withdraws closed ones; the Windows and
 //! macOS ones also clear what earlier launches left behind, whose ids would
 //! collide with this launch's.
@@ -39,7 +39,7 @@ use crate::images::Images;
 mod freedesktop;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", test))]
 mod native;
 #[cfg(any(windows, target_os = "macos", test))]
 mod text;
@@ -556,6 +556,8 @@ impl Notifications {
             title = format!("{title} · {server_name}");
         }
         let body = match spec.body {
+            // The user's hidden words stay out of the preview too.
+            Some(b) if prefs.hidden_words.matches(&b) => t!("desktop.hidden_body").into_owned(),
             Some(b) if !b.trim().is_empty() => b,
             Some(_) if notification.payload.message.content.is_some() => {
                 t!("desktop.encrypted_body").into_owned()
@@ -1072,6 +1074,31 @@ mod tests {
         drain(&mut n, t);
         assert_eq!(mock.shown.lock().unwrap().len(), 1, "busy: do not disturb");
         assert_eq!(sound, None);
+    }
+
+    /// A message with one of the hidden words shows no preview.
+    #[test]
+    fn hidden_words_keep_the_preview_out() {
+        let mock = MockNotifier::default();
+        let mut n = Notifications::with_backend(Arc::new(mock.clone()));
+        let fx = Fixture::new();
+        let ws = workspace();
+        let sid = ServerId("s1".into());
+        let mut prefs = UiPrefs::default();
+        prefs.hidden_words.add("THERE").unwrap();
+        let (t, _) = n.notify(
+            &sid,
+            "Dev",
+            &notification("r1", "m1", None),
+            &ws,
+            &prefs,
+            &fx.env(false, None),
+        );
+        drain(&mut n, t);
+        let shown = mock.shown.lock().unwrap().clone();
+        assert_eq!(shown.len(), 1, "still notified");
+        assert!(!shown[0].body.contains("there"), "{}", shown[0].body);
+        assert!(!shown[0].body.is_empty());
     }
 
     /// "Play a sound" without desktop notifications: the sound alone.

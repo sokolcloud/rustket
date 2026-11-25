@@ -40,6 +40,11 @@ pub enum Instance {
     Primary(Listener, Guard),
     /// The arguments were handed to the running instance.
     Forwarded,
+    /// Primary without a listener (no socket path fits, see
+    /// `unix::Endpoint`): forwarded launches cannot reach it. Keep the guard.
+    LockOnly(Guard),
+    /// Another instance holds the lock and cannot be reached: exit.
+    AlreadyRunning,
 }
 
 /// The bytes a second invocation sends: one argument per line.

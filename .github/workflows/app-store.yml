@@ -1,0 +1,536 @@
+name: App Store
+
+# Mac App Store build (docs/app-store.md). Pushing the `app-store-dry-run`
+# branch builds, signs and validates the package with App Store Connect
+# without uploading it. A manual run from a v* tag uploads the build to App
+# Store Connect (TestFlight); a manual run on app-store-dry-run uploads with
+# `upload: true`. Releases created by release.yml with GITHUB_TOKEN cannot
+# trigger workflows, so there is no `on: release`.
+on:
+  push:
+    branches: ['app-store-dry-run']
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: 'Upload to App Store Connect (runs from v* tags always upload)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-store-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # The store build has no in-app updater (the `mas` feature refuses the
+  # updater feature at compile time) and no RUSTKET_UPDATE_REPO.
+  RUSTKET_CARGO_FEATURES: mas
+  # Pinned release Xcode of the macos-26 image (docs/app-store.md: Xcode pin).
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  # Compiles the universal binary and runs the static gates. No environment
+  # and no secrets: dependency build scripts and the app's own code run only
+  # here. The artifact holds the binary and its THIRD-PARTY-NOTICES text,
+  # nothing else.
+  mas-build:
+    name: Mac App Store (binary)
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup default stable
+      - name: Version and build number
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+          TAG: ${{ github.ref_name }}
+          MAS_BUILD_OFFSET: ${{ vars.MAS_BUILD_OFFSET }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "$IS_TAG" = true ] && [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match the Cargo.toml version $version"
+            exit 1
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the App Store needs a numeric x.y.z version, not $version"
+            exit 1
+          fi
+          offset="${MAS_BUILD_OFFSET:-0}"
+          [[ "$offset" =~ ^[0-9]+$ ]] || { echo "::error::MAS_BUILD_OFFSET must be a number"; exit 1; }
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+          echo "MAS_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 10#$offset)).$GITHUB_RUN_ATTEMPT" >>"$GITHUB_ENV"
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          xcrun --sdk macosx --show-sdk-build-version
+          # Release build numbers can end in a letter too (16C5032a), so the
+          # path and the version text decide (build.sh checks the same).
+          if [[ "$DEVELOPER_DIR" == *[Bb]eta* ]] || grep -qi beta <<<"$(xcodebuild -version)"; then
+            echo "::error::$DEVELOPER_DIR is a beta Xcode; pin a release Xcode in DEVELOPER_DIR"
+            exit 1
+          fi
+      # Universal binary, the `rustket --version` smoke run (only here), the
+      # static gates (lipo, vtool, nm private symbols, updater markers) and
+      # the DT* probe against packaging/macos/xcode-probe.
+      - name: Build and check the app
+        env:
+          MAS: 1
+          APP_ONLY: 1
+        run: packaging/macos/build.sh
+      # A tar keeps the executable bit that a zipped artifact would lose.
+      - name: Archive the binary
+        run: |
+          set -euo pipefail
+          app=packaging/out/macos-mas/Rustket.app/Contents
+          mkdir dist
+          tar --no-mac-metadata -cf "dist/Rustket-$VERSION-mas-binary.tar" \
+            -C "$app/MacOS" rustket -C ../Resources THIRD-PARTY-NOTICES.txt
+          tar -tvf "dist/Rustket-$VERSION-mas-binary.tar"
+      - name: Upload the binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: dist/*-mas-binary.tar
+          archive: false
+          retention-days: 7
+          if-no-files-found: error
+
+  # Assembles Rustket.app around the binary from this checkout (Info.plist,
+  # entitlements, icons, localizations), signs it with the Apple Distribution
+  # identity, packages it with productbuild and validates or uploads it with
+  # altool. Runs no cargo, no rustup and never executes the binary.
+  mas-upload:
+    name: Mac App Store (sign, validate, upload)
+    needs: [mas-build]
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/app-store-dry-run'
+    runs-on: macos-26
+    # Room for the 30-minute upload attempt and its one retry.
+    timeout-minutes: 100
+    environment: app-store
+    env:
+      UPLOAD: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/app-store-dry-run' && inputs.upload) }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      MAS_APPLE_ID: ${{ vars.MAS_APPLE_ID }}
+    steps:
+      # The runner context is not available in job-level env.
+      - name: Paths
+        run: |
+          {
+            echo "SIGNING_KEYCHAIN=$RUNNER_TEMP/rustket-mas.keychain-db"
+            echo "PROFILE_PATH=$RUNNER_TEMP/rustket-mas.provisionprofile"
+            echo "API_PRIVATE_KEYS_DIR=$RUNNER_TEMP/private_keys"
+          } >>"$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Signing policy
+        id: signing
+        env:
+          MAS_CERTIFICATES_P12: ${{ secrets.MAS_CERTIFICATES_P12 }}
+          MAS_CERTIFICATES_PASSWORD: ${{ secrets.MAS_CERTIFICATES_PASSWORD }}
+          MAS_PROFILE_B64: ${{ secrets.MAS_PROVISIONING_PROFILE }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in MAS_CERTIFICATES_P12 MAS_CERTIFICATES_PASSWORD MAS_PROFILE_B64 APPLE_API_KEY_P8 \
+              APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_TEAM_ID MAS_APPLE_ID; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          # The profile secret is MAS_PROVISIONING_PROFILE (MAS_PROFILE_B64 here).
+          missing="${missing//MAS_PROFILE_B64/MAS_PROVISIONING_PROFILE}"
+          if [ -z "$missing" ]; then
+            echo "sign=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "sign=false" >>"$GITHUB_OUTPUT"
+          msg="App Store signing is not configured (missing:$missing; see docs/app-store.md)"
+          if [ "$IS_TAG" = true ] || [ "$UPLOAD" = true ]; then
+            echo "::error::$msg. An App Store build must be signed; there is no unsigned upload."
+            exit 1
+          fi
+          echo "::warning::$msg: only the unsigned app is assembled and checked."
+      - name: Version and build number
+        env:
+          MAS_BUILD_OFFSET: ${{ vars.MAS_BUILD_OFFSET }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          offset="${MAS_BUILD_OFFSET:-0}"
+          [[ "$offset" =~ ^[0-9]+$ ]] || { echo "::error::MAS_BUILD_OFFSET must be a number"; exit 1; }
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+          echo "MAS_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 10#$offset)).$GITHUB_RUN_ATTEMPT" >>"$GITHUB_ENV"
+      - name: Download the binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: '*-mas-binary.tar'
+          path: ${{ runner.temp }}/mas-artifact
+          merge-multiple: true
+          skip-decompress: true
+      # The artifact contributes the binary (data: lipo, vtool and nm look at
+      # it, nothing runs it) and the notices text; anything else is rejected,
+      # including _CodeSignature or embedded.provisionprofile.
+      - name: Unpack the binary
+        env:
+          ARTIFACT: ${{ runner.temp }}/mas-artifact
+          BINARY_DIR: ${{ runner.temp }}/mas-binary
+        run: |
+          set -euo pipefail
+          tars=()
+          while IFS= read -r f; do tars+=("$f"); done < <(find "$ARTIFACT" -type f -name '*-mas-binary.tar')
+          if [ "${#tars[@]}" -ne 1 ]; then
+            echo "::error::expected one binary archive, found ${#tars[@]}"
+            exit 1
+          fi
+          listing="$(tar -tf "${tars[0]}" | LC_ALL=C sort | tr '\n' ' ')"
+          if [ "$listing" != "THIRD-PARTY-NOTICES.txt rustket " ]; then
+            echo "::error::unexpected contents of ${tars[0]}: $listing"
+            exit 1
+          fi
+          mkdir -p "$BINARY_DIR"
+          tar -C "$BINARY_DIR" -xf "${tars[0]}"
+          for f in rustket THIRD-PARTY-NOTICES.txt; do
+            if [ ! -f "$BINARY_DIR/$f" ] || [ -L "$BINARY_DIR/$f" ]; then
+              echo "::error::$f is not a regular file"
+              exit 1
+            fi
+          done
+          rm -rf "$ARTIFACT"
+      - name: Assemble the unsigned app (signing not configured)
+        if: steps.signing.outputs.sign != 'true'
+        env:
+          MAS: 1
+          PREBUILT_APP: 1
+          APP_ONLY: 1
+          MAS_BINARY: ${{ runner.temp }}/mas-binary/rustket
+          MAS_NOTICES: ${{ runner.temp }}/mas-binary/THIRD-PARTY-NOTICES.txt
+        run: packaging/macos/build.sh
+      - name: Signing keychain, identities and profile
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          MAS_CERTIFICATES_P12: ${{ secrets.MAS_CERTIFICATES_P12 }}
+          MAS_CERTIFICATES_PASSWORD: ${{ secrets.MAS_CERTIFICATES_PASSWORD }}
+          MAS_PROFILE_B64: ${{ secrets.MAS_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          kc_pass="$(openssl rand -hex 32)"
+          echo "::add-mask::$kc_pass"
+          security create-keychain -p "$kc_pass" "$SIGNING_KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$SIGNING_KEYCHAIN"
+          security unlock-keychain -p "$kc_pass" "$SIGNING_KEYCHAIN"
+
+          p12="$RUNNER_TEMP/rustket-mas.p12"
+          printf '%s' "$MAS_CERTIFICATES_P12" | tr -d '[:space:]' | base64 --decode >"$p12"
+          if ! security import "$p12" -k "$SIGNING_KEYCHAIN" -f pkcs12 -P "$MAS_CERTIFICATES_PASSWORD" \
+              -T /usr/bin/codesign -T /usr/bin/productbuild >/dev/null; then
+            rm -f "$p12"
+            echo "::error::cannot import MAS_CERTIFICATES_P12 (wrong MAS_CERTIFICATES_PASSWORD or not base64 of a .p12?)"
+            exit 1
+          fi
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" \
+            "$SIGNING_KEYCHAIN" >/dev/null
+          keychains=("$SIGNING_KEYCHAIN")
+          while IFS= read -r k; do
+            k="$(sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//' <<<"$k")"
+            [ -z "$k" ] || [ "$k" = "$SIGNING_KEYCHAIN" ] || keychains+=("$k")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${keychains[@]}"
+
+          # The codesigning policy filter hides installer identities, so the
+          # installer is looked up without -p codesigning.
+          signing="$(security find-identity -v -p codesigning "$SIGNING_KEYCHAIN")"
+          app_match="$(grep -F "\"Apple Distribution: " <<<"$signing" | grep -F "($APPLE_TEAM_ID)\"" || true)"
+          all="$(security find-identity -v "$SIGNING_KEYCHAIN")"
+          pkg_match="$(grep -E "\"(3rd Party Mac Developer Installer|Mac Installer Distribution): " <<<"$all" | grep -F "($APPLE_TEAM_ID)\"" || true)"
+          if [ -z "$app_match" ] || [ -z "$pkg_match" ]; then
+            echo "::error::MAS_CERTIFICATES_P12 needs an \"Apple Distribution\" and a \"3rd Party Mac Developer Installer\" identity of team $APPLE_TEAM_ID. Identities found:"
+            echo "$all"
+            exit 1
+          fi
+          identity="$(head -1 <<<"$app_match" | awk '{ print $2 }')"
+          installer="$(head -1 <<<"$pkg_match" | sed -e 's/^[^"]*"//' -e 's/"[^"]*$//')"
+          echo "signing with: $(head -1 <<<"$app_match" | sed 's/^[^"]*//')"
+          echo "installer: $installer"
+
+          printf '%s' "$MAS_PROFILE_B64" | tr -d '[:space:]' | base64 --decode >"$PROFILE_PATH"
+          {
+            echo "MAS_SIGN_IDENTITY=$identity"
+            echo "MAS_INSTALLER_IDENTITY=$installer"
+          } >>"$GITHUB_ENV"
+      - name: Package and sign
+        if: steps.signing.outputs.sign == 'true'
+        timeout-minutes: 20
+        env:
+          MAS: 1
+          PREBUILT_APP: 1
+          MAS_BINARY: ${{ runner.temp }}/mas-binary/rustket
+          MAS_NOTICES: ${{ runner.temp }}/mas-binary/THIRD-PARTY-NOTICES.txt
+          MAS_PROVISIONING_PROFILE: ${{ runner.temp }}/rustket-mas.provisionprofile
+        run: packaging/macos/build.sh
+      - name: API key
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$API_PRIVATE_KEYS_DIR"
+          printf '%s' "$APPLE_API_KEY_P8" | tr -d '[:space:]' | base64 --decode \
+            >"$API_PRIVATE_KEYS_DIR/AuthKey_$APPLE_API_KEY_ID.p8"
+          # Flag names changed in the Xcode 26 altool; keep its help in the log.
+          xcrun altool --help 2>&1 | head -150 || true
+      - name: Validate with App Store Connect
+        if: steps.signing.outputs.sign == 'true'
+        timeout-minutes: 20
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/altool-validate.log"
+          xcrun altool --validate-app "packaging/out/Rustket-$VERSION-mas.pkg" --platform macos \
+            --apple-id "$MAS_APPLE_ID" --bundle-id io.github.sokolcloud.rustket \
+            --bundle-version "$MAS_BUILD_NUMBER" --bundle-short-version-string "$VERSION" \
+            --api-key "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID" \
+            --output-format json >"$log" 2>&1
+          code=$?
+          cat "$log"
+          python3 -I packaging/macos/altool_result.py "$log" "$code"
+      - name: Upload to App Store Connect
+        if: steps.signing.outputs.sign == 'true' && env.UPLOAD == 'true'
+        timeout-minutes: 65
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/altool-upload.log"
+          # altool can hang on a dropped part; give each attempt 30 minutes
+          # and retry once after a hang or a failed checksum retry. Not after
+          # exit 0: altool may have recovered, and a second upload of the
+          # same build number would be refused.
+          for attempt in 1 2; do
+            xcrun altool --upload-package "packaging/out/Rustket-$VERSION-mas.pkg" --platform macos \
+              --apple-id "$MAS_APPLE_ID" --bundle-id io.github.sokolcloud.rustket \
+              --bundle-version "$MAS_BUILD_NUMBER" --bundle-short-version-string "$VERSION" \
+              --api-key "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID" \
+              --output-format json --wait >"$log" 2>&1 &
+            pid=$!
+            ( sleep 1800; kill "$pid" 2>/dev/null ) &
+            watchdog=$!
+            wait "$pid"
+            code=$?
+            kill "$watchdog" 2>/dev/null || true
+            cat "$log"
+            if [ "$attempt" = 1 ] && { [ "$code" -ge 128 ] || { [ "$code" -ne 0 ] &&
+                grep -q -e 'WILL RETRY PART' -e 'Checksums do not match' "$log"; }; }; then
+              echo "::warning::altool hung or dropped a part (exit $code); retrying once"
+              continue
+            fi
+            break
+          done
+          python3 -I packaging/macos/altool_result.py "$log" "$code"
+      - name: Summary
+        if: steps.signing.outputs.sign == 'true'
+        run: |
+          set -euo pipefail
+          {
+            echo "### Mac App Store build"
+            echo "- version: $VERSION, build: $MAS_BUILD_NUMBER"
+            echo "- uploaded: $UPLOAD"
+            echo "- $(xcodebuild -version | tr '\n' ' ')"
+            echo "- macOS SDK $(xcrun --sdk macosx --show-sdk-version) ($(xcrun --sdk macosx --show-sdk-build-version))"
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload the package
+        if: steps.signing.outputs.sign == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: packaging/out/*-mas.pkg
+          archive: false
+          retention-days: 7
+          if-no-files-found: error
+      - name: Remove the keychain, key and profile
+        if: always()
+        run: |
+          if [ -f "$SIGNING_KEYCHAIN" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+          rm -rf "$API_PRIVATE_KEYS_DIR"
+          rm -f "$PROFILE_PATH" "$RUNNER_TEMP/rustket-mas.p12"
+
+  # Optional Developer ID build with the App Sandbox entitlements
+  # (rustket-sandbox-test.entitlements), notarized, for the sandbox checklist
+  # on a Mac before TestFlight (docs/app-store.md). Uses the dmg's
+  # `macos-signing` environment, which must also allow app-store-dry-run;
+  # turned on by the repository variable MAS_SANDBOX_TEST=true.
+  # Runs no cargo and never executes the binary.
+  mas-sandbox-test:
+    name: Mac App Store (sandbox test build)
+    needs: [mas-build]
+    if: github.ref == 'refs/heads/app-store-dry-run' && vars.MAS_SANDBOX_TEST == 'true'
+    runs-on: macos-26
+    timeout-minutes: 120
+    environment: macos-signing
+    env:
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+    steps:
+      - name: Paths
+        run: |
+          {
+            echo "SIGNING_KEYCHAIN=$RUNNER_TEMP/rustket-sandbox.keychain-db"
+            echo "NOTARY_KEY=$RUNNER_TEMP/rustket-notary.p8"
+          } >>"$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Signing policy
+        id: signing
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD APPLE_API_KEY_P8 \
+              APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::warning::Developer ID signing is not configured for this ref ($name missing); no sandbox test build"
+              echo "sign=false" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "sign=true" >>"$GITHUB_OUTPUT"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          echo "MAS_BUILD_NUMBER=$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT" >>"$GITHUB_ENV"
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+      - name: Download the binary
+        if: steps.signing.outputs.sign == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: '*-mas-binary.tar'
+          path: ${{ runner.temp }}/mas-artifact
+          merge-multiple: true
+          skip-decompress: true
+      - name: Unpack the binary
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          ARTIFACT: ${{ runner.temp }}/mas-artifact
+          BINARY_DIR: ${{ runner.temp }}/mas-binary
+        run: |
+          set -euo pipefail
+          tars=()
+          while IFS= read -r f; do tars+=("$f"); done < <(find "$ARTIFACT" -type f -name '*-mas-binary.tar')
+          if [ "${#tars[@]}" -ne 1 ]; then
+            echo "::error::expected one binary archive, found ${#tars[@]}"
+            exit 1
+          fi
+          listing="$(tar -tf "${tars[0]}" | LC_ALL=C sort | tr '\n' ' ')"
+          if [ "$listing" != "THIRD-PARTY-NOTICES.txt rustket " ]; then
+            echo "::error::unexpected contents of ${tars[0]}: $listing"
+            exit 1
+          fi
+          mkdir -p "$BINARY_DIR"
+          tar -C "$BINARY_DIR" -xf "${tars[0]}"
+          for f in rustket THIRD-PARTY-NOTICES.txt; do
+            if [ ! -f "$BINARY_DIR/$f" ] || [ -L "$BINARY_DIR/$f" ]; then
+              echo "::error::$f is not a regular file"
+              exit 1
+            fi
+          done
+          rm -rf "$ARTIFACT"
+      - name: Signing keychain and notary profile
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          kc_pass="$(openssl rand -hex 32)"
+          echo "::add-mask::$kc_pass"
+          security create-keychain -p "$kc_pass" "$SIGNING_KEYCHAIN"
+          security set-keychain-settings -lut 7200 "$SIGNING_KEYCHAIN"
+          security unlock-keychain -p "$kc_pass" "$SIGNING_KEYCHAIN"
+          p12="$RUNNER_TEMP/rustket-sandbox.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | tr -d '[:space:]' | base64 --decode >"$p12"
+          if ! security import "$p12" -k "$SIGNING_KEYCHAIN" -f pkcs12 \
+              -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null; then
+            rm -f "$p12"
+            echo "::error::cannot import MACOS_CERTIFICATE_P12"
+            exit 1
+          fi
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" \
+            "$SIGNING_KEYCHAIN" >/dev/null
+          keychains=("$SIGNING_KEYCHAIN")
+          while IFS= read -r k; do
+            k="$(sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//' <<<"$k")"
+            [ -z "$k" ] || [ "$k" = "$SIGNING_KEYCHAIN" ] || keychains+=("$k")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${keychains[@]}"
+          identities="$(security find-identity -v -p codesigning "$SIGNING_KEYCHAIN")"
+          match="$(grep -F "\"Developer ID Application: " <<<"$identities" | grep -F "($APPLE_TEAM_ID)\"" || true)"
+          if [ -z "$match" ]; then
+            echo "::error::no Developer ID Application identity of team $APPLE_TEAM_ID"
+            exit 1
+          fi
+          identity="$(head -1 <<<"$match" | awk '{ print $2 }')"
+          printf '%s' "$APPLE_API_KEY_P8" | tr -d '[:space:]' | base64 --decode >"$NOTARY_KEY"
+          if ! xcrun notarytool store-credentials rustket-notary --key "$NOTARY_KEY" \
+              --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+              --keychain "$SIGNING_KEYCHAIN" >/dev/null; then
+            echo "::error::notarytool rejects APPLE_API_KEY_P8 / APPLE_API_KEY_ID / APPLE_API_ISSUER_ID"
+            exit 1
+          fi
+          rm -f "$NOTARY_KEY"
+          {
+            echo "MACOS_SIGN_IDENTITY=$identity"
+            echo "MACOS_NOTARY_PROFILE=rustket-notary"
+            echo "MACOS_NOTARY_KEYCHAIN=$SIGNING_KEYCHAIN"
+          } >>"$GITHUB_ENV"
+      - name: Package, sign and notarize
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          MAS: 1
+          PREBUILT_APP: 1
+          MAS_SANDBOX_TEST: 1
+          MAS_BINARY: ${{ runner.temp }}/mas-binary/rustket
+          MAS_NOTICES: ${{ runner.temp }}/mas-binary/THIRD-PARTY-NOTICES.txt
+        run: packaging/macos/build.sh
+      - name: Upload the sandbox test build
+        if: steps.signing.outputs.sign == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: packaging/out/*-mas-sandbox-test.zip
+          archive: false
+          retention-days: 7
+          if-no-files-found: error
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          if [ -f "$SIGNING_KEYCHAIN" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+          rm -f "$NOTARY_KEY" "$RUNNER_TEMP/rustket-sandbox.p12"

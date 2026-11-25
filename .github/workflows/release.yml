@@ -192,8 +192,11 @@ jobs:
   macos-build:
     name: macOS universal (app)
     needs: [changelog]
-    # Apple Silicon runner; the x86_64 slice is cross-compiled.
-    runs-on: macos-latest
+    # Apple Silicon runner; the x86_64 slice is cross-compiled. The Xcode is
+    # pinned like in app-store.yml.
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -232,7 +235,9 @@ jobs:
   macos:
     name: macOS universal (dmg)
     needs: [macos-build]
-    runs-on: macos-latest
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     # Usually minutes; a new team's first submission took over 3 hours.
     # Stay just below the 360-minute limit of hosted runners.
     timeout-minutes: 355

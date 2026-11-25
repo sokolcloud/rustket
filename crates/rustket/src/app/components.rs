@@ -85,6 +85,7 @@ impl App {
                 | Nav::SecretStoreSettings
                 | Nav::MentionGroupSettings
                 | Nav::HelpSettings
+                | Nav::AboutSettings
                 | Nav::Workspace
                 | Nav::Account
                 | Nav::Directory
@@ -132,7 +133,8 @@ impl App {
                 | Nav::SidebarSettings { .. }
                 | Nav::SecretStoreSettings
                 | Nav::MentionGroupSettings
-                | Nav::HelpSettings),
+                | Nav::HelpSettings
+                | Nav::AboutSettings),
                 _,
             ) => {
                 // The real autostart location only with real desktop integration.
@@ -148,6 +150,7 @@ impl App {
                     Nav::SecretStoreSettings => settings::Tab::Privacy,
                     Nav::MentionGroupSettings => settings::Tab::Mentions,
                     Nav::HelpSettings => settings::Tab::Help,
+                    Nav::AboutSettings => settings::Tab::About,
                     _ => self.settings_tab,
                 };
                 self.settings_tab = tab;
@@ -288,6 +291,7 @@ impl App {
                     None => Task::none(),
                 },
                 Effect::OpenUrl(url) => self.open_url(url),
+                Effect::OpenFile(path) => self.open_file(path),
                 Effect::Close => match source {
                     Source::Screen => self.navigate(Nav::Workspace),
                     Source::CreateRoom => {
@@ -307,6 +311,10 @@ impl App {
                         sid: sid.clone(),
                         everywhere,
                     }),
+                    None => Task::none(),
+                },
+                Effect::AccountDeleted => match sid {
+                    Some(sid) => self.logged_out(&sid.clone(), None),
                     None => Task::none(),
                 },
                 Effect::RemoveServer => {
@@ -345,6 +353,7 @@ impl App {
                     Task::none()
                 }
                 Effect::OpenThemesFolder => self.open_themes_folder(),
+                Effect::Import(kind) => self.import_files(kind),
                 Effect::ReloadLocales => {
                     self.locales.reload(&self.config.ui.language);
                     Task::none()
@@ -764,6 +773,15 @@ impl App {
                     tmid: Some(tmid),
                 }),
                 desktop::Request::ShowWindow => self.desktop.show_window().map(Message::Desktop),
+                desktop::Request::Navigate(nav) => {
+                    let show = self.desktop.show_window().map(Message::Desktop);
+                    if self.menu_may_navigate(&nav) {
+                        Task::batch([show, self.navigate(nav)])
+                    } else {
+                        show
+                    }
+                }
+                desktop::Request::OpenUrl(url) => self.open_url(url.to_owned()),
                 // Unsaved admin settings: the window comes back for the question.
                 desktop::Request::Quit if self.admin_dirty() => Task::batch([
                     self.desktop.show_window().map(Message::Desktop),

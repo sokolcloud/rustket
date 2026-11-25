@@ -11,6 +11,22 @@ use crate::models::{
     UpdatedSince, UserSummary,
 };
 
+/// First server version with `POST im.blockUser`.
+pub const IM_BLOCK_USER_SINCE: (u32, u32, u32) = (8, 6, 0);
+
+/// Body of `im.blockUser`.
+pub fn im_block_user_body(rid: &str, block: bool) -> Value {
+    json!({ "roomId": rid, "block": block })
+}
+
+/// Name and params of the pre-8.6 method (`blocked`: the partner's id).
+pub fn block_user_method(rid: &str, partner: &str, block: bool) -> (&'static str, Value) {
+    (
+        if block { "blockUser" } else { "unblockUser" },
+        json!([{ "rid": rid, "blocked": partner }]),
+    )
+}
+
 /// Parameters of `channels.create` / `groups.create`.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +194,35 @@ impl RestClient {
             .post("im.create", &json!({ "usernames": usernames.join(",") }))
             .await?;
         field(v, "room")
+    }
+
+    /// Blocks (`block`) or unblocks the other member of DM `rid`
+    /// (`partner`: their user id). Servers from 8.6 take `im.blockUser`;
+    /// older ones (or an unknown version whose server lacks the endpoint)
+    /// the `blockUser`/`unblockUser` methods.
+    pub async fn dm_set_blocked(
+        &self,
+        rid: &str,
+        partner: &str,
+        block: bool,
+        server_version: Option<(u32, u32, u32)>,
+    ) -> Result<()> {
+        let rest = || async {
+            self.post_ok("im.blockUser", &im_block_user_body(rid, block))
+                .await
+        };
+        let method = || async {
+            let (name, params) = block_user_method(rid, partner, block);
+            self.method_call_raw(name, params, false).await.map(|_| ())
+        };
+        match server_version {
+            Some(v) if v >= IM_BLOCK_USER_SINCE => rest().await,
+            Some(_) => method().await,
+            None => match rest().await {
+                Err(e) if e.is_endpoint_not_found() => method().await,
+                r => r,
+            },
+        }
     }
 
     pub async fn channels_create(&self, params: &CreateRoom) -> Result<Room> {
@@ -418,5 +463,19 @@ mod discussion_tests {
             b,
             json!({"prid": "R", "t_name": "t", "users": [], "reply": "hi"})
         );
+    }
+
+    #[test]
+    fn block_bodies() {
+        assert_eq!(
+            im_block_user_body("R", false),
+            json!({"roomId": "R", "block": false})
+        );
+        assert_eq!(
+            block_user_method("R", "U", true),
+            ("blockUser", json!([{"rid": "R", "blocked": "U"}]))
+        );
+        assert_eq!(block_user_method("R", "U", false).0, "unblockUser");
+        assert!((8, 6, 0) >= IM_BLOCK_USER_SINCE && (8, 5, 9) < IM_BLOCK_USER_SINCE);
     }
 }

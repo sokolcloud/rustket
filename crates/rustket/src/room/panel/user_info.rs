@@ -34,7 +34,27 @@ pub enum Msg {
     Confirm,
     Cancel,
     ActionDone(UserAction, Res<()>),
+    /// Block (`true`, asks first) or unblock the partner of this DM.
+    Block(bool),
+    ConfirmBlock,
+    CancelBlock,
+    Blocked(bool, Res<()>),
+    /// Open the "Report user" form.
+    Report,
+    ReportText(String),
+    SubmitReport,
+    CancelReport,
+    Reported(Res<()>),
 }
+
+/// The "Report user" form under the actions.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReportDraft {
+    pub description: String,
+    pub busy: bool,
+}
+
+pub const REPORT_INPUT_ID: &str = "user-info-report";
 
 pub struct UserInfo {
     username: String,
@@ -48,6 +68,11 @@ pub struct UserInfo {
     busy: bool,
     /// DM room created but not in the workspace yet.
     dm_pending: Option<String>,
+    /// "Block" awaits confirmation.
+    confirm_block: bool,
+    /// A block or unblock call is running.
+    blocking: bool,
+    report: Option<ReportDraft>,
 }
 
 /// Loading state of the user's room roles: role actions are offered only
@@ -125,6 +150,21 @@ pub fn available_actions(
     out
 }
 
+/// Whether Block/Unblock is offered for `uid` in `rid` (the other member
+/// of this 1:1 DM), and if so whether they are blocked now.
+pub fn block_offer(ws: &Workspace, rid: &str, uid: &str, username: &str) -> Option<bool> {
+    let partner = crate::room::header::dm_partner(ws, rid);
+    (ws.user_id() != Some(uid)
+        && permissions::can_block_in(ws, rid)
+        && partner.as_deref() == Some(username))
+    .then(|| permissions::blocked_by_me(ws, rid))
+}
+
+/// Whether "Report user" is offered: anyone but oneself, when signed in.
+pub fn can_report(ws: &Workspace, uid: &str) -> bool {
+    ws.user_id().is_some_and(|me| me != uid)
+}
+
 fn action_label(a: &UserAction, team_main: bool) -> String {
     match a {
         UserAction::SetRole(Role::Owner, true) => t!("room_panel.set_owner"),
@@ -180,6 +220,50 @@ fn done_text(a: &UserAction, user: &str) -> String {
         UserAction::Ignore(false) => t!("room_panel.done_unignored", user = user),
     }
     .into_owned()
+}
+
+/// The "Report user" form: why, sent to the workspace's moderators.
+fn report_card<'a>(username: &str, r: &'a ReportDraft) -> Element<'a, Msg> {
+    let ready = !r.busy && !r.description.trim().is_empty();
+    container(
+        column![
+            text(
+                t!(
+                    "moderation.report_user_title",
+                    user = rustket_ui::widget::sanitize_bidi(username)
+                )
+                .into_owned()
+            )
+            .font(font_semibold()),
+            text(t!("moderation.report_user_body").into_owned())
+                .size(TEXT_SMALL)
+                .style(style::text_secondary),
+            iced::widget::text_input(&t!("room_timeline.report_placeholder"), &r.description)
+                .id(REPORT_INPUT_ID)
+                .on_input(Msg::ReportText)
+                .on_submit_maybe(ready.then_some(Msg::SubmitReport))
+                .padding([SPACE_2, SPACE_3])
+                .style(style::text_input),
+            row![
+                iced::widget::space().width(Length::Fill),
+                rustket_ui::widget::secondary_button(
+                    t!("room_panel.cancel").into_owned(),
+                    Some(Msg::CancelReport)
+                ),
+                rustket_ui::widget::danger_button(
+                    t!("room_timeline.report_send").into_owned(),
+                    ready.then_some(Msg::SubmitReport)
+                )
+                .loading(r.busy),
+            ]
+            .spacing(SPACE_2),
+        ]
+        .spacing(SPACE_3),
+    )
+    .padding(SPACE_3)
+    .width(Length::Fill)
+    .style(style::container_popover)
+    .into()
 }
 
 /// `HH:MM` at the user's UTC offset (hours).
@@ -329,6 +413,9 @@ impl UserInfo {
             confirm: None,
             busy: false,
             dm_pending: None,
+            confirm_block: false,
+            blocking: false,
+            report: None,
         }
     }
 
@@ -448,6 +535,84 @@ impl UserInfo {
                 self.confirm = None;
                 Action::none()
             }
+            Msg::Block(true) => {
+                self.confirm_block = true;
+                Action::none()
+            }
+            Msg::Block(false) => self.set_blocked(false, ctx),
+            Msg::ConfirmBlock => self.set_blocked(true, ctx),
+            Msg::CancelBlock => {
+                self.confirm_block = false;
+                Action::none()
+            }
+            Msg::Blocked(on, r) => {
+                self.blocking = false;
+                self.confirm_block = false;
+                match r {
+                    Ok(()) => {
+                        // The subscription change follows on the stream.
+                        let text = if on {
+                            t!("moderation.done_blocked", user = self.username)
+                        } else {
+                            t!("moderation.done_unblocked", user = self.username)
+                        };
+                        Action::effect(common::ok_toast(text.into_owned()))
+                    }
+                    Err(e) => Action::effect(common::error_toast(
+                        &if on {
+                            t!("moderation.block")
+                        } else {
+                            t!("moderation.unblock")
+                        },
+                        &e,
+                    )),
+                }
+            }
+            Msg::Report => {
+                self.report = Some(ReportDraft::default());
+                Action::task(iced::widget::operation::focus(REPORT_INPUT_ID))
+            }
+            Msg::ReportText(text) => {
+                if let Some(r) = &mut self.report {
+                    r.description = text;
+                }
+                Action::none()
+            }
+            Msg::CancelReport => {
+                self.report = None;
+                Action::none()
+            }
+            Msg::SubmitReport => {
+                let (Some(user), Some(r)) = (&self.user, &mut self.report) else {
+                    return Action::none();
+                };
+                if r.busy || r.description.trim().is_empty() {
+                    return Action::none();
+                }
+                r.busy = true;
+                let (uid, text) = (user.id.clone(), r.description.trim().to_owned());
+                Action::task(ctx.rest_task(
+                    move |rest| async move { rest.moderation_report_user(&uid, &text).await },
+                    Msg::Reported,
+                ))
+            }
+            Msg::Reported(r) => match r {
+                Ok(()) => {
+                    self.report = None;
+                    Action::effect(common::ok_toast(
+                        t!("moderation.user_reported").into_owned(),
+                    ))
+                }
+                Err(e) => {
+                    if let Some(d) = &mut self.report {
+                        d.busy = false;
+                    }
+                    Action::effect(common::error_toast(
+                        &t!("moderation.report_user_failed"),
+                        &e,
+                    ))
+                }
+            },
             Msg::ActionDone(a, r) => {
                 self.busy = false;
                 self.confirm = None;
@@ -460,6 +625,24 @@ impl UserInfo {
                 }
             }
         }
+    }
+
+    /// Blocks or unblocks the user, the partner of the open DM.
+    fn set_blocked(&mut self, on: bool, ctx: &UpdateCtx<'_>) -> Action<Msg> {
+        let Some(user) = &self.user else {
+            return Action::none();
+        };
+        if self.blocking || block_offer(ctx.workspace, ctx.rid, &user.id, &self.username).is_none()
+        {
+            return Action::none();
+        }
+        self.blocking = true;
+        let (rid, uid) = (ctx.rid.to_owned(), user.id.clone());
+        let version = ctx.workspace.server_version();
+        Action::task(ctx.rest_task(
+            move |rest| async move { rest.dm_set_blocked(&rid, &uid, on, version).await },
+            move |r| Msg::Blocked(on, r),
+        ))
     }
 
     fn run(&mut self, a: UserAction, ctx: &UpdateCtx<'_>) -> Action<Msg> {
@@ -655,6 +838,45 @@ impl UserInfo {
             }
             col = col.push(divider()).push(list);
         }
+        let block = block_offer(ws, ctx.rid, &user.id, &self.username);
+        if block.is_some() || can_report(ws, &user.id) {
+            let mut list = column![].spacing(SPACE_1);
+            if let Some(blocked) = block {
+                list = list.push(common::action_entry(
+                    Icon::Ban,
+                    if blocked {
+                        t!("moderation.unblock")
+                    } else {
+                        t!("moderation.block")
+                    }
+                    .into_owned(),
+                    !blocked,
+                    (!self.blocking).then_some(Msg::Block(!blocked)),
+                ));
+            }
+            if can_report(ws, &user.id) {
+                list = list.push(common::action_entry(
+                    Icon::Flag,
+                    t!("moderation.report_user").into_owned(),
+                    true,
+                    self.report.is_none().then_some(Msg::Report),
+                ));
+            }
+            col = col.push(divider()).push(list);
+        }
+        if self.confirm_block {
+            col = col.push(common::confirm_card(
+                t!("moderation.confirm_block", user = self.username).into_owned(),
+                t!("moderation.block").into_owned(),
+                true,
+                self.blocking,
+                Msg::ConfirmBlock,
+                Msg::CancelBlock,
+            ));
+        }
+        if let Some(r) = &self.report {
+            col = col.push(report_card(&self.username, r));
+        }
         if let Some(a) = &self.confirm {
             let room = ws
                 .room(ctx.rid)
@@ -770,6 +992,23 @@ mod tests {
     fn no_actions_in_dms() {
         let ws = ws(&["owner"], "d");
         assert!(available_actions(&ws, "r", "u-bob", "bob", Some(&[])).is_empty());
+    }
+
+    #[test]
+    fn block_is_offered_for_the_dm_partner_only() {
+        let mut ws = ws(&[], "d");
+        assert_eq!(block_offer(&ws, "r", "u-dev", "dev"), Some(false));
+        assert_eq!(block_offer(&ws, "r", "me", "me"), None, "never oneself");
+        assert_eq!(block_offer(&ws, "r", "u-x", "someone"), None);
+        let mut sub = ws.subscription("r").unwrap().clone();
+        sub.blocker = Some(true);
+        ws.apply_subscription(Change::Updated, sub);
+        assert_eq!(block_offer(&ws, "r", "u-dev", "dev"), Some(true));
+        // Channels: report, no block.
+        let ws = super::tests::ws(&[], "c");
+        assert_eq!(block_offer(&ws, "r", "u-dev", "dev"), None);
+        assert!(can_report(&ws, "u-dev"));
+        assert!(!can_report(&ws, "me"));
     }
 
     #[test]

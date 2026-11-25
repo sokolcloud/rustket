@@ -116,6 +116,26 @@ fn read(path: &Path) -> Result<String, LoadError> {
     std::fs::read_to_string(path).map_err(|e| LoadError::Read(e.to_string()))
 }
 
+/// Whether `path` is a usable theme file (Settings → Import).
+pub fn check_file(path: &Path) -> Result<(), LoadError> {
+    let text = read(path)?;
+    ThemeFile::parse(&text).map(drop).map_err(LoadError::Parse)
+}
+
+/// Why theme file `file` cannot be used, in the UI language.
+pub fn load_error_text(e: &LoadError, file: &str) -> String {
+    use rust_i18n::t;
+    match e {
+        LoadError::NotFound => t!("settings.theme_not_found", file = file),
+        LoadError::Read(e) => t!("settings.theme_unreadable", error = e),
+        LoadError::TooLarge(size) => t!("settings.theme_too_large", size = size),
+        LoadError::Parse(ThemeFileError::MissingName) => t!("settings.theme_no_name"),
+        LoadError::Parse(ThemeFileError::NoVariants) => t!("settings.theme_no_variants"),
+        LoadError::Parse(ThemeFileError::Syntax(e)) => t!("settings.theme_invalid", error = e),
+    }
+    .into_owned()
+}
+
 /// Every `*.toml` in `dir`, sorted by display name; a missing directory is
 /// an empty list.
 pub fn scan(dir: &Path) -> Vec<ThemeEntry> {
