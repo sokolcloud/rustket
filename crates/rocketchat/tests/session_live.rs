@@ -394,8 +394,14 @@ async fn direct_message_and_presence() {
         let entry = presence.users.iter().find(|u| u.id == b.id).expect("b in presence");
         assert_eq!(entry.status, Some(UserStatus::Online));
 
-        // Live change through user-status.
-        sb.rest().users_set_status(UserStatus::Busy, Some("in a test")).await.unwrap();
+        // Live change through user-status, with the time the server clears it.
+        let expires = rocketchat::RcDate::from_millis(
+            (chrono::Utc::now() + chrono::Duration::days(1)).timestamp_millis() / 1000 * 1000,
+        );
+        sb.rest()
+            .users_set_status(UserStatus::Busy, Some("in a test"), expires)
+            .await
+            .unwrap();
         let ev = expect_event(
             &mut ea,
             |e| matches!(e, SessionEvent::UserStatus { uid, status: UserStatus::Busy, .. } if *uid == b.id),
@@ -409,9 +415,22 @@ async fn direct_message_and_presence() {
                 username: b.username.clone(),
                 status: UserStatus::Busy,
                 status_text: Some("in a test".into()),
+                status_expires_at: expires,
             }
         );
-        sb.rest().users_set_status(UserStatus::Online, Some("")).await.unwrap();
+        // A text change without an expiry drops it.
+        sb.rest().users_set_status_message("still testing", None).await.unwrap();
+        let ev = expect_event(
+            &mut ea,
+            |e| matches!(e, SessionEvent::UserStatus { uid, status_text: Some(t), .. } if *uid == b.id && t == "still testing"),
+            WAIT,
+        )
+        .await;
+        assert!(
+            matches!(ev, SessionEvent::UserStatus { status: UserStatus::Busy, status_expires_at: None, .. }),
+            "{ev:?}"
+        );
+        sb.rest().users_set_status(UserStatus::Online, Some(""), None).await.unwrap();
         expect_event(
             &mut ea,
             |e| matches!(e, SessionEvent::UserStatus { uid, status: UserStatus::Online, .. } if *uid == b.id),

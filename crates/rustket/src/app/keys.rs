@@ -115,8 +115,9 @@ impl App {
     /// 2. the room timeline's message selection is cleared;
     /// 3. the right panel closes;
     /// 4. an unread room is marked read with its threads (Slack;
-    ///    `UiPrefs::escape_marks_read`), unless the composer's emoji picker
-    ///    or upload dialog is open.
+    ///    `UiPrefs::escape_marks_read`; Rocket.Chat marks it on Escape too),
+    ///    unless the composer's emoji picker, upload or confirmation dialog
+    ///    is open or it holds an edit or quotes.
     pub(super) fn escape_on_server(&mut self) -> Task<Message> {
         let Some(s) = self.active.as_ref().and_then(|sid| self.servers.get(sid)) else {
             return Task::none();
@@ -159,13 +160,20 @@ impl App {
                 room::Message::Panel(room::panel::Message::Close),
             ));
         }
+        // The subscription itself, not the sidebar's unread state: "Hide
+        // unread status" only hides the badge, the room still waits for its
+        // first unread message (Rocket.Chat marks it read on Esc too).
         let unread = s
             .workspace
-            .room(&rid)
-            .is_some_and(room_list::room_is_unread);
+            .subscription(&rid)
+            .is_some_and(|sub| sub.alert || sub.unread > 0 || sub.has_unread_threads());
+        // An edit or a quote waits in the composer (its Escape cancels it
+        // once the composer has the focus).
         let busy = rv.composer.is_picker_open()
             || rv.composer.is_upload_dialog_open()
-            || rv.composer.is_confirm_open();
+            || rv.composer.is_confirm_open()
+            || rv.composer.is_editing()
+            || !rv.composer.quoted().is_empty();
         if !self.config.ui.escape_marks_read || !unread || busy || s.room_area_taken() {
             return Task::none();
         }

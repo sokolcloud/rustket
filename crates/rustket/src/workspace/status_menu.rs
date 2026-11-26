@@ -2,16 +2,21 @@
 //! online/away/busy/invisible, pausing notifications (`crate::quiet`), the
 //! server's custom statuses, a custom status text (with recently used texts
 //! and "Clear after"), my account, preferences, logout. Status changes go
-//! through `users.setStatus`. Owner: desktop agent. Strings:
+//! through `users.setStatus`; "Clear after" goes with it as `expiresAt` where
+//! the server clears statuses itself (Rocket.Chat 8.6+), so web and mobile
+//! show it too, and is done by the app on older servers
+//! (`Workspace::status_expiry_on_server`). Owner: desktop agent. Strings:
 //! `locales/status_menu.yml` (`status_menu.*`), `locales/quiet.yml`.
 
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
+use rocketchat::RcDate;
 use rocketchat::models::UserStatus;
 use rust_i18n::t;
-use rustket_core::Workspace;
+use rustket_core::config::AppConfig;
 use rustket_core::quiet::{ClearAfter, PausePreset, StatusExpiry};
 use rustket_core::room_list::Avatar;
+use rustket_core::{ServerId, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
@@ -74,10 +79,16 @@ pub enum Message {
     CancelExpiry,
 }
 
-/// A "Clear after" option: a preset or a custom date and time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A "Clear after" option: a preset, the current status's expiry, or a
+/// custom date and time.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClearChoice {
     Preset(ClearAfter),
+    /// When the current status clears (UTC ms; set here, in another client,
+    /// or by the app), with its label ("Until Nov 28 00:00"): kept for the
+    /// next status set here. Picked, it follows the current expiry (another
+    /// client may change it while the menu is open).
+    Until(i64, String),
     Custom,
 }
 
@@ -85,26 +96,62 @@ impl std::fmt::Display for ClearChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Preset(c) => f.write_str(&crate::quiet::clear_label(*c)),
+            Self::Until(_, label) => f.write_str(label),
             Self::Custom => f.write_str(&t!("later.preset_custom")),
         }
     }
 }
 
 impl ClearChoice {
-    fn all() -> Vec<Self> {
-        ClearAfter::ALL
-            .into_iter()
-            .map(Self::Preset)
-            .chain([Self::Custom])
-            .collect()
+    /// The choices, with the current expiry (`until`) after "Never".
+    fn all(until: Option<&ClearChoice>) -> Vec<Self> {
+        let mut v: Vec<Self> = ClearAfter::ALL.into_iter().map(Self::Preset).collect();
+        if let Some(u) = until {
+            v.insert(1, u.clone());
+        }
+        v.push(Self::Custom);
+        v
     }
 
-    /// The choice after this one in [`Self::all`] (the last wraps).
-    fn next(self) -> Self {
-        let all = Self::all();
-        let i = all.iter().position(|c| *c == self).map_or(0, |i| i + 1);
-        all.get(i).copied().unwrap_or_default()
+    /// The choice after this one in `all` (the last wraps).
+    fn next(&self, all: &[ClearChoice]) -> Self {
+        let i = all.iter().position(|c| c == self).map_or(0, |i| i + 1);
+        all.get(i).cloned().unwrap_or_default()
     }
+
+    /// "Until …" for an expiry at `at` (UTC ms).
+    fn until(at: i64, clock_24h: bool) -> Self {
+        let when = crate::format::date_time(at, chrono::Local::now(), clock_24h);
+        Self::Until(at, t!("quiet.clear_until", time = when).into_owned())
+    }
+}
+
+/// [`ClearChoice::Until`] of the current expiry, if it is still ahead.
+fn live_until(ws: &Workspace, config: &AppConfig, sid: &ServerId) -> Option<ClearChoice> {
+    let now = chrono::Utc::now().timestamp_millis();
+    current_expiry(ws, config, sid, now)
+        .filter(|(at, _)| *at > now)
+        .map(|(at, _)| ClearChoice::until(at, config.ui.clock_24h))
+}
+
+/// When the current status clears (UTC ms): the server's `statusExpiresAt`
+/// if it is ahead of `now_ms`, else the one the app keeps
+/// (`ServerEntry::status_expiry`, servers before 8.6); `true` for the
+/// server's.
+pub fn current_expiry(
+    ws: &Workspace,
+    config: &AppConfig,
+    sid: &ServerId,
+    now_ms: i64,
+) -> Option<(i64, bool)> {
+    if let Some(at) = ws.my_status_expiry(now_ms) {
+        return Some((at.timestamp_millis(), true));
+    }
+    config
+        .server(sid)
+        .and_then(|e| e.status_expiry.as_ref())
+        .filter(|e| Some(e.user_id.as_str()) == ws.user_id())
+        .map(|e| (e.at, false))
 }
 
 #[derive(Debug, Default)]
@@ -121,14 +168,24 @@ pub struct StatusMenu {
     /// The pause presets are shown.
     pub pause_open: bool,
     /// "Clear after" of the next status set from the open menu (a status
-    /// set with the menu closed, from the tray, does not clear).
+    /// set with the menu closed, from the tray, does not clear). Opens on
+    /// the current status's expiry, if any (as the web client's status
+    /// dialog does), which a text edit keeps and a status pick drops.
     pub clear: ClearChoice,
+    /// `clear` was picked in the open menu (not preselected on opening).
+    clear_picked: bool,
     pub clear_date: String,
     pub clear_time: String,
     /// The custom clear time is invalid or past.
     pub clear_error: bool,
-    /// The expiry of the running call (`Some(None)`: none, clears an old one).
+    /// The expiry the app keeps for the running call (`Some(None)`: none,
+    /// drops an old one).
     pending_expiry: Option<Option<StatusExpiry>>,
+    /// `pending_expiry` is the current one kept with a new text.
+    pending_expiry_kept: bool,
+    /// The `expiresAt` the running call sent (UTC ms), recorded on success
+    /// (`None`: the server does not clear statuses, nothing to record).
+    pending_server_expiry: Option<Option<i64>>,
 }
 
 impl Default for ClearChoice {
@@ -188,6 +245,19 @@ fn my_text(ws: &Workspace) -> String {
         .unwrap_or_default()
 }
 
+/// `users.setStatus` arguments (status, text; `None`: kept) that set the
+/// current status again, which drops its server expiry: the chosen status
+/// alone, so the text stays without the text permission
+/// (`Accounts_AllowUserStatusMessageChange` refuses any non-empty text);
+/// the text alone when the chosen status is not known (the server keeps
+/// `statusDefault`).
+fn keep_status_args(ws: &Workspace) -> (Option<UserStatus>, Option<String>) {
+    match ws.my_chosen_status() {
+        Some(st) => (Some(st), None),
+        None => (None, Some(my_text(ws))),
+    }
+}
+
 /// Adds `text` to the front of `recent` (deduplicated, bounded).
 pub fn remember(recent: &mut Vec<String>, text: &str) {
     let text = text.trim();
@@ -206,10 +276,13 @@ impl StatusMenu {
 
     /// When a status set now clears itself ("Clear after"); `Err` for an
     /// invalid or past custom time.
-    fn clear_at(&mut self) -> Result<Option<i64>, ()> {
+    /// `current`: when the current status clears (for
+    /// [`ClearChoice::Until`]; `None`: it no longer does).
+    fn clear_at(&mut self, current: Option<i64>) -> Result<Option<i64>, ()> {
         let now = chrono::Local::now();
-        match self.clear {
+        match &self.clear {
             ClearChoice::Preset(c) => Ok(c.at(&now).map(|t| t.timestamp_millis())),
+            ClearChoice::Until(..) => Ok(current.filter(|at| *at > now.timestamp_millis())),
             ClearChoice::Custom => {
                 let at = crate::uikit::elements::parse_date(&self.clear_date)
                     .and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok())
@@ -226,8 +299,14 @@ impl StatusMenu {
 
     /// [`Self::clear_at`] of the open menu; a status set with the menu
     /// closed (the tray) does not clear, whatever was picked there last.
-    fn menu_clear_at(&mut self) -> Result<Option<i64>, ()> {
-        if self.open { self.clear_at() } else { Ok(None) }
+    fn menu_clear_at(&mut self, ctx: &Ctx<'_>) -> Result<Option<i64>, ()> {
+        if !self.open {
+            return Ok(None);
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        let current =
+            current_expiry(ctx.workspace, ctx.config, ctx.server_id, now).map(|(at, _)| at);
+        self.clear_at(current)
     }
 
     /// The expiry of `status` with `text` set now; `None` when it does not
@@ -269,8 +348,17 @@ impl StatusMenu {
                 t!("status_menu.not_allowed").into_owned(),
             ));
         }
-        let Ok(at) = self.menu_clear_at() else {
-            return Action::none();
+        // The current expiry belongs to the current status: a preset or
+        // custom status picked over it does not inherit it (the web menu's
+        // statuses send no expiry either); only a clear-after picked here
+        // goes with it, "Until …" too.
+        let at = if matches!(self.clear, ClearChoice::Until(..)) && !self.clear_picked {
+            None
+        } else {
+            let Ok(at) = self.menu_clear_at(ctx) else {
+                return Action::none();
+            };
+            at
         };
         let text = text.filter(|_| text_allowed(ctx.workspace));
         let shown = text.clone().unwrap_or_else(|| my_text(ctx.workspace));
@@ -278,14 +366,48 @@ impl StatusMenu {
             .workspace
             .my_chosen_status()
             .unwrap_or_else(|| ctx.workspace.my_status());
-        self.pending_expiry = Some(self.expiry(at, status, &shown, Some(before), ctx.workspace));
+        let expiry = self.expiry(at, status, &shown, Some(before), ctx.workspace);
+        let expires = self.plan_expiry(expiry, ctx.workspace);
         self.busy = true;
         self.open = false;
         let t2 = text.clone();
         Action::task(ctx.rest_task(
-            move |rest| async move { rest.users_set_status(status, t2.as_deref()).await },
+            move |rest| async move { rest.users_set_status(status, t2.as_deref(), expires).await },
             move |r| Message::StatusSet(Some(status), text.clone(), r),
         ))
+    }
+
+    /// Records how the status set now clears: sent as `expiresAt` where the
+    /// server clears statuses (returned), else kept by the app. Either way
+    /// the other one is dropped.
+    fn plan_expiry(&mut self, expiry: Option<StatusExpiry>, ws: &Workspace) -> Option<RcDate> {
+        self.pending_expiry_kept = false;
+        if ws.status_expiry_on_server() {
+            let at = expiry.map(|e| e.at);
+            self.pending_expiry = Some(None);
+            self.pending_server_expiry = Some(at);
+            at.and_then(RcDate::from_millis)
+        } else {
+            self.pending_expiry = Some(expiry);
+            self.pending_server_expiry = None;
+            None
+        }
+    }
+
+    /// The app's expiry of the current status when the open menu keeps it
+    /// ([`ClearChoice::Until`] and no server expiry).
+    fn app_expiry_kept(&self, ctx: &Ctx<'_>) -> Option<StatusExpiry> {
+        if !self.open || !matches!(self.clear, ClearChoice::Until(..)) {
+            return None;
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        if ctx.workspace.my_status_expiry(now).is_some() {
+            return None;
+        }
+        ctx.config
+            .server(ctx.server_id)
+            .and_then(|e| e.status_expiry.clone())
+            .filter(|e| Some(e.user_id.as_str()) == ctx.workspace.user_id() && e.at > now)
     }
 
     /// Changes only the status text: the server keeps the status the user
@@ -294,16 +416,24 @@ impl StatusMenu {
         if !text_allowed(ctx.workspace) {
             return Action::none();
         }
-        let Ok(at) = self.menu_clear_at() else {
+        let Ok(at) = self.menu_clear_at(ctx) else {
             return Action::none();
         };
-        let status = ctx.workspace.my_status();
-        self.pending_expiry = Some(self.expiry(at, status, &text, None, ctx.workspace));
+        // The current expiry kept with a new text: the app's (servers
+        // before 8.6) still restores the status it would have restored.
+        let kept = self.app_expiry_kept(ctx);
+        let (status, restore) = kept.as_ref().map_or_else(
+            || (ctx.workspace.my_status(), None),
+            |e| (e.status, e.restore),
+        );
+        let expiry = self.expiry(at, status, &text, restore, ctx.workspace);
+        let expires = self.plan_expiry(expiry, ctx.workspace);
+        self.pending_expiry_kept = kept.is_some();
         self.busy = true;
         self.open = false;
         let t2 = text.clone();
         Action::task(ctx.rest_task(
-            move |rest| async move { rest.users_set_status_message(&t2).await },
+            move |rest| async move { rest.users_set_status_message(&t2, expires).await },
             move |r| Message::StatusSet(None, Some(text.clone()), r),
         ))
     }
@@ -323,7 +453,9 @@ impl StatusMenu {
                 self.open = open;
                 if open {
                     self.pause_open = false;
-                    self.clear = ClearChoice::default();
+                    self.clear =
+                        live_until(ctx.workspace, ctx.config, ctx.server_id).unwrap_or_default();
+                    self.clear_picked = false;
                     self.clear_error = false;
                     self.text = my_text(ctx.workspace);
                     let current = self.text.clone();
@@ -370,12 +502,26 @@ impl StatusMenu {
             Message::StatusSet(status, text, r) => {
                 self.busy = false;
                 let expiry = self.pending_expiry.take();
+                let kept = std::mem::take(&mut self.pending_expiry_kept);
+                let server_expiry = self.pending_server_expiry.take();
                 match r {
                     Ok(()) => {
+                        // Before the stream event confirms it.
+                        if let (Some(at), Some(uid)) =
+                            (server_expiry, ctx.workspace.user_id().map(str::to_owned))
+                        {
+                            ctx.workspace
+                                .apply_status_expiry(&uid, at.and_then(RcDate::from_millis));
+                        }
                         // The expiry first: set during a busy pause, it goes
                         // back to the status before the pause (the hold's).
                         let mut effects: Vec<Effect> = expiry
-                            .map(|e| Effect::Quiet(crate::quiet::Request::Expiry(e)))
+                            .map(|e| match e {
+                                Some(e) if kept => {
+                                    Effect::Quiet(crate::quiet::Request::KeptExpiry(e))
+                                }
+                                e => Effect::Quiet(crate::quiet::Request::Expiry(e)),
+                            })
                             .into_iter()
                             .collect();
                         let ws = &mut *ctx.workspace;
@@ -470,9 +616,11 @@ impl StatusMenu {
                 Action::effect(Effect::Quiet(crate::quiet::Request::Resume))
             }
             Message::ClearAfter(c) => {
+                let custom = c == ClearChoice::Custom;
                 self.clear = c;
+                self.clear_picked = true;
                 self.clear_error = false;
-                if c == ClearChoice::Custom && self.clear_date.is_empty() {
+                if custom && self.clear_date.is_empty() {
                     let base = chrono::Local::now() + chrono::Duration::hours(1);
                     self.clear_date = base.format("%Y-%m-%d").to_string();
                     self.clear_time = base.format("%H:%M").to_string();
@@ -490,7 +638,32 @@ impl StatusMenu {
                 Action::none()
             }
             Message::CancelExpiry => {
-                Action::effect(Effect::Quiet(crate::quiet::Request::Expiry(None)))
+                if matches!(self.clear, ClearChoice::Until(..)) {
+                    self.clear = ClearChoice::default();
+                }
+                let now = chrono::Utc::now().timestamp_millis();
+                if ctx.workspace.my_status_expiry(now).is_none() {
+                    return Action::effect(Effect::Quiet(crate::quiet::Request::Expiry(None)));
+                }
+                // The server's: the chosen status again, without
+                // `expiresAt` (the text stays).
+                let (status, text) = keep_status_args(ctx.workspace);
+                self.pending_expiry = Some(None);
+                self.pending_server_expiry = Some(None);
+                self.busy = true;
+                let t2 = text.clone();
+                Action::task(ctx.rest_task(
+                    move |rest| async move {
+                        match status {
+                            Some(st) => rest.users_set_status(st, None, None).await,
+                            None => {
+                                rest.users_set_status_message(t2.as_deref().unwrap_or(""), None)
+                                    .await
+                            }
+                        }
+                    },
+                    move |r| Message::StatusSet(None, text.clone(), r),
+                ))
             }
         }
     }
@@ -676,9 +849,10 @@ impl StatusMenu {
             rows.plain(container(field).padding([SPACE_1, SPACE_2]));
             // Enter on the row picks the next "Clear after" (the keyboard
             // does not reach the pick list).
+            let (shown, choices) = self.clear_choices(ctx);
             rows.keyed(
                 self.clear_after_view(ctx),
-                enabled.then(|| Message::ClearAfter(self.clear.next())),
+                enabled.then(|| Message::ClearAfter(shown.next(&choices))),
             );
             let current = my_text(ws);
             for r in self.recent.iter().filter(|r| **r != current) {
@@ -844,16 +1018,28 @@ impl StatusMenu {
         );
     }
 
+    /// The "Clear after" shown (a picked [`ClearChoice::Until`] as the
+    /// current expiry now; "Never" once that is gone) and the choices.
+    fn clear_choices(&self, ctx: &ViewCtx<'_>) -> (ClearChoice, Vec<ClearChoice>) {
+        let until = live_until(ctx.workspace, ctx.config, ctx.server_id);
+        let shown = match &self.clear {
+            ClearChoice::Until(..) => until.clone().unwrap_or_default(),
+            c => c.clone(),
+        };
+        (shown, ClearChoice::all(until.as_ref()))
+    }
+
     /// "Clear after" of the next status, and the current status's expiry.
     fn clear_after_view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
         let enabled = !self.busy;
+        let (shown, choices) = self.clear_choices(ctx);
         let mut col = column![
             row![
                 text(t!("quiet.clear_after").into_owned())
                     .size(TEXT_CAPTION)
                     .style(style::text_secondary)
                     .width(Length::Fill),
-                pick_list(ClearChoice::all(), Some(self.clear), Message::ClearAfter)
+                pick_list(choices, Some(shown), Message::ClearAfter)
                     .text_size(TEXT_CAPTION)
                     .padding([2, 8])
                     .style(style::pick_list)
@@ -888,20 +1074,21 @@ impl StatusMenu {
                 );
             }
         }
-        let expiry = ctx
-            .config
-            .server(ctx.server_id)
-            .and_then(|e| e.status_expiry.as_ref())
-            .filter(|e| Some(e.user_id.as_str()) == ctx.workspace.user_id());
-        if let Some(e) = expiry {
-            let local = chrono::Local::now();
+        let local = chrono::Local::now();
+        let expiry = current_expiry(
+            ctx.workspace,
+            ctx.config,
+            ctx.server_id,
+            local.timestamp_millis(),
+        );
+        if let Some((at, _)) = expiry {
             col = col.push(
                 row![
                     icon::sized(Icon::Timer, 12.0).style(style::text_secondary),
                     text(
                         t!(
                             "quiet.clears_at",
-                            time = crate::format::moment(e.at, local, ctx.config.ui.clock_24h)
+                            time = crate::format::date_time(at, local, ctx.config.ui.clock_24h)
                         )
                         .into_owned()
                     )
@@ -1155,15 +1342,259 @@ mod tests {
 
     #[test]
     fn enter_on_clear_after_cycles_its_choices() {
-        let all = ClearChoice::all();
-        let mut c = ClearChoice::default();
-        let mut seen = vec![c];
-        for _ in 1..all.len() {
-            c = c.next();
-            seen.push(c);
+        let until = ClearChoice::Until(1, "Until x".into());
+        for all in [ClearChoice::all(None), ClearChoice::all(Some(&until))] {
+            let mut c = ClearChoice::default();
+            let mut seen = vec![c.clone()];
+            for _ in 1..all.len() {
+                c = c.next(&all);
+                seen.push(c.clone());
+            }
+            assert_eq!(seen, all);
+            assert_eq!(c.next(&all), ClearChoice::default(), "wraps");
         }
-        assert_eq!(seen, all);
-        assert_eq!(c.next(), ClearChoice::default(), "wraps");
+        assert_eq!(ClearChoice::all(Some(&until))[1], until);
+    }
+
+    /// A server that clears statuses itself (8.6+).
+    fn on_server(fx: &mut Fx, version: &str) {
+        fx.ws
+            .apply_server_info(serde_json::from_value(json!({ "version": version })).unwrap());
+    }
+
+    fn in_hours(h: i64) -> i64 {
+        (chrono::Utc::now() + chrono::Duration::hours(h)).timestamp_millis() / 1000 * 1000
+    }
+
+    fn view_ctx(fx: &Fx) -> ViewCtx<'_> {
+        ViewCtx {
+            server_id: &fx.sid,
+            server: &fx.url,
+            workspace: &fx.ws,
+            images: &fx.images,
+            config: &fx.config,
+            connected: true,
+            now: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn the_server_expiry_is_the_current_clear_after() {
+        let mut fx = Fx::new();
+        on_server(&mut fx, "9.0.0");
+        // Set in another client ("until November 28").
+        let at = in_hours(48);
+        fx.ws.apply_status_expiry("me", RcDate::from_millis(at));
+        assert_eq!(
+            current_expiry(&fx.ws, &fx.config, &fx.sid, at - 1),
+            Some((at, true))
+        );
+        let mut m = StatusMenu::new();
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        let ClearChoice::Until(shown, label) = &m.clear else {
+            panic!("{:?}", m.clear)
+        };
+        assert_eq!(*shown, at);
+        let when = crate::format::date_time(at, chrono::Local::now(), true);
+        assert!(label.contains(&when), "{label}");
+        let (shown, choices) = m.clear_choices(&view_ctx(&fx));
+        assert_eq!(shown, m.clear);
+        assert!(choices.contains(&m.clear));
+        // The open menu renders with it.
+        let _ = m.view(&view_ctx(&fx));
+        // Another client moves it while the menu is open: shown and kept.
+        let moved = in_hours(50);
+        fx.ws.apply_status_expiry("me", RcDate::from_millis(moved));
+        assert!(
+            matches!(m.clear_choices(&view_ctx(&fx)).0, ClearChoice::Until(t, _) if t == moved)
+        );
+        fx.ws.apply_status_expiry("me", RcDate::from_millis(at));
+        // A new text keeps it: sent again as `expiresAt`.
+        m.text = "Vacation, still".into();
+        m.update(Message::SubmitText, &mut fx.ctx());
+        assert_eq!(m.pending_server_expiry, Some(Some(at)));
+        assert_eq!(m.pending_expiry, Some(None), "the app keeps none");
+        m.update(
+            Message::StatusSet(None, Some("Vacation, still".into()), Ok(())),
+            &mut fx.ctx(),
+        );
+        assert_eq!(fx.ws.my_status_expiry(0), RcDate::from_millis(at));
+        // Another client clears the status; the next open shows "Never".
+        fx.ws.apply_status_expiry("me", None);
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        assert_eq!(m.clear, ClearChoice::default());
+        assert_eq!(current_expiry(&fx.ws, &fx.config, &fx.sid, 0), None);
+        let _ = m.view(&view_ctx(&fx));
+        // Or changes it: the next open shows the new time.
+        let later = in_hours(72);
+        fx.ws.apply_status_expiry("me", RcDate::from_millis(later));
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        assert!(matches!(m.clear, ClearChoice::Until(t, _) if t == later));
+        // Past already (the server is about to clear it): not offered.
+        fx.ws
+            .apply_status_expiry("me", RcDate::from_millis(in_hours(-1)));
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        assert_eq!(m.clear, ClearChoice::default());
+    }
+
+    #[test]
+    fn clear_after_is_sent_to_a_server_that_clears_statuses() {
+        use crate::quiet::Request;
+        let mut fx = Fx::new();
+        on_server(&mut fx, "8.9");
+        let mut m = StatusMenu::new();
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        m.update(
+            Message::ClearAfter(ClearChoice::Preset(ClearAfter::Hour1)),
+            &mut fx.ctx(),
+        );
+        let before = chrono::Utc::now().timestamp_millis();
+        m.update(Message::SetStatus(UserStatus::Busy), &mut fx.ctx());
+        let Some(Some(at)) = m.pending_server_expiry else {
+            panic!("{:?}", m.pending_server_expiry)
+        };
+        assert!(at >= before + 3_590_000 && at <= before + 3_610_000);
+        let a = m.update(
+            Message::StatusSet(Some(UserStatus::Busy), Some(String::new()), Ok(())),
+            &mut fx.ctx(),
+        );
+        // The app's own expiry (an old one, if any) is dropped.
+        assert!(
+            a.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Quiet(Request::Expiry(None))))
+        );
+        assert_eq!(fx.ws.my_status_expiry(0), RcDate::from_millis(at));
+        // "Never": sent without it, which clears it on the server.
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        m.update(Message::ClearAfter(ClearChoice::default()), &mut fx.ctx());
+        m.update(Message::SetStatus(UserStatus::Away), &mut fx.ctx());
+        assert_eq!(m.pending_server_expiry, Some(None));
+        m.update(
+            Message::StatusSet(Some(UserStatus::Away), Some(String::new()), Ok(())),
+            &mut fx.ctx(),
+        );
+        assert_eq!(fx.ws.my_status_expiry(0), None);
+        // A failed call records nothing.
+        fx.ws.apply_status_expiry("me", RcDate::from_millis(at));
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        m.update(Message::ClearAfter(ClearChoice::default()), &mut fx.ctx());
+        m.update(Message::SetStatus(UserStatus::Online), &mut fx.ctx());
+        let err = crate::error::Failure::from(rocketchat::Error::Unauthorized {
+            message: None,
+            code: None,
+        });
+        m.update(
+            Message::StatusSet(Some(UserStatus::Online), None, Err(err)),
+            &mut fx.ctx(),
+        );
+        assert_eq!(fx.ws.my_status_expiry(0), RcDate::from_millis(at));
+        assert_eq!(m.pending_server_expiry, None);
+    }
+
+    #[test]
+    fn a_status_pick_does_not_inherit_the_current_expiry() {
+        use crate::quiet::Request;
+        // Set in web: busy "Vacation" until a later day.
+        let mut fx = Fx::new();
+        on_server(&mut fx, "9.0.0");
+        fx.ws
+            .apply_status_expiry("me", RcDate::from_millis(in_hours(48)));
+        let mut m = StatusMenu::new();
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        assert!(matches!(m.clear, ClearChoice::Until(..)));
+        m.update(Message::SetStatus(UserStatus::Away), &mut fx.ctx());
+        assert_eq!(m.pending_server_expiry, Some(None), "no expiresAt");
+        assert_eq!(m.pending_expiry, Some(None));
+        // A clear-after picked explicitly still goes with it.
+        m.busy = false;
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        m.update(
+            Message::ClearAfter(ClearChoice::Preset(ClearAfter::Hour1)),
+            &mut fx.ctx(),
+        );
+        m.update(Message::SetStatus(UserStatus::Away), &mut fx.ctx());
+        assert!(matches!(m.pending_server_expiry, Some(Some(_))));
+
+        // Before 8.6, the app's expiry (busy for an hour, back to online).
+        let mut fx = Fx::new();
+        on_server(&mut fx, "8.5.1");
+        let sid = fx.config.add_server(rustket_core::config::ServerEntry {
+            id: fx.sid.clone(),
+            url: "http://localhost:3000".into(),
+            ..Default::default()
+        });
+        fx.config.server_mut(&sid).unwrap().status_expiry = Some(StatusExpiry {
+            user_id: "me".into(),
+            at: in_hours(1),
+            status: UserStatus::Busy,
+            text: "Meeting".into(),
+            restore: Some(UserStatus::Online),
+        });
+        let mut m = StatusMenu::new();
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        assert!(matches!(m.clear, ClearChoice::Until(..)));
+        m.update(Message::SetStatus(UserStatus::Away), &mut fx.ctx());
+        assert_eq!(m.pending_expiry, Some(None), "the old expiry is dropped");
+        assert_eq!(m.pending_server_expiry, None);
+        let a = m.update(
+            Message::StatusSet(Some(UserStatus::Away), Some(String::new()), Ok(())),
+            &mut fx.ctx(),
+        );
+        assert!(
+            a.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Quiet(Request::Expiry(None))))
+        );
+    }
+
+    #[test]
+    fn keeping_a_server_status_sends_it_again_without_the_expiry() {
+        let mut fx = Fx::new();
+        on_server(&mut fx, "8.9.1");
+        let at = in_hours(5);
+        fx.ws.apply_status_expiry("me", RcDate::from_millis(at));
+        let mut m = StatusMenu::new();
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        let a = m.update(Message::CancelExpiry, &mut fx.ctx());
+        assert!(m.busy && a.effects.is_empty());
+        assert_eq!(m.pending_server_expiry, Some(None));
+        assert_eq!(m.clear, ClearChoice::default());
+        m.update(
+            Message::StatusSet(None, Some("Lunch".into()), Ok(())),
+            &mut fx.ctx(),
+        );
+        assert_eq!(fx.ws.my_status_expiry(0), None);
+        assert_eq!(my_text(&fx.ws), "Lunch");
+    }
+
+    #[test]
+    fn servers_before_8_6_keep_the_app_expiry() {
+        use crate::quiet::Request;
+        let mut fx = Fx::new();
+        on_server(&mut fx, "8.5.1");
+        assert!(!fx.ws.status_expiry_on_server());
+        let mut m = StatusMenu::new();
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        m.update(
+            Message::ClearAfter(ClearChoice::Preset(ClearAfter::Hour4)),
+            &mut fx.ctx(),
+        );
+        m.update(Message::SetStatus(UserStatus::Busy), &mut fx.ctx());
+        assert_eq!(m.pending_server_expiry, None, "no expiresAt");
+        let a = m.update(
+            Message::StatusSet(Some(UserStatus::Busy), Some(String::new()), Ok(())),
+            &mut fx.ctx(),
+        );
+        assert!(
+            a.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Quiet(Request::Expiry(Some(_)))))
+        );
+        // A user with a server expiry tells the server clears them.
+        fx.ws
+            .apply_status_expiry("me", RcDate::from_millis(in_hours(1)));
+        assert!(fx.ws.status_expiry_on_server());
     }
 
     #[test]
@@ -1315,5 +1746,109 @@ mod tests {
         m.busy = false;
         m.update(Message::SetCustom("nope".into()), &mut fx.ctx());
         assert!(!m.busy);
+    }
+
+    /// Review: before 8.6, a new text over the preselected "Until …" kept
+    /// the time but dropped the status restore (busy forever).
+    #[test]
+    fn a_text_change_keeps_the_app_expiry_restore() {
+        use crate::quiet::Request;
+        let mut fx = Fx::new();
+        on_server(&mut fx, "8.5.1");
+        let sid = fx.config.add_server(rustket_core::config::ServerEntry {
+            id: fx.sid.clone(),
+            url: "http://localhost:3000".into(),
+            ..Default::default()
+        });
+        let at = in_hours(1);
+        fx.config.server_mut(&sid).unwrap().status_expiry = Some(StatusExpiry {
+            user_id: "me".into(),
+            at,
+            status: UserStatus::Busy,
+            text: "Meeting".into(),
+            restore: Some(UserStatus::Online),
+        });
+        let mut m = StatusMenu::new();
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        assert!(matches!(m.clear, ClearChoice::Until(..)));
+        m.text = "Meeting with X".into();
+        m.update(Message::SubmitText, &mut fx.ctx());
+        let a = m.update(
+            Message::StatusSet(None, Some("Meeting with X".into()), Ok(())),
+            &mut fx.ctx(),
+        );
+        let e = a
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::Quiet(Request::KeptExpiry(x)) => Some(x.clone()),
+                _ => None,
+            })
+            .expect("a kept expiry");
+        assert_eq!(
+            (e.at, e.status, e.text.as_str(), e.restore),
+            (
+                at,
+                UserStatus::Busy,
+                "Meeting with X",
+                Some(UserStatus::Online)
+            )
+        );
+    }
+
+    /// Review: "Until …" picked from the list goes with the status picked
+    /// next (only the preselected one does not).
+    #[test]
+    fn a_picked_until_goes_with_the_status() {
+        let mut fx = Fx::new();
+        on_server(&mut fx, "9.0.0");
+        let at = in_hours(48);
+        fx.ws.apply_status_expiry("me", RcDate::from_millis(at));
+        let mut m = StatusMenu::new();
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        let until = m.clear.clone();
+        assert!(matches!(until, ClearChoice::Until(..)));
+        m.update(Message::ClearAfter(until), &mut fx.ctx());
+        m.update(Message::SetStatus(UserStatus::Away), &mut fx.ctx());
+        assert_eq!(m.pending_server_expiry, Some(Some(at)));
+        // Reopened: preselected again, dropped by a status pick.
+        m.busy = false;
+        m.update(Message::Toggle(true), &mut fx.ctx());
+        m.update(Message::SetStatus(UserStatus::Away), &mut fx.ctx());
+        assert_eq!(m.pending_server_expiry, Some(None));
+    }
+
+    /// Review: cancelling the server's expiry sent the text again, which
+    /// the server refuses when status texts are not allowed; the chosen
+    /// status alone drops the expiry and keeps the text.
+    #[test]
+    fn cancelling_a_server_expiry_sends_the_status_alone() {
+        use rocketchat::rest::set_status_body;
+        let mut fx = Fx::new();
+        fx.ws.apply_me(
+            serde_json::from_value(json!({
+                "_id": "me", "username": "me", "status": "busy",
+                "statusDefault": "busy", "statusText": "Vacation"
+            }))
+            .unwrap(),
+        );
+        let (st, text) = keep_status_args(&fx.ws);
+        assert_eq!(
+            set_status_body(st, text.as_deref(), None),
+            json!({"status": "busy"})
+        );
+        // The chosen status not known (offline without statusDefault): the
+        // text, which keeps statusDefault on the server.
+        fx.ws.apply_me(
+            serde_json::from_value(json!({
+                "_id": "me", "username": "me", "status": "offline", "statusText": "Vacation"
+            }))
+            .unwrap(),
+        );
+        let (st, text) = keep_status_args(&fx.ws);
+        assert_eq!(
+            set_status_body(st, text.as_deref(), None),
+            json!({"message": "Vacation"})
+        );
     }
 }

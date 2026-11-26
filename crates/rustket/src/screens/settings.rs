@@ -222,6 +222,8 @@ pub enum Message {
     SetEscapeMarksRead(bool),
     /// `UiPrefs::confirm_broad_mentions`.
     SetConfirmBroadMentions(bool),
+    /// `UiPrefs::mark_read_on_open`.
+    SetMarkReadOnOpen(bool),
     /// `UiPrefs::room_bookmarks`.
     SetRoomBookmarks(bool),
     /// `UiPrefs::share_utc_offset`.
@@ -474,6 +476,7 @@ impl Settings {
             Message::SetStartMinimized(v) => Self::pref(ctx, |p| p.start_minimized = v),
             Message::SetEscapeMarksRead(v) => Self::pref(ctx, |p| p.escape_marks_read = v),
             Message::SetRoomBookmarks(v) => Self::pref(ctx, |p| p.room_bookmarks = v),
+            Message::SetMarkReadOnOpen(v) => Self::pref(ctx, |p| p.mark_read_on_open = v),
             Message::SetConfirmBroadMentions(v) => {
                 Self::pref(ctx, |p| p.confirm_broad_mentions = v)
             }
@@ -722,6 +725,8 @@ mod tests {
             (Message::SetEscapeMarksRead(false), |c| !c.escape_marks_read),
             (Message::SetEscapeMarksRead(true), |c| c.escape_marks_read),
             (Message::SetRoomBookmarks(false), |c| !c.room_bookmarks),
+            (Message::SetMarkReadOnOpen(true), |c| c.mark_read_on_open),
+            (Message::SetMarkReadOnOpen(false), |c| !c.mark_read_on_open),
             (Message::SetConfirmBroadMentions(false), |c| {
                 !c.confirm_broad_mentions
             }),

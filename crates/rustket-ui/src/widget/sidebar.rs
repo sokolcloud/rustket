@@ -315,18 +315,19 @@ pub fn section_header_full<'a, Message: Clone + 'a>(
     header_impl(title, collapsed, count, swatch, status, false, on_toggle)
 }
 
-/// A section header in the Rocket.Chat look: no row count; `emphasis` (a
-/// collapsed section with something unread) draws the title bright and
-/// bold.
+/// A section header in the Rocket.Chat look: no row count unless `count` is
+/// given (search results); `emphasis` (a collapsed section with something
+/// unread) draws the title bright and bold.
 pub fn section_header_rc<'a, Message: Clone + 'a>(
     title: impl Into<String>,
     collapsed: bool,
+    count: Option<u32>,
     swatch: Option<usize>,
     status: Option<Element<'a, Message>>,
     emphasis: bool,
     on_toggle: Message,
 ) -> Element<'a, Message> {
-    header_impl(title, collapsed, None, swatch, status, emphasis, on_toggle)
+    header_impl(title, collapsed, count, swatch, status, emphasis, on_toggle)
 }
 
 fn header_impl<'a, Message: Clone + 'a>(
@@ -617,7 +618,8 @@ mod rc_tests {
         for look in [IndicatorLook::Rustket, IndicatorLook::RocketChat] {
             crate::theme::with_indicator_look(look, || {
                 let _: Element<'_, ()> = room_list_item(p.clone());
-                let _: Element<'_, ()> = section_header_rc("Channels", true, None, None, true, ());
+                let _: Element<'_, ()> =
+                    section_header_rc("Channels", true, None, None, None, true, ());
             });
         }
     }

@@ -361,7 +361,11 @@ impl App {
                 }
                 Effect::OpenLocalesFolder => self.open_locales_folder(),
                 Effect::Quiet(crate::quiet::Request::Expiry(e)) => match sid {
-                    Some(sid) => self.set_status_expiry(sid, e),
+                    Some(sid) => self.set_status_expiry(sid, e, false),
+                    None => Task::none(),
+                },
+                Effect::Quiet(crate::quiet::Request::KeptExpiry(e)) => match sid {
+                    Some(sid) => self.set_status_expiry(sid, Some(e), true),
                     None => Task::none(),
                 },
                 Effect::Quiet(crate::quiet::Request::ReleaseHold) => match sid {

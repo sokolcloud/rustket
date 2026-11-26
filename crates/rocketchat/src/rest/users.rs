@@ -25,6 +25,31 @@ pub fn delete_own_account_body(secret: &str, confirm_relinquish: bool) -> Value 
     }
 }
 
+/// First Rocket.Chat version whose `users.setStatus` takes `expiresAt` and
+/// clears the status itself (`statusExpiresAt`, the 8.6.0 presence engine).
+/// Older servers do not know the field (newer request schemas reject
+/// unknown ones).
+pub const STATUS_EXPIRY_SINCE: (u32, u32, u32) = (8, 6, 0);
+
+/// Body of `users.setStatus` (`status: None`: text only).
+pub fn set_status_body(
+    status: Option<UserStatus>,
+    message: Option<&str>,
+    expires_at: Option<RcDate>,
+) -> Value {
+    let mut body = json!({});
+    if let Some(s) = status {
+        body["status"] = Value::String(s.as_str().into());
+    }
+    if let Some(m) = message {
+        body["message"] = Value::String(m.into());
+    }
+    if let Some(at) = expires_at {
+        body["expiresAt"] = Value::String(at.to_iso());
+    }
+    body
+}
+
 impl RestClient {
     pub async fn users_info(&self, user: UserLookup<'_>) -> Result<User> {
         let q = match user {
@@ -47,19 +72,35 @@ impl RestClient {
     }
 
     /// Sets the current user's status and optional custom status text.
-    pub async fn users_set_status(&self, status: UserStatus, message: Option<&str>) -> Result<()> {
-        let mut body = json!({ "status": status.as_str() });
-        if let Some(m) = message {
-            body["message"] = Value::String(m.into());
-        }
-        self.post_ok("users.setStatus", &body).await
+    /// `expires_at`: when the server clears it (`statusExpiresAt`, Rocket.Chat
+    /// 8.6+, see [`STATUS_EXPIRY_SINCE`]); without it the server drops any
+    /// expiry the status had.
+    pub async fn users_set_status(
+        &self,
+        status: UserStatus,
+        message: Option<&str>,
+        expires_at: Option<RcDate>,
+    ) -> Result<()> {
+        self.post_ok(
+            "users.setStatus",
+            &set_status_body(Some(status), message, expires_at),
+        )
+        .await
     }
 
     /// Changes only the custom status text: the server keeps the status the
     /// user chose (`statusDefault`), so a transient auto-away is not pinned.
-    pub async fn users_set_status_message(&self, message: &str) -> Result<()> {
-        self.post_ok("users.setStatus", &json!({ "message": message }))
-            .await
+    /// `expires_at` as in [`Self::users_set_status`].
+    pub async fn users_set_status_message(
+        &self,
+        message: &str,
+        expires_at: Option<RcDate>,
+    ) -> Result<()> {
+        self.post_ok(
+            "users.setStatus",
+            &set_status_body(None, Some(message), expires_at),
+        )
+        .await
     }
 
     /// Presence of users changed since `from` (all users with a non-offline status

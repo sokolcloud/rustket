@@ -971,3 +971,41 @@ fn rocketchat_runtime_keys_are_translated() {
         }
     }
 }
+
+/// Review: Q4 told the old read rule (bottom of the feed) although by
+/// default a room also waits for its first unread message; with
+/// `ui.mark_read_on_open` the old rule holds.
+#[test]
+fn q4_follows_the_read_setting() {
+    rust_i18n::set_locale("en");
+    let mut cfg = rustket_cfg();
+    let env = HelpEnv::default();
+    let first = "first unread message has been on screen";
+    assert!(!cfg.ui.mark_read_on_open);
+    assert!(has(&texts(&cfg, &env), first));
+    cfg.ui.mark_read_on_open = true;
+    let on_open = texts(&cfg, &env);
+    assert!(!has(&on_open, first));
+    assert!(has(
+        &on_open,
+        "the feed is at the bottom and no app dialog covers it"
+    ));
+}
+
+#[test]
+fn q4_mentions_esc_only_while_it_marks_read() {
+    rust_i18n::set_locale("en");
+    let mut cfg = rustket_cfg();
+    let env = HelpEnv::default();
+    let esc = "and Esc mark it read at once";
+    assert!(cfg.ui.escape_marks_read);
+    assert!(has(&texts(&cfg, &env), esc));
+    cfg.ui.escape_marks_read = false;
+    let no_esc = texts(&cfg, &env);
+    assert!(!has(&no_esc, esc));
+    assert!(has(&no_esc, "first unread message has been on screen"));
+    assert!(has(
+        &no_esc,
+        "Mark as read on the unread bar marks it read at once"
+    ));
+}

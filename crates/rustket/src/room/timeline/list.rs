@@ -534,6 +534,9 @@ pub(crate) struct Follow {
     /// Newest item seen by [`Follow::on_changes`] (grows the window instead
     /// of shifting it when messages arrive at the bottom).
     newest: Option<(i64, String)>,
+    /// Bumped whenever `window` changes; never repeats (unlike `window`,
+    /// which cycles), so a sensor keyed on it re-arms on every rebuild.
+    generation: u64,
 }
 
 /// What a scroll event means for the list owner.
@@ -552,11 +555,24 @@ impl Default for Follow {
             at_bottom: true,
             frozen: None,
             newest: None,
+            generation: 0,
         }
     }
 }
 
 impl Follow {
+    /// Changes of the built window so far (see the field).
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn set_window(&mut self, window: usize) {
+        if window != self.window {
+            self.window = window;
+            self.generation += 1;
+        }
+    }
+
     /// The frozen newest row, for [`plan`].
     pub fn frozen(&self) -> Option<(i64, &str)> {
         self.frozen.as_ref().map(|(ts, id)| (*ts, id.as_str()))
@@ -566,7 +582,7 @@ impl Follow {
     pub fn follow_bottom(&mut self) {
         self.frozen = None;
         self.at_bottom = true;
-        self.window = WINDOW;
+        self.set_window(WINDOW);
     }
 
     pub fn scrolled(&mut self, vp: &Viewport, tl: Option<&CoreTimeline>) -> Scrolled {
@@ -578,7 +594,7 @@ impl Follow {
         if back_at_bottom {
             // Show what arrived meanwhile.
             self.frozen = None;
-            self.window = WINDOW;
+            self.set_window(WINDOW);
         } else if !self.at_bottom && self.frozen.is_none() {
             self.frozen = tl.and_then(newest_key);
         }
@@ -593,7 +609,7 @@ impl Follow {
     /// `true` when an older page is due instead.
     pub fn grow(&mut self, tl: &CoreTimeline) -> bool {
         if tl.len() > self.window {
-            self.window += WINDOW_STEP;
+            self.set_window(self.window + WINDOW_STEP);
             false
         } else {
             true
@@ -607,12 +623,23 @@ impl Follow {
             return false;
         };
         let newer = tl.iter().rev().take_while(|i| item_key(i) > target).count();
-        self.window = self.window.max(newer + WINDOW_STEP);
-        if self.frozen.is_none() {
+        self.set_window(self.window.max(newer + WINDOW_STEP));
+        // A target newer than the frozen view (it arrived while scrolled
+        // up) would never be built: freeze at the newest row instead.
+        if self.frozen.is_none() || self.below_frozen(tl, mid) {
             self.frozen = newest_key(tl);
         }
         self.at_bottom = false;
         true
+    }
+
+    /// Whether message `mid` is newer than the frozen view (not built: it
+    /// waits behind "jump to latest").
+    pub fn below_frozen(&self, tl: &CoreTimeline, mid: &str) -> bool {
+        match (tl.get(mid), self.frozen()) {
+            (Some(item), Some(f)) => item_key(item) > f,
+            _ => false,
+        }
     }
 
     /// After the timeline changed. `true` when an own message is being
@@ -629,11 +656,13 @@ impl Follow {
                 .rev()
                 .take_while(|i| item_key(i) > (prev.0, prev.1.as_str()))
                 .count();
-            self.window += added;
             // Trimmed back once in a while.
-            if self.window > WINDOW + WINDOW_STEP {
-                self.window = WINDOW;
-            }
+            let window = self.window + added;
+            self.set_window(if window > WINDOW + WINDOW_STEP {
+                WINDOW
+            } else {
+                window
+            });
         }
         self.newest = newest;
         let own_pending = tl
@@ -939,6 +968,14 @@ mod tests {
         assert!(!f.at_bottom);
         assert_eq!(f.frozen(), Some((T0 + 6_000, "f")));
         assert!(!f.hold_at(&tl, "missing"));
+        // Review: a message that arrived while frozen is not built; holding
+        // at it moves the frozen view down to include it.
+        tl.extend([m("h", "bob", T0 + 6_500, None)]);
+        assert!(!f.on_changes(&tl));
+        assert!(f.below_frozen(&tl, "h") && !f.below_frozen(&tl, "c"));
+        assert!(f.hold_at(&tl, "h"));
+        assert_eq!(f.frozen(), Some((T0 + 6_500, "h")));
+        assert!(!f.below_frozen(&tl, "h"));
         // An own message being sent unfreezes.
         tl.insert_pending(m("g", "me", T0 + 7_000, None));
         assert!(f.on_changes(&tl));

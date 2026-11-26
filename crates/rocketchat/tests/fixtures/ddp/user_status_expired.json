@@ -1,0 +1,22 @@
+{
+  "msg": "changed",
+  "collection": "stream-notify-logged",
+  "id": "id",
+  "fields": {
+    "args": [
+      [
+        "Er3h8XYKahaopbSA7",
+        "alice",
+        1,
+        "",
+        "Alice",
+        [
+          "user"
+        ],
+        null,
+        null
+      ]
+    ],
+    "eventName": "user-status"
+  }
+}

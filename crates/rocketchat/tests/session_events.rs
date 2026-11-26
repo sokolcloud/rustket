@@ -243,6 +243,7 @@ fn user_status() {
             username: "cap-b-1794072787233".into(),
             status: UserStatus::Online,
             status_text: Some(String::new()),
+            status_expires_at: None,
         }
     );
     assert_eq!(
@@ -252,12 +253,39 @@ fn user_status() {
             username: "cap-a-1794072787233".into(),
             status: UserStatus::Away,
             status_text: None,
+            status_expires_at: None,
         }
     );
     assert!(matches!(
         decode("user_status_offline_text"),
         SessionEvent::UserStatus { status: UserStatus::Offline, status_text: Some(t), .. } if t == "capturing"
     ));
+}
+
+#[test]
+fn user_status_expiry() {
+    // Set with an expiry: `{"$date": ms}` in the eighth field.
+    assert_eq!(
+        decode("user_status_expiry"),
+        SessionEvent::UserStatus {
+            uid: "Er3h8XYKahaopbSA7".into(),
+            username: "alice".into(),
+            status: UserStatus::Away,
+            status_text: Some("short".into()),
+            status_expires_at: rocketchat::RcDate::from_millis(1_795_664_970_000),
+        }
+    );
+    // Cleared by the server when it expired: online, no text, no source.
+    assert_eq!(
+        decode("user_status_expired"),
+        SessionEvent::UserStatus {
+            uid: "Er3h8XYKahaopbSA7".into(),
+            username: "alice".into(),
+            status: UserStatus::Online,
+            status_text: Some(String::new()),
+            status_expires_at: None,
+        }
+    );
 }
 
 #[test]
@@ -500,6 +528,7 @@ fn user_status_uses_username_not_real_name() {
             username: "bob".into(),
             status: UserStatus::Busy,
             status_text: Some("on a call".into()),
+            status_expires_at: None,
         }
     );
 }

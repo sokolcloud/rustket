@@ -53,6 +53,36 @@ room_timeline.unread:
   es: "Mensajes no leídos"
   th: "ข้อความที่ยังไม่ได้อ่าน"
   zh: "未读消息"
+room_timeline.unread_count_one:
+  en: "%{count} unread message"
+  ru: "%{count} непрочитанное сообщение"
+  es: "%{count} mensaje sin leer"
+  th: "%{count} ข้อความที่ยังไม่ได้อ่าน"
+  zh: "%{count} 条未读消息"
+room_timeline.unread_count_few:
+  en: "%{count} unread messages"
+  ru: "%{count} непрочитанных сообщения"
+  es: "%{count} mensajes sin leer"
+  th: "%{count} ข้อความที่ยังไม่ได้อ่าน"
+  zh: "%{count} 条未读消息"
+room_timeline.unread_count_many:
+  en: "%{count} unread messages"
+  ru: "%{count} непрочитанных сообщений"
+  es: "%{count} mensajes sin leer"
+  th: "%{count} ข้อความที่ยังไม่ได้อ่าน"
+  zh: "%{count} 条未读消息"
+room_timeline.jump_first_unread:
+  en: "Jump to first unread"
+  ru: "К первому непрочитанному"
+  es: "Ir al primer mensaje sin leer"
+  th: "ไปที่ข้อความแรกที่ยังไม่ได้อ่าน"
+  zh: "跳到第一条未读"
+room_timeline.mark_read:
+  en: "Mark as read"
+  ru: "Отметить прочитанным"
+  es: "Marcar como leído"
+  th: "ทำเครื่องหมายว่าอ่านแล้ว"
+  zh: "标记为已读"
 room_timeline.jump_to_latest:
   en: "Jump to latest"
   ru: "К последним"

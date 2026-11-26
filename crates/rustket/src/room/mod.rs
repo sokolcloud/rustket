@@ -400,6 +400,10 @@ pub enum Message {
     /// Escape with nothing else to close: the explicit "Mark as read" (the
     /// room and its threads).
     MarkAllRead,
+    /// The unread bar's "Mark as read": the room without its threads.
+    MarkRoomRead,
+    /// The unread bar's "Jump to first unread".
+    JumpToFirstUnread,
     /// Files dropped onto the window while this room is shown: to the open
     /// thread's composer, else the room composer.
     FilesDropped(Vec<std::path::PathBuf>),
@@ -425,6 +429,9 @@ pub struct RoomView {
     read_again: bool,
     /// The explicit "Mark as read" waits for the request in flight.
     read_all_again: bool,
+    /// The unread bar's "Mark as read" (without threads) waits for the
+    /// request in flight.
+    read_room_again: bool,
     /// The room was opened and not marked read yet (it was not readable):
     /// marked once it is.
     read_on_show: bool,
@@ -441,6 +448,16 @@ pub struct RoomView {
     /// `marked_upto` and `read_on_show` before the read mark in flight:
     /// restored when it fails, so the mark is tried again.
     mark_undo: Option<(Option<i64>, bool)>,
+    /// `UiPrefs::mark_read_on_open` (refreshed by `set_visible`).
+    mark_on_open: bool,
+    /// The first unread message that was on screen while the room was
+    /// shown: from then on the room is caught up and the automatic read
+    /// mark follows the usual rules ([`Self::readable`]).
+    seen_first_unread: Option<String>,
+    /// The subscription's last seen time (`ls`, ms) when an explicit "Mark
+    /// as read" was asked for: nothing waits for the first unread message
+    /// (and no unread bar shows) until `ls` changes.
+    dismissed_ls: Option<Option<i64>>,
     /// Timeline epoch at `open`: history loaded under it counts as seen by
     /// the open's read mark, a reload after a timeline reset does not.
     open_epoch: Option<(u64, u64)>,
@@ -466,11 +483,15 @@ impl RoomView {
             marking_read: false,
             read_again: false,
             read_all_again: false,
+            read_room_again: false,
             read_on_show: false,
             visible: false,
             was_readable: false,
             marked_upto: None,
             mark_undo: None,
+            mark_on_open: ctx.prefs.mark_read_on_open,
+            seen_first_unread: None,
+            dismissed_ls: None,
             open_epoch: ctx.workspace.timeline(&rid).map(|t| t.epoch()),
             watching: false,
             loaded: false,
@@ -548,16 +569,63 @@ impl RoomView {
 
     /// Whether the user can see the newest messages: the room is shown,
     /// its timeline is at the bottom (not the frozen view while scrolled
-    /// up), not under the E2E cover and not covered by an expanded thread.
-    /// The automatic read mark only runs then (like the web's
-    /// `attemptMarkAsRead`), and never while the offline cache is shown.
+    /// up), not under the E2E cover, not covered by an expanded thread and
+    /// not waiting for its first unread message to be seen
+    /// ([`Self::awaiting_first_unread`]). The automatic read mark only
+    /// runs then (like the web's `attemptMarkAsRead`), and never while the
+    /// offline cache is shown.
     pub fn readable(&self, ws: &Workspace) -> bool {
+        self.timeline_shown(ws) && self.timeline.at_bottom() && !self.awaiting_first_unread(ws)
+    }
+
+    /// The room's timeline is on screen and not covered (see
+    /// [`Self::readable`]).
+    fn timeline_shown(&self, ws: &Workspace) -> bool {
         self.visible
             && !ws.from_cache()
             && !self.is_preview(ws)
-            && self.timeline.at_bottom()
             && !self.panel.expanded()
             && crate::e2e::room::body_state(ws, &self.rid).is_none()
+    }
+
+    /// Rocket.Chat's rule (unless `UiPrefs::mark_read_on_open`): the room
+    /// is unread (`unread`, or only `alert` where the server counts
+    /// mentions only) and the first unread message
+    /// ([`timeline::first_unread`]) has not been on screen yet, or unread
+    /// messages are older than the loaded history. The automatic read mark
+    /// waits and the unread bar shows; the explicit "Mark as read" (the
+    /// bar, Esc) does not wait. An alert from unread threads alone is
+    /// never marked automatically ([`Self::wants_auto_read`]): no wait.
+    pub fn awaiting_first_unread(&self, ws: &Workspace) -> bool {
+        let Some(sub) = ws.subscription(&self.rid) else {
+            return false;
+        };
+        if self.mark_on_open
+            || (sub.unread == 0 && (!sub.alert || sub.has_unread_threads()))
+            || self.dismissed_ls == Some(sub.ls.map(|d| d.timestamp_millis()))
+        {
+            return false;
+        }
+        if timeline::unread_not_loaded(ws, &self.rid) {
+            return true;
+        }
+        timeline::first_unread(ws, &self.rid).is_some_and(|m| {
+            self.seen_first_unread.as_deref() != Some(m.id.as_str())
+                && !self.timeline.unread_in_view(&m.id)
+        })
+    }
+
+    /// Notes the first unread message as seen when it is in view while the
+    /// timeline is shown.
+    fn note_first_unread_seen(&mut self, ws: &Workspace) {
+        if !self.timeline_shown(ws) {
+            return;
+        }
+        if let Some(m) = timeline::first_unread(ws, &self.rid)
+            && self.timeline.unread_in_view(&m.id)
+        {
+            self.seen_first_unread = Some(m.id.clone());
+        }
     }
 
     /// Shown on screen (see [`Self::set_visible`]).
@@ -572,6 +640,8 @@ impl RoomView {
     pub fn set_visible(&mut self, visible: bool, ctx: &mut UpdateCtx<'_>) -> Task<Message> {
         let was_visible = std::mem::replace(&mut self.visible, visible);
         self.panel.set_visible(visible);
+        self.mark_on_open = ctx.prefs.mark_read_on_open;
+        self.note_first_unread_seen(ctx.workspace);
         let readable = self.readable(ctx.workspace);
         let was_readable = std::mem::replace(&mut self.was_readable, readable);
         let mut tasks = Vec::new();
@@ -766,11 +836,37 @@ impl RoomView {
         if self.is_preview(ctx.workspace) {
             return Task::none();
         }
+        self.dismiss_unread(ctx.workspace);
         if self.marking_read {
             self.read_all_again = true;
             return Task::none();
         }
         self.send_read(ctx, true)
+    }
+
+    /// The unread bar's "Mark as read": the room without its threads (like
+    /// Rocket.Chat's indicator), also while the room is not readable.
+    pub fn mark_room_read(&mut self, ctx: &UpdateCtx<'_>) -> Task<Message> {
+        if self.is_preview(ctx.workspace) {
+            return Task::none();
+        }
+        self.dismiss_unread(ctx.workspace);
+        if self.marking_read {
+            self.read_room_again = true;
+            return Task::none();
+        }
+        self.send_read(ctx, false)
+    }
+
+    /// Asked for: nothing waits for the first unread message any more, the
+    /// unread bar goes away (also when the mark fails; the automatic mark
+    /// then tries again).
+    fn dismiss_unread(&mut self, ws: &Workspace) {
+        self.dismissed_ls = Some(
+            ws.subscription(&self.rid)
+                .and_then(|s| s.ls)
+                .map(|d| d.timestamp_millis()),
+        );
     }
 
     fn send_read(&mut self, ctx: &UpdateCtx<'_>, read_threads: bool) -> Task<Message> {
@@ -825,11 +921,18 @@ impl RoomView {
                 if !self.read_on_show
                     && self.open_epoch.is_some()
                     && ctx.workspace.timeline(&self.rid).map(|t| t.epoch()) == self.open_epoch
-                    && !self.is_preview(ctx.workspace)
+                    && let Some(sub) = ctx.workspace.subscription(&self.rid)
                 {
-                    self.marked_upto = self
-                        .marked_upto
-                        .max(newest_from_others(ctx.workspace, &self.rid));
+                    let newest = newest_from_others(ctx.workspace, &self.rid);
+                    // Read when opened but unread now (messages arrived
+                    // before the page) and no mark in flight: only what
+                    // the server counts as seen (`ls`) is seen.
+                    let seen = if mark_clears(sub) && !self.marking_read {
+                        newest.min(sub.ls.map(|d| d.timestamp_millis()))
+                    } else {
+                        newest
+                    };
+                    self.marked_upto = self.marked_upto.max(seen);
                 }
                 // A page of hidden thread replies only: fetch the next one.
                 let empty_page = ctx.workspace.timeline(&self.rid).is_some_and(|t| {
@@ -853,14 +956,19 @@ impl RoomView {
                         self.marked_upto = upto;
                         self.read_on_show |= on_show;
                     }
-                    if !self.read_all_again {
+                    if !self.read_all_again && !self.read_room_again {
                         self.read_again = false;
                         return Action::none();
                     }
                 }
+                let room_again = std::mem::take(&mut self.read_room_again);
                 if std::mem::take(&mut self.read_all_again) {
                     self.read_again = false;
                     return Action::task(self.send_read(ctx, true));
+                }
+                if room_again {
+                    self.read_again = false;
+                    return Action::task(self.send_read(ctx, false));
                 }
                 // A message that arrived meanwhile may have been counted after
                 // the read mark (gated like any automatic mark).
@@ -870,6 +978,11 @@ impl RoomView {
                 Action::none()
             }
             Message::MarkAllRead => Action::task(self.mark_all_read(ctx)),
+            Message::MarkRoomRead => Action::task(self.mark_room_read(ctx)),
+            Message::JumpToFirstUnread => self
+                .timeline
+                .jump_to_first_unread(ctx)
+                .map(Message::Timeline),
             Message::FilesDropped(paths) => match self.panel.thread_files_dropped(&paths, ctx) {
                 Some(a) => a.map(Message::Panel),
                 None => self
@@ -1022,6 +1135,43 @@ impl RoomView {
         ])
     }
 
+    /// The unread bar while the room waits for its first unread message
+    /// ([`Self::awaiting_first_unread`]) above the view, with the unread
+    /// count when it is known: the subscription's `unread` where the
+    /// server counts every message (`Unread_Count*`, by default DMs and
+    /// omnichannel only), else the loaded unread messages once all are
+    /// loaded (`unread` then counts mentions). No bar while the first page
+    /// loads, nor when every unread message arrived below the frozen view
+    /// ("jump to latest" counts those), like Rocket.Chat's indicator.
+    pub fn unread_bar_count(&self, ws: &Workspace) -> Option<Option<u64>> {
+        if !self.awaiting_first_unread(ws) {
+            return None;
+        }
+        let sub = ws.subscription(&self.rid)?;
+        let tl = ws.timeline(&self.rid)?;
+        if tl.pagination.loading_before && !tl.pagination.loaded {
+            return None;
+        }
+        let not_loaded = timeline::unread_not_loaded(ws, &self.rid);
+        if !not_loaded
+            && timeline::first_unread(ws, &self.rid)
+                .is_some_and(|m| self.timeline.below_view(ws, &m.id))
+        {
+            return None;
+        }
+        let counts_all = crate::help::server::ServerFacts::from_settings(ws.settings())
+            .unread_count_for(sub.t)
+            == crate::help::server::UnreadCount::AllMessages;
+        if counts_all && sub.unread > 0 {
+            return Some(Some(sub.unread));
+        }
+        if not_loaded {
+            return Some(None);
+        }
+        let loaded = (timeline::unread_loaded_count(ws, &self.rid) as u64).max(sub.unread);
+        Some((loaded > 0).then_some(loaded))
+    }
+
     pub fn view<'a>(&'a self, ctx: &ViewCtx<'a>) -> Element<'a, Message> {
         let timeline: Element<'a, Message> = if preview_blocked(ctx.workspace, &self.rid) {
             empty_state(
@@ -1042,7 +1192,13 @@ impl RoomView {
                 ),
                 None => space().into(),
             };
-            stack![self.timeline.view(ctx).map(Message::Timeline), cover].into()
+            // The unread bar floats over the top of the timeline; its slot
+            // always exists, so the timeline keeps its tree position.
+            let bar: Element<'a, Message> = match self.unread_bar_count(ctx.workspace) {
+                Some(n) => unread_bar(n),
+                None => space().into(),
+            };
+            stack![self.timeline.view(ctx).map(Message::Timeline), bar, cover].into()
         };
         let main = column![
             self.header.view(ctx).map(Message::Header),
@@ -1141,6 +1297,47 @@ impl RoomView {
             .style(style::container_room)
             .into()
     }
+}
+
+/// "N unread messages" with "Jump to first unread" and "Mark as read"
+/// (Rocket.Chat's `UnreadMessagesIndicator`), at the top of the timeline.
+fn unread_bar<'a>(count: Option<u64>) -> Element<'a, Message> {
+    use iced::widget::text;
+    use rustket_ui::theme::{SPACE_1, SPACE_2, SPACE_3, TEXT_SMALL};
+    use rustket_ui::widget::{ButtonSize, ghost_button, secondary_button};
+    let label = match count {
+        Some(count) => t!(
+            format!("room_timeline.unread_count_{}", render::plural(count)),
+            count = count
+        ),
+        None => t!("room_timeline.unread"),
+    }
+    .into_owned();
+    let bar = container(
+        row![
+            text(label).size(TEXT_SMALL),
+            secondary_button(
+                t!("room_timeline.jump_first_unread").into_owned(),
+                Some(Message::JumpToFirstUnread)
+            )
+            .icon(Icon::ArrowUp)
+            .size(ButtonSize::Small),
+            ghost_button(
+                t!("room_timeline.mark_read").into_owned(),
+                Some(Message::MarkRoomRead)
+            )
+            .icon(Icon::CheckCheck)
+            .size(ButtonSize::Small),
+        ]
+        .spacing(SPACE_2)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([SPACE_1, SPACE_3])
+    .style(style::container_popover);
+    container(bar)
+        .center_x(Length::Fill)
+        .padding(SPACE_2)
+        .into()
 }
 
 #[cfg(test)]
@@ -1374,6 +1571,537 @@ mod tests {
         assert!(!rv.marking_read);
         let _ = rv.set_visible(true, &mut ctx);
         assert!(rv.marking_read, "read when shown again");
+    }
+
+    /// A room with unread messages last seen at 1 000 000 (`ls`): one read
+    /// message before it and `unread` messages from bob after it, loaded
+    /// as the first history page (more history exists).
+    fn unread_room(ws: &mut Workspace, unread: u64) {
+        let mut sub = ws.subscription("R1").unwrap().clone();
+        sub.ls = RcDate::from_millis(1_000_000);
+        sub.unread = unread;
+        sub.alert = unread > 0;
+        ws.apply_subscription(rustket_core::Change::Updated, sub);
+    }
+
+    /// The server counts every message in channels (`Unread_Count`).
+    fn count_all_messages(ws: &mut Workspace) {
+        ws.apply_setting(
+            rustket_core::Change::Updated,
+            rocketchat::models::Setting {
+                id: "Unread_Count".into(),
+                value: serde_json::json!("all_messages"),
+                ..Default::default()
+            },
+        );
+    }
+
+    fn first_page(rv: &mut RoomView, ctx: &mut UpdateCtx<'_>, msgs: Vec<RcMessage>) {
+        ctx.workspace.reset_room_timelines("R1");
+        let (c, t) = ctx.workspace.begin_load_older_ticket("R1").unwrap();
+        let _ = rv.update(Message::HistoryPage(c, t, Ok(msgs)), ctx);
+    }
+
+    fn unread_page() -> Vec<RcMessage> {
+        vec![
+            from_bob("old", 500_000),
+            from_bob("u1", 2_000_000),
+            from_bob("u2", 3_000_000),
+            from_bob("u3", 4_000_000),
+        ]
+    }
+
+    /// What the sensor around the first unread row reports when it shows.
+    fn sensor_shows(rv: &mut RoomView, ctx: &mut UpdateCtx<'_>, mid: &str) {
+        let w = rv.timeline.generation();
+        let _ = rv.update(
+            Message::Timeline(timeline::Message::UnreadShown(mid.into(), w)),
+            ctx,
+        );
+    }
+
+    /// Rocket.Chat: opening a room whose first unread message is above the
+    /// viewport does not mark it read; the unread bar shows the count.
+    /// Jumping to the first unread message and reaching the bottom does.
+    #[tokio::test]
+    async fn unread_above_the_viewport_waits_until_seen() {
+        let mut ws = workspace();
+        unread_room(&mut ws, 3);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        assert!(!prefs.mark_read_on_open);
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        first_page(&mut rv, &mut ctx, unread_page());
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.timeline.at_bottom());
+        assert!(!rv.marking_read, "marked read with the first unread unseen");
+        assert!(!rv.readable(ctx.workspace));
+        assert_eq!(rv.unread_bar_count(ctx.workspace), Some(Some(3)));
+        // New messages at the bottom do not mark it either.
+        ctx.workspace.apply_message(from_bob("u4", 5_000_000));
+        unread_room(ctx.workspace, 4);
+        let ch = ctx.workspace.take_changes();
+        let _ = rv.on_changes(&ch, &mut ctx);
+        let _ = rv.mark_read(&ctx);
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read);
+        // Jump to the first unread: held there, highlighted.
+        let _ = rv.update(Message::JumpToFirstUnread, &mut ctx);
+        assert_eq!(rv.timeline.selected(), Some("u1"));
+        assert!(!rv.timeline.at_bottom());
+        sensor_shows(&mut rv, &mut ctx, "u1");
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read, "not at the bottom yet");
+        assert_eq!(rv.unread_bar_count(ctx.workspace), None, "caught up");
+        // Back at the bottom: marked read (the first unread row is gone
+        // from view by then).
+        let _ = rv.update(
+            Message::Timeline(timeline::Message::UnreadHidden(
+                "u1".into(),
+                rv.timeline.generation(),
+            )),
+            &mut ctx,
+        );
+        let a = rv
+            .timeline
+            .update(timeline::Message::JumpToLatest, &mut ctx);
+        let _ = rv.handle_effects(a.map(Message::Timeline), &mut ctx);
+        assert!(rv.marking_read);
+    }
+
+    /// The first unread message seen while the window had no focus counts
+    /// once the room is shown; unread messages older than the loaded
+    /// history keep the room waiting.
+    #[test]
+    fn unread_seen_only_while_shown_and_loaded() {
+        let mut ws = workspace();
+        count_all_messages(&mut ws);
+        unread_room(&mut ws, 3);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        // The page starts after `ls`: more unread may be older.
+        first_page(&mut rv, &mut ctx, unread_page()[1..].to_vec());
+        sensor_shows(&mut rv, &mut ctx, "u1");
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read, "unread messages not loaded");
+        assert_eq!(rv.unread_bar_count(ctx.workspace), Some(Some(3)));
+        // All loaded: an older unread message is the first one now. Seen
+        // while hidden, the room is marked once it is shown.
+        let mut page = unread_page();
+        page.insert(1, from_bob("u0", 1_500_000));
+        first_page(&mut rv, &mut ctx, page);
+        let _ = rv.set_visible(false, &mut ctx);
+        sensor_shows(&mut rv, &mut ctx, "u0");
+        let _ = rv.set_visible(false, &mut ctx);
+        assert_eq!(rv.seen_first_unread.as_deref(), Some("u1"));
+        assert!(!rv.marking_read, "hidden");
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.marking_read);
+    }
+
+    /// Unread messages that all fit on screen at the bottom are marked read
+    /// on open, as before.
+    #[test]
+    fn unread_on_screen_is_marked_on_open() {
+        let mut ws = workspace();
+        unread_room(&mut ws, 3);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        first_page(&mut rv, &mut ctx, unread_page());
+        sensor_shows(&mut rv, &mut ctx, "u1");
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.marking_read);
+        assert_eq!(rv.unread_bar_count(ctx.workspace), None);
+        // Read on the server: a new message at the bottom is the next first
+        // unread, marked once its row shows.
+        let _ = rv.update(Message::MarkedRead(Ok(())), &mut ctx);
+        let mut sub = ctx.workspace.subscription("R1").unwrap().clone();
+        sub.ls = RcDate::from_millis(4_000_000);
+        sub.unread = 0;
+        sub.alert = false;
+        ctx.workspace
+            .apply_subscription(rustket_core::Change::Updated, sub);
+        let ch = ctx.workspace.take_changes();
+        let _ = rv.on_changes(&ch, &mut ctx);
+        ctx.workspace.apply_message(from_bob("u4", 5_000_000));
+        let mut sub = ctx.workspace.subscription("R1").unwrap().clone();
+        sub.unread = 1;
+        sub.alert = true;
+        ctx.workspace
+            .apply_subscription(rustket_core::Change::Updated, sub);
+        let _ = ctx.workspace.take_changes();
+        // `App::after_update`: the automatic mark waits for the new row.
+        assert!(rv.wants_auto_read(ctx.workspace));
+        let _ = rv.mark_read(&ctx);
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read);
+        sensor_shows(&mut rv, &mut ctx, "u4");
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.marking_read, "new message at the bottom not marked");
+    }
+
+    /// `UiPrefs::mark_read_on_open`: the room is marked read once shown at
+    /// the bottom, whatever is above the viewport, and no bar shows.
+    #[test]
+    fn mark_read_on_open_keeps_the_old_behaviour() {
+        let mut ws = workspace();
+        unread_room(&mut ws, 3);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs {
+            mark_read_on_open: true,
+            ..UiPrefs::default()
+        };
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        first_page(&mut rv, &mut ctx, unread_page()[1..].to_vec());
+        assert_eq!(rv.unread_bar_count(ctx.workspace), None);
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.marking_read);
+    }
+
+    /// The unread bar's "Mark as read" marks the room read without its
+    /// threads (Rocket.Chat's indicator) while the first unread message is
+    /// unseen; the bar goes away at once, also while unread messages are
+    /// older than the loaded history and when the request fails, until the
+    /// server's `ls` changes.
+    #[test]
+    fn unread_bar_mark_as_read() {
+        let mut ws = workspace();
+        count_all_messages(&mut ws);
+        unread_room(&mut ws, 3);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        // The page does not reach back to `ls`.
+        first_page(&mut rv, &mut ctx, unread_page()[1..].to_vec());
+        let _ = rv.set_visible(true, &mut ctx);
+        assert_eq!(rv.unread_bar_count(ctx.workspace), Some(Some(3)));
+        // The bar is drawn over the timeline.
+        {
+            let vctx = view_ctx(ctx.workspace, &sid, &url, &images, &prefs);
+            let texts = crate::tree_probe::texts(rv.view(&vctx));
+            let label = t!("room_timeline.unread_count_many", count = 3).into_owned();
+            assert!(texts.contains(&label), "{texts:?}");
+        }
+        let _ = rv.update(Message::MarkRoomRead, &mut ctx);
+        assert!(rv.marking_read);
+        assert_eq!(rv.unread_bar_count(ctx.workspace), None);
+        assert!(!rv.awaiting_first_unread(ctx.workspace));
+        // Asked again while in flight: the room alone, not its threads.
+        let _ = rv.update(Message::MarkRoomRead, &mut ctx);
+        assert!(rv.read_room_again && !rv.read_all_again);
+        // Failed (offline): the bar stays away, the retry goes out.
+        let _ = rv.update(
+            Message::MarkedRead(Err(Failure::from(no_session()))),
+            &mut ctx,
+        );
+        assert!(rv.marking_read && !rv.read_room_again);
+        let _ = rv.update(
+            Message::MarkedRead(Err(Failure::from(no_session()))),
+            &mut ctx,
+        );
+        assert!(!rv.marking_read);
+        assert_eq!(rv.unread_bar_count(ctx.workspace), None);
+        // Unread again later with a new `ls`: the usual rules again.
+        let mut sub = ctx.workspace.subscription("R1").unwrap().clone();
+        sub.ls = RcDate::from_millis(2_500_000);
+        ctx.workspace
+            .apply_subscription(rustket_core::Change::Updated, sub);
+        assert!(rv.awaiting_first_unread(ctx.workspace));
+    }
+
+    /// Rocket.Chat's default `Unread_Count` for channels and groups counts
+    /// mentions only: plain messages set `alert` and leave `unread` at 0.
+    /// Such a room waits for its first unread message too; the bar counts
+    /// the loaded unread messages (no number while some are not loaded). An
+    /// alert from unread threads alone does not wait.
+    #[test]
+    fn alert_only_room_waits_for_the_first_unread() {
+        let mut ws = workspace();
+        unread_room(&mut ws, 0);
+        let mut sub = ws.subscription("R1").unwrap().clone();
+        sub.alert = true;
+        ws.apply_subscription(rustket_core::Change::Updated, sub);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        first_page(&mut rv, &mut ctx, unread_page()[1..].to_vec());
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read, "alert-only room marked read on open");
+        assert_eq!(rv.unread_bar_count(ctx.workspace), Some(None));
+        {
+            let vctx = view_ctx(ctx.workspace, &sid, &url, &images, &prefs);
+            let texts = crate::tree_probe::texts(rv.view(&vctx));
+            let label = t!("room_timeline.unread").into_owned();
+            assert!(texts.contains(&label), "{texts:?}");
+        }
+        first_page(&mut rv, &mut ctx, unread_page());
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read);
+        assert_eq!(rv.unread_bar_count(ctx.workspace), Some(Some(3)));
+        // The alert comes from unread threads: nothing to wait for.
+        let mut sub = ctx.workspace.subscription("R1").unwrap().clone();
+        sub.tunread = Some(vec!["T1".into()]);
+        ctx.workspace
+            .apply_subscription(rustket_core::Change::Updated, sub);
+        assert!(!rv.awaiting_first_unread(ctx.workspace));
+        assert_eq!(rv.unread_bar_count(ctx.workspace), None);
+        // Seen: the alert-only room is marked read at the bottom.
+        let mut sub = ctx.workspace.subscription("R1").unwrap().clone();
+        sub.tunread = None;
+        ctx.workspace
+            .apply_subscription(rustket_core::Change::Updated, sub);
+        sensor_shows(&mut rv, &mut ctx, "u1");
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.marking_read);
+    }
+
+    /// Review: with Rocket.Chat's default `Unread_Count` a channel's
+    /// `unread` counts mentions only; the bar said "1 unread message" for
+    /// one mention among many plain unread messages. It counts the loaded
+    /// unread messages instead (no number while some are not loaded); a
+    /// DM's `unread` counts every message.
+    #[test]
+    fn unread_bar_does_not_count_mentions_as_messages() {
+        let mut ws = workspace();
+        unread_room(&mut ws, 1);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        first_page(&mut rv, &mut ctx, unread_page());
+        assert_eq!(rv.unread_bar_count(ctx.workspace), Some(Some(3)));
+        first_page(&mut rv, &mut ctx, unread_page()[1..].to_vec());
+        assert_eq!(rv.unread_bar_count(ctx.workspace), Some(None));
+        let mut sub = ctx.workspace.subscription("R1").unwrap().clone();
+        sub.t = RoomType::Direct;
+        ctx.workspace
+            .apply_subscription(rustket_core::Change::Updated, sub);
+        assert_eq!(rv.unread_bar_count(ctx.workspace), Some(Some(1)));
+    }
+
+    /// Review: a message that arrived while the user was scrolled up (the
+    /// frozen view) showed the unread bar although it is below the view
+    /// ("N new messages" points at it), and its "Jump to first unread"
+    /// did nothing: the target row was never built. No bar while the
+    /// first page loads either.
+    #[tokio::test]
+    async fn unread_below_the_frozen_view_shows_no_bar() {
+        let mut ws = workspace();
+        unread_room(&mut ws, 0);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        // Unread while the first page is in flight: no bar yet.
+        unread_room(ctx.workspace, 1);
+        ctx.workspace.reset_room_timelines("R1");
+        let (c, t) = ctx.workspace.begin_load_older_ticket("R1").unwrap();
+        assert!(rv.awaiting_first_unread(ctx.workspace));
+        assert_eq!(rv.unread_bar_count(ctx.workspace), None);
+        let _ = rv.update(
+            Message::HistoryPage(
+                c,
+                t,
+                Ok(vec![from_bob("old", 500_000), from_bob("read", 900_000)]),
+            ),
+            &mut ctx,
+        );
+        unread_room(ctx.workspace, 0);
+        let _ = rv.set_visible(true, &mut ctx);
+        // Scrolled up: held at an older message, the view is frozen.
+        let _ = rv
+            .timeline
+            .jump_to("old", RcDate::from_millis(500_000), &mut ctx);
+        assert!(!rv.timeline.at_bottom());
+        ctx.workspace.apply_message(from_bob("m", 2_000_000));
+        unread_room(ctx.workspace, 1);
+        let ch = ctx.workspace.take_changes();
+        let _ = rv.on_changes(&ch, &mut ctx);
+        assert!(rv.timeline.below_view(ctx.workspace, "m"));
+        assert!(rv.awaiting_first_unread(ctx.workspace));
+        assert_eq!(rv.unread_bar_count(ctx.workspace), None, "m is below");
+        // Jumping to it anyway builds its row.
+        let _ = rv.update(Message::JumpToFirstUnread, &mut ctx);
+        assert_eq!(rv.timeline.selected(), Some("m"));
+        assert!(!rv.timeline.below_view(ctx.workspace, "m"));
+    }
+
+    /// The built window cycles (arrivals at the bottom grow it, then it is
+    /// trimmed back): a sensor report from an earlier build with the same
+    /// window size must not count once the row has gone (a rebuild reports
+    /// no hide).
+    #[test]
+    fn stale_sensor_report_does_not_count_after_the_window_cycles() {
+        let mut ws = workspace();
+        count_all_messages(&mut ws);
+        unread_room(&mut ws, 3);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        first_page(&mut rv, &mut ctx, unread_page());
+        let ch = ctx.workspace.take_changes();
+        let _ = rv.on_changes(&ch, &mut ctx);
+        // Shown while the window had no focus: not seen yet.
+        let _ = rv.set_visible(false, &mut ctx);
+        sensor_shows(&mut rv, &mut ctx, "u1");
+        let window = rv.timeline.window();
+        let mut cycled = false;
+        for i in 0..200 {
+            ctx.workspace
+                .apply_message(from_bob(&format!("n{i}"), 5_000_000 + i));
+            let ch = ctx.workspace.take_changes();
+            let _ = rv.on_changes(&ch, &mut ctx);
+            if i > 0 && rv.timeline.window() == window {
+                cycled = true;
+                break;
+            }
+        }
+        assert!(cycled, "the window never came back to {window}");
+        assert!(!rv.timeline.unread_in_view("u1"));
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read, "marked read from a stale sensor report");
+        assert_eq!(rv.unread_bar_count(ctx.workspace), Some(Some(3)));
+    }
+
+    /// "Jump to first unread" loads older pages until it reaches `ls`, then
+    /// selects the first unread message (without marking the room read).
+    #[tokio::test]
+    async fn jump_to_first_unread_loads_older_pages() {
+        let mut ws = workspace();
+        unread_room(&mut ws, 4);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        first_page(&mut rv, &mut ctx, unread_page()[1..].to_vec());
+        let _ = ctx.workspace.take_changes();
+        let _ = rv.set_visible(true, &mut ctx);
+        let a = rv.timeline.jump_to_first_unread(&mut ctx);
+        assert!(a.effects.iter().any(|e| matches!(e, Effect::LoadOlder)));
+        assert_eq!(rv.timeline.selected(), None);
+        // The older page arrives (its request is made here: no session).
+        let (c, t) = ctx.workspace.begin_load_older_ticket("R1").unwrap();
+        let _ = rv.update(
+            Message::HistoryPage(
+                c,
+                t,
+                Ok(vec![from_bob("old", 500_000), from_bob("u0", 1_500_000)]),
+            ),
+            &mut ctx,
+        );
+        let ch = ctx.workspace.take_changes();
+        let _ = rv.on_changes(&ch, &mut ctx);
+        assert_eq!(rv.timeline.selected(), Some("u0"));
+        assert!(!rv.marking_read);
     }
 
     /// The jumped-to message is highlighted at the timeline's width: in a
@@ -1772,6 +2500,60 @@ mod tests {
             rv.marking_read,
             "shown again with unread=1 but not marked read"
         );
+    }
+
+    /// Review: a message that arrived (and made the room unread) before the
+    /// first history page of a room that was read when opened was counted
+    /// as seen by the page: once its row showed at the bottom nothing
+    /// marked the room read, and no unread bar showed either.
+    #[test]
+    fn message_before_the_first_page_is_marked_once_seen() {
+        let mut ws = workspace();
+        unread_room(&mut ws, 0);
+        let sid = ServerId("s".into());
+        let url = ServerUrl::parse("http://chat.test").unwrap();
+        let images = Images::new(None);
+        let prefs = UiPrefs::default();
+        let mut ctx = UpdateCtx {
+            server_id: &sid,
+            server: &url,
+            rid: "R1",
+            workspace: &mut ws,
+            session: None,
+            images: &images,
+            prefs: &prefs,
+        };
+        let (mut rv, _) = RoomView::open(&mut ctx);
+        assert!(!rv.read_on_show);
+        let _ = rv.set_visible(true, &mut ctx);
+        // Bob's message and the unread subscription come before the page.
+        ctx.workspace.apply_message(from_bob("m", 2_000_000));
+        unread_room(ctx.workspace, 1);
+        let _ = ctx.workspace.take_changes();
+        assert!(rv.wants_auto_read(ctx.workspace));
+        let _ = rv.mark_read(&ctx);
+        // `App::after_update` tells the room after every update.
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read, "nothing loaded yet");
+        // The first page of the open (same timeline epoch).
+        let (c, t) = ctx.workspace.begin_load_older_ticket("R1").unwrap();
+        let _ = rv.update(
+            Message::HistoryPage(
+                c,
+                t,
+                Ok(vec![from_bob("old", 500_000), from_bob("m", 2_000_000)]),
+            ),
+            &mut ctx,
+        );
+        let ch = ctx.workspace.take_changes();
+        let _ = rv.on_changes(&ch, &mut ctx);
+        assert!(rv.wants_auto_read(ctx.workspace), "the page swallowed m");
+        let _ = rv.mark_read(&ctx);
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(!rv.marking_read, "m not on screen yet");
+        sensor_shows(&mut rv, &mut ctx, "m");
+        let _ = rv.set_visible(true, &mut ctx);
+        assert!(rv.marking_read, "m seen at the bottom but not marked read");
     }
 
     /// Review: a failed automatic mark was never retried: the room stayed

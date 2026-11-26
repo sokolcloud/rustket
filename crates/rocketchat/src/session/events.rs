@@ -346,6 +346,9 @@ pub enum SessionEvent {
         username: String,
         status: UserStatus,
         status_text: Option<String>,
+        /// When the server clears the status (`None`: it does not, or a
+        /// server before 8.6).
+        status_expires_at: Option<RcDate>,
     },
     UserNameChanged {
         uid: String,
@@ -677,6 +680,7 @@ fn decode_notify_logged(event: &str, args: &[Value]) -> Option<SessionEvent> {
                 username: str_at(t, 1).unwrap_or_default(),
                 status: status_from_code(t.get(2)?.as_i64()?),
                 status_text: str_at(t, 3),
+                status_expires_at: t.get(7).and_then(|v| RcDate::deserialize(v).ok()),
             }
         }
         "Users:NameChanged" => {

@@ -240,6 +240,15 @@ test cannot trigger without changing global server state).
   statusSource, statusExpiresAt]]`, codes 0 offline, 1 online, 2 away, 3 busy. `statusText`
   is `null` when unset and `""` after clearing. A user without any DDP connection is reported as
   0 even right after `users.setStatus busy`. Initial statuses: `users.presence`.
+  `statusExpiresAt` is `{"$date": ms}` or `null`.
+- Status expiry (8.6+ presence engine): `users.setStatus {status?, message?, expiresAt: ISO}`
+  stores `statusExpiresAt`, returned as an ISO string by `me`, `users.info`, `users.presence`
+  and the login `data.me`. `statusExpiresAt` in the body is refused ("must NOT have additional
+  properties"), so is a past `expiresAt` (`error-invalid-date`). Every `users.setStatus`
+  without `expiresAt` drops the expiry, also a status-only or text-only one (the text stays
+  when `message` is absent). When it expires the server resets a manual status to online
+  without text and broadcasts it (`user-status`, `{uid}/userData` with
+  `unset.statusExpiresAt`).
 - `updateAvatar`: `[{username}]` after `users.resetAvatar` (no `etag`), or `{rid, etag}` for rooms.
 - `roles-change`: `[{_id: roleId, type: "added"|"removed", u: {_id, username}, scope?}]`.
 - `updateCustomUserStatus`: `[{userStatusData: {_id, name, statusType}}]`;

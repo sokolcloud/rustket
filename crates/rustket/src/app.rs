@@ -1182,7 +1182,7 @@ impl App {
             &s.id,
             &s.workspace,
             &s.sidebar.sections,
-            &self.ui_state.collapsed_sections,
+            s.sidebar.collapsed(&self.ui_state.collapsed_sections),
         )
         .into_iter()
         .map(|i| (i.rid.as_str(), i.marked(self.config.ui.indicator_scheme)))

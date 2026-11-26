@@ -563,6 +563,45 @@ impl Timeline {
             .map(|i| i.message.id.as_str())
     }
 
+    /// The oldest message newer than `since` (ms) not sent by `me` that
+    /// `shown` accepts (pending messages never count): the first unread
+    /// message for the last-seen time `since`.
+    pub fn first_unread_after(
+        &self,
+        since: i64,
+        me: &str,
+        shown: impl Fn(&Message) -> bool,
+    ) -> Option<&TimelineItem> {
+        self.items
+            .range((since.saturating_add(1), String::new())..)
+            .map(|(_, i)| i)
+            .find(|i| !i.is_pending() && i.message.u.id != me && shown(&i.message))
+    }
+
+    /// The loaded messages newer than `since` (ms) not sent by `me` that
+    /// `shown` accepts, oldest first (see [`Self::first_unread_after`]).
+    pub fn unread_after<'a>(
+        &'a self,
+        since: i64,
+        me: &'a str,
+        shown: impl Fn(&Message) -> bool + 'a,
+    ) -> impl Iterator<Item = &'a TimelineItem> + 'a {
+        self.items
+            .range((since.saturating_add(1), String::new())..)
+            .map(|(_, i)| i)
+            .filter(move |i| !i.is_pending() && i.message.u.id != me && shown(&i.message))
+    }
+
+    /// Whether messages newer than `since` (ms) may exist older than the
+    /// loaded history (Rocket.Chat's `unreadNotLoaded`); always true before
+    /// the first page.
+    pub fn unloaded_after(&self, since: i64) -> bool {
+        match self.pagination.window_floor {
+            None => true,
+            Some(floor) => self.pagination.has_more_before && floor > since,
+        }
+    }
+
     // --- pagination -----------------------------------------------------------
 
     /// Starts loading older room history. Returns the cursor to run
@@ -995,6 +1034,38 @@ mod tests {
         assert_eq!(t.unread_divider("me"), Some("a"));
         t.set_unread_since(Some(ts(3000)));
         assert_eq!(t.unread_divider("me"), None);
+    }
+
+    #[test]
+    fn first_unread_and_unloaded_history() {
+        let mut t = Timeline::new_room("r");
+        assert!(t.unloaded_after(0), "nothing loaded yet");
+        let c = t.begin_load_older().unwrap();
+        t.finish_load_older(
+            c,
+            Ok(vec![
+                msg("a", "r", 1000, "u"),
+                msg("b", "r", 2000, "me"),
+                msg("c", "r", 3000, "u"),
+                msg("d", "r", 4000, "u"),
+            ]),
+        );
+        assert!(t.pagination.has_more_before);
+        let first = |t: &Timeline, since, skip: &str| {
+            t.first_unread_after(since, "me", |m| m.id != skip)
+                .map(|i| i.message.id.clone())
+        };
+        assert_eq!(first(&t, 1000, "").as_deref(), Some("c"));
+        assert_eq!(first(&t, 1000, "c").as_deref(), Some("d"), "hidden skipped");
+        assert_eq!(first(&t, 4000, ""), None);
+        assert_eq!(t.unread_after(1000, "me", |_| true).count(), 2);
+        // Older than the loaded page: maybe more unread before it.
+        assert!(t.unloaded_after(500));
+        assert!(!t.unloaded_after(1000));
+        assert!(!t.unloaded_after(3500));
+        // The start of the room is loaded: nothing more.
+        t.pagination.has_more_before = false;
+        assert!(!t.unloaded_after(0));
     }
 
     #[test]

@@ -1015,13 +1015,13 @@ async fn users_and_lists() {
     assert_eq!(again.username.as_deref(), Some("bob"));
     let user = TempUser::create(&s, "rkstatus").await;
     let t = user.login(&s).await;
-    t.users_set_status(UserStatus::Busy, Some("testing"))
+    t.users_set_status(UserStatus::Busy, Some("testing"), None)
         .await
         .unwrap();
     let me = t.me().await.unwrap();
     assert_eq!(me.status_text.as_deref(), Some("testing"));
     let status = me.status;
-    t.users_set_status_message("text only").await.unwrap();
+    t.users_set_status_message("text only", None).await.unwrap();
     let me = t.me().await.unwrap();
     assert_eq!(me.status_text.as_deref(), Some("text only"));
     assert_eq!(me.status, status, "status kept");
@@ -1042,6 +1042,56 @@ async fn users_and_lists() {
         .commands_run("status", "rustket test", &dm.id, None, None)
         .await;
     assert!(r.is_ok() || matches!(r, Err(Error::Api { .. })), "{r:?}");
+}
+
+#[tokio::test]
+async fn status_expiry_round_trip() {
+    let Some(s) = server() else { return };
+    let user = TempUser::create(&s, "rkexpiry").await;
+    let t = user.login(&s).await;
+    // Whole seconds: the server keeps milliseconds, the comparison is exact.
+    let at = |days: i64| {
+        rocketchat::RcDate::from_millis(
+            (chrono::Utc::now() + chrono::Duration::days(days)).timestamp_millis() / 1000 * 1000,
+        )
+    };
+    let expires = at(2);
+    t.users_set_status(UserStatus::Busy, Some("Vacation"), expires)
+        .await
+        .unwrap();
+    let me = t.me().await.unwrap();
+    assert_eq!(me.status_default, Some(UserStatus::Busy));
+    assert_eq!(me.status_text.as_deref(), Some("Vacation"));
+    assert_eq!(me.status_expires_at, expires, "me");
+    let info = t.users_info(UserLookup::Id(&user.id)).await.unwrap();
+    assert_eq!(info.status_expires_at, expires, "users.info");
+    // A status change keeps the text; the expiry goes with every call that
+    // does not repeat it.
+    t.users_set_status(UserStatus::Away, None, expires)
+        .await
+        .unwrap();
+    let me = t.me().await.unwrap();
+    assert_eq!(me.status_text.as_deref(), Some("Vacation"));
+    assert_eq!(me.status_expires_at, expires, "kept when repeated");
+    let later = at(3);
+    t.users_set_status_message("Vacation, longer", later)
+        .await
+        .unwrap();
+    let me = t.me().await.unwrap();
+    assert_eq!(me.status_default, Some(UserStatus::Away));
+    assert_eq!(me.status_expires_at, later, "text-only call sets it");
+    t.users_set_status(UserStatus::Away, None, None)
+        .await
+        .unwrap();
+    let me = t.me().await.unwrap();
+    assert_eq!(me.status_expires_at, None, "dropped without expiresAt");
+    // A past time is refused.
+    let past = rocketchat::RcDate::from_millis(chrono::Utc::now().timestamp_millis() - 60_000);
+    let r = t
+        .users_set_status(UserStatus::Busy, Some("late"), past)
+        .await;
+    assert!(matches!(r, Err(Error::Api { .. })), "{r:?}");
+    user.delete().await;
 }
 
 fn cookie_header(jar: &mut Vec<(String, String)>, resp: &reqwest::Response) {

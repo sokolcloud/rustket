@@ -69,6 +69,30 @@ pub fn moment(at_ms: i64, now: DateTime<Local>, clock_24h: bool) -> String {
     }
 }
 
+/// When something ends (a status that clears): the time alone today, else
+/// the date and time (`Nov 28 00:00`, with the year when it is not this
+/// one), never a weekday that leaves the date to guess.
+pub fn date_time(at_ms: i64, now: DateTime<Local>, clock_24h: bool) -> String {
+    let Some(local) = Local.timestamp_millis_opt(at_ms).single() else {
+        return String::new();
+    };
+    let Some(day) = rocketchat::date::local_date(&local) else {
+        return String::new();
+    };
+    let time = if clock_24h {
+        local.format("%H:%M").to_string()
+    } else {
+        local.format("%-I:%M %p").to_string()
+    };
+    if day == now.date_naive() {
+        time
+    } else if local.year() == now.year() {
+        format!("{} {time}", localized(&local, "app.date_short_fmt"))
+    } else {
+        format!("{} {time}", full_date(&local))
+    }
+}
+
 /// Date with the year in the UI locale (`Nov 8, 2026` / `08.11.2026`).
 pub fn full_date(local: &DateTime<Local>) -> String {
     localized(local, "app.date_full_fmt")
@@ -176,6 +200,29 @@ mod tests {
             let _ = short_time(d, now, true);
             let _ = short_time(d, now, false);
         }
+    }
+
+    #[test]
+    fn date_time_always_names_the_date() {
+        let now = at(2026, 11, 26);
+        let later = |d: u32, h: u32| {
+            Local
+                .with_ymd_and_hms(2026, 11, d, h, 0, 0)
+                .single()
+                .unwrap()
+                .timestamp_millis()
+        };
+        assert_eq!(date_time(later(26, 18), now, true), "18:00");
+        assert_eq!(date_time(later(26, 18), now, false), "6:00 PM");
+        // Two days ahead: the date, not "Sat".
+        let shown = date_time(later(28, 0), now, true);
+        assert!(shown.ends_with(" 00:00") && shown.contains("28"), "{shown}");
+        let next_year = Local
+            .with_ymd_and_hms(2027, 1, 2, 9, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        assert!(date_time(next_year, now, true).contains("2027"));
     }
 
     #[test]

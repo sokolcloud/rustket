@@ -3430,6 +3430,134 @@ async fn file_fallback_toast_opens_the_privacy_tab() {
 
 // --- keyboard shortcuts --------------------------------------------------------------
 
+/// Esc marks the open room read (Rocket.Chat too), but not while the
+/// composer holds an edit or a quote: its Escape cancels that first (menus, dialogs and focused inputs
+/// capture Escape before the app sees it).
+#[test]
+fn escape_waits_for_an_edit_or_a_quote() {
+    use rustket::room::composer::Message as Cm;
+    use rustket::room::timeline::{Act, ItemMsg, Message as Tm};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    let esc = |app: &mut App| outputs_within(app.update(Message::Escape), 300);
+    let marks_all = |outs: &[Message]| {
+        outs.iter().any(|m| {
+            matches!(m, Message::Room(_, _, r, rustket::room::Message::MarkAllRead) if r == "r1")
+        })
+    };
+    deliver(&mut app, &sid, rc_msg("own", "r1", T0 + 5, "A"));
+    deliver(&mut app, &sid, rc_msg("b1", "r1", T0 + 10, "B"));
+    set_unread(&mut app, &sid, "r1", 1, T0 + 11);
+    let act = |app: &App, a: Act| {
+        room_msg(
+            app,
+            &sid,
+            "r1",
+            rustket::room::Message::Timeline(Tm::Item(ItemMsg::Act("own".into(), a))),
+        )
+    };
+    let _ = app.update(act(&app, Act::Edit));
+    assert!(app.servers[&sid].rooms["r1"].composer.is_editing());
+    assert!(!marks_all(&esc(&mut app)), "marked read with an edit open");
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Composer(Cm::CancelEdit),
+    ));
+    let _ = app.update(act(&app, Act::Quote));
+    assert!(!app.servers[&sid].rooms["r1"].composer.quoted().is_empty());
+    assert!(!marks_all(&esc(&mut app)), "marked read with a quote");
+    let _ = app.update(room_msg(
+        &app,
+        &sid,
+        "r1",
+        rustket::room::Message::Composer(Cm::RemoveQuote("own".into())),
+    ));
+    assert!(marks_all(&esc(&mut app)));
+}
+
+/// Rocket.Chat's default (`ui.mark_read_on_open` off), App level: the open
+/// room's unread messages reach back past the loaded history (`ls` before
+/// it), so nothing marks it read automatically and the unread bar shows;
+/// Esc marks it read and the wait ends.
+#[test]
+fn unread_room_waits_for_its_first_unread_until_escape() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    assert!(!app.config.ui.mark_read_on_open);
+    deliver(&mut app, &sid, rc_msg("b1", "r1", T0 + 10, "B"));
+    deliver(&mut app, &sid, rc_msg("b2", "r1", T0 + 20, "B"));
+    let mut unread = sub("r1", "A", 2, T0 + 21);
+    unread.ls = Some(ts(T0 + 5));
+    let e = ev(
+        &app,
+        &sid,
+        SessionEvent::SubscriptionChanged {
+            kind: ChangeKind::Updated,
+            sub: Box::new(unread),
+        },
+    );
+    let _ = app.update(e);
+    let s = &app.servers[&sid];
+    let rv = &s.rooms["r1"];
+    assert!(rv.awaiting_first_unread(&s.workspace));
+    assert!(!rv.readable(&s.workspace), "marked read with unread unseen");
+    // A channel's `unread` counts mentions by default: no number while
+    // unread messages are not loaded.
+    assert_eq!(rv.unread_bar_count(&s.workspace), Some(None));
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    let mark = outs
+        .into_iter()
+        .find(|m| {
+            matches!(m, Message::Room(_, _, r, rustket::room::Message::MarkAllRead) if r == "r1")
+        })
+        .expect("Esc did not mark the room read");
+    let _ = app.update(mark);
+    let s = &app.servers[&sid];
+    let rv = &s.rooms["r1"];
+    assert!(!rv.awaiting_first_unread(&s.workspace));
+    assert_eq!(rv.unread_bar_count(&s.workspace), None);
+}
+
+/// Review: "Hide unread status" only hides the sidebar badge. Such a room
+/// still waits for its first unread message and shows the unread bar, so
+/// Esc must mark it read too (Rocket.Chat's Escape always does).
+#[test]
+fn escape_marks_a_room_with_hidden_unread_status_read() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, sid) = loaded_app(dir.path());
+    deliver(&mut app, &sid, rc_msg("b1", "r1", T0 + 10, "B"));
+    deliver(&mut app, &sid, rc_msg("b2", "r1", T0 + 20, "B"));
+    let mut unread = sub("r1", "A", 2, T0 + 21);
+    unread.ls = Some(ts(T0 + 5));
+    unread.hide_unread_status = Some(true);
+    let e = ev(
+        &app,
+        &sid,
+        SessionEvent::SubscriptionChanged {
+            kind: ChangeKind::Updated,
+            sub: Box::new(unread),
+        },
+    );
+    let _ = app.update(e);
+    let s = &app.servers[&sid];
+    assert!(s.rooms["r1"].unread_bar_count(&s.workspace).is_some());
+    let outs = outputs_within(app.update(Message::Escape), 300);
+    assert!(
+        outs.iter().any(|m| {
+            matches!(m, Message::Room(_, _, r, rustket::room::Message::MarkAllRead) if r == "r1")
+        }),
+        "Esc ignored the room with hidden unread status"
+    );
+}
+
 /// Esc on the server view: the right panel closes first; then an unread
 /// room is marked read with its threads (unless the setting is off); a view
 /// in place of the room area (the contact center) closes instead, and the
@@ -4620,6 +4748,7 @@ fn explicit_status_releases_the_hold_and_sign_out_keeps_it() {
         status: UserStatus::Online,
         text: String::new(),
         released: false,
+        expires_at: None,
     });
     // A text change keeps the hold.
     let _ = app.update(Message::StatusMenu(

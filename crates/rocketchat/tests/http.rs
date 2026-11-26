@@ -633,6 +633,35 @@ async fn set_utc_offset_posts_the_preference() {
     assert_eq!(body_json(req), json!({"data": {"utcOffset": -3.5}}));
 }
 
+#[tokio::test]
+async fn set_status_posts_the_expiry() {
+    let (pa, log) = serve(|_| Some(json_ok(r#"{"success":true}"#))).await;
+    let c = client(&format!("http://127.0.0.1:{pa}"));
+    let at = rocketchat::RcDate::parse_iso("2026-11-27T21:00:00.000Z");
+    c.users_set_status(rocketchat::models::UserStatus::Busy, Some("Vacation"), at)
+        .await
+        .unwrap();
+    c.users_set_status_message("Lunch", at).await.unwrap();
+    c.users_set_status_message("", None).await.unwrap();
+    let reqs: Vec<String> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.starts_with("POST /api/v1/users.setStatus"))
+        .cloned()
+        .collect();
+    assert_eq!(reqs.len(), 3);
+    assert_eq!(
+        body_json(&reqs[0]),
+        json!({"status": "busy", "message": "Vacation", "expiresAt": "2026-11-27T21:00:00.000Z"})
+    );
+    assert_eq!(
+        body_json(&reqs[1]),
+        json!({"message": "Lunch", "expiresAt": "2026-11-27T21:00:00.000Z"})
+    );
+    assert_eq!(body_json(&reqs[2]), json!({"message": ""}));
+}
+
 fn ugc_fixture(name: &str) -> &'static str {
     match name {
         "invalid_channel" => include_str!("fixtures/ugc/im_block_user_invalid_channel.json"),

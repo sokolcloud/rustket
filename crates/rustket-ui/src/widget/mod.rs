@@ -5,6 +5,7 @@ mod arrow_keys;
 mod avatar;
 mod badge;
 mod button;
+mod clamp;
 mod ellipsis;
 mod feedback;
 mod flag;
@@ -43,6 +44,7 @@ pub use button::{
     ActionButton, ButtonKind, ButtonSize, action_button, danger_button, ghost_button, icon_button,
     icon_button_with, primary_button, secondary_button,
 };
+pub use clamp::{Clamp, clamp};
 pub use ellipsis::{Ellipsis, ellipsis, sanitize_bidi};
 pub use feedback::{BannerKind, banner, status_strip};
 pub use flag::{FlagMark, flag_glyph, flag_mark, flag_swatch};

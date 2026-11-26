@@ -78,12 +78,18 @@ pub enum Message {
     ForwardPicked,
     /// Copy the permalinks of the selected messages.
     CopyPickedLinks,
+    /// The first unread message's row came into view (its id and the
+    /// generation of the built window it was shown in).
+    UnreadShown(String, u64),
+    /// It went out of view.
+    UnreadHidden(String, u64),
 }
 
-/// A message being looked for in older history.
+/// A message being looked for in older history: `mid`, or the first unread
+/// message (`None`, newer than the last-seen time `ts`).
 #[derive(Debug, Clone)]
 struct Seek {
-    mid: String,
+    mid: Option<String>,
     ts: i64,
     pages: u32,
 }
@@ -100,6 +106,48 @@ pub struct Timeline {
     seek: Option<Seek>,
     /// Selected messages (`None`: not selecting).
     picked: Option<BTreeSet<String>>,
+    /// The first unread message in view and the generation of the built
+    /// window it was shown in: a sensor reports it, and a rebuilt window
+    /// re-arms the sensor (a row moved or dropped by a rebuild reports no
+    /// hide, so only the current generation counts).
+    unread_in_view: Option<(String, u64)>,
+}
+
+/// The first unread message of room `rid`: the oldest shown message from
+/// someone else newer than the subscription's last seen time (`ls`), like
+/// Rocket.Chat's read state manager. `None` without a subscription or `ls`.
+pub(crate) fn first_unread<'a>(
+    ws: &'a rustket_core::Workspace,
+    rid: &str,
+) -> Option<&'a rocketchat::models::Message> {
+    let ls = ws.subscription(rid)?.ls?.timestamp_millis();
+    let me = ws.user_id().unwrap_or_default();
+    ws.timeline(rid)?
+        .first_unread_after(ls, me, list::visible_in(ws, rid))
+        .map(|i| &i.message)
+}
+
+/// The number of loaded unread messages of room `rid` (see
+/// [`first_unread`]).
+pub(crate) fn unread_loaded_count(ws: &rustket_core::Workspace, rid: &str) -> usize {
+    let Some(ls) = ws.subscription(rid).and_then(|s| s.ls) else {
+        return 0;
+    };
+    let me = ws.user_id().unwrap_or_default();
+    ws.timeline(rid).map_or(0, |t| {
+        t.unread_after(ls.timestamp_millis(), me, list::visible_in(ws, rid))
+            .count()
+    })
+}
+
+/// Unread messages of room `rid` may be older than its loaded history
+/// (Rocket.Chat's `unreadNotLoaded`).
+pub(crate) fn unread_not_loaded(ws: &rustket_core::Workspace, rid: &str) -> bool {
+    let Some(ls) = ws.subscription(rid).and_then(|s| s.ls) else {
+        return false;
+    };
+    ws.timeline(rid)
+        .is_some_and(|t| t.unloaded_after(ls.timestamp_millis()))
 }
 
 /// Id of the container around a jumped-to row.
@@ -118,7 +166,35 @@ impl Timeline {
             stamp: 0,
             seek: None,
             picked: None,
+            unread_in_view: None,
         }
+    }
+
+    /// The generation of the built window (the sensor key of the first
+    /// unread row).
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.follow.generation()
+    }
+
+    /// The number of rows built.
+    #[cfg(test)]
+    pub(crate) fn window(&self) -> usize {
+        self.follow.window
+    }
+
+    /// Whether the row of message `mid` (the first unread one) is in view.
+    pub fn unread_in_view(&self, mid: &str) -> bool {
+        self.unread_in_view
+            .as_ref()
+            .is_some_and(|(m, g)| m == mid && *g == self.follow.generation())
+    }
+
+    /// Whether message `mid` arrived below the frozen view (scrolled up):
+    /// it is not built and "jump to latest" counts it.
+    pub fn below_view(&self, ws: &rustket_core::Workspace, mid: &str) -> bool {
+        ws.timeline(&self.rid)
+            .is_some_and(|tl| self.follow.below_frozen(tl, mid))
     }
 
     /// Selection mode is on.
@@ -232,7 +308,32 @@ impl Timeline {
                 }
                 Action::none()
             }
+            Message::UnreadShown(mid, generation) => {
+                self.unread_in_view = Some((mid, generation));
+                Action::none()
+            }
+            Message::UnreadHidden(mid, generation) => {
+                if self.unread_in_view.as_ref() == Some(&(mid, generation)) {
+                    self.unread_in_view = None;
+                }
+                Action::none()
+            }
         }
+    }
+
+    /// Shows the first unread message ([`first_unread`]), loading older
+    /// pages (up to [`SEEK_PAGES`]) while unread messages may be older than
+    /// the loaded history. It does not mark the room read.
+    pub fn jump_to_first_unread(&mut self, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        let Some(ls) = ctx.workspace.subscription(ctx.rid).and_then(|s| s.ls) else {
+            return Action::none();
+        };
+        self.seek = Some(Seek {
+            mid: None,
+            ts: ls.timestamp_millis(),
+            pages: 0,
+        });
+        self.continue_seek(ctx)
     }
 
     /// Shows message `mid` (sent at `ts`): highlighted and scrolled into
@@ -262,7 +363,7 @@ impl Timeline {
         match ts {
             Some(ts) if older && (p.has_more_before || p.loading_before) => {
                 self.seek = Some(Seek {
-                    mid: mid.to_owned(),
+                    mid: Some(mid.to_owned()),
                     ts: ts.timestamp_millis(),
                     pages: 0,
                 });
@@ -285,9 +386,21 @@ impl Timeline {
             self.seek = None;
             return Action::none();
         };
-        if tl.contains(&seek.mid) {
-            self.seek = None;
-            return self.select(&seek.mid, ctx);
+        match &seek.mid {
+            Some(mid) if tl.contains(mid) => {
+                self.seek = None;
+                return self.select(mid, ctx);
+            }
+            Some(_) => {}
+            // Everything newer than the last seen time is loaded.
+            None if !tl.unloaded_after(seek.ts) => {
+                self.seek = None;
+                return match first_unread(ctx.workspace, ctx.rid).map(|m| m.id.clone()) {
+                    Some(mid) => self.select(&mid, ctx),
+                    None => Action::none(),
+                };
+            }
+            None => {}
         }
         let p = &tl.pagination;
         if p.loading_before {
@@ -467,6 +580,8 @@ impl Timeline {
                 .on_show(|_| Message::ReachedTop),
         );
         let selected = self.selected();
+        let first_unread = first_unread(ws, &self.rid).map(|m| m.id.as_str());
+        let generation = self.follow.generation();
         for r in &plan.rows {
             let m = &r.item.message;
             let flags = row::RowFlags {
@@ -484,7 +599,20 @@ impl Timeline {
             } else {
                 el
             };
-            col = col.push(list::id_key(&m.id), el.map(Message::Item));
+            let el = el.map(Message::Item);
+            // The room's read state waits until this row was seen
+            // (`RoomView::readable`).
+            let el = if first_unread == Some(m.id.as_str()) {
+                let mid = m.id.clone();
+                sensor(el)
+                    .key((mid.clone(), generation))
+                    .on_show(move |_| Message::UnreadShown(mid.clone(), generation))
+                    .on_hide(Message::UnreadHidden(m.id.clone(), generation))
+                    .into()
+            } else {
+                el
+            };
+            col = col.push(list::id_key(&m.id), el);
         }
         let new_below = plan.new_below;
         let list = scrollable(col)

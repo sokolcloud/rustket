@@ -179,6 +179,12 @@ quiet.clear_week:
   es: "Esta semana"
   th: "สัปดาห์นี้"
   zh: "本周"
+quiet.clear_until:
+  en: "Until %{time}"
+  ru: "До %{time}"
+  es: "Hasta %{time}"
+  th: "จนถึง %{time}"
+  zh: "直到 %{time}"
 quiet.clears_at:
   en: "Clears %{time}"
   ru: "Сбросится %{time}"

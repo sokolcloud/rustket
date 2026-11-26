@@ -254,6 +254,13 @@ in both.
 **Settings → Help** explains every signal of the selected scheme with a
 short code and samples computed from your current settings.
 
+As in Rocket.Chat, opening a room does not mark it read while its first unread
+message is above the screen or not loaded yet: a bar at the top of the
+timeline shows the unread count with **Jump to first unread** and **Mark as
+read**. Once you have seen the first unread message, the room is marked read
+when you reach the bottom (Escape marks it read at once). **Settings → General
+→ Messages → Mark rooms as read on open** brings back marking on open.
+
 Message sounds are Rocket.Chat's own: the room's sound, otherwise the account's
 New message sound, at the account's volume. **Play a sound** (Settings →
 Notifications) also works with desktop notifications off. When the system shows

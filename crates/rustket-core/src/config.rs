@@ -593,6 +593,11 @@ pub struct UiPrefs {
     /// Escape with nothing else to close marks the open room as read (with
     /// its threads), like Slack.
     pub escape_marks_read: bool,
+    /// Opening an unread room marks it read once its newest messages are
+    /// shown (Rustket's earlier behaviour). Off: like Rocket.Chat, the room stays
+    /// unread until its first unread message was on screen (or the unread
+    /// bar's "Mark as read", Esc).
+    pub mark_read_on_open: bool,
     /// Ask before sending `@all` / `@here` to a room with several members
     /// (also an upload's message).
     pub confirm_broad_mentions: bool,
@@ -672,6 +677,7 @@ impl Default for UiPrefs {
             update_prereleases: false,
             secrets_memory_only: false,
             escape_marks_read: true,
+            mark_read_on_open: false,
             confirm_broad_mentions: true,
             share_utc_offset: true,
             sidebar_pinned_views: true,
@@ -816,6 +822,7 @@ const UI_KEYS: &[&str] = &[
     "update_prereleases",
     "secrets_memory_only",
     "escape_marks_read",
+    "mark_read_on_open",
     "confirm_broad_mentions",
     "share_utc_offset",
     "sidebar_pinned_views",
@@ -1537,6 +1544,7 @@ mod tests {
             status: rocketchat::models::UserStatus::Online,
             text: String::new(),
             released: false,
+            expires_at: None,
         });
         s.status_expiry = Some(crate::quiet::StatusExpiry {
             user_id: "u".into(),
@@ -1942,6 +1950,7 @@ mod tests {
                 status: UserStatus::Away,
                 text: "Lunch".into(),
                 released: false,
+                expires_at: None,
             }),
             status_expiry: Some(StatusExpiry {
                 user_id: "u1".into(),
@@ -2058,6 +2067,16 @@ mod tests {
         assert_eq!(AppConfig::parse(&text).unwrap().ui, c.ui);
         let c = AppConfig::parse("[ui]\ncheck_updates = \"no\"").unwrap();
         assert!(c.ui.check_updates, "invalid value falls back");
+    }
+
+    #[test]
+    fn mark_read_on_open_defaults_off() {
+        let c = AppConfig::parse("").unwrap();
+        assert!(!c.ui.mark_read_on_open);
+        let c = AppConfig::parse("[ui]\nmark_read_on_open = true").unwrap();
+        assert!(c.ui.mark_read_on_open);
+        let c = AppConfig::parse("[ui]\nmark_read_on_open = \"yes\"").unwrap();
+        assert!(!c.ui.mark_read_on_open, "invalid value falls back");
     }
 
     #[test]
