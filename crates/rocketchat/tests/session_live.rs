@@ -762,6 +762,51 @@ async fn thread_parent_updates_reach_my_messages() {
     .await;
 }
 
+/// What the Threads panel relies on after its bell: `chat.followMessage`
+/// and `chat.unfollowMessage` re-broadcast the parent (with a room watch,
+/// as for an open room) with the new `replies` and a newer `_updatedAt`.
+#[tokio::test(flavor = "multi_thread")]
+async fn follow_toggles_rebroadcast_a_newer_parent() {
+    with_fixture(|server, fx| async move {
+        let a = fx.user("fa").await;
+        let b = fx.user("fb").await;
+        let rid = shared_channel(&fx, &a, &b).await;
+        let parent = post(&b, &rid, "followed parent").await;
+        b.rest
+            .send_message(&OutgoingMessage::new(&rid, "reply").in_thread(&parent, false))
+            .await
+            .unwrap();
+        let before = b.rest.get_message(&parent).await.unwrap();
+        assert!(
+            !follows(&before, &a.id) && before.updated_at.is_some(),
+            "{before:?}"
+        );
+        let (sa, mut ea) = start(&server, &a).await;
+        let _w = sa.watch_room(&rid).await.unwrap();
+        let is_parent = |on: bool| {
+            let parent = parent.clone();
+            let me = a.id.clone();
+            move |e: &SessionEvent| {
+                matches!(e, SessionEvent::Message { message, .. }
+                    if message.id == parent && follows(message, &me) == on)
+            }
+        };
+        let updated = |ev: SessionEvent| match ev {
+            SessionEvent::Message { message, .. } => message.updated_at,
+            other => panic!("{other:?}"),
+        };
+
+        a.rest.follow_message(&parent).await.unwrap();
+        let followed = updated(expect_event(&mut ea, is_parent(true), WAIT).await);
+        assert!(followed > before.updated_at, "{followed:?} {before:?}");
+        a.rest.unfollow_message(&parent).await.unwrap();
+        let unfollowed = updated(expect_event(&mut ea, is_parent(false), WAIT).await);
+        assert!(unfollowed > followed, "{unfollowed:?} {followed:?}");
+        sa.close().await;
+    })
+    .await;
+}
+
 /// A write to the hidden service room reaches the owner's other devices as a
 /// subscription change carrying the new `customFields`; the room stays hidden.
 #[tokio::test(flavor = "multi_thread")]

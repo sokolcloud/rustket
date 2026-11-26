@@ -175,6 +175,16 @@ impl ServerUrl {
         s
     }
 
+    /// `{base}/avatar/uid/{user_id}` (404 without the user's credentials,
+    /// which the asset fetch sends as cookies).
+    pub fn avatar_user_id(&self, user_id: &str, size: Option<u32>) -> String {
+        let mut s = format!("{}/avatar/uid/{}", self.base, encode_segment(user_id));
+        if let Some(size) = size {
+            s.push_str(&format!("?size={size}"));
+        }
+        s
+    }
+
     pub fn avatar_room(&self, rid: &str, size: Option<u32>) -> String {
         let mut s = format!("{}/avatar/room/{}", self.base, encode_segment(rid));
         if let Some(size) = size {

@@ -211,10 +211,15 @@ impl App {
                 }
                 Followup::LoggedOut(reason) => self.logged_out(&sid, Some(reason)),
                 Followup::UiKit(hook) => self.on_uikit_session(&sid, hook),
-                Followup::AvatarChanged { username, rid } => {
+                Followup::AvatarChanged { username, uid, rid } => {
                     let url = s.url.clone();
-                    self.images
-                        .invalidate_avatar(&sid, &url, username.as_deref(), rid.as_deref());
+                    self.images.invalidate_avatar(
+                        &sid,
+                        &url,
+                        username.as_deref(),
+                        uid.as_deref(),
+                        rid.as_deref(),
+                    );
                     Task::none()
                 }
             },

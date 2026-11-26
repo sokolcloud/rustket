@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Each thread in a room's Threads panel has a bell on the right, as in
+  Rocket.Chat: it shows whether you follow the thread, and a click follows
+  or unfollows it without opening the thread. The unread dot moved under
+  the bell. Under the preview, the avatars of up to two followers and "+N"
+  for the rest come before the reply count.
+
 ## [0.3.1] - 2026-11-26
 
 ### Changed

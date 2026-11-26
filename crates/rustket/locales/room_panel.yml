@@ -1211,6 +1211,24 @@ room_panel.thread_not_following:
   es: "Sin seguir"
   th: "ไม่ได้ติดตาม"
   zh: "未关注"
+room_panel.followers_one:
+  en: "%{count} follower"
+  ru: "%{count} подписчик"
+  es: "%{count} seguidor"
+  th: "ผู้ติดตาม %{count} คน"
+  zh: "%{count} 位关注者"
+room_panel.followers_few:
+  en: "%{count} followers"
+  ru: "%{count} подписчика"
+  es: "%{count} seguidores"
+  th: "ผู้ติดตาม %{count} คน"
+  zh: "%{count} 位关注者"
+room_panel.followers_many:
+  en: "%{count} followers"
+  ru: "%{count} подписчиков"
+  es: "%{count} seguidores"
+  th: "ผู้ติดตาม %{count} คน"
+  zh: "%{count} 位关注者"
 room_panel.thread_replies_one:
   en: "%{count} reply"
   ru: "%{count} ответ"

@@ -1,18 +1,24 @@
 //! Message lists: threads (with filters), pinned, starred, mentions and the
 //! room search. Bodies go through the shared message renderer.
 
+use std::collections::{HashMap, HashSet};
+
 use iced::widget::{column, container, mouse_area, row, scrollable, text};
 use iced::{Alignment, Element, Length};
 use rocketchat::models::{Message as RcMessage, Paginated, RoomType};
 use rust_i18n::t;
 use rustket_core::room_list::{self, PreviewKind};
-use rustket_core::workspace::Workspace;
+use rustket_core::thread_index::follows;
+use rustket_core::workspace::{Changes, Workspace};
 use rustket_ui::icon::{self, Icon};
 use rustket_ui::style;
 use rustket_ui::theme::{
     SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_CAPTION, font_semibold,
 };
-use rustket_ui::widget::{BadgePlace, TooltipPosition, clamp, divider, dot_in, ellipsis, tooltip};
+use rustket_ui::widget::{
+    AvatarShape, BadgePlace, TooltipPosition, avatar, clamp, divider, dot_in, ellipsis,
+    icon_button_with, tooltip,
+};
 
 use super::api::{self, MessageList, ThreadFilter};
 use super::common;
@@ -216,44 +222,67 @@ fn flatten(
     (!flat.is_empty()).then_some(flat)
 }
 
-/// "Replies: 21  last 14:48  •" under a thread's preview.
-fn thread_meta<'a>(m: &RcMessage, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
-    let unread = crate::room::timeline::parent_thread_kind(
-        ctx.workspace.subscription(ctx.rid),
-        &m.id,
-        ctx.prefs.indicator_scheme,
-    );
-    let mut foot = row![
-        icon::sized(Icon::MessageCircle, 13.0).style(style::text_link),
-        text(t!("room_panel.replies", count = m.tcount.unwrap_or(0)).into_owned())
-            .size(TEXT_CAPTION)
-            .style(style::text_link),
-    ]
-    .spacing(SPACE_1)
-    .align_y(Alignment::Center);
-    if let Some(tlm) = m.tlm {
-        foot = foot.push(
-            text(
-                t!(
-                    "room_panel.last_reply",
-                    time = common::time_label(Some(tlm), ctx)
-                )
-                .into_owned(),
-            )
-            .size(TEXT_CAPTION)
-            .style(style::text_hint),
-        );
+/// Follower avatars shown before "+N" in a Threads panel item.
+const SHOWN_FOLLOWERS: usize = 2;
+
+/// Size of a follower avatar in a Threads panel item.
+const FOLLOWER_AVATAR: f32 = 16.0;
+
+/// Size of the follow bell of a Threads panel item.
+const BELL_SIZE: f32 = 28.0;
+
+/// The "+N" after the shown follower avatars, if any are left.
+fn more_followers(total: usize) -> Option<String> {
+    (total > SHOWN_FOLLOWERS).then(|| format!("+{}", total - SHOWN_FOLLOWERS))
+}
+
+/// "N followers", the tooltip of the participants.
+fn followers_tip(total: usize) -> String {
+    t!(
+        format!(
+            "room_panel.followers_{}",
+            crate::room::render::plural(total as u64)
+        ),
+        count = total
+    )
+    .into_owned()
+}
+
+/// Puts `me` into the thread's followers (`replies`) or takes it out.
+fn set_following(m: &mut RcMessage, me: &str, on: bool) {
+    let replies = m.replies.get_or_insert_with(Vec::new);
+    replies.retain(|u| u != me);
+    if on {
+        replies.push(me.to_owned());
     }
-    if let Some(kind) = unread {
-        let dot = dot_in(kind, 8.0, BadgePlace::Content);
-        foot = foot.push(
-            match crate::room::timeline::rc_thread_dot_tip(kind, ctx.prefs.indicator_scheme) {
-                Some(tip) => tooltip(dot, tip, TooltipPosition::Top),
-                None => dot,
-            },
-        );
+}
+
+/// A follow or unfollow from the Threads panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Toggle {
+    /// Following after the toggle.
+    want: bool,
+    /// The call is in flight.
+    busy: bool,
+    /// A server copy showed the new state: later copies are trusted.
+    confirmed: bool,
+}
+
+/// Brings a server copy of a thread in line with a toggle of it: until a
+/// copy shows the toggled state, copies are older than the toggle and get
+/// its state.
+fn settle(toggles: &mut HashMap<String, Toggle>, m: &mut RcMessage, me: Option<&str>) {
+    let (Some(me), Some(t)) = (me, toggles.get_mut(&m.id)) else {
+        return;
+    };
+    if follows(m, Some(me)) == t.want {
+        t.confirmed = true;
+        if !t.busy {
+            toggles.remove(&m.id);
+        }
+    } else if !t.confirmed {
+        set_following(m, me, t.want);
     }
-    foot.spacing(SPACE_2).into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +305,10 @@ pub enum Msg {
     OpenUser(String),
     /// A result was clicked: show it in its thread or in the timeline.
     Show(String),
+    /// The bell of a Threads panel item: follow or unfollow the thread.
+    ToggleFollow(String),
+    /// A follow (`true`) or unfollow call of the thread finished.
+    Followed(String, bool, Res<()>),
 }
 
 pub struct Messages {
@@ -285,6 +318,10 @@ pub struct Messages {
     filter: ThreadFilter,
     list: Paged<RcMessage>,
     viewer: Viewer,
+    /// Follow toggles of threads in the list, by id.
+    toggles: HashMap<String, Toggle>,
+    /// Usernames of the followers shown as avatars, by user id.
+    names: HashMap<String, String>,
 }
 
 impl Messages {
@@ -296,13 +333,80 @@ impl Messages {
             filter: ThreadFilter::All,
             list: Paged::default(),
             viewer: Viewer::new(),
+            toggles: HashMap::new(),
+            names: HashMap::new(),
         }
     }
 
-    /// Workspace changes (keys may have arrived): encrypted results that were
-    /// not decrypted yet are tried again (processed ones are skipped).
-    pub fn on_changes(&mut self, ctx: &UpdateCtx<'_>) {
+    /// Workspace changes: threads take the server's newer copies (replies,
+    /// followers), keeping a follow toggle's state until the server shows
+    /// it; encrypted results that were not decrypted yet are tried again
+    /// (keys may have arrived; processed ones are skipped).
+    pub fn on_changes(&mut self, changes: &Changes, ctx: &UpdateCtx<'_>) {
+        if self.mode == Mode::Threads && !changes.parents.is_empty() {
+            let me = ctx.workspace.user_id();
+            for m in &mut self.list.items {
+                let Some(copy) = changes.parents.get(&m.id) else {
+                    continue;
+                };
+                let older = matches!((copy.updated_at, m.updated_at), (Some(c), Some(o)) if c < o);
+                if copy.rid != m.rid || older {
+                    continue;
+                }
+                *m = copy.clone();
+                settle(&mut self.toggles, m, me);
+            }
+            self.learn_names(ctx.workspace);
+        }
         crate::e2e::shown::process_list(ctx.workspace, ctx.server, &mut self.list.items);
+    }
+
+    /// Usernames of the shown followers that are not known yet, from me,
+    /// presence, and the authors and mentions of the list and the loaded
+    /// messages (avatars by username).
+    fn learn_names(&mut self, ws: &Workspace) {
+        let mut wanted: HashSet<&str> = self
+            .list
+            .items
+            .iter()
+            .flat_map(|m| m.replies.iter().flatten().take(SHOWN_FOLLOWERS))
+            .map(String::as_str)
+            .filter(|uid| !self.names.contains_key(*uid))
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        let mut found = Vec::new();
+        if let (Some(id), Some(name)) = (ws.user_id(), ws.username())
+            && wanted.remove(id)
+        {
+            found.push((id.to_owned(), name.to_owned()));
+        }
+        wanted.retain(
+            |uid| match ws.presence().get(uid).and_then(|p| p.username.as_ref()) {
+                Some(name) => {
+                    found.push(((*uid).to_owned(), name.clone()));
+                    false
+                }
+                None => true,
+            },
+        );
+        let messages = || self.list.items.iter().chain(ws.loaded_messages());
+        let authors = messages().map(|m| (m.u.id.as_str(), m.u.username.as_deref()));
+        let mentioned = messages()
+            .flat_map(|m| m.mentions.iter().flatten())
+            .map(|u| (u.id.as_str(), u.username.as_deref()));
+        for (id, name) in authors.chain(mentioned) {
+            if wanted.is_empty() {
+                break;
+            }
+            if let Some(name) = name
+                && wanted.remove(id)
+            {
+                found.push((id.to_owned(), name.to_owned()));
+            }
+        }
+        self.names.extend(found);
     }
 
     /// The image lightbox, if open, and the message that closes it.
@@ -358,11 +462,19 @@ impl Messages {
             }
             Msg::Page(req, r) => {
                 // Encrypted results are decrypted before they are shown.
+                let me = ctx.workspace.user_id();
+                let toggles = &mut self.toggles;
                 let r = r.map(|mut page| {
+                    for m in &mut page.items {
+                        settle(toggles, m, me);
+                    }
                     crate::e2e::shown::process_list(ctx.workspace, ctx.server, &mut page.items);
                     page
                 });
                 self.list.finish(req, r);
+                if self.mode == Mode::Threads {
+                    self.learn_names(ctx.workspace);
+                }
                 Action::none()
             }
             Msg::More => match self.list.begin_more() {
@@ -380,6 +492,69 @@ impl Messages {
             },
             Msg::OpenThread(tmid) => Action::effect(Effect::OpenPanel(Kind::Thread(tmid))),
             Msg::OpenUser(u) => Action::effect(Effect::OpenPanel(Kind::UserInfo(u))),
+            Msg::ToggleFollow(id) => {
+                let busy = self.toggles.get(&id).is_some_and(|t| t.busy);
+                let me = ctx.workspace.user_id();
+                let (Some(me), Some(m), false) =
+                    (me, self.list.items.iter_mut().find(|m| m.id == id), busy)
+                else {
+                    return Action::none();
+                };
+                let want = !follows(m, Some(me));
+                set_following(m, me, want);
+                self.toggles.insert(
+                    id.clone(),
+                    Toggle {
+                        want,
+                        busy: true,
+                        confirmed: false,
+                    },
+                );
+                self.learn_names(ctx.workspace);
+                let tmid = id.clone();
+                Action::task(ctx.rest_task(
+                    move |rest| async move {
+                        if want {
+                            rest.follow_message(&tmid).await
+                        } else {
+                            rest.unfollow_message(&tmid).await
+                        }
+                    },
+                    move |r| Msg::Followed(id, want, r),
+                ))
+            }
+            Msg::Followed(id, want, r) => {
+                let Some(t) = self.toggles.get_mut(&id) else {
+                    return Action::none();
+                };
+                t.busy = false;
+                match r {
+                    Ok(()) => {
+                        if t.confirmed {
+                            self.toggles.remove(&id);
+                        }
+                        Action::none()
+                    }
+                    // A server copy already showed the new state: the call
+                    // went through, only its answer was lost.
+                    Err(_) if t.confirmed => {
+                        self.toggles.remove(&id);
+                        Action::none()
+                    }
+                    Err(e) => {
+                        self.toggles.remove(&id);
+                        if let Some(me) = ctx.workspace.user_id()
+                            && let Some(m) = self.list.items.iter_mut().find(|m| m.id == id)
+                        {
+                            set_following(m, me, !want);
+                        }
+                        Action::effect(common::error_toast(
+                            &t!("room_panel.thread_follow_failed"),
+                            &e,
+                        ))
+                    }
+                }
+            }
         }
     }
 
@@ -436,6 +611,122 @@ impl Messages {
             .into()
     }
 
+    /// A follower's avatar: by username when known (the picture or letter
+    /// shared with the rest of the app); otherwise the `/avatar/uid/`
+    /// picture, or a user icon while it loads or when the server only has
+    /// a letter avatar for them (whose letter is not known here).
+    fn follower_face<'a>(&self, uid: &str, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
+        if let Some(username) = self.names.get(uid) {
+            return common::user_avatar(ctx, username, username, FOLLOWER_AVATAR);
+        }
+        let src = ctx.images.avatar(
+            ctx.server_id,
+            ctx.server,
+            &room_list::Avatar::UserId {
+                uid: uid.to_owned(),
+            },
+            "",
+        );
+        if src.image.is_some() {
+            return avatar(src, FOLLOWER_AVATAR, AvatarShape::Rounded).into();
+        }
+        container(icon::sized(Icon::User, FOLLOWER_AVATAR * 0.7).style(style::text_hint))
+            .center(FOLLOWER_AVATAR)
+            .style(|theme| {
+                let t = rustket_ui::theme::tokens(theme);
+                container::Style {
+                    background: Some(t.border.into()),
+                    border: iced::border::rounded(2),
+                    ..container::Style::default()
+                }
+            })
+            .into()
+    }
+
+    /// Followers (up to two avatars and "+N"), the replies and the last
+    /// reply under a thread's preview, as in Rocket.Chat's thread list.
+    fn thread_meta<'a>(&'a self, m: &RcMessage, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
+        let mut foot = row![].spacing(SPACE_2).align_y(Alignment::Center);
+        let followers = m.replies.as_deref().unwrap_or_default();
+        if !followers.is_empty() {
+            let total = followers.len();
+            let mut shown = row![].spacing(2).align_y(Alignment::Center);
+            for uid in followers.iter().take(SHOWN_FOLLOWERS) {
+                shown = shown.push(self.follower_face(uid, ctx));
+            }
+            if let Some(more) = more_followers(total) {
+                shown = shown.push(text(more).size(TEXT_CAPTION).style(style::text_hint));
+            }
+            foot = foot.push(tooltip(shown, followers_tip(total), TooltipPosition::Top));
+        }
+        foot = foot.push(
+            row![
+                icon::sized(Icon::MessageCircle, 13.0).style(style::text_link),
+                text(t!("room_panel.replies", count = m.tcount.unwrap_or(0)).into_owned())
+                    .size(TEXT_CAPTION)
+                    .style(style::text_link),
+            ]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center),
+        );
+        // Cut, not wrapped, in a narrow panel: the row stays one line.
+        if let Some(tlm) = m.tlm {
+            foot = foot.push(
+                ellipsis(
+                    t!(
+                        "room_panel.last_reply",
+                        time = common::time_label(Some(tlm), ctx)
+                    )
+                    .into_owned(),
+                )
+                .size(TEXT_CAPTION)
+                .style(|t| style::text_hint(t).color),
+            );
+        }
+        foot.into()
+    }
+
+    /// The right-hand column of a Threads panel item: the follow bell and,
+    /// under it, the unread dot.
+    fn thread_side<'a>(&'a self, m: &RcMessage, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
+        let mut side = column![]
+            .spacing(SPACE_2)
+            .width(BELL_SIZE)
+            .align_x(Alignment::Center);
+        let me = ctx.workspace.user_id();
+        if me.is_some() {
+            let following = follows(m, me);
+            // Pressable while a call is in flight too (`ToggleFollow`
+            // ignores it): a click on the bell never opens the thread.
+            side = side.push(icon_button_with(
+                if following { Icon::Bell } else { Icon::BellOff },
+                Some(Msg::ToggleFollow(m.id.clone())),
+                if following {
+                    t!("room_panel.thread_following").into_owned()
+                } else {
+                    t!("room_panel.thread_not_following").into_owned()
+                },
+                following,
+                BELL_SIZE,
+            ));
+        }
+        let unread = crate::room::timeline::parent_thread_kind(
+            ctx.workspace.subscription(ctx.rid),
+            &m.id,
+            ctx.prefs.indicator_scheme,
+        );
+        if let Some(kind) = unread {
+            let dot = dot_in(kind, 8.0, BadgePlace::Content);
+            side = side.push(
+                match crate::room::timeline::rc_thread_dot_tip(kind, ctx.prefs.indicator_scheme) {
+                    Some(tip) => tooltip(dot, tip, TooltipPosition::Top),
+                    None => dot,
+                },
+            );
+        }
+        side.into()
+    }
+
     fn row<'a>(&'a self, m: &'a RcMessage, ctx: &ViewCtx<'a>) -> Element<'a, Msg> {
         if m.is_system() {
             return self.system_row(m, ctx);
@@ -462,15 +753,18 @@ impl Messages {
             let preview = clamp(thread_preview(ws, m, use_real, ctx.prefs.clock_24h))
                 .lines(THREAD_PREVIEW_LINES)
                 .size(TEXT_BODY);
-            column![head, preview, thread_meta(m, ctx)].spacing(2)
+            column![head, preview, self.thread_meta(m, ctx)].spacing(2)
         } else {
             column![head, self.viewer.body(m, ctx).map(Msg::View)].spacing(2)
         };
-        let line = row![
+        let mut line = row![
             common::user_avatar(ctx, &username, &name, 28.0),
             content.width(Length::Fill)
         ]
         .spacing(SPACE_3);
+        if self.mode == Mode::Threads {
+            line = line.push(self.thread_side(m, ctx));
+        }
         let cell = container(line)
             .padding([SPACE_2, SPACE_4])
             .width(Length::Fill);
@@ -872,8 +1166,347 @@ mod tests {
             ws
         }
 
-        /// A long root takes two lines, with the replies row right under it,
-        /// at narrow and wide panel widths; a click on it opens the thread.
+        struct Harness {
+            ws: Workspace,
+            sid: ServerId,
+            url: ServerUrl,
+            images: Images,
+            prefs: UiPrefs,
+        }
+
+        impl Harness {
+            fn new() -> Self {
+                Self {
+                    ws: workspace(),
+                    sid: ServerId("messages-tests".into()),
+                    url: ServerUrl::parse("http://chat.test").unwrap(),
+                    images: Images::new(None),
+                    prefs: UiPrefs::default(),
+                }
+            }
+            fn update(&mut self) -> UpdateCtx<'_> {
+                UpdateCtx {
+                    server_id: &self.sid,
+                    server: &self.url,
+                    rid: "R1",
+                    workspace: &mut self.ws,
+                    session: None,
+                    images: &self.images,
+                    prefs: &self.prefs,
+                }
+            }
+            fn view(&self) -> ViewCtx<'_> {
+                ViewCtx {
+                    server_id: &self.sid,
+                    server: &self.url,
+                    rid: "R1",
+                    workspace: &self.ws,
+                    images: &self.images,
+                    prefs: &self.prefs,
+                    connected: true,
+                    panel: None,
+                    now: std::time::Instant::now(),
+                }
+            }
+        }
+
+        fn threads(items: Vec<RcMessage>) -> Messages {
+            let mut panel = Messages::new(Mode::Threads);
+            let req = panel.list.reset();
+            let n = items.len();
+            panel.list.finish(
+                req,
+                Ok(Paginated {
+                    raw_len: n,
+                    count: n as u64,
+                    items,
+                    offset: 0,
+                    total: n as u64,
+                    dropped: 0,
+                }),
+            );
+            panel
+        }
+
+        fn following(panel: &Messages, id: &str) -> bool {
+            let m = panel.list.items.iter().find(|m| m.id == id).unwrap();
+            follows(m, Some("me"))
+        }
+
+        fn parent_copy(replies: &[&str], updated: &str) -> RcMessage {
+            root(serde_json::json!({"replies": replies, "_updatedAt": updated}))
+        }
+
+        fn changes_with(m: RcMessage) -> Changes {
+            let mut c = Changes::default();
+            c.parents.insert(m.id.clone(), m);
+            c
+        }
+
+        fn failure() -> crate::error::Failure {
+            crate::error::Failure::from(rocketchat::Error::Protocol("boom".into()))
+        }
+
+        /// The item follows when `replies` holds my id, as in Rocket.Chat.
+        #[test]
+        fn following_comes_from_replies() {
+            let panel = threads(vec![
+                root(serde_json::json!({"_id": "A", "replies": ["b", "me"]})),
+                root(serde_json::json!({"_id": "B", "replies": ["b"]})),
+                root(serde_json::json!({"_id": "C"})),
+            ]);
+            assert!(following(&panel, "A"));
+            assert!(!following(&panel, "B"));
+            assert!(!following(&panel, "C"));
+        }
+
+        /// A click shows the new state at once; a failure reverts it and
+        /// toasts; clicks while the call is in flight are ignored.
+        #[test]
+        fn toggle_is_optimistic_and_reverts_on_error() {
+            let mut h = Harness::new();
+            let mut panel = threads(vec![parent_copy(&["b"], "2026-11-20T14:48:00.000Z")]);
+            let a = panel.update(Msg::ToggleFollow("T1".into()), &mut h.update());
+            assert!(a.effects.is_empty());
+            assert!(following(&panel, "T1"));
+            assert!(panel.toggles["T1"].busy);
+            // A second click while busy changes nothing.
+            let _ = panel.update(Msg::ToggleFollow("T1".into()), &mut h.update());
+            assert!(following(&panel, "T1"));
+            let a = panel.update(
+                Msg::Followed("T1".into(), true, Err(failure())),
+                &mut h.update(),
+            );
+            assert!(!following(&panel, "T1"));
+            assert!(panel.toggles.is_empty());
+            assert!(matches!(
+                a.effects.as_slice(),
+                [Effect::Toast(rustket_ui::widget::BannerKind::Error, title, _)]
+                    if *title == t!("room_panel.thread_follow_failed")
+            ));
+            // Unfollowing works the same way.
+            let mut panel = threads(vec![parent_copy(&["b", "me"], "2026-11-20T14:48:00.000Z")]);
+            let _ = panel.update(Msg::ToggleFollow("T1".into()), &mut h.update());
+            assert!(!following(&panel, "T1"));
+            let a = panel.update(Msg::Followed("T1".into(), false, Ok(())), &mut h.update());
+            assert!(a.effects.is_empty());
+            assert!(!following(&panel, "T1"));
+        }
+
+        /// Server copies replace the item (newer ones only); a copy that
+        /// does not show the toggle yet keeps the toggled state, and once a
+        /// copy showed it, later copies are trusted again.
+        #[test]
+        fn server_copies_after_a_toggle_keep_the_right_state() {
+            let mut h = Harness::new();
+            let mut panel = threads(vec![parent_copy(&["b"], "2026-11-20T14:48:00.000Z")]);
+            let _ = panel.update(Msg::ToggleFollow("T1".into()), &mut h.update());
+            // A reply's broadcast sent before the follow was applied.
+            let mut stale = parent_copy(&["b", "c"], "2026-11-20T14:49:00.000Z");
+            stale.tcount = Some(22);
+            panel.on_changes(&changes_with(stale), &h.update());
+            assert!(following(&panel, "T1"));
+            assert_eq!(panel.list.items[0].tcount, Some(22));
+            let _ = panel.update(Msg::Followed("T1".into(), true, Ok(())), &mut h.update());
+            assert!(following(&panel, "T1"), "kept until the server shows it");
+            // The follow's own broadcast confirms it.
+            panel.on_changes(
+                &changes_with(parent_copy(&["b", "c", "me"], "2026-11-20T14:50:00.000Z")),
+                &h.update(),
+            );
+            assert!(following(&panel, "T1"));
+            assert!(panel.toggles.is_empty());
+            // An older copy is ignored ...
+            panel.on_changes(
+                &changes_with(parent_copy(&["b"], "2026-11-20T14:40:00.000Z")),
+                &h.update(),
+            );
+            assert!(following(&panel, "T1"));
+            // ... a newer one decides (unfollowed elsewhere).
+            panel.on_changes(
+                &changes_with(parent_copy(&["b", "c"], "2026-11-20T14:55:00.000Z")),
+                &h.update(),
+            );
+            assert!(!following(&panel, "T1"));
+            // A copy of another room's message with the same id is not used.
+            let mut other = parent_copy(&["b", "c", "me"], "2026-11-20T15:00:00.000Z");
+            other.rid = "R2".into();
+            panel.on_changes(&changes_with(other), &h.update());
+            assert!(!following(&panel, "T1"));
+        }
+
+        /// The broadcast may come before the call returns: the toggle ends
+        /// with the call and later copies are trusted.
+        #[test]
+        fn confirmation_before_the_response_ends_the_toggle() {
+            let mut h = Harness::new();
+            let mut panel = threads(vec![parent_copy(&["b"], "2026-11-20T14:48:00.000Z")]);
+            let _ = panel.update(Msg::ToggleFollow("T1".into()), &mut h.update());
+            panel.on_changes(
+                &changes_with(parent_copy(&["b", "me"], "2026-11-20T14:50:00.000Z")),
+                &h.update(),
+            );
+            assert!(panel.toggles["T1"].confirmed);
+            let _ = panel.update(Msg::Followed("T1".into(), true, Ok(())), &mut h.update());
+            assert!(panel.toggles.is_empty());
+            assert!(following(&panel, "T1"));
+        }
+
+        /// Review: a failed call after a server copy already showed the new
+        /// state keeps that state and does not toast.
+        #[test]
+        fn failure_after_confirmation_keeps_the_server_state() {
+            let mut h = Harness::new();
+            let mut panel = threads(vec![parent_copy(&["b"], "2026-11-20T14:48:00.000Z")]);
+            let _ = panel.update(Msg::ToggleFollow("T1".into()), &mut h.update());
+            panel.on_changes(
+                &changes_with(parent_copy(&["b", "me"], "2026-11-20T14:50:00.000Z")),
+                &h.update(),
+            );
+            let a = panel.update(
+                Msg::Followed("T1".into(), true, Err(failure())),
+                &mut h.update(),
+            );
+            assert!(a.effects.is_empty(), "{:?}", a.effects.len());
+            assert!(following(&panel, "T1"));
+            assert!(panel.toggles.is_empty());
+        }
+
+        /// Review: the list stashed behind a thread opened from it keeps
+        /// taking the server's copies, so Back shows follow changes made
+        /// meanwhile and a toggle still in flight gets confirmed.
+        #[test]
+        fn stashed_list_keeps_taking_server_copies() {
+            use crate::room::panel::{Body, BodyMsg, Kind, Message as PanelMsg, Panel};
+            let mut h = Harness::new();
+            let mut p = Panel::new("R1");
+            p.open(Kind::Threads);
+            p.pending = None;
+            p.body = Some(Body::Messages(threads(vec![parent_copy(
+                &["b"],
+                "2026-11-20T14:48:00.000Z",
+            )])));
+            let g_list = p.generation();
+            let _ = p.update(
+                PanelMsg::Body(g_list, BodyMsg::Messages(Msg::ToggleFollow("T1".into()))),
+                &mut h.update(),
+            );
+            p.open(Kind::Thread("T1".into()));
+            let _ = p.update(
+                PanelMsg::Body(
+                    g_list,
+                    BodyMsg::Messages(Msg::Followed("T1".into(), true, Ok(()))),
+                ),
+                &mut h.update(),
+            );
+            // The follow's broadcast, then an unfollow from the thread view.
+            for (replies, at) in [
+                (&["b", "me"][..], "2026-11-20T14:50:00.000Z"),
+                (&["b"][..], "2026-11-20T14:52:00.000Z"),
+            ] {
+                let _ = p.on_changes(&changes_with(parent_copy(replies, at)), &mut h.update());
+            }
+            let _ = p.update(PanelMsg::Back, &mut h.update());
+            match &p.body {
+                Some(Body::Messages(m)) => {
+                    assert!(!following(m, "T1"));
+                    assert!(m.toggles.is_empty());
+                }
+                _ => panic!("threads list expected"),
+            }
+        }
+
+        #[test]
+        fn followers_label_and_plurals() {
+            assert_eq!(more_followers(0), None);
+            assert_eq!(more_followers(2), None);
+            assert_eq!(more_followers(3).as_deref(), Some("+1"));
+            assert_eq!(more_followers(12).as_deref(), Some("+10"));
+            assert_eq!(followers_tip(1), "1 follower");
+            assert_eq!(followers_tip(5), "5 followers");
+            for (n, key) in [(1, "one"), (3, "few"), (5, "many"), (21, "one")] {
+                assert_eq!(crate::room::render::plural_for("ru", n), key);
+                let ru = t!(
+                    format!("room_panel.followers_{key}"),
+                    locale = "ru",
+                    count = n
+                );
+                assert!(ru.starts_with(&n.to_string()), "{ru}");
+            }
+            assert_eq!(
+                t!("room_panel.followers_few", locale = "ru", count = 3),
+                "3 подписчика"
+            );
+            assert_eq!(
+                t!("room_panel.followers_many", locale = "ru", count = 5),
+                "5 подписчиков"
+            );
+        }
+
+        fn texts(panel: &Messages, ctx: &ViewCtx<'_>, width: f32) -> Vec<(Rectangle, String)> {
+            let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(
+                rustket_ui::theme::font_regular(),
+                iced::Pixels(TEXT_BODY),
+            ));
+            let mut ui = UserInterface::build(
+                panel.view(ctx),
+                Size::new(width, 700.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            let mut t = Texts(Vec::new());
+            ui.operate(&renderer, &mut t);
+            t.0
+        }
+
+        /// "+N" after two avatars; none with two followers or fewer.
+        #[test]
+        fn followers_show_plus_n() {
+            let h = Harness::new();
+            let panel = threads(vec![root(
+                serde_json::json!({"replies": ["b", "c", "d", "me", "e"]}),
+            )]);
+            let shown = texts(&panel, &h.view(), 420.0);
+            assert!(shown.iter().any(|(_, t)| t == "+3"), "{shown:?}");
+            assert!(!shown.iter().any(|(_, t)| t == "5"), "{shown:?}");
+            let panel = threads(vec![root(serde_json::json!({"replies": ["b", "me"]}))]);
+            let shown = texts(&panel, &h.view(), 420.0);
+            assert!(!shown.iter().any(|(_, t)| t.starts_with('+')), "{shown:?}");
+        }
+
+        /// Review: a follower whose username is unknown was drawn with "?"
+        /// initials. Usernames now also come from presence and mentions;
+        /// still unknown ones show a user icon, never "?".
+        #[test]
+        fn unknown_followers_show_no_question_mark() {
+            let mut h = Harness::new();
+            h.ws.apply_user_status(
+                "c",
+                Some("carol"),
+                rocketchat::models::UserStatus::Online,
+                None,
+            );
+            let mut panel = threads(vec![
+                root(serde_json::json!({"replies": ["c", "zz"]})),
+                root(serde_json::json!({
+                    "_id": "T2", "replies": ["d"],
+                    "mentions": [{"_id": "d", "username": "dave"}]
+                })),
+            ]);
+            panel.learn_names(&h.ws);
+            assert_eq!(panel.names.get("c").map(String::as_str), Some("carol"));
+            assert_eq!(panel.names.get("d").map(String::as_str), Some("dave"));
+            assert!(!panel.names.contains_key("zz"));
+            let shown = texts(&panel, &h.view(), 420.0);
+            assert!(shown.iter().any(|(_, t)| t == "C"), "{shown:?}");
+            assert!(shown.iter().any(|(_, t)| t == "D"), "{shown:?}");
+            assert!(!shown.iter().any(|(_, t)| t == "?"), "{shown:?}");
+        }
+
+        /// A long root takes two lines, with the replies row (followers
+        /// first) right under it and the bell column to the right of both,
+        /// at narrow and wide panel widths; a click on it opens the thread,
+        /// a click on the bell toggles following and does not.
         #[test]
         fn thread_item_is_two_lines_with_meta_under_it() {
             let ws = workspace();
@@ -897,7 +1530,9 @@ mod tests {
             let long = "A long root message that goes on and on. ".repeat(30);
             let mut panel = Messages::new(Mode::Threads);
             let req = panel.list.reset();
-            let items = vec![root(serde_json::json!({"msg": long}))];
+            let items = vec![root(
+                serde_json::json!({"msg": long, "replies": ["b", "me", "c", "d"]}),
+            )];
             panel.list.finish(
                 req,
                 Ok(Paginated {
@@ -931,6 +1566,23 @@ mod tests {
                 let preview = find(&|t| t.starts_with("A long root"));
                 let meta = find(&|t| t == "Replies: 21");
                 let name = find(&|t| t == "bob");
+                let more = find(&|t| t == "+2");
+                assert!(
+                    (more.center_y() - meta.center_y()).abs() < 1.0 && more.x < meta.x,
+                    "{width}: {more:?} {meta:?}"
+                );
+                // The bell glyph: the only text right of the preview.
+                let bell = texts
+                    .0
+                    .iter()
+                    .find(|(b, _)| b.x >= preview.x + preview.width)
+                    .map(|(b, _)| *b)
+                    .unwrap();
+                assert!(
+                    bell.x + bell.width <= width - SPACE_4 + 0.5,
+                    "{width}: {bell:?}"
+                );
+                assert!(bell.y < preview.y + preview.height, "{width}: {bell:?}");
                 assert!(
                     (preview.height - 2.0 * line).abs() < 0.5,
                     "{width}: {preview:?}"
@@ -959,6 +1611,25 @@ mod tests {
                 assert!(
                     out.iter()
                         .any(|m| matches!(m, Msg::OpenThread(id) if id == "T1")),
+                    "{width}: {out:?}"
+                );
+
+                let at = Point::new(bell.center_x(), bell.center_y());
+                let events = [
+                    iced::Event::Mouse(mouse::Event::CursorMoved { position: at }),
+                    iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                    iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+                ];
+                let mut out = Vec::new();
+                ui.update(
+                    &events,
+                    mouse::Cursor::Available(at),
+                    &mut renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut out,
+                );
+                assert!(
+                    matches!(out.as_slice(), [Msg::ToggleFollow(id)] if id == "T1"),
                     "{width}: {out:?}"
                 );
             }
