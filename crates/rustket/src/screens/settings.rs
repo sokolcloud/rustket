@@ -189,7 +189,6 @@ pub enum Message {
     SetIndicatorScheme(IndicatorScheme),
     /// Zoom in (`1`), out (`-1`) or reset (`0`).
     Zoom(i8),
-    SetShowAvatars(bool),
     SetUnreadOnTop(bool),
     SetClock24(bool),
     /// `None`: the server's `UI_Use_Real_Name`.
@@ -437,7 +436,6 @@ impl Settings {
             Message::SetIndicatorScheme(v) => Self::pref(ctx, |p| p.indicator_scheme = v)
                 .with(Effect::ApplyTheme { rescan: false }),
             Message::Zoom(dir) => Self::pref(ctx, |p| p.zoom = zoom_step(p.zoom, dir)),
-            Message::SetShowAvatars(v) => Self::pref(ctx, |p| p.show_avatars = v),
             Message::SetUnreadOnTop(v) => Self::pref(ctx, |p| p.unread_on_top = v),
             Message::SetClock24(v) => Self::pref(ctx, |p| p.clock_24h = v),
             Message::SetRealNames(v) => Self::pref(ctx, |p| p.use_real_names = v),
@@ -680,7 +678,6 @@ mod tests {
             (Message::SetDensity(Density::Condensed), |c| {
                 c.density == Density::Condensed
             }),
-            (Message::SetShowAvatars(false), |c| !c.show_avatars),
             (Message::SetUnreadOnTop(true), |c| c.unread_on_top),
             (Message::SetUnreadOnTop(false), |c| !c.unread_on_top),
             (Message::SetClock24(false), |c| !c.clock_24h),

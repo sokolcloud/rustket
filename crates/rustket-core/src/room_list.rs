@@ -170,6 +170,10 @@ pub enum RoomKind {
 pub enum Avatar {
     /// `/avatar/{username}`.
     User { username: String },
+    /// `/avatar/uid/{uid}`: a user known only by id (thread followers
+    /// whose username is not known); only a picture is shown, never
+    /// initials.
+    UserId { uid: String },
     /// `/avatar/room/{rid}`.
     Room { rid: String, etag: Option<String> },
 }

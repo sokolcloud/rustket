@@ -1218,3 +1218,31 @@ fn later_index_follows_scans_and_live_updates() {
     ws.set_later_tracking(false);
     assert!(ws.later_index().starred().next().is_none());
 }
+
+/// Every thread parent applied as a message reaches `Changes::parents`
+/// (latest copy), open timeline or not; replies, plain and hidden messages
+/// do not.
+#[test]
+fn applied_thread_parents_are_listed_in_changes() {
+    let mut ws = Workspace::new();
+    ws.take_changes();
+    let mut p = msg("p", "r1", 1, "u");
+    p.tcount = Some(1);
+    p.replies = Some(vec!["u".into()]);
+    ws.apply_message(p.clone());
+    p.replies = Some(vec!["u".into(), "me".into()]);
+    ws.apply_message(p.clone());
+    let mut reply = msg("c", "r1", 2, "u");
+    reply.tmid = Some("p".into());
+    ws.apply_message(reply);
+    ws.apply_message(msg("plain", "r1", 3, "u"));
+    let mut hidden = msg("h", "r1", 4, "u");
+    hidden.tcount = Some(2);
+    hidden.hidden = Some(true);
+    ws.apply_message(hidden);
+    let c = ws.take_changes();
+    assert!(c.areas.contains(Dirty::PARENTS));
+    assert_eq!(c.parents.len(), 1);
+    assert_eq!(c.parents["p"], p);
+    assert!(ws.take_changes().parents.is_empty());
+}

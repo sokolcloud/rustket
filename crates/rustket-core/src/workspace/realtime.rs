@@ -438,6 +438,10 @@ impl Workspace {
         if m.hidden == Some(true) {
             return;
         }
+        if m.tmid.is_none() && m.tcount.is_some() {
+            self.changes.parents.insert(m.id.clone(), m.clone());
+            self.mark(Dirty::PARENTS);
+        }
         let rid = m.rid.clone();
         self.forget_ephemeral(&rid, &m.id);
         if self.outbox.remove(&m.id).is_some() {

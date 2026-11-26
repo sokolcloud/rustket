@@ -240,6 +240,9 @@ pub enum Followup {
     /// A user or room avatar changed; drop cached images.
     AvatarChanged {
         username: Option<String>,
+        /// The user's id when known (presence, loaded messages): drops
+        /// `/avatar/uid/` copies too.
+        uid: Option<String>,
         rid: Option<String>,
     },
     /// Hand the notification to `desktop::Desktop::on_notification`.
@@ -267,6 +270,17 @@ pub fn map_connection(s: &RcConn) -> ConnectionState {
 
 /// Applies one realtime event to the workspace and tells the caller which
 /// asynchronous follow-up (sync, logout handling) is needed.
+/// The id of `username` from presence or the loaded messages.
+fn user_id_of(ws: &Workspace, username: &str) -> Option<String> {
+    if let Some(p) = ws.presence().get_by_username(username) {
+        return Some(p.uid.clone());
+    }
+    ws.loaded_messages()
+        .map(|m| &m.u)
+        .find(|u| u.username.as_deref() == Some(username))
+        .map(|u| u.id.clone())
+}
+
 pub fn apply_event(ws: &mut Workspace, ev: &SessionEvent) -> Followup {
     apply_event_for(ws, ev, None)
 }
@@ -411,6 +425,7 @@ pub fn apply_event_for(
         }
         E::AvatarUpdated { username, rid, .. } => Followup::AvatarChanged {
             username: username.clone(),
+            uid: username.as_deref().and_then(|u| user_id_of(ws, u)),
             rid: rid.clone(),
         },
         E::EmojiCustomUpdated(e) => {
@@ -978,6 +993,29 @@ mod tests {
             ),
             Followup::AvatarChanged {
                 username: Some("bob".into()),
+                uid: None,
+                rid: None
+            }
+        );
+        // With bob's id known (presence), `/avatar/uid/` copies go too.
+        ws.apply_user_status(
+            "B1",
+            Some("bob"),
+            rocketchat::models::UserStatus::Online,
+            None,
+        );
+        assert_eq!(
+            apply_event(
+                &mut ws,
+                &SessionEvent::AvatarUpdated {
+                    username: Some("bob".into()),
+                    rid: None,
+                    etag: None
+                }
+            ),
+            Followup::AvatarChanged {
+                username: Some("bob".into()),
+                uid: Some("B1".into()),
                 rid: None
             }
         );

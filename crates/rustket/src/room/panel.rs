@@ -655,6 +655,15 @@ impl Panel {
     }
 
     fn body_changes(&mut self, changes: &Changes, ctx: &mut UpdateCtx<'_>) -> Action<Message> {
+        // A stashed thread list keeps its items (followers, replies) and
+        // pending follow toggles up to date for Back.
+        if let Some(Stash {
+            body: Body::Messages(b),
+            ..
+        }) = self.stash.as_mut()
+        {
+            b.on_changes(changes, ctx);
+        }
         let g = self.generation;
         if self.pending.is_some() {
             return Action::none();
@@ -667,7 +676,7 @@ impl Panel {
             Some(Body::Team(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Team),
             Some(Body::Omni(b)) => wrap(g, b.on_changes(changes, ctx), BodyMsg::Omni),
             Some(Body::Messages(b)) => {
-                b.on_changes(ctx);
+                b.on_changes(changes, ctx);
                 Action::none()
             }
             _ => Action::none(),

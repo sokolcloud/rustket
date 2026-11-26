@@ -88,8 +88,10 @@ impl Dirty {
     pub const FEEDS: Self = Self(1 << 20);
     /// Scheduled messages (see [`Workspace::scheduled`]).
     pub const SCHEDULED: Self = Self(1 << 21);
-    pub const ALL: Self = Self((1 << 22) - 1);
-    const BITS: usize = 22;
+    /// Thread parents applied live or from REST (see [`Changes::parents`]).
+    pub const PARENTS: Self = Self(1 << 22);
+    pub const ALL: Self = Self((1 << 23) - 1);
+    const BITS: usize = 23;
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -126,7 +128,7 @@ impl std::ops::BitOrAssign for Dirty {
 }
 
 /// Accumulated changes since the last [`Workspace::take_changes`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Changes {
     pub areas: Dirty,
     /// Rooms whose room/subscription data changed.
@@ -135,6 +137,10 @@ pub struct Changes {
     pub timelines: HashSet<String>,
     /// Threads (by `tmid`) whose timeline changed.
     pub threads: HashSet<String>,
+    /// The latest copy of every thread parent (`tcount` set, not hidden)
+    /// applied as a message, by id, whether or not a timeline holds it: for
+    /// lists kept outside the workspace (the Threads panel).
+    pub parents: HashMap<String, Message>,
 }
 
 impl Changes {

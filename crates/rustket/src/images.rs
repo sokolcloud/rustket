@@ -198,6 +198,7 @@ impl Images {
     pub fn avatar_url(server: &ServerUrl, avatar: &Avatar) -> String {
         match avatar {
             Avatar::User { username } => server.avatar_user(username, Some(AVATAR_PX)),
+            Avatar::UserId { uid } => server.avatar_user_id(uid, Some(AVATAR_PX)),
             Avatar::Room { rid, etag } => {
                 let mut url = server.avatar_room(rid, Some(AVATAR_PX));
                 if let Some(etag) = etag.as_deref().filter(|e| !e.is_empty()) {
@@ -271,6 +272,7 @@ impl Images {
     ) -> AvatarSource {
         let key = match avatar {
             Avatar::User { username } => username.clone(),
+            Avatar::UserId { uid } => uid.clone(),
             Avatar::Room { rid, .. } => rid.clone(),
         };
         let url = Self::avatar_url(server, avatar);
@@ -496,11 +498,15 @@ impl Images {
         server_id: &ServerId,
         server: &ServerUrl,
         username: Option<&str>,
+        uid: Option<&str>,
         rid: Option<&str>,
     ) -> Vec<String> {
         let mut prefixes = Vec::new();
         if let Some(u) = username {
             prefixes.push(server.avatar_user(u, None));
+        }
+        if let Some(id) = uid {
+            prefixes.push(server.avatar_user_id(id, None));
         }
         if let Some(r) = rid {
             prefixes.push(server.avatar_room(r, None));
@@ -1192,13 +1198,23 @@ mod tests {
         write_cache_entry(&disk_paths(&sdir, &u)[1], &png_bytes(1, 1)).unwrap();
         images.insert(u.clone(), img(1));
         images.insert(r.clone(), img(1));
-        let dropped = images.invalidate_avatar(&sid, &server, Some("bob"), None);
+        let dropped = images.invalidate_avatar(&sid, &server, Some("bob"), None, None);
         assert_eq!(dropped, vec![u.clone()]);
         assert!(!images.contains(&u));
         assert!(images.contains(&r));
         assert!(!disk_paths(&sdir, &u)[1].exists());
         let w = images.take_wanted(|_| true);
         assert_eq!(w.len(), 1, "re-requested right away");
+        // Review: `/avatar/uid/` copies (thread followers) go too when the
+        // user's id is known.
+        let by_id = Images::avatar_url(&server, &Avatar::UserId { uid: "B1".into() });
+        assert_eq!(by_id, "http://localhost:3000/avatar/uid/B1?size=64");
+        images.insert(by_id.clone(), img(1));
+        let dropped = images.invalidate_avatar(&sid, &server, Some("bob"), Some("B1"), None);
+        assert_eq!(dropped, vec![by_id.clone()]);
+        assert!(!images.contains(&by_id));
+        assert!(images.contains(&r));
+        let _ = images.take_wanted(|_| true);
         // Purge bumps the generation: an in-flight result is dropped.
         let generation = images.generation(&sid);
         assert_eq!(images.purge_server(&sid, &server), Some(sdir));
