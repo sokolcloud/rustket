@@ -281,12 +281,6 @@ settings.names_usernames:
   es: "Nombres de usuario"
   th: "ชื่อผู้ใช้"
   zh: "用户名"
-settings.show_avatars:
-  en: "Show avatars in the room list"
-  ru: "Показывать аватары в списке комнат"
-  es: "Mostrar avatares en la lista de salas"
-  th: "แสดงรูปโปรไฟล์ในรายการห้อง"
-  zh: "在聊天室列表中显示头像"
 settings.unread_on_top:
   en: "Unread conversations in a separate group"
   ru: "Непрочитанные беседы отдельной группой"

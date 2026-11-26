@@ -118,12 +118,6 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
                 ),
             ),
             switch(
-                t!("settings.show_avatars").into_owned(),
-                None,
-                ui.show_avatars,
-                Some(Message::SetShowAvatars),
-            ),
-            switch(
                 t!("settings.clock_24h").into_owned(),
                 None,
                 ui.clock_24h,

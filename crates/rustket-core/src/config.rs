@@ -528,7 +528,6 @@ pub struct UiPrefs {
     pub sidebar_sort: SidebarSort,
     pub group_by_type: bool,
     pub unread_on_top: bool,
-    pub show_avatars: bool,
     pub density: Density,
     /// Unread indicators: Rustket's own look or Rocket.Chat's. A missing or
     /// unknown value gives Rocket.Chat (the default for everyone).
@@ -652,7 +651,6 @@ impl Default for UiPrefs {
             sidebar_sort: SidebarSort::Activity,
             group_by_type: true,
             unread_on_top: false,
-            show_avatars: true,
             density: Density::Extended,
             indicator_scheme: IndicatorScheme::RocketChat,
             use_real_names: None,
@@ -790,6 +788,9 @@ const APP_KEYS: &[&str] = &[
     "pause",
     "accepted_terms",
 ];
+/// `ui` keys earlier versions wrote that no version reads any more: dropped on
+/// save rather than kept like a newer version's keys.
+const RETIRED_UI_KEYS: &[&str] = &["show_avatars"];
 const UI_KEYS: &[&str] = &[
     "theme",
     "theme_name",
@@ -797,7 +798,6 @@ const UI_KEYS: &[&str] = &[
     "sidebar_sort",
     "group_by_type",
     "unread_on_top",
-    "show_avatars",
     "density",
     "indicator_scheme",
     "use_real_names",
@@ -1108,7 +1108,8 @@ impl AppConfig {
         let mut out = toml::Table::try_from(self)?;
         if let Some(raw) = self.unknown.0.as_ref() {
             merge_unknown(&mut out, raw, APP_KEYS);
-            for (key, known) in [("ui", UI_KEYS), ("window", WINDOW_KEYS)] {
+            let ui_known: Vec<&str> = UI_KEYS.iter().chain(RETIRED_UI_KEYS).copied().collect();
+            for (key, known) in [("ui", ui_known.as_slice()), ("window", WINDOW_KEYS)] {
                 if let (Some(toml::Value::Table(o)), Some(toml::Value::Table(r))) =
                     (out.get_mut(key), raw.get(key))
                 {
@@ -1529,6 +1530,24 @@ mod tests {
         c.save(dir.path()).unwrap();
         let doc: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert!(doc["servers"][0].get("user_id").is_none());
+    }
+
+    #[test]
+    fn retired_keys_are_dropped_on_save() {
+        let dir = tempfile::tempdir().unwrap();
+        saved_with_two_servers(dir.path());
+        let path = dir.path().join(CONFIG_FILE);
+        let text = fs::read_to_string(&path).unwrap().replacen(
+            "zoom = 1.0",
+            "zoom = 1.0\nshow_avatars = false",
+            1,
+        );
+        fs::write(&path, text).unwrap();
+        let c = AppConfig::load(dir.path()).unwrap();
+        c.save(dir.path()).unwrap();
+        let doc: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc["ui"].get("show_avatars").is_none());
+        assert!(doc["ui"].get("zoom").is_some());
     }
 
     #[test]

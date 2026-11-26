@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bell. Under the preview, the avatars of up to two followers and "+N"
   for the rest come before the reply count.
 
+### Removed
+
+- **Show avatars in the room list** in Settings → Appearance: it never
+  changed anything.
+
 ## [0.3.1] - 2026-11-26
 
 ### Changed
