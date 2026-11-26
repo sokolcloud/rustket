@@ -232,7 +232,7 @@ Verify from another network, with the app's User-Agent:
 
 ```sh
 H=review-rustket.example.com
-UA='Rustket/0.3.1 (Macintosh; Mac OS X)'
+UA='Rustket/0.3.2 (Macintosh; Mac OS X)'
 curl -4 -sS -A "$UA" "https://$H/api/info"; echo     # {"version":...,"success":true}
 curl -6 -sS -A "$UA" "https://$H/api/info"; echo     # same over IPv6
 curl -sS -o /dev/null -D - -A "$UA" "https://$H/api/info" | grep -i '^cf-mitigated'   # must print nothing

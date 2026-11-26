@@ -5,7 +5,7 @@ members = ["crates/meteor-ddp", "crates/rocketchat", "crates/rustket-core", "cra
 exclude = ["vendor/winit"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.90"
 publish = false

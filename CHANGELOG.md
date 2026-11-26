@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-26
+
 ### Added
 
 - Each thread in a room's Threads panel has a bell on the right, as in
@@ -606,7 +608,8 @@ First public release.
 - Auth tokens and end-to-end encryption keys are kept in the desktop keyring,
   with a warned-about private file fallback when no keyring is available.
 
-[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/sokolcloud/rustket/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/sokolcloud/rustket/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/sokolcloud/rustket/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/sokolcloud/rustket/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/sokolcloud/rustket/compare/v0.2.10...v0.2.11
