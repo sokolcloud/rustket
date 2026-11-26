@@ -1320,8 +1320,8 @@ fn family_card<'a>(f: Family, d: &Data<'_>) -> Element<'a, Message> {
     section(t!(f.title_key()).into_owned(), rows)
 }
 
-/// The trigger line of `code` (L1 names the sound and Q1 what else
-/// silences the sounds on the platform).
+/// The trigger line of `code` (L1 names the sound, Q1 what else silences
+/// the sounds on the platform and Q4 when a room counts as read).
 fn trigger_text(code: Code, d: &Data<'_>) -> String {
     match code {
         Code::L1 => {
@@ -1357,6 +1357,8 @@ fn trigger_text(code: Code, d: &Data<'_>) -> String {
             t!(format!("{}_rc", code.trigger_key())).into_owned()
         }
         Code::M2 if mac(d) => t!("help.code.m2.trigger_macos").into_owned(),
+        Code::Q4 if d.cfg.ui.mark_read_on_open => t!("help.code.q4.trigger_on_open").into_owned(),
+        Code::Q4 if !d.cfg.ui.escape_marks_read => t!("help.code.q4.trigger_no_esc").into_owned(),
         _ => t!(code.trigger_key()).into_owned(),
     }
 }

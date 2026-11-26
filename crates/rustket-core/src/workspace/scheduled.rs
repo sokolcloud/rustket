@@ -124,6 +124,45 @@ impl Workspace {
         self.apply_user_status(&uid, username.as_deref(), status, text);
     }
 
+    /// When the server clears user `uid`'s status (`statusExpiresAt`: set
+    /// here, by another client, or cleared by the server). Only the current
+    /// user's is kept.
+    pub fn apply_status_expiry(&mut self, uid: &str, at: Option<RcDate>) {
+        if self.user_id() != Some(uid) {
+            return;
+        }
+        if let Some(me) = self.me.as_mut()
+            && me.status_expires_at != at
+        {
+            me.status_expires_at = at;
+            self.mark(Dirty::ME);
+        }
+    }
+
+    /// When the server clears the current user's status, if that is still
+    /// ahead of `now_ms`.
+    pub fn my_status_expiry(&self, now_ms: i64) -> Option<RcDate> {
+        self.me
+            .as_ref()?
+            .status_expires_at
+            .filter(|at| at.timestamp_millis() > now_ms)
+    }
+
+    /// Whether the server clears statuses itself (`users.setStatus` takes
+    /// `expiresAt`): Rocket.Chat [`STATUS_EXPIRY_SINCE`] or later, or the
+    /// user has a server-side expiry already. Otherwise "Clear after" is
+    /// done by this app (`crate::quiet::StatusExpiry`).
+    ///
+    /// [`STATUS_EXPIRY_SINCE`]: rocketchat::rest::STATUS_EXPIRY_SINCE
+    pub fn status_expiry_on_server(&self) -> bool {
+        self.me
+            .as_ref()
+            .is_some_and(|m| m.status_expires_at.is_some())
+            || self
+                .server_version()
+                .is_some_and(|v| v >= rocketchat::rest::STATUS_EXPIRY_SINCE)
+    }
+
     /// The status the user chose (`crate::quiet::chosen_status`).
     pub fn my_chosen_status(&self) -> Option<rocketchat::models::UserStatus> {
         crate::quiet::chosen_status(

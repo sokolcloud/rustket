@@ -130,6 +130,12 @@ pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a,
         t!("settings.messages").into_owned(),
         vec![
             switch(
+                t!("settings.mark_read_on_open").into_owned(),
+                Some(t!("settings.mark_read_on_open_help").into_owned()),
+                ui.mark_read_on_open,
+                Some(Message::SetMarkReadOnOpen),
+            ),
+            switch(
                 t!("settings.confirm_broad_mentions").into_owned(),
                 Some(
                     t!(

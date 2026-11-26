@@ -262,6 +262,10 @@ pub struct Sidebar {
     /// Starred threads are tracked (Favorites offers a refresh); set by
     /// [`Self::refresh`], whose inputs cover it.
     starred_tracked: bool,
+    /// Collapse keys of the sections collapsed during the current search; in
+    /// place of the persisted collapsed state while filtering (every section
+    /// starts expanded), dropped when the search is cleared.
+    search_collapsed: BTreeSet<String>,
 }
 
 /// Height of a section header slot (the header is centred in it; its own
@@ -412,14 +416,18 @@ impl Sidebar {
         match msg {
             Message::Filter(s) => {
                 self.filter = s;
+                if !self.filtering() {
+                    self.search_collapsed.clear();
+                }
                 Out::None
             }
             Message::ClearFilter => {
                 self.filter.clear();
+                self.search_collapsed.clear();
                 Out::None
             }
             Message::SubmitFilter => Out::None,
-            Message::Toggle(id) => Out::ToggleSection(id.collapse_key().into_owned()),
+            Message::Toggle(id) => self.toggle(id.collapse_key().into_owned()),
             Message::Open(rid) => Out::OpenRoom(rid),
             Message::Status(super::status_menu::Message::Omni(
                 crate::omnichannel::status::Msg::ContactCenter,
@@ -427,7 +435,7 @@ impl Sidebar {
             Message::Status(m) => Out::Status(m),
             Message::Directory => Out::Directory,
             Message::Create => Out::Create,
-            Message::Omni(crate::omnichannel::sidebar::Msg::Toggle(key)) => Out::ToggleSection(key),
+            Message::Omni(crate::omnichannel::sidebar::Msg::Toggle(key)) => self.toggle(key),
             Message::Omni(m) => Out::Omni(m),
             Message::Scrolled(v) => {
                 self.viewport = Some((
@@ -498,10 +506,37 @@ impl Sidebar {
         }
     }
 
+    /// The search field has a query: the sections are search results.
+    fn filtering(&self) -> bool {
+        !self.filter.trim().is_empty()
+    }
+
+    /// The collapse keys in effect: `persisted` (the user's saved state), or
+    /// while filtering the sections collapsed during this search.
+    pub fn collapsed<'s>(&'s self, persisted: &'s BTreeSet<String>) -> &'s BTreeSet<String> {
+        if self.filtering() {
+            &self.search_collapsed
+        } else {
+            persisted
+        }
+    }
+
+    /// A header arrow: saves the collapsed state, or while filtering only
+    /// collapses the section for this search.
+    fn toggle(&mut self, key: String) -> Out {
+        if !self.filtering() {
+            return Out::ToggleSection(key);
+        }
+        if !self.search_collapsed.remove(&key) {
+            self.search_collapsed.insert(key);
+        }
+        Out::None
+    }
+
     /// Resolves a drop against the current sections: a section that is gone
     /// by now cancels it.
     fn reorder(&self, dragged: u64, before: Option<u64>) -> Out {
-        if !self.filter.trim().is_empty() {
+        if self.filtering() {
             return Out::None;
         }
         let ids: Vec<&SectionId> = self
@@ -783,11 +818,15 @@ impl Sidebar {
                 .width(Length::Fill);
             // Omnichannel groups first (queue, in progress, on hold).
             let row = |item: &'a RoomListItem| -> Element<'a, Message> { self.row(item, ctx) };
+            let omni_ctx = SidebarCtx {
+                collapsed: self.collapsed(ctx.collapsed),
+                ..*ctx
+            };
             omni = crate::omnichannel::sidebar::push_groups(
                 omni,
                 queue,
                 &self.sections,
-                ctx,
+                &omni_ctx,
                 &self.filter,
                 &row,
             );
@@ -804,7 +843,7 @@ impl Sidebar {
                 server: ctx.server_id.as_str(),
                 sections: self.sections_rev,
                 filter: &self.filter,
-                collapsed: ctx.collapsed,
+                collapsed: self.collapsed(ctx.collapsed),
                 active: ctx.active_room,
                 active_thread: ctx.active_thread,
                 kept_enabled: ws.thread_index().kept_enabled(),
@@ -931,20 +970,16 @@ impl Sidebar {
         self.listed_with(ctx.collapsed)
     }
 
+    /// `collapsed`: the persisted state (see [`Self::collapsed`]).
     fn listed_with<'s>(
         &'s self,
         collapsed: &'s BTreeSet<String>,
     ) -> impl Iterator<Item = (&'s Section, bool)> + 's {
-        let filtering = !self.filter.trim().is_empty();
+        let collapsed = self.collapsed(collapsed);
         self.sections
             .iter()
             .filter(|s| !s.is(SectionKind::Omnichannel))
-            .map(move |s| {
-                (
-                    s,
-                    !filtering && collapsed.contains(s.id.collapse_key().as_ref()),
-                )
-            })
+            .map(move |s| (s, collapsed.contains(s.id.collapse_key().as_ref())))
     }
 
     /// Slot range `[start, end)` of the list (a slot is a section header or a
@@ -1015,7 +1050,7 @@ impl Sidebar {
             }
         };
         let ids: Vec<&SectionId> = self.listed(ctx).map(|(s, _)| &s.id).collect();
-        let filtering = !self.filter.trim().is_empty();
+        let filtering = self.filtering();
         // Drag handles of every header, built or not (same slot math).
         let mut handles = Vec::new();
         let mut y = 0.0f32;
@@ -1091,10 +1126,10 @@ impl Sidebar {
         (section.threads_hidden > 0).then(|| hidden_status(section.threads_hidden, limit))
     }
 
-    /// A section header under the Rocket.Chat scheme: no row count; a
-    /// collapsed section with something unread shows the counter and a bold
-    /// title; the Threads header shows the counter, then the loading
-    /// progress.
+    /// A section header under the Rocket.Chat scheme: no row count (search
+    /// results show their number); a collapsed section with something unread
+    /// shows the counter and a bold title; the Threads header shows the
+    /// counter, then the loading progress (only while drawn expanded).
     fn header_rc(
         &self,
         section: &Section,
@@ -1111,6 +1146,7 @@ impl Sidebar {
             .is(SectionKind::Threads)
             .then_some(self.thread_progress)
             .flatten()
+            .filter(|_| !collapsed)
             .map(progress_status);
         let status = match (counter, progress) {
             (Some(c), Some(p)) => Some(
@@ -1125,6 +1161,7 @@ impl Sidebar {
         section_header_rc(
             section_title(section),
             collapsed,
+            self.header_count(section, IndicatorScheme::RocketChat),
             section.id.flag().map(FlagColor::index),
             status,
             emphasis,
@@ -1144,7 +1181,10 @@ impl Sidebar {
             .then(|| collapsed_unread_status(section))
             .flatten();
         let status = if section.is(SectionKind::Threads) {
+            // The progress shows only while the section is drawn expanded
+            // (also when collapsed just for a search).
             self.thread_progress
+                .filter(|_| !collapsed)
                 .map(progress_status)
                 .or(unread)
                 .or_else(|| Self::hidden_threads(section, layout))
@@ -1154,11 +1194,19 @@ impl Sidebar {
         section_header_full(
             section_title(section),
             collapsed,
-            Some(section.len() as u32),
+            self.header_count(section, IndicatorScheme::Rustket),
             section.id.flag().map(FlagColor::index),
             status,
             Message::Toggle(section.id.clone()),
         )
+    }
+
+    /// The row count in `section`'s header: always under the Rustket scheme;
+    /// under the Rocket.Chat one only for search results (the number of
+    /// matches, also of a section collapsed during the search).
+    fn header_count(&self, section: &Section, scheme: IndicatorScheme) -> Option<u32> {
+        (scheme == IndicatorScheme::Rustket || self.filtering())
+            .then(|| u32::try_from(section.len()).unwrap_or(u32::MAX))
     }
 
     /// Context menu of `section`, the `i`-th of the listed sections `ids`.
@@ -1176,7 +1224,7 @@ impl Sidebar {
             prev: i.checked_sub(1).and_then(|j| ids.get(j).copied()),
             next: ids.get(i + 1).copied(),
             collapsed,
-            filtering: !self.filter.trim().is_empty(),
+            filtering: self.filtering(),
             layout,
             prefs,
             starred_tracked: self.starred_tracked,
@@ -1908,7 +1956,7 @@ struct HeaderMenu<'a> {
     prev: Option<&'a SectionId>,
     next: Option<&'a SectionId>,
     collapsed: bool,
-    /// Sections are search results: no moving, no collapsing.
+    /// Sections are search results: no moving.
     filtering: bool,
     layout: &'a Layout,
     prefs: &'a UiPrefs,
@@ -2099,9 +2147,8 @@ fn header_menu(m: &HeaderMenu<'_>) -> Vec<MenuEntry<Message>> {
             MenuEntry::Separator,
         ]);
     }
-    // Left-click collapses too; the long Threads menu leaves it out. While
-    // filtering every section shows expanded, so the label would lie.
-    if !threads && !m.filtering {
+    // Left-click collapses too; the long Threads menu leaves it out.
+    if !threads {
         let (label, icon) = if m.collapsed {
             (t!("sidebar.menu_expand"), Icon::ChevronsUpDown)
         } else {
@@ -4120,29 +4167,278 @@ mod tests {
             assert_eq!(defaults[0].label, "Default (Newest first)");
         }
 
-        /// While filtering every section shows expanded: no Collapse/Expand
-        /// item (its label would not match what Toggle does to the stored
-        /// state), and no moves.
+        /// While filtering the header menu offers Collapse/Expand for the
+        /// search's own state (a section collapsed before shows expanded),
+        /// but no moves.
         #[test]
-        fn header_menu_while_filtering_has_no_collapse_item() {
+        fn header_menu_while_filtering_collapses_for_the_search() {
+            rust_i18n::set_locale("en");
             let mut fx = Fx::with_rooms(3);
-            fx.collapsed.insert(
-                SectionId::from(SectionKind::Channels)
-                    .collapse_key()
-                    .into_owned(),
-            );
+            let channels = SectionId::from(SectionKind::Channels);
+            fx.collapsed.insert(channels.collapse_key().into_owned());
             fx.refresh();
-            let toggles = |fx: &Fx| {
+            let toggle_label = |fx: &Fx| {
                 let menus = header_menus(fx);
-                items(menu_of(&menus, "channels"), |m| {
+                let toggles = items(menu_of(&menus, "channels"), |m| {
                     matches!(m, Message::Toggle(_))
-                })
-                .len()
+                });
+                assert_eq!(toggles.len(), 1);
+                toggles[0].label.clone()
             };
-            assert_eq!(toggles(&fx), 1);
-            fx.sidebar.filter = "r0".into();
+            assert_eq!(toggle_label(&fx), "Expand");
+            fx.sidebar.update(Message::Filter("r0".into()));
             fx.refresh();
-            assert_eq!(toggles(&fx), 0);
+            assert_eq!(toggle_label(&fx), "Collapse");
+            fx.sidebar.update(Message::Toggle(channels));
+            assert_eq!(toggle_label(&fx), "Expand");
+            let menus = header_menus(&fx);
+            assert!(
+                items(menu_of(&menus, "channels"), |m| {
+                    matches!(layout_edit(m), Some(LayoutEdit::MoveTo { .. }))
+                })
+                .iter()
+                .all(|i| i.disabled),
+                "no moves while filtering"
+            );
+        }
+
+        /// The arrows work while filtering: a section collapsed during the
+        /// search stays collapsed for it (Alt+Up/Down and reveal skip it),
+        /// the persisted state is untouched, and clearing the search brings
+        /// it back.
+        #[test]
+        fn sections_collapse_during_a_search_without_saving() {
+            let mut fx = Fx::with_rooms(3);
+            let channels = SectionId::from(SectionKind::Channels);
+            let dms = SectionId::from(SectionKind::DirectMessages);
+            let dm_key = dms.collapse_key().into_owned();
+            // Direct messages collapsed before the search.
+            fx.collapsed.insert(dm_key.clone());
+            let saved = fx.collapsed.clone();
+            let listed = |fx: &Fx| -> Vec<(String, bool)> {
+                fx.sidebar
+                    .listed_with(&fx.collapsed)
+                    .map(|(s, c)| (s.id.as_config_str(), c))
+                    .collect()
+            };
+            let steps = |fx: &Fx| -> Vec<String> {
+                crate::omnichannel::sidebar::step_order(
+                    &fx.sid,
+                    &fx.ws,
+                    &fx.sidebar.sections,
+                    fx.sidebar.collapsed(&fx.collapsed),
+                )
+                .iter()
+                .map(|i| i.rid.clone())
+                .collect()
+            };
+            fx.sidebar.update(Message::Filter("r000".into()));
+            fx.refresh();
+            assert_eq!(listed(&fx), [("channels".to_owned(), false)]);
+            assert_eq!(steps(&fx), ["r0000", "r0001", "r0002"]);
+            // "b" matches the DM (bob) too: it shows its matches although
+            // collapsed before the search.
+            fx.sidebar.update(Message::Filter("b".into()));
+            fx.refresh();
+            assert_eq!(listed(&fx), [("direct_messages".to_owned(), false)]);
+            assert_eq!(steps(&fx), ["dm"]);
+            fx.sidebar.update(Message::Filter("r000".into()));
+            fx.refresh();
+            // The arrow collapses it for this search only.
+            assert!(matches!(
+                fx.sidebar.update(Message::Toggle(channels.clone())),
+                Out::None
+            ));
+            assert_eq!(fx.collapsed, saved);
+            assert_eq!(listed(&fx), [("channels".to_owned(), true)]);
+            assert!(steps(&fx).is_empty());
+            fx.sidebar.viewport = Some((0.0, 600.0, 1000.0));
+            assert_eq!(
+                fx.sidebar
+                    .reveal_offset("r0002", Density::Extended, &fx.collapsed),
+                None
+            );
+            // The header still counts the matches, under both schemes.
+            let sec = &fx.sidebar.sections[0];
+            assert_eq!(
+                fx.sidebar.header_count(sec, IndicatorScheme::Rustket),
+                Some(3)
+            );
+            assert_eq!(
+                fx.sidebar.header_count(sec, IndicatorScheme::RocketChat),
+                Some(3)
+            );
+            // Refining the query keeps it collapsed.
+            fx.sidebar.update(Message::Filter("r0001".into()));
+            fx.refresh();
+            assert_eq!(listed(&fx), [("channels".to_owned(), true)]);
+            assert_eq!(
+                fx.sidebar
+                    .header_count(&fx.sidebar.sections[0], IndicatorScheme::RocketChat),
+                Some(1)
+            );
+            // Expanded again by its arrow.
+            fx.sidebar.update(Message::Toggle(channels.clone()));
+            assert_eq!(listed(&fx), [("channels".to_owned(), false)]);
+            fx.sidebar.update(Message::Toggle(channels.clone()));
+            // Clearing the search: the saved state again (Channels open, DMs
+            // collapsed), and a new search starts expanded.
+            fx.sidebar.update(Message::ClearFilter);
+            fx.refresh();
+            assert_eq!(
+                listed(&fx),
+                [
+                    ("channels".to_owned(), false),
+                    ("direct_messages".to_owned(), true)
+                ]
+            );
+            assert_eq!(steps(&fx), ["r0000", "r0001", "r0002"]);
+            assert_eq!(
+                fx.sidebar
+                    .header_count(&fx.sidebar.sections[0], IndicatorScheme::RocketChat),
+                None
+            );
+            fx.sidebar.update(Message::Filter("r000".into()));
+            fx.refresh();
+            assert_eq!(listed(&fx), [("channels".to_owned(), false)]);
+            // Erasing the query by hand clears it as well.
+            fx.sidebar.update(Message::Toggle(channels.clone()));
+            fx.sidebar.update(Message::Filter("  ".into()));
+            fx.sidebar.update(Message::Filter("r000".into()));
+            fx.refresh();
+            assert_eq!(listed(&fx), [("channels".to_owned(), false)]);
+            // Without a search the arrow saves the state as before.
+            fx.sidebar.update(Message::ClearFilter);
+            assert!(matches!(
+                fx.sidebar.update(Message::Toggle(channels)),
+                Out::ToggleSection(k) if k == "sidebar.channels"
+            ));
+        }
+
+        /// The omnichannel groups follow the same rule in the drawn view: a
+        /// group collapsed before the search shows its matches, its arrow
+        /// collapses it for the search only, and the header counts the
+        /// matches under the Rocket.Chat scheme.
+        #[test]
+        fn omnichannel_groups_collapse_during_a_search() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            fx.sid = ServerId("omni-sidebar-search-test".into());
+            fx.prefs.indicator_scheme = IndicatorScheme::RocketChat;
+            let mut state = rustket_core::omnichannel::OmnichannelState::new();
+            state.accessible = true;
+            crate::omnichannel::shared::publish(&fx.sid, &state);
+            fx.ws.apply_subscription(
+                Change::Inserted,
+                sub("lc", "visitor-zed", RoomType::Livechat),
+            );
+            let mut lc = room("lc", "visitor-zed", RoomType::Livechat, 1_700_000_500_000);
+            lc.open = Some(true);
+            fx.ws.apply_room(Change::Inserted, lc);
+            let key = crate::omnichannel::sidebar::section_key(
+                rustket_core::omnichannel::room_list::OmnichannelSectionKind::Open,
+            );
+            // Collapsed before the search.
+            fx.collapsed.insert(key.to_owned());
+            let saved = fx.collapsed.clone();
+            fx.refresh();
+            let texts = |fx: &Fx| crate::tree_probe::texts(fx.view());
+            let shown = |fx: &Fx| texts(fx).iter().any(|t| t == "visitor-zed");
+            // The text after the group's title: its count, if any.
+            let after_title = |fx: &Fx| {
+                let t = texts(fx);
+                let i = t.iter().position(|t| t == "CHATS IN PROGRESS").unwrap();
+                t.get(i + 1).cloned()
+            };
+            assert!(!shown(&fx));
+            assert_ne!(after_title(&fx).as_deref(), Some("1"));
+            fx.sidebar.update(Message::Filter("zed".into()));
+            fx.refresh();
+            assert!(shown(&fx), "{:?}", texts(&fx));
+            assert_eq!(after_title(&fx).as_deref(), Some("1"));
+            assert!(matches!(
+                fx.sidebar
+                    .update(Message::Omni(crate::omnichannel::sidebar::Msg::Toggle(
+                        key.to_owned()
+                    ))),
+                Out::None
+            ));
+            assert_eq!(fx.collapsed, saved);
+            assert!(!shown(&fx));
+            assert_eq!(after_title(&fx).as_deref(), Some("1"));
+            // Clearing the search: the saved state again.
+            fx.sidebar.update(Message::ClearFilter);
+            fx.refresh();
+            assert!(!shown(&fx));
+            assert_ne!(after_title(&fx).as_deref(), Some("1"));
+            crate::omnichannel::shared::forget(&fx.sid);
+        }
+
+        /// The Threads loading progress shows only while the section is
+        /// drawn expanded, also when collapsed just for a search.
+        #[test]
+        fn thread_progress_hides_when_collapsed_during_a_search() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 5, 0);
+            fx.sidebar.set_thread_progress(Some((2, 9)));
+            fx.sidebar.update(Message::Filter("TOPIC".into()));
+            fx.refresh();
+            let progress = |fx: &Fx| {
+                crate::tree_probe::texts(fx.view())
+                    .iter()
+                    .any(|t| t == "2/9")
+            };
+            assert!(progress(&fx));
+            fx.sidebar
+                .update(Message::Toggle(SectionKind::Threads.into()));
+            assert!(!progress(&fx));
+            fx.prefs.indicator_scheme = IndicatorScheme::RocketChat;
+            fx.refresh();
+            assert!(!progress(&fx));
+            fx.sidebar
+                .update(Message::Toggle(SectionKind::Threads.into()));
+            assert!(progress(&fx));
+        }
+
+        /// A collapsed section's rows are not built while filtering, and
+        /// the body is rebuilt when the search's collapsed state changes.
+        #[test]
+        fn collapsing_during_a_search_rebuilds_the_body() {
+            rust_i18n::set_locale("en");
+            let mut fx = Fx::with_rooms(30);
+            fx.sidebar.update(Message::Filter("r00".into()));
+            fx.refresh();
+            BUILDS.with(|b| b.set((0, 0)));
+            let mut tree = Tree::new(fx.view().as_widget());
+            let (_, rows) = BUILDS.with(std::cell::Cell::get);
+            assert!(rows >= 10, "{rows}");
+            fx.sidebar
+                .update(Message::Toggle(SectionKind::Channels.into()));
+            let (bodies, rows) = fx.diff(&mut tree);
+            assert_eq!((bodies, rows), (1, 0));
+        }
+
+        /// While filtering a thread row matches by its own title, not by its
+        /// room's name: the room is found, not dozens of its threads.
+        #[test]
+        fn search_finds_threads_by_their_title_only() {
+            let mut fx = Fx::with_rooms(3);
+            with_threads(&mut fx, 5, 0);
+            fx.refresh();
+            assert_eq!(threads(&fx.sidebar).len(), 5);
+            fx.sidebar.update(Message::Filter("r0000".into()));
+            fx.refresh();
+            assert!(threads(&fx.sidebar).is_empty());
+            assert!(
+                fx.sidebar
+                    .sections
+                    .iter()
+                    .any(|s| s.items.iter().any(|i| i.rid == "r0000"))
+            );
+            fx.sidebar.update(Message::Filter("TOPIC t003".into()));
+            fx.refresh();
+            assert_eq!(threads(&fx.sidebar), ["t003"]);
         }
 
         /// Unread offers Hide; a group offers Ungroup…, which opens the

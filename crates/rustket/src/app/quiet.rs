@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 use iced::Task;
 use rocketchat::models::UserStatus;
 use rustket_core::ServerId;
-use rustket_core::quiet::{self, ExpiryAction, ExpiryStep, HoldStep, Quiet, StatusExpiry};
+use rustket_core::quiet::{
+    self, ExpiryAction, ExpiryStep, HoldStep, Quiet, StatusExpiry, StatusHold,
+};
 
 use super::{App, Modal};
 use crate::message::Message;
@@ -91,7 +93,9 @@ impl App {
                 Task::none()
             }
             // Comes with its server through `set_status_expiry`.
-            Msg::Request(Request::Expiry(_) | Request::ReleaseHold) => Task::none(),
+            Msg::Request(Request::Expiry(_) | Request::KeptExpiry(_) | Request::ReleaseHold) => {
+                Task::none()
+            }
             Msg::Picker(pm) => {
                 let morning = self.config.ui.morning_hour();
                 let Some(Modal::PauseCustom(picker)) = self.modals.last_mut() else {
@@ -123,15 +127,17 @@ impl App {
 
     /// The status just set from the status menu of server `sid` clears
     /// itself at `e.at` (`None`: it does not).
+    /// `kept`: the current expiry kept with a new text, stored as it is.
     pub(super) fn set_status_expiry(
         &mut self,
         sid: &ServerId,
         e: Option<StatusExpiry>,
+        kept: bool,
     ) -> Task<Message> {
         let Some(entry) = self.config.server_mut(sid) else {
             return Task::none();
         };
-        let e = e.map(|e| quiet::expiry_for_hold(e, entry.status_hold.as_ref()));
+        let e = e.map(|e| stored_expiry(e, kept, entry.status_hold.as_ref()));
         if entry.status_expiry == e {
             return Task::none();
         }
@@ -146,11 +152,14 @@ impl App {
             .config
             .server_mut(sid)
             .and_then(|e| e.status_hold.as_mut())
-            .filter(|h| !h.released)
+            .filter(|h| !h.released || h.expires_at.is_some())
         else {
             return Task::none();
         };
+        // The expiry followed so far was the old status's (the new one's
+        // is followed from the next step on).
         h.released = true;
+        h.expires_at = None;
         self.save_config()
     }
 
@@ -246,13 +255,9 @@ impl App {
         if !crate::cache::online(s) {
             return (Task::none(), false);
         }
-        let (Some(uid), Some(me)) = (s.workspace.user_id(), s.workspace.me()) else {
+        let Some(inputs) = status_inputs(&s.workspace, idle_away, now) else {
             return (Task::none(), false);
         };
-        let uid = uid.to_owned();
-        let auto_away = quiet::idle_away(idle_away, me.status_default);
-        let status = s.workspace.my_chosen_status();
-        let text = me.status_text.clone().unwrap_or_default();
         let Some(rest) = s.session.as_ref().map(|h| h.rest().clone()) else {
             return (Task::none(), false);
         };
@@ -260,72 +265,9 @@ impl App {
         let Some(entry) = self.config.server_mut(sid) else {
             return (Task::none(), false);
         };
-        let mut changed = false;
-        // An expiring status first (it may set the status the hold sees).
-        if let Some(e) = entry.status_expiry.clone() {
-            match quiet::expiry_step(&e, &uid, now, status, &text) {
-                ExpiryStep::Wait => {}
-                ExpiryStep::Forget => {
-                    entry.status_expiry = None;
-                    changed = true;
-                }
-                ExpiryStep::Clear(restore) => {
-                    // A pause that set busy over the expiring status ends
-                    // on the status after it.
-                    if let Some(h) = quiet::hold_after_expiry(&e, entry.status_hold.as_ref()) {
-                        entry.status_hold = Some(h);
-                        changed = true;
-                    }
-                    // A pause holding busy keeps it: only the text clears,
-                    // and the status waits for the end of the pause.
-                    let call = match quiet::expiry_action(restore, busy_wanted, status) {
-                        ExpiryAction::Clear(st) => StatusCall::Expire(st),
-                        ExpiryAction::ClearAndHold(st) => StatusCall::ExpireHold(st),
-                        ExpiryAction::ClearToBusy(st) => {
-                            StatusCall::ExpireBusy(rustket_core::quiet::StatusHold {
-                                user_id: uid.clone(),
-                                status: st,
-                                text: String::new(),
-                                released: false,
-                            })
-                        }
-                    };
-                    return (self.status_call(sid, epoch, rest, call), changed);
-                }
-            }
-        }
-        let step = quiet::hold_step(
-            busy_wanted,
-            entry.status_hold.as_ref(),
-            &uid,
-            status,
-            &text,
-            auto_away,
-        );
-        let call = match step {
-            HoldStep::Nothing => None,
-            HoldStep::Keep(h) => {
-                entry.status_hold = Some(h);
-                changed = true;
-                None
-            }
-            HoldStep::Release => {
-                if let Some(h) = entry.status_hold.as_mut() {
-                    h.released = true;
-                }
-                changed = true;
-                None
-            }
-            HoldStep::Forget => {
-                entry.status_hold = None;
-                changed = true;
-                None
-            }
-            HoldStep::SetBusy(h) => Some(StatusCall::Busy(h)),
-            HoldStep::Restore(st) => Some(StatusCall::Restore(st)),
-        };
+        let (call, changed) = status_step(entry, &inputs, busy_wanted, now);
         let task = match call {
-            Some(c) => self.status_call(sid, epoch, rest, c),
+            Some((c, keep)) => self.status_call(sid, epoch, rest, c, keep),
             None => Task::none(),
         };
         (task, changed)
@@ -337,22 +279,19 @@ impl App {
         epoch: u64,
         rest: rocketchat::RestClient,
         call: StatusCall,
+        keep: Option<rocketchat::RcDate>,
     ) -> Task<Message> {
         self.quiet.inflight.insert(sid.clone());
         let sid = sid.clone();
         let c2 = call.clone();
         Task::perform(
             async move {
-                match c2 {
-                    // The text stays as it is.
-                    StatusCall::Busy(_) => rest.users_set_status(UserStatus::Busy, None).await,
-                    StatusCall::Restore(st) => rest.users_set_status(st, None).await,
-                    StatusCall::Expire(Some(st)) => rest.users_set_status(st, Some("")).await,
-                    StatusCall::ExpireBusy(_) => {
-                        rest.users_set_status(UserStatus::Busy, Some("")).await
-                    }
-                    StatusCall::Expire(None) | StatusCall::ExpireHold(_) => {
-                        rest.users_set_status_message("").await
+                let (status, message, expires) = status_call_args(&c2, keep);
+                match status {
+                    Some(st) => rest.users_set_status(st, message, expires).await,
+                    None => {
+                        rest.users_set_status_message(message.unwrap_or_default(), expires)
+                            .await
                     }
                 }
                 .map_err(crate::error::Failure::from)
@@ -427,6 +366,7 @@ impl App {
                         status: st,
                         text: String::new(),
                         released: false,
+                        expires_at: None,
                     });
                 }
             }
@@ -462,6 +402,193 @@ impl App {
     }
 }
 
+/// The expiry stored for one the status menu set (`kept`: the current
+/// one kept with a new text, whose restore is not the status before).
+fn stored_expiry(e: StatusExpiry, kept: bool, hold: Option<&StatusHold>) -> StatusExpiry {
+    if kept {
+        e
+    } else {
+        quiet::expiry_for_hold(e, hold)
+    }
+}
+
+/// What a status step reads of the account's workspace.
+#[derive(Debug, Clone)]
+struct StatusInputs {
+    uid: String,
+    /// The chosen status (`Workspace::my_chosen_status`).
+    status: Option<UserStatus>,
+    text: String,
+    /// When the current status clears on the server, if ahead.
+    keep: Option<rocketchat::RcDate>,
+    /// The away status is the app's idle away.
+    auto_away: bool,
+}
+
+fn status_inputs(
+    ws: &rustket_core::workspace::Workspace,
+    idle_away: bool,
+    now: i64,
+) -> Option<StatusInputs> {
+    let (uid, me) = (ws.user_id()?, ws.me()?);
+    Some(StatusInputs {
+        uid: uid.to_owned(),
+        status: ws.my_chosen_status(),
+        text: me.status_text.clone().unwrap_or_default(),
+        // A status change without `expiresAt` drops the server's expiry:
+        // busy and its restore repeat it (the text stays, so does when it
+        // clears).
+        keep: ws.my_status_expiry(now),
+        auto_away: quiet::idle_away(idle_away, me.status_default),
+    })
+}
+
+/// One status step of `entry`'s account: the call (with the server expiry
+/// it repeats) and whether `entry` changed.
+fn status_step(
+    entry: &mut rustket_core::config::ServerEntry,
+    inputs: &StatusInputs,
+    busy_wanted: bool,
+    now: i64,
+) -> (Option<(StatusCall, Option<rocketchat::RcDate>)>, bool) {
+    let StatusInputs {
+        uid,
+        status,
+        text,
+        keep,
+        auto_away,
+    } = inputs;
+    let (status, auto_away) = (*status, *auto_away);
+    let mut changed = false;
+    // An expiring status first (it may set the status the hold sees).
+    if let Some(e) = entry.status_expiry.clone() {
+        match quiet::expiry_step(&e, uid, now, status, text) {
+            ExpiryStep::Wait => {}
+            ExpiryStep::Forget => {
+                entry.status_expiry = None;
+                changed = true;
+            }
+            ExpiryStep::Clear(restore) => {
+                // A pause that set busy over the expiring status ends
+                // on the status after it.
+                if let Some(h) = quiet::hold_after_expiry(&e, entry.status_hold.as_ref()) {
+                    entry.status_hold = Some(h);
+                    changed = true;
+                }
+                // A pause holding busy keeps it: only the text clears,
+                // and the status waits for the end of the pause.
+                let call = match quiet::expiry_action(restore, busy_wanted, status) {
+                    ExpiryAction::Clear(st) => StatusCall::Expire(st),
+                    ExpiryAction::ClearAndHold(st) => StatusCall::ExpireHold(st),
+                    ExpiryAction::ClearToBusy(st) => StatusCall::ExpireBusy(StatusHold {
+                        user_id: uid.clone(),
+                        status: st,
+                        text: String::new(),
+                        released: false,
+                        expires_at: None,
+                    }),
+                };
+                return (Some((call, None)), changed);
+            }
+        }
+    }
+    // During a pause the hold follows when the server clears the status
+    // (the pause's busy, or one the hold left alone; another client may
+    // change it), keeping one that is due: busy again once it fired. An
+    // online status's expiry only clears its text (as the app's own
+    // expiries do), so it is not followed.
+    let keep_ms = keep.as_ref().map(rocketchat::RcDate::timestamp_millis);
+    if let Some(h) = entry
+        .status_hold
+        .as_mut()
+        .filter(|h| busy_wanted && h.user_id == *uid && status.is_some())
+    {
+        let at = if status == Some(UserStatus::Online) && keep_ms.is_some() {
+            None
+        } else {
+            quiet::followed_expiry(h.expires_at, keep_ms, now)
+        };
+        if h.expires_at != at {
+            h.expires_at = at;
+            changed = true;
+        }
+    }
+    let step = quiet::hold_step(
+        busy_wanted,
+        entry.status_hold.as_ref(),
+        uid,
+        status,
+        text,
+        auto_away,
+    );
+    // The server's expiry of the status during a pause is not a choice of
+    // the user: busy again.
+    let again = |hold: Option<&StatusHold>| {
+        hold.filter(|h| busy_wanted && h.user_id == *uid)
+            .zip(status)
+            .and_then(|(h, st)| quiet::hold_after_server_expiry(h, st, text, now))
+    };
+    let call = match step {
+        HoldStep::Nothing => again(entry.status_hold.as_ref()).map(StatusCall::Busy),
+        HoldStep::Keep(h) => {
+            entry.status_hold = Some(StatusHold {
+                expires_at: keep_ms,
+                ..h
+            });
+            changed = true;
+            None
+        }
+        HoldStep::Release => match again(entry.status_hold.as_ref()) {
+            Some(h) => Some(StatusCall::Busy(h)),
+            None => {
+                if let Some(h) = entry.status_hold.as_mut() {
+                    h.released = true;
+                }
+                changed = true;
+                None
+            }
+        },
+        HoldStep::Forget => {
+            entry.status_hold = None;
+            changed = true;
+            None
+        }
+        HoldStep::SetBusy(h) => Some(StatusCall::Busy(StatusHold {
+            expires_at: keep_ms,
+            ..h
+        })),
+        HoldStep::Restore(st) => Some(StatusCall::Restore(st)),
+    };
+    (call.map(|c| (c, *keep)), changed)
+}
+
+/// `users.setStatus` arguments of `call` (status, `None`: text only; text,
+/// `None`: kept; `expiresAt`). A call without `expiresAt` drops the
+/// server's expiry, so the pause's busy repeats it (the hold's) and its
+/// restore repeats `keep` (the current one); the app's own expiries (servers
+/// before 8.6) send none.
+fn status_call_args(
+    call: &StatusCall,
+    keep: Option<rocketchat::RcDate>,
+) -> (
+    Option<UserStatus>,
+    Option<&'static str>,
+    Option<rocketchat::RcDate>,
+) {
+    match call {
+        // The text stays as it is.
+        StatusCall::Busy(h) => (
+            Some(UserStatus::Busy),
+            None,
+            h.expires_at.and_then(rocketchat::RcDate::from_millis),
+        ),
+        StatusCall::Restore(st) => (Some(*st), None, keep),
+        StatusCall::Expire(Some(st)) => (Some(*st), Some(""), None),
+        StatusCall::ExpireBusy(_) => (Some(UserStatus::Busy), Some(""), None),
+        StatusCall::Expire(None) | StatusCall::ExpireHold(_) => (None, Some(""), None),
+    }
+}
+
 /// How long the timer sleeps for the next time `next` (UTC ms, a future
 /// one): at least [`MIN_WAIT`] (a time that is already due never makes it
 /// spin), at most [`MAX_WAIT`] (a suspend is noticed), sooner for a retry.
@@ -482,6 +609,7 @@ fn timer_wait(next: Option<i64>, now: i64, idle: bool, retrying: bool) -> Option
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -501,5 +629,303 @@ mod tests {
             timer_wait(None, 0, true, true),
             Some(RETRY_AFTER.min(MAX_WAIT))
         );
+    }
+
+    #[test]
+    fn pause_calls_repeat_the_server_expiry() {
+        use rocketchat::RcDate;
+        use rocketchat::rest::set_status_body;
+        let body = |call: StatusCall, keep: Option<RcDate>| {
+            let (st, msg, exp) = status_call_args(&call, keep);
+            set_status_body(st, msg, exp)
+        };
+        let at = 1_795_000_000_000;
+        let iso = RcDate::from_millis(at).unwrap().to_iso();
+        let hold = |expires_at| StatusHold {
+            user_id: "u".into(),
+            status: UserStatus::Online,
+            text: String::new(),
+            released: false,
+            expires_at,
+        };
+        // Busy repeats the hold's expiry (the one current when it started).
+        assert_eq!(
+            body(StatusCall::Busy(hold(Some(at))), None),
+            serde_json::json!({"status": "busy", "expiresAt": iso})
+        );
+        assert_eq!(
+            body(StatusCall::Busy(hold(None)), None),
+            serde_json::json!({"status": "busy"})
+        );
+        // The restore repeats the current one.
+        assert_eq!(
+            body(
+                StatusCall::Restore(UserStatus::Away),
+                RcDate::from_millis(at)
+            ),
+            serde_json::json!({"status": "away", "expiresAt": iso})
+        );
+        // The app's own expiries send none.
+        let keep = RcDate::from_millis(at);
+        assert_eq!(
+            body(StatusCall::Expire(Some(UserStatus::Online)), keep),
+            serde_json::json!({"status": "online", "message": ""})
+        );
+        assert_eq!(
+            body(StatusCall::Expire(None), keep),
+            serde_json::json!({"message": ""})
+        );
+        assert_eq!(
+            body(StatusCall::ExpireHold(UserStatus::Online), keep),
+            serde_json::json!({"message": ""})
+        );
+        assert_eq!(
+            body(StatusCall::ExpireBusy(hold(Some(at))), keep),
+            serde_json::json!({"status": "busy", "message": ""})
+        );
+    }
+
+    /// The own user document as `/me` returns it.
+    fn me(status: &str, text: Option<&str>, expires_at: Option<i64>) -> rocketchat::models::User {
+        let mut v = serde_json::json!({
+            "_id": "u", "username": "alice", "status": status, "statusDefault": status,
+        });
+        if let Some(t) = text {
+            v["statusText"] = t.into();
+        }
+        if let Some(at) = expires_at {
+            v["statusExpiresAt"] = rocketchat::RcDate::from_millis(at).unwrap().to_iso().into();
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn me_changed(ws: &mut rustket_core::workspace::Workspace, me: rocketchat::models::User) {
+        crate::session::apply_event(ws, &rocketchat::SessionEvent::MeChanged(Box::new(me)));
+    }
+
+    /// The server's expiry of the own status fires, in the order 8.9.1 sends
+    /// it: `user-status` (online, no text, no expiry), a step (the chosen
+    /// status is still the stale `statusDefault`), then the `/me` re-read
+    /// after the `userData` hint. Returns the step after that.
+    fn server_expiry_fires(
+        ws: &mut rustket_core::workspace::Workspace,
+        entry: &mut rustket_core::config::ServerEntry,
+        now: i64,
+    ) -> Option<StatusCall> {
+        crate::session::apply_event(
+            ws,
+            &rocketchat::SessionEvent::UserStatus {
+                uid: "u".into(),
+                username: "alice".into(),
+                status: UserStatus::Online,
+                status_text: Some(String::new()),
+                status_expires_at: None,
+            },
+        );
+        let (call, _) = step(ws, entry, now);
+        assert!(call.is_none(), "{call:?}");
+        me_changed(ws, me("online", None, None));
+        step(ws, entry, now).0
+    }
+
+    /// A step while paused with "Busy while paused".
+    fn step(
+        ws: &rustket_core::workspace::Workspace,
+        entry: &mut rustket_core::config::ServerEntry,
+        now: i64,
+    ) -> (Option<StatusCall>, bool) {
+        let inputs = status_inputs(ws, false, now).unwrap();
+        let (call, changed) = status_step(entry, &inputs, true, now);
+        (call.map(|(c, _)| c), changed)
+    }
+
+    fn new_entry() -> rustket_core::config::ServerEntry {
+        rustket_core::config::ServerEntry::new("http://localhost:3000", "Local")
+    }
+
+    /// Review: the server's expiry of the pause's busy (repeating the
+    /// expiry of the status before it) cleared the hold's expiry while the
+    /// chosen status was still the stale busy, so the pause released the
+    /// hold and the user showed online for the rest of it.
+    #[test]
+    fn server_expiry_of_the_paused_busy_sets_busy_again() {
+        let mut ws = rustket_core::workspace::Workspace::new();
+        let now = 1_795_000_000_000;
+        // Away "Lunch" until `at`, the pause set busy until `at` (the
+        // server clears it a little early by this clock).
+        let at = now + 30_000;
+        me_changed(&mut ws, me("busy", Some("Lunch"), Some(at)));
+        let mut entry = new_entry();
+        entry.status_hold = Some(StatusHold {
+            user_id: "u".into(),
+            status: UserStatus::Away,
+            text: "Lunch".into(),
+            released: false,
+            expires_at: Some(at),
+        });
+        assert_eq!(step(&ws, &mut entry, now), (None, false));
+        let call = server_expiry_fires(&mut ws, &mut entry, now);
+        let Some(StatusCall::Busy(h)) = call else {
+            panic!("{call:?} {:?}", entry.status_hold)
+        };
+        assert_eq!(
+            (h.status, h.text.as_str(), h.released, h.expires_at),
+            (UserStatus::Online, "", false, None)
+        );
+        // Sent without `expiresAt`.
+        assert_eq!(status_call_args(&StatusCall::Busy(h), None).2, None);
+    }
+
+    /// Review: on servers that clear statuses (8.6+), the expiry of a
+    /// status the pause left alone (busy until then when it started, or
+    /// picked with "Clear after" during it) dropped the user to online for
+    /// the rest of the pause; the app's own expiries kept busy
+    /// (`ClearAndHold`, `ClearToBusy`).
+    #[test]
+    fn server_expiry_during_a_pause_keeps_busy_over_a_released_hold() {
+        let mut ws = rustket_core::workspace::Workspace::new();
+        let now = 1_795_000_000_000;
+        let at = now + 30_000;
+        // Busy "Meeting" until `at` when the pause starts: nothing to set.
+        me_changed(&mut ws, me("busy", Some("Meeting"), Some(at)));
+        let mut entry = new_entry();
+        assert_eq!(step(&ws, &mut entry, now), (None, true));
+        let h = entry.status_hold.clone().unwrap();
+        assert!(h.released);
+        assert_eq!(h.expires_at, Some(at));
+        let call = server_expiry_fires(&mut ws, &mut entry, now);
+        assert!(
+            matches!(&call, Some(StatusCall::Busy(h)) if h.status == UserStatus::Online && !h.released),
+            "{call:?}"
+        );
+
+        // Away "Errand" until `at`, picked during the pause (a released
+        // hold; the menu's choice drops the expiry followed so far).
+        let mut entry = new_entry();
+        entry.status_hold = Some(StatusHold {
+            user_id: "u".into(),
+            status: UserStatus::Online,
+            text: String::new(),
+            released: true,
+            expires_at: None,
+        });
+        me_changed(&mut ws, me("away", Some("Errand"), Some(at)));
+        assert_eq!(step(&ws, &mut entry, now), (None, true));
+        assert_eq!(entry.status_hold.as_ref().unwrap().expires_at, Some(at));
+        let call = server_expiry_fires(&mut ws, &mut entry, now);
+        assert!(
+            matches!(&call, Some(StatusCall::Busy(h)) if h.status == UserStatus::Online && !h.released),
+            "{call:?}"
+        );
+        // Another client sets online without a text before the expiry: the
+        // user's choice, nothing is set.
+        let mut entry = new_entry();
+        entry.status_hold = Some(StatusHold {
+            user_id: "u".into(),
+            status: UserStatus::Online,
+            text: String::new(),
+            released: true,
+            expires_at: None,
+        });
+        me_changed(&mut ws, me("away", Some("Errand"), Some(at + 3_600_000)));
+        let _ = step(&ws, &mut entry, now);
+        me_changed(&mut ws, me("online", None, None));
+        assert_eq!(step(&ws, &mut entry, now).0, None);
+        assert_eq!(entry.status_hold.unwrap().expires_at, None);
+    }
+
+    /// Review: before 8.6, a new text over an app expiry kept from before
+    /// a busy pause lost its restore (remapped to the hold's status, the
+    /// expiring one), so the pause ended on that status instead of the one
+    /// after the expiry.
+    #[test]
+    fn a_kept_app_expiry_restores_after_a_busy_pause() {
+        let mut ws = rustket_core::workspace::Workspace::new();
+        let now = 1_795_000_000_000;
+        let at = now + 3_600_000;
+        let hold = StatusHold {
+            user_id: "u".into(),
+            status: UserStatus::Away,
+            text: "Lunch".into(),
+            released: false,
+            expires_at: None,
+        };
+        let kept = StatusExpiry {
+            user_id: "u".into(),
+            at,
+            status: UserStatus::Away,
+            text: "Lunch 2".into(),
+            restore: Some(UserStatus::Online),
+        };
+        // A status picked during the pause still goes back to the hold's.
+        assert_eq!(
+            stored_expiry(kept.clone(), false, Some(&hold)).restore,
+            None
+        );
+        let stored = stored_expiry(kept.clone(), true, Some(&hold));
+        assert_eq!(stored, kept);
+        let mut entry = new_entry();
+        entry.status_hold = Some(hold);
+        entry.status_expiry = Some(stored);
+        me_changed(&mut ws, me("busy", Some("Lunch 2"), None));
+        assert_eq!(step(&ws, &mut entry, now), (None, false));
+        // At the expiry only the text clears; the pause ends on online.
+        let (call, _) = step(&ws, &mut entry, at);
+        assert_eq!(call, Some(StatusCall::Expire(None)));
+        let h = entry.status_hold.as_ref().unwrap();
+        assert_eq!((h.status, h.released), (UserStatus::Online, false));
+    }
+
+    /// Review: an online status with a text and "Clear after", picked
+    /// during the pause, ended in busy when the server cleared its text;
+    /// the app's own expiry of an online status only clears the text.
+    #[test]
+    fn server_expiry_of_an_online_status_picked_during_a_pause_keeps_online() {
+        let mut ws = rustket_core::workspace::Workspace::new();
+        let now = 1_795_000_000_000;
+        let at = now + 30_000;
+        // Picked in Rustket: the hold was released, nothing followed yet.
+        let mut entry = new_entry();
+        entry.status_hold = Some(StatusHold {
+            user_id: "u".into(),
+            status: UserStatus::Online,
+            text: String::new(),
+            released: true,
+            expires_at: None,
+        });
+        me_changed(&mut ws, me("online", Some("WFH"), Some(at)));
+        assert_eq!(step(&ws, &mut entry, now).0, None);
+        assert_eq!(entry.status_hold.as_ref().unwrap().expires_at, None);
+        assert_eq!(server_expiry_fires(&mut ws, &mut entry, now), None);
+
+        // Set on the web while the pause's busy shows (the stale busy step
+        // follows the expiry, then the hold is released with it).
+        let mut ws = rustket_core::workspace::Workspace::new();
+        me_changed(&mut ws, me("busy", None, None));
+        let mut entry = new_entry();
+        entry.status_hold = Some(StatusHold {
+            user_id: "u".into(),
+            status: UserStatus::Online,
+            text: String::new(),
+            released: false,
+            expires_at: None,
+        });
+        crate::session::apply_event(
+            &mut ws,
+            &rocketchat::SessionEvent::UserStatus {
+                uid: "u".into(),
+                username: "alice".into(),
+                status: UserStatus::Online,
+                status_text: Some("WFH".into()),
+                status_expires_at: rocketchat::RcDate::from_millis(at),
+            },
+        );
+        let _ = step(&ws, &mut entry, now);
+        me_changed(&mut ws, me("online", Some("WFH"), Some(at)));
+        assert_eq!(step(&ws, &mut entry, now).0, None);
+        let h = entry.status_hold.as_ref().unwrap();
+        assert!(h.released);
+        assert_eq!(h.expires_at, None);
+        assert_eq!(server_expiry_fires(&mut ws, &mut entry, now), None);
     }
 }

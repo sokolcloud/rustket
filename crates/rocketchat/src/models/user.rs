@@ -57,6 +57,13 @@ pub struct User {
     pub status_default: Option<UserStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_connection: Option<String>,
+    /// When the server clears the custom status (Rocket.Chat 8.6+; REST
+    /// sends an ISO string, streams `{"$date": ms}`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::lenient::opt"
+    )]
+    pub status_expires_at: Option<RcDate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

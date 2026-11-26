@@ -359,6 +359,11 @@ pub struct StatusHold {
     /// the user changed it during the pause.
     #[serde(default)]
     pub released: bool,
+    /// When the busy status clears on the server (UTC ms): the
+    /// `statusExpiresAt` the pause's busy repeats, followed while busy
+    /// (`hold_after_server_expiry`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 /// What to do with the user's status on one server.
@@ -406,6 +411,7 @@ pub fn hold_step(
                 status,
                 text: text.to_owned(),
                 released: matches!(status, UserStatus::Busy | UserStatus::Offline),
+                expires_at: None,
             };
             if h.released {
                 HoldStep::Keep(h)
@@ -421,6 +427,49 @@ pub fn hold_step(
         (false, Some(_)) => HoldStep::Forget,
         (false, None) => HoldStep::Nothing,
     }
+}
+
+/// How far ahead of the server's expiry (ms) a status change still counts
+/// as the expiry firing (the clocks may differ).
+pub const SERVER_EXPIRY_SLACK_MS: i64 = 60_000;
+
+/// The server expiry a hold follows (`StatusHold::expires_at`) once the
+/// current status's is `keep` (UTC ms, a future one; `None`: none) at
+/// `now_ms`. A followed one that is due stays: its firing looks like a
+/// status change without expiry, and [`hold_after_server_expiry`] needs it
+/// (the chosen status stays stale until `/me` is read again).
+pub fn followed_expiry(followed: Option<i64>, keep: Option<i64>, now_ms: i64) -> Option<i64> {
+    match (keep, followed) {
+        (None, Some(at)) if now_ms + SERVER_EXPIRY_SLACK_MS >= at => Some(at),
+        _ => keep,
+    }
+}
+
+/// The hold once the server's expiry of the status during a pause fired:
+/// the server reset the status to online without text, which is not the
+/// user's choice, so busy is set again and the pause ends on online (where
+/// the expiry would have left it). This holds for the pause's own busy and
+/// for a status the hold left alone (released: busy or invisible before
+/// the pause, or picked during it), as the app's own expiries do
+/// ([`ExpiryAction::ClearAndHold`], [`ExpiryAction::ClearToBusy`]).
+/// `None`: a change the user made (an unreleased hold is released,
+/// [`HoldStep::Release`]).
+pub fn hold_after_server_expiry(
+    hold: &StatusHold,
+    current: UserStatus,
+    text: &str,
+    now_ms: i64,
+) -> Option<StatusHold> {
+    let at = hold.expires_at?;
+    let fired =
+        current == UserStatus::Online && text.is_empty() && now_ms + SERVER_EXPIRY_SLACK_MS >= at;
+    fired.then(|| StatusHold {
+        status: UserStatus::Online,
+        text: String::new(),
+        released: false,
+        expires_at: None,
+        ..hold.clone()
+    })
 }
 
 /// A status set with "Clear after" (`ServerEntry::status_expiry`).
@@ -912,6 +961,89 @@ mod tests {
     }
 
     #[test]
+    fn server_expiry_of_paused_busy_sets_busy_again() {
+        use UserStatus::*;
+        let h = StatusHold {
+            user_id: "u".into(),
+            status: Away,
+            text: "Lunch".into(),
+            released: false,
+            expires_at: Some(1_000_000),
+        };
+        let again = hold_after_server_expiry(&h, Online, "", 1_000_000).unwrap();
+        assert_eq!(
+            (
+                again.status,
+                again.text.as_str(),
+                again.released,
+                again.expires_at
+            ),
+            (Online, "", false, None)
+        );
+        // Within the clock slack.
+        assert!(
+            hold_after_server_expiry(&h, Online, "", 1_000_000 - SERVER_EXPIRY_SLACK_MS).is_some()
+        );
+        // Before the expiry, another status or a text: the user's change.
+        assert_eq!(hold_after_server_expiry(&h, Online, "", 500_000), None);
+        assert_eq!(hold_after_server_expiry(&h, Away, "", 1_000_000), None);
+        assert_eq!(
+            hold_after_server_expiry(&h, Online, "Back", 1_000_000),
+            None
+        );
+        // No expiry.
+        let none = StatusHold {
+            expires_at: None,
+            ..h.clone()
+        };
+        assert_eq!(hold_after_server_expiry(&none, Online, "", 1_000_000), None);
+        // Released (busy "Meeting" until then when the pause started, or a
+        // status picked during it): busy again too, unreleased, ending on
+        // online.
+        let released = StatusHold {
+            status: Busy,
+            text: "Meeting".into(),
+            released: true,
+            ..h
+        };
+        let again = hold_after_server_expiry(&released, Online, "", 1_000_000).unwrap();
+        assert_eq!(
+            (
+                again.status,
+                again.text.as_str(),
+                again.released,
+                again.expires_at
+            ),
+            (Online, "", false, None)
+        );
+        assert_eq!(
+            hold_after_server_expiry(&released, Away, "", 1_000_000),
+            None
+        );
+    }
+
+    #[test]
+    fn a_due_followed_expiry_is_not_dropped() {
+        let at = 1_000_000;
+        // Followed while ahead: moved or dropped with the status.
+        assert_eq!(followed_expiry(None, Some(at), 0), Some(at));
+        assert_eq!(followed_expiry(Some(at), Some(at + 5), 0), Some(at + 5));
+        assert_eq!(followed_expiry(Some(at), None, 0), None);
+        // Due (also within the clock slack): the server's expiry fired, the
+        // hold keeps it.
+        assert_eq!(followed_expiry(Some(at), None, at), Some(at));
+        assert_eq!(followed_expiry(Some(at), None, at + 10_000), Some(at));
+        assert_eq!(
+            followed_expiry(Some(at), None, at - SERVER_EXPIRY_SLACK_MS),
+            Some(at)
+        );
+        assert_eq!(
+            followed_expiry(Some(at), None, at - SERVER_EXPIRY_SLACK_MS - 1),
+            None
+        );
+    }
+
+    #[test]
     fn expiring_status_clears_unless_changed() {
         use UserStatus::*;
         let e = StatusExpiry {
@@ -961,6 +1093,7 @@ mod tests {
             status: Online,
             text: String::new(),
             released: false,
+            expires_at: None,
         };
         // "offline" without a connection while statusDefault stays busy.
         assert_eq!(chosen_status(None, Offline), None);
@@ -1019,6 +1152,7 @@ mod tests {
             status: Away,
             text: String::new(),
             released: false,
+            expires_at: None,
         };
         let e = StatusExpiry {
             user_id: "u".into(),
@@ -1085,6 +1219,7 @@ mod tests {
             status: Away,
             text: "Lunch".into(),
             released: false,
+            expires_at: None,
         };
         let h = hold_after_expiry(&e, Some(&hold)).unwrap();
         assert_eq!((h.status, h.text.as_str(), h.released), (Online, "", false));

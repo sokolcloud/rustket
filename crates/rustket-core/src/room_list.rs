@@ -981,8 +981,8 @@ fn in_flag_section(ws: &Workspace, rid: &str, tmid: &str) -> bool {
 /// Thread rows of the flag section of `color`: flagged threads in listed,
 /// non-omnichannel rooms, whatever the Threads mode is (empty while threads
 /// are disabled on the server). Gone or deleted parents are listed while
-/// flagged. `q` (lower case) matches the room name and the title. Sorted by
-/// the section's sort and unread-first setting.
+/// flagged. `q` (lower case) matches the thread's own title, not its room's
+/// name. Sorted by the section's sort and unread-first setting.
 pub fn flagged_thread_rows(
     ws: &Workspace,
     opts: &RoomListOptions,
@@ -1033,7 +1033,7 @@ pub fn flag_usage(ws: &Workspace) -> std::collections::BTreeMap<FlagColor, (usiz
 /// mode is. Unread ones stay here too (Threads does not repeat them);
 /// flagged ones are in their flag's section.
 /// Deleted parents are listed while starred. `q` (lower case) matches the
-/// room name and the title. Sorted by the Favorites sort and unread-first
+/// thread's own title, not its room's name. Sorted by the Favorites sort and unread-first
 /// setting; not cut.
 pub fn starred_thread_rows(ws: &Workspace, opts: &RoomListOptions, q: &str) -> Vec<ThreadListItem> {
     if !starred_threads_shown(ws, opts) {
@@ -1132,9 +1132,9 @@ pub fn threads_unread(s: &rocketchat::models::Subscription) -> Option<BadgeVaria
 ///
 /// Parents come from the thread index only; unknown ones give placeholder
 /// rows. Deleted parents are listed only while unread or kept. `q` (lower
-/// case) matches the room name and the title. Sorted by the section's sort,
-/// unread (and the open thread) first when the section lists unread first,
-/// then cut to the section's limit (see [`cap_thread_rows`]).
+/// case) matches the thread's own title, not its room's name. Sorted by the
+/// section's sort, unread (and the open thread) first when the section lists
+/// unread first, then cut to the section's limit (see [`cap_thread_rows`]).
 pub fn thread_rows(ws: &Workspace, opts: &RoomListOptions, q: &str) -> Vec<ThreadListItem> {
     let mut rows = all_thread_rows(ws, opts, q);
     cap_thread_rows(&mut rows, opts);
@@ -1233,7 +1233,9 @@ pub fn all_thread_rows(ws: &Workspace, opts: &RoomListOptions, q: &str) -> Vec<T
 }
 
 /// The row of thread `tmid` of the listed room `e` (`None`: `q`, lower
-/// case, matches neither the room name nor the title).
+/// case, does not match the title). A filter matches a thread by its own
+/// text only: the parent room's name would list every thread of a matching
+/// room above the room itself.
 fn thread_item(
     ws: &Workspace,
     e: &RoomEntry,
@@ -1252,13 +1254,13 @@ fn thread_item(
         None if idx.is_gone(tmid) => ThreadTitle::Unavailable,
         None => ThreadTitle::Loading,
     };
-    let room_name = display_name(ws, e, opts.use_real_names);
     if !q.is_empty() {
         let hit = |s: &str| s.to_lowercase().contains(q);
-        if !hit(&room_name) && !title.text().is_some_and(hit) {
+        if !title.text().is_some_and(hit) {
             return None;
         }
     }
+    let room_name = display_name(ws, e, opts.use_real_names);
     let author = parent.and_then(|p| p.u.username.clone());
     let avatar = match &author {
         Some(u) => Avatar::User {
@@ -2963,10 +2965,17 @@ mod tests {
         let rows = thread_rows(&ws2, &with(SidebarSort::Alphabetical), "");
         assert_eq!(tmids(&rows), ["t2", "t1", "t3"]);
         assert_eq!(rows[0].title, ThreadTitle::Text("Another topic".into()));
-        // The filter matches titles and room names.
+        // The filter matches a thread's own title, never its room's name
+        // (the room row matches that).
         let opts = thread_opts(ThreadsMode::Unread);
         assert_eq!(tmids(&thread_rows(&ws2, &opts, "another")), ["t2"]);
-        assert_eq!(thread_rows(&ws2, &opts, "alph").len(), 3);
+        assert_eq!(tmids(&thread_rows(&ws2, &opts, "topic")), ["t2"]);
+        assert!(thread_rows(&ws2, &opts, "alph").is_empty());
+        assert!(
+            compute(&ws2, &opts, "alph")
+                .iter()
+                .all(|s| s.threads.is_empty())
+        );
         // A filter without hits drops the section; no filter keeps it empty.
         assert_eq!(ids(&compute(&ws2, &opts, "beta")), ["channels"]);
         let empty = ws_with(vec![(sub("c", "chan", RoomType::Channel), None)]);
@@ -3072,8 +3081,8 @@ mod tests {
         // Exactly the limit: nothing hidden; a filter searches every row.
         let s = compute(&ws, &with(5, None), "");
         assert_eq!((s[0].threads.len(), s[0].threads_hidden), (5, 0));
-        let s = compute(&ws, &with(1, None), "alpha");
-        assert_eq!((s[0].threads.len(), s[0].threads_hidden), (3, 0));
+        let s = compute(&ws, &with(1, None), "text");
+        assert_eq!((s[0].threads.len(), s[0].threads_hidden), (4, 0));
     }
 
     #[test]
@@ -3261,10 +3270,12 @@ mod tests {
         assert_eq!(ids(&s), ["favorites", "channels"]);
         assert!(s[0].items.is_empty());
         assert_eq!(s[0].threads.len(), 3);
-        // A filter searches them like Threads rows.
-        let s = compute(&ws, &opts, "beta");
-        assert_eq!(ids(&s), ["favorites", "channels"]);
+        // A filter searches them like Threads rows: by their own titles,
+        // not by their room's name.
+        let s = compute(&ws, &opts, "text s");
+        assert_eq!(ids(&s), ["favorites"]);
         assert_eq!(tmids(&s[0].threads), ["s2", "s1"]);
+        assert_eq!(ids(&compute(&ws, &opts, "beta")), ["channels"]);
         assert_eq!(ids(&compute(&ws, &opts, "nothing")), Vec::<String>::new());
     }
 

@@ -403,8 +403,10 @@ pub fn apply_event_for(
             username,
             status,
             status_text,
+            status_expires_at,
         } => {
             ws.apply_user_status(uid, Some(username), *status, status_text.as_deref());
+            ws.apply_status_expiry(uid, *status_expires_at);
             Followup::None
         }
         E::AvatarUpdated { username, rid, .. } => Followup::AvatarChanged {
@@ -840,6 +842,7 @@ mod tests {
                 username: "bob".into(),
                 status: UserStatus::Busy,
                 status_text: None,
+                status_expires_at: None,
             },
         );
         let changes = ws.take_changes();
@@ -881,6 +884,39 @@ mod tests {
             ws.me().and_then(|m| m.name.as_deref()),
             Some("Alice Renamed")
         );
+    }
+
+    #[test]
+    fn user_status_events_carry_my_status_expiry() {
+        let mut ws = Workspace::new();
+        apply_event(&mut ws, &SessionEvent::Ready { me: Box::new(me()) });
+        let at = rocketchat::RcDate::parse_iso("2026-11-27T21:00:00.000Z");
+        let status =
+            |uid: &str, text: &str, expires: Option<rocketchat::RcDate>| SessionEvent::UserStatus {
+                uid: uid.into(),
+                username: "x".into(),
+                status: UserStatus::Busy,
+                status_text: Some(text.into()),
+                status_expires_at: expires,
+            };
+        // Set from another client.
+        apply_event(&mut ws, &status("me", "Vacation", at));
+        assert_eq!(ws.me().and_then(|m| m.status_expires_at), at);
+        assert_eq!(ws.my_status_expiry(0), at);
+        assert_eq!(ws.my_status(), UserStatus::Busy);
+        // Another user's expiry is not mine.
+        apply_event(&mut ws, &status("bob-id", "Away", None));
+        assert_eq!(ws.me().and_then(|m| m.status_expires_at), at);
+        // Only the expiry changes (same status and text): still applied.
+        let later = rocketchat::RcDate::parse_iso("2026-11-28T21:00:00.000Z");
+        ws.take_changes();
+        apply_event(&mut ws, &status("me", "Vacation", later));
+        assert_eq!(ws.me().and_then(|m| m.status_expires_at), later);
+        assert!(ws.take_changes().areas.contains(Dirty::ME));
+        // Cleared (by the server when it expired, or by another client).
+        apply_event(&mut ws, &status("me", "", None));
+        assert_eq!(ws.me().and_then(|m| m.status_expires_at), None);
+        assert_eq!(ws.me().and_then(|m| m.status_text.clone()), None);
     }
 
     #[test]

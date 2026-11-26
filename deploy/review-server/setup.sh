@@ -323,7 +323,7 @@ Reports go to the workspace's moderation console (sign in as the administrator >
 Administration > Moderation). On this server we act on reports within 24 hours.
 Contact: $REVIEW_SUPPORT_EMAIL.
 
-Features that depend on server role or settings (Guideline 2.5.19): Administration and
+Features that depend on server role or settings: Administration and
 the moderation console (admin account), the Omnichannel section of the sidebar (agent account), ${e2e_line}teams and discussions (channel "$TEAM_NAME"), app
 message blocks (rendered natively from JSON; no code is downloaded or executed).
 

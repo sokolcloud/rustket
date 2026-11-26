@@ -1674,3 +1674,146 @@ fn menu_width_makes_room_for_swatches() {
     )];
     assert!(w::menu_width(&swatched) > w::menu_width(&plain));
 }
+
+/// Heights of every text-exposing widget of `el` laid out in `SIZE`.
+fn text_heights(el: Element<'_, M>, r: &mut iced::Renderer) -> Vec<f32> {
+    let mut ui: Ui<'_> = UserInterface::build(el, SIZE, Cache::default(), r);
+    let mut op = TextProbe(Vec::new());
+    ui.operate(r, &mut op);
+    draw(&mut ui, r, mouse::Cursor::Unavailable);
+    screenshot(r);
+    op.0.iter().map(|(b, _)| b.height).collect()
+}
+
+#[test]
+fn clamp_shows_at_most_two_lines_at_any_width() {
+    let mut r = renderer();
+    let line = 13.0 * 1.3;
+    let long = [
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor \
+         incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud \
+         exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat."
+            .to_owned(),
+        "这是一个很长的中文消息，用来检查两行截断是否在窄面板和宽面板上都能稳定工作。".repeat(4),
+        "นี่คือข้อความภาษาไทยที่ยาวมากเพื่อทดสอบการตัดบรรทัดสองบรรทัดในแผงแคบและกว้าง".repeat(4),
+        "مرحبا بالعالم هذا نص طويل جدا للاختبار وهو أطول من العرض المتاح ".repeat(4),
+        "👩‍💻 Привет мир, this is long enough to wrap 🎉 ".repeat(8),
+        "Averyveryverylongwordwithoutanyspacesthatmustbreakbyglyphsinsteadofwords".repeat(4),
+    ];
+    for width in [40.0, 120.0, 260.0, 480.0, 780.0] {
+        for s in &long {
+            let el = container(w::clamp(s.as_str()).size(13.0)).width(width);
+            let h = text_heights(el.into(), &mut r);
+            assert!((h[0] - 2.0 * line).abs() < 0.5, "{width} {s:.20}: {h:?}");
+        }
+    }
+    // Short text takes one line; the clamp follows `lines`.
+    let h = text_heights(
+        container(w::clamp("Hi there").size(13.0)).width(300).into(),
+        &mut r,
+    );
+    assert!((h[0] - line).abs() < 0.5, "{h:?}");
+    let el = container(w::clamp(long[0].as_str()).size(13.0).lines(3)).width(200);
+    let h = text_heights(el.into(), &mut r);
+    assert!((h[0] - 3.0 * line).abs() < 0.5, "{h:?}");
+    let el = container(w::clamp(long[0].as_str()).size(13.0).lines(1)).width(200);
+    let h = text_heights(el.into(), &mut r);
+    assert!((h[0] - line).abs() < 0.5, "{h:?}");
+    // Newlines collapse: two short lines of input fit on one.
+    let h = text_heights(
+        container(w::clamp("a\n\nb").size(13.0)).width(300).into(),
+        &mut r,
+    );
+    assert!((h[0] - line).abs() < 0.5, "{h:?}");
+}
+
+#[test]
+fn clamp_relayout_on_resize_is_bounded() {
+    let mut r = renderer();
+    let long = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(10);
+    let rows = |width: f32| -> Element<'static, M> {
+        let mut col = column![];
+        for _ in 0..300 {
+            col = col.push(w::clamp(long.clone()).size(13.0));
+        }
+        container(scrollable(col)).width(width).into()
+    };
+    let ui = UserInterface::build(rows(300.0), SIZE, Cache::default(), &mut r);
+    let mut cache = ui.into_cache();
+    let mut worst = Duration::ZERO;
+    for width in [301.0, 305.0, 320.0, 310.0, 300.0] {
+        let t = Instant::now();
+        let ui = UserInterface::build(rows(width), SIZE, cache, &mut r);
+        worst = worst.max(t.elapsed());
+        cache = ui.into_cache();
+    }
+    eprintln!("300 clamped rows, one drag step: {worst:?}");
+    let limit = if cfg!(debug_assertions) { 4000 } else { 250 };
+    assert!(worst < Duration::from_millis(limit), "{worst:?}");
+}
+
+/// Columns and rows of dark ink in the last screenshot, within `area`.
+fn ink(r: &mut iced::Renderer, area: Rectangle) -> Vec<(usize, usize)> {
+    let shot = r.screenshot(
+        Size::new(SIZE.width as u32, SIZE.height as u32),
+        1.0,
+        Color::WHITE,
+    );
+    let mut out = Vec::new();
+    for y in area.y as usize..(area.y + area.height) as usize {
+        for x in area.x as usize..(area.x + area.width) as usize {
+            let i = (y * SIZE.width as usize + x) * 4;
+            if (0..3).all(|c| shot[i + c] < 160) {
+                out.push((x, y));
+            }
+        }
+    }
+    out
+}
+
+/// What the clamp draws: ink on both lines, nothing below them or past the
+/// width, and the cut last line reaching close to the right edge ("…" after
+/// the kept text), for the left-to-right cut and the bidi tail.
+#[test]
+#[allow(clippy::unwrap_used)]
+fn clamp_draws_two_lines_within_its_bounds() {
+    let mut r = renderer();
+    let line = 13.0 * 1.3;
+    let width = 220.0;
+    let texts = [
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor \
+         incididunt ut labore et dolore magna aliqua."
+            .to_owned(),
+        "这是一个很长的中文消息，用来检查两行截断是否稳定工作。".repeat(4),
+        "مرحبا بالعالم هذا نص طويل جدا للاختبار وهو أطول من العرض المتاح ".repeat(4),
+    ];
+    for (i, s) in texts.iter().enumerate() {
+        let el: Element<'_, M> = container(w::clamp(s.as_str()).size(13.0).color(Color::BLACK))
+            .width(width)
+            .into();
+        let mut ui: Ui<'_> = UserInterface::build(el, SIZE, Cache::default(), &mut r);
+        draw(&mut ui, &mut r, mouse::Cursor::Unavailable);
+        let all = ink(&mut r, Rectangle::new(Point::ORIGIN, SIZE));
+        let label = s.chars().take(10).collect::<String>();
+        assert!(!all.is_empty(), "{label}: nothing drawn");
+        let bottom = all.iter().map(|p| p.1).max().unwrap() as f32;
+        let right = all.iter().map(|p| p.0).max().unwrap() as f32;
+        assert!(bottom < 2.0 * line, "{label}: ink at y {bottom}");
+        assert!(right < width, "{label}: ink at x {right}");
+        let first = all.iter().filter(|p| (p.1 as f32) < line).count();
+        let second: Vec<_> = all.iter().filter(|p| (p.1 as f32) >= line).collect();
+        assert!(first > 0 && !second.is_empty(), "{label}");
+        let reach = second.iter().map(|p| p.0).max().unwrap() as f32;
+        assert!(reach > width - 30.0, "{label}: last line ends at {reach}");
+        if i < 2 {
+            // The left-to-right cut ends in "…": low dots, not a letter.
+            let tip: Vec<_> = second
+                .iter()
+                .filter(|p| p.0 as f32 + 2.0 >= reach)
+                .map(|p| p.1)
+                .collect();
+            let span = tip.iter().max().unwrap() - tip.iter().min().unwrap();
+            assert!(span <= 3, "{label}: no dots at the end ({span}px tall)");
+        }
+    }
+}

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Opening a room no longer marks all its unread messages read at once. As
+  in Rocket.Chat, the room stays unread until you have seen its first
+  unread message, and is then marked read when you reach the bottom. While
+  the first unread message is above the screen or not loaded yet, a bar at
+  the top of the timeline shows the unread count with **Jump to first
+  unread** and **Mark as read**; Escape marks the room read at once.
+  **Settings → General → Messages → Mark rooms as read on open** brings
+  back the old behaviour.
+- The Threads panel of a room shows each thread's first message in at most
+  two lines, ending with "…", as Rocket.Chat does.
+- Sidebar search matches a thread by its own text only, not by the name of
+  its room, and the section arrows collapse sections while you search.
+
+### Fixed
+
+- **Clear after** of your status follows the expiry kept by the server
+  (Rocket.Chat 8.6 and later): a status set in Rocket.Chat web or mobile to
+  clear "until Nov 28" shows that in Rustket instead of "Never", and the
+  time you pick in Rustket is sent to the server. A status that expires
+  while notifications are paused with **Busy while paused** goes back to
+  busy, not online.
+
 ## [0.3.0] - 2026-11-25
 
 ### Added

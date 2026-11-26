@@ -779,6 +779,7 @@ impl Gallery {
                 section_header_rc(
                     section,
                     collapsed,
+                    None,
                     flag,
                     status.map(|b| tooltip(b, "Unread messages", TooltipPosition::Bottom)),
                     emphasis,

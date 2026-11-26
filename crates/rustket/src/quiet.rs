@@ -27,6 +27,10 @@ pub enum Request {
     /// The expiry of the status just set on the component's server (`None`:
     /// it does not clear itself).
     Expiry(Option<StatusExpiry>),
+    /// The app's expiry of the current status, kept with a new text on the
+    /// component's server: stored as it is (its restore already is the
+    /// status after it, also while a pause holds busy).
+    KeptExpiry(StatusExpiry),
     /// The user chose a status on the component's server: a pause's busy
     /// hold no longer restores anything.
     ReleaseHold,

@@ -187,6 +187,61 @@ fn login_responses() {
 }
 
 #[test]
+fn status_expiry() {
+    let at = RcDate::parse_iso("2026-11-27T21:00:00.000Z");
+    assert!(at.is_some());
+    let me: User = get("me_status_expiry", "");
+    assert_eq!(me.status_default, Some(UserStatus::Busy));
+    assert_eq!(me.status_text.as_deref(), Some("Vacation 25.11-27.11"));
+    assert_eq!(me.status_expires_at, at);
+    let info: User = get("users_info_status_expiry", "user");
+    assert_eq!(info.status_expires_at, at);
+    let login: LoginResult = get("login_status_expiry", "data");
+    assert_eq!(login.me.unwrap().status_expires_at, at);
+    // Without the field (no expiry, or a server before 8.6).
+    let me: User = get("me", "");
+    assert_eq!(me.status_expires_at, None);
+    // DDP `{"$date": ms}`; null and junk are no expiry.
+    let ddp: User = serde_json::from_value(serde_json::json!({
+        "_id": "u1", "statusExpiresAt": {"$date": 1_795_813_200_000_i64}
+    }))
+    .unwrap();
+    assert_eq!(ddp.status_expires_at, at);
+    for v in [
+        Value::Null,
+        serde_json::json!("soon"),
+        serde_json::json!({}),
+    ] {
+        let u: User =
+            serde_json::from_value(serde_json::json!({"_id": "u1", "statusExpiresAt": v})).unwrap();
+        assert_eq!(u.status_expires_at, None);
+    }
+    // Kept through the offline cache (serialised and read back).
+    let back: User = serde_json::from_value(serde_json::to_value(&info).unwrap()).unwrap();
+    assert_eq!(back.status_expires_at, at);
+}
+
+#[test]
+fn set_status_body_carries_the_expiry() {
+    use rocketchat::rest::set_status_body;
+    let at = RcDate::parse_iso("2026-11-27T21:00:00.000Z");
+    assert_eq!(
+        set_status_body(Some(UserStatus::Busy), Some("Vacation"), at),
+        serde_json::json!({
+            "status": "busy", "message": "Vacation", "expiresAt": "2026-11-27T21:00:00.000Z"
+        })
+    );
+    assert_eq!(
+        set_status_body(None, Some(""), None),
+        serde_json::json!({ "message": "" })
+    );
+    assert_eq!(
+        set_status_body(Some(UserStatus::Away), None, None),
+        serde_json::json!({ "status": "away" })
+    );
+}
+
+#[test]
 fn me_and_users() {
     let me: User = get("me", "");
     assert_eq!(me.username.as_deref(), Some("alice"));

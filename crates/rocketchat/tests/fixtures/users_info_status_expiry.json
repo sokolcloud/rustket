@@ -1,0 +1,32 @@
+{
+  "user": {
+    "_id": "Er3h8XYKahaopbSA7",
+    "createdAt": "2026-11-07T15:59:47.239Z",
+    "services": {
+      "password": true
+    },
+    "username": "alice",
+    "emails": [
+      {
+        "address": "alice@rustket.local",
+        "verified": true
+      }
+    ],
+    "name": "Alice",
+    "type": "user",
+    "roles": [
+      "user"
+    ],
+    "status": "offline",
+    "active": true,
+    "requirePasswordChange": false,
+    "lastLogin": "2026-11-26T03:48:51.721Z",
+    "statusConnection": "offline",
+    "statusText": "Vacation 25.11-27.11",
+    "utcOffset": 7,
+    "statusSource": "manual",
+    "statusExpiresAt": "2026-11-27T21:00:00.000Z",
+    "canViewAllInfo": true
+  },
+  "success": true
+}

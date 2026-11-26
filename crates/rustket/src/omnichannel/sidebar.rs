@@ -105,13 +105,18 @@ fn header<'a>(
     filter: &str,
 ) -> (Element<'a, Message>, bool) {
     let key = section_key(group.kind);
-    let collapsed = filter.trim().is_empty() && ctx.collapsed.contains(key);
+    // While filtering `ctx.collapsed` holds the groups collapsed during the
+    // search (`Sidebar::collapsed`).
+    let collapsed = ctx.collapsed.contains(key);
+    let count = group.queue.len() + group.rooms.len();
+    let count = u32::try_from(count).unwrap_or(u32::MAX);
     if ctx.prefs.indicator_scheme == IndicatorScheme::RocketChat {
         let unread = collapsed.then(|| collapsed_rc(group)).flatten();
         return (
             section_header_rc(
                 t!(key).into_owned(),
                 collapsed,
+                (!filter.trim().is_empty()).then_some(count),
                 None,
                 unread
                     .as_ref()
@@ -122,13 +127,12 @@ fn header<'a>(
             collapsed,
         );
     }
-    let count = group.queue.len() + group.rooms.len();
     let status = collapsed.then(|| collapsed_kinds(group)).flatten();
     (
         section_header_with(
             t!(key).into_owned(),
             collapsed,
-            Some(u32::try_from(count).unwrap_or(u32::MAX)),
+            Some(count),
             status,
             Message::Omni(Msg::Toggle(key.to_owned())),
         ),
@@ -223,7 +227,8 @@ pub fn push_groups<'a>(
 
 /// The subscribed rooms in the order the sidebar draws them, without
 /// collapsed groups (Alt+Up/Down): the omnichannel groups first, then the
-/// other sections.
+/// other sections. `collapsed`: the keys in effect (`Sidebar::collapsed`,
+/// the search's own while filtering).
 pub fn step_order<'a>(
     sid: &ServerId,
     ws: &Workspace,

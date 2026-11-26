@@ -563,6 +563,18 @@ settings.escape_marks_read_help:
   es: "Cuando no hay ningún menú, diálogo o panel que cerrar. Sus hilos también se marcan como leídos."
   th: "เมื่อไม่มีเมนู กล่องโต้ตอบ หรือแผงให้ปิด เธรดของห้องจะถูกทำเครื่องหมายว่าอ่านแล้วด้วย"
   zh: "在没有可关闭的菜单、对话框或面板时生效。其讨论串也会标记为已读。"
+settings.mark_read_on_open:
+  en: "Mark rooms as read on open"
+  ru: "Отмечать комнату прочитанной при открытии"
+  es: "Marcar las salas como leídas al abrirlas"
+  th: "ทำเครื่องหมายห้องว่าอ่านแล้วเมื่อเปิด"
+  zh: "打开聊天室时标记为已读"
+settings.mark_read_on_open_help:
+  en: "Off: like Rocket.Chat, a room stays unread until you have seen its first unread message or use Mark as read."
+  ru: "Выключено: как в Rocket.Chat, комната остаётся непрочитанной, пока вы не увидите первое непрочитанное сообщение или не нажмёте «Отметить прочитанным»."
+  es: "Desactivado: como en Rocket.Chat, la sala sigue sin leer hasta que veas su primer mensaje no leído o uses Marcar como leído."
+  th: "ปิด: เหมือน Rocket.Chat ห้องจะยังไม่ถูกอ่านจนกว่าคุณจะเห็นข้อความแรกที่ยังไม่ได้อ่าน หรือใช้ ทำเครื่องหมายว่าอ่านแล้ว"
+  zh: "关闭时与 Rocket.Chat 相同：在你看到第一条未读消息或使用“标记为已读”之前，聊天室保持未读。"
 settings.shortcuts_help:
   en: "Also opens with %{keys} anywhere."
   ru: "Также открывается сочетанием %{keys} из любого места."
