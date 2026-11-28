@@ -8,6 +8,7 @@ use semver::Version;
 
 use super::detect::InstallKind;
 use super::github::Release;
+use super::mode::UpdateMode;
 use super::relaunch::StaleFailure;
 use super::version::offer;
 use super::{CHECK_INTERVAL, REPO, STARTUP_MIN_AGE, UpdateError};
@@ -204,10 +205,11 @@ impl Updater {
         }
     }
 
-    /// Whether this copy installs updates itself (else "Download" opens the
+    /// Whether an install may start: only in the effective mode `prompt`,
+    /// for a copy that installs updates itself (else "Download" opens the
     /// release page).
-    pub fn can_install(&self) -> bool {
-        self.kind.as_ref().is_some_and(InstallKind::can_install)
+    pub fn can_install(&self, mode: UpdateMode) -> bool {
+        mode == UpdateMode::Prompt && self.kind.as_ref().is_some_and(InstallKind::can_install)
     }
 
     /// Whether the corner card shows. `skipped`: `UiState::update_skipped`.
@@ -445,6 +447,58 @@ impl Updater {
         }
     }
 
+    /// The effective mode stopped allowing installs (docs/policy.md 9.3):
+    /// a download is cancelled (the returned handle is to be aborted). In
+    /// `notify` an offer, a downloaded file waiting for its install and a
+    /// failed install become the report of their release (`Available`); a
+    /// failure an earlier run left behind goes. `off` drops them all, and
+    /// also ends what the checks left: a check under way (its result is
+    /// dropped) and its status. An install that runs and an installed
+    /// release stay.
+    pub fn withdraw(&mut self, off: bool) -> Option<iced::task::Handle> {
+        let handle = self.cancel_download();
+        // What replaces `p`, if anything.
+        let replace = |p: &Phase| -> Option<Phase> {
+            match p {
+                Phase::Available { .. } if off => Some(Phase::Idle),
+                Phase::Ready { release, .. }
+                | Phase::Failed {
+                    release: Some(release),
+                    ..
+                } => Some(if off {
+                    Phase::Idle
+                } else {
+                    Phase::Available {
+                        release: release.clone(),
+                        manual: true,
+                    }
+                }),
+                Phase::Failed { release: None, .. } => Some(Phase::Idle),
+                Phase::UpToDate | Phase::CheckFailed(_) if off => Some(Phase::Idle),
+                _ => None,
+            }
+        };
+        match &mut self.phase {
+            Phase::Checking { prev, .. } => {
+                if let Some(p) = prev.as_deref().and_then(replace) {
+                    *prev = match p {
+                        Phase::Idle => None,
+                        p => Some(Box::new(p)),
+                    };
+                }
+                if off {
+                    self.phase = prev.take().map_or(Phase::Idle, |p| *p);
+                }
+            }
+            p => {
+                if let Some(new) = replace(p) {
+                    *p = new;
+                }
+            }
+        }
+        handle
+    }
+
     /// "Later" / the card's close button: hides the card of this version for
     /// this run. A downloaded file waits for the next "Install".
     pub fn later(&mut self) {
@@ -661,6 +715,104 @@ mod tests {
         u.on_download_started(pre(), 1, handle());
         u.drop_prereleases();
         assert!(matches!(u.phase, Phase::Downloading { .. }));
+    }
+
+    /// Leaving `prompt`: `notify` turns what could still be installed into
+    /// the report of its release, `off` drops it and what the checks left.
+    /// A running install and an installed release stay.
+    #[test]
+    fn withdraw_per_phase() {
+        let r = || Arc::new(release("0.3.0"));
+        let failed = || Phase::Failed {
+            release: Some(r()),
+            version: Version::parse("0.3.0").unwrap(),
+            error: UpdateError::NoAsset,
+            file: Some(PathBuf::from("/c/f")),
+        };
+        // `notify`: the report of 0.3.0; `off`: nothing.
+        let left = |u: &Updater, off: bool| {
+            if off {
+                matches!(u.phase, Phase::Idle)
+            } else {
+                matches!(&u.phase, Phase::Available { release, .. }
+                    if release.version == Version::parse("0.3.0").unwrap())
+            }
+        };
+        for off in [false, true] {
+            let mut u = Updater::new(true);
+            available(&mut u, "0.3.0", CheckOrigin::Tick);
+            assert!(u.withdraw(off).is_none());
+            assert!(left(&u, off), "{off}");
+            u.on_download_started(r(), 10, handle());
+            assert!(u.withdraw(off).is_some(), "the download is aborted");
+            assert!(left(&u, off) && u.download.is_none(), "{off}");
+            u.phase = Phase::Ready {
+                release: r(),
+                file: PathBuf::from("/c/f"),
+                sha: [0; 32],
+            };
+            u.withdraw(off);
+            assert!(left(&u, off), "{off}");
+            u.phase = failed();
+            u.withdraw(off);
+            assert!(left(&u, off), "{off}");
+            // A failure an earlier run left behind has no release to report.
+            u.phase = Phase::Failed {
+                release: None,
+                version: Version::parse("0.3.0").unwrap(),
+                error: UpdateError::NoAsset,
+                file: Some(PathBuf::from("/c/f")),
+            };
+            u.withdraw(off);
+            assert!(matches!(u.phase, Phase::Idle), "{off}");
+            u.phase = Phase::Installing {
+                release: r(),
+                file: PathBuf::from("/c/f"),
+            };
+            u.withdraw(off);
+            assert!(matches!(u.phase, Phase::Installing { .. }), "{off}");
+            u.phase = Phase::InstalledNoRestart { release: r() };
+            u.withdraw(off);
+            assert!(matches!(u.phase, Phase::InstalledNoRestart { .. }), "{off}");
+            // During a check: `notify` keeps the offer as a report, `off`
+            // ends the check.
+            u.phase = Phase::Idle;
+            available(&mut u, "0.3.0", CheckOrigin::Tick);
+            u.start_check(CheckOrigin::Tick);
+            u.withdraw(off);
+            if off {
+                assert!(matches!(u.phase, Phase::Idle));
+            } else {
+                assert!(matches!(&u.phase, Phase::Checking { prev: Some(p), .. }
+                    if matches!(**p, Phase::Available { .. })));
+            }
+            // A failed install kept by a check: reported in `notify`.
+            u.phase = failed();
+            u.start_check(CheckOrigin::Tick);
+            u.withdraw(off);
+            if off {
+                assert!(matches!(u.phase, Phase::Idle));
+            } else {
+                assert!(matches!(&u.phase, Phase::Checking { prev: Some(p), .. }
+                    if matches!(**p, Phase::Available { .. })));
+            }
+            // A check from an installed release keeps it.
+            u.phase = Phase::InstalledNoRestart { release: r() };
+            u.start_check(CheckOrigin::Tick);
+            u.withdraw(off);
+            if off {
+                assert!(matches!(u.phase, Phase::InstalledNoRestart { .. }));
+            } else {
+                assert!(matches!(u.phase, Phase::Checking { prev: Some(_), .. }));
+            }
+            // Statuses of checks: only `off` clears them.
+            u.phase = Phase::UpToDate;
+            u.withdraw(off);
+            assert_eq!(matches!(u.phase, Phase::Idle), off);
+            u.phase = Phase::CheckFailed(UpdateError::Http(500));
+            u.withdraw(off);
+            assert_eq!(matches!(u.phase, Phase::Idle), off);
+        }
     }
 
     #[test]

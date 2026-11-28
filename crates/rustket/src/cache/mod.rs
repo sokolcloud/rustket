@@ -182,6 +182,9 @@ pub struct ServerCache {
     queued: HashSet<String>,
     /// Outbox ids being sent by this module.
     sending: HashSet<String>,
+    /// The handle of the last send of queued messages started
+    /// ([`abort_sends`]); aborting one that already finished does nothing.
+    send_task: Option<iced::task::Handle>,
     /// Queued ids that came from the scheduled queue (a final failure is
     /// announced: nobody watches them go out).
     scheduled: HashSet<String>,
@@ -204,6 +207,14 @@ pub struct ServerCache {
 }
 
 impl ServerCache {
+    /// Stops a running send of queued messages: no further queued message
+    /// is posted with the session's credentials ([`close`]).
+    fn abort_sends(&mut self) {
+        if let Some(h) = self.send_task.take() {
+            h.abort();
+        }
+    }
+
     /// A queued message was sent, dropped or given up.
     fn forget_queued(&mut self, id: &str) {
         self.queued.remove(id);
@@ -226,6 +237,11 @@ impl ServerCache {
 
     pub fn is_open(&self) -> bool {
         self.handle.is_some()
+    }
+
+    /// Whether the cache is being opened for an account.
+    pub fn is_opening(&self) -> bool {
+        self.opening.is_some()
     }
 
     /// Whether the outbox (and scheduled messages) of this account are kept
@@ -830,9 +846,12 @@ fn send_queued(s: &mut ServerState) -> Task<Message> {
         crate::room::composer::outbox_start(&s.id, &m.rid, &m.id);
     }
     let (sid, generation) = (s.id.clone(), s.generation);
-    Task::run(send_in_order(rest, ready), move |r| {
+    let (task, handle) = Task::run(send_in_order(rest, ready), move |r| {
         wrap(Msg::Sent(sid.clone(), generation, Box::new(r)))
     })
+    .abortable();
+    s.cache.send_task = Some(handle);
+    task
 }
 
 /// Sends `items` one after the other (each waits for the previous answer,
@@ -1335,6 +1354,27 @@ fn quit_batch(s: &ServerState) -> Batch {
     }
 }
 
+/// What a suspension writes: what quitting writes, without the running
+/// uploads (the app names them at once; they were not cut by a quit).
+fn suspend_batch(s: &ServerState) -> Batch {
+    Batch {
+        interrupted_uploads: None,
+        ..quit_batch(s)
+    }
+}
+
+/// Closes a server's cache without deleting it (the policy suspended the
+/// server): what quitting writes, minus the running uploads, is queued, and
+/// the worker stops after its queued writes once the handle is dropped
+/// here. The next start of the account opens it again, outbox included.
+pub fn close(s: &mut ServerState) {
+    let mut cache = std::mem::take(&mut s.cache);
+    cache.abort_sends();
+    if let Some(h) = &cache.handle {
+        h.write(suspend_batch(s));
+    }
+}
+
 /// The app quits: running uploads are recorded (reported on the next
 /// start), the thread data is written and queued writes are flushed
 /// (bounded wait).
@@ -1485,13 +1525,25 @@ mod tests {
         }
     }
 
+    /// Closing the cache (suspension by the policy) aborts the send of
+    /// queued messages: no further queued message is posted.
+    #[test]
+    fn close_aborts_the_queued_send() {
+        let mut s = thread_server();
+        let (_task, handle) = Task::<Message>::future(std::future::pending()).abortable();
+        s.cache.send_task = Some(handle.clone());
+        close(&mut s);
+        assert!(handle.is_aborted());
+        assert!(s.cache.send_task.is_none());
+    }
+
     fn thread_server() -> ServerState {
         let entry = rustket_core::config::ServerEntry {
             id: rustket_core::ServerId("s-cache-threads".into()),
             url: "http://localhost:3000".into(),
             ..Default::default()
         };
-        let mut s = ServerState::from_entry(&entry).unwrap();
+        let mut s = ServerState::from_entry(&entry, &Default::default()).unwrap();
         s.workspace
             .set_thread_config(rustket_core::config::ThreadsMode::UnreadKept, [("a", "k")]);
         s
@@ -1702,6 +1754,26 @@ mod tests {
         let t = b.threads.unwrap();
         assert_eq!(t.parents.len(), 1);
         assert!(b.interrupted_uploads.is_none());
+    }
+
+    /// Quitting records the running uploads (reported at the next start as
+    /// cut by the quit); a suspension does not: the app names them at once.
+    #[test]
+    fn a_suspension_does_not_record_running_uploads() {
+        let entry = rustket_core::config::ServerEntry {
+            id: rustket_core::ServerId("s-cache-suspend-uploads".into()),
+            url: "http://localhost:3000".into(),
+            ..Default::default()
+        };
+        let s = ServerState::from_entry(&entry, &Default::default()).unwrap();
+        let handle = crate::room::upload::register_pending(s.id.as_str(), "report.pdf");
+        assert_eq!(
+            quit_batch(&s).interrupted_uploads,
+            Some(vec!["report.pdf".to_owned()])
+        );
+        assert!(suspend_batch(&s).interrupted_uploads.is_none());
+        crate::room::upload::cancel_server(s.id.as_str());
+        assert!(handle.is_aborted());
     }
 
     #[tokio::test(flavor = "multi_thread")]

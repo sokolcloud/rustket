@@ -70,5 +70,12 @@ cp -a "%{rustket_stage}/." "%{buildroot}/"
 /usr/lib/rustket/install-kind
 %dir /usr/share/doc/rustket
 %doc /usr/share/doc/rustket/THIRD-PARTY-NOTICES
+%dir /usr/share/doc/rustket/policy
+%doc /usr/share/doc/rustket/policy/policy.schema.json
+%doc /usr/share/doc/rustket/policy/50-example.json
+# The policy directory (docs/policy.md section 2), empty: administrators add files.
+%dir %attr(0755,root,root) /etc/rustket
+%dir %attr(0755,root,root) /etc/rustket/policies
+%dir %attr(0755,root,root) /etc/rustket/policies/managed
 %dir /usr/share/licenses/rustket
 %license /usr/share/licenses/rustket/LICENSE

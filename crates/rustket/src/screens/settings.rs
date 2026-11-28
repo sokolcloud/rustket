@@ -1,5 +1,6 @@
 //! App preferences (local, not per server) in tabs: General, Appearance,
-//! Notifications, Sidebar, Mentions, Privacy & storage, Help, About. Each tab's cards are
+//! Notifications, Sidebar, Mentions, Privacy & storage, Policies (only with an
+//! enterprise policy to show), Help, About. Each tab's cards are
 //! built in `settings/<tab>.rs`; this file keeps the state, the messages, the
 //! update and the tab frame. Strings: `locales/settings.yml` (`settings.*`).
 
@@ -10,6 +11,7 @@ use rustket_core::config::{
     AppConfig, Density, IndicatorScheme, Language, SidebarSort, Theme as ThemePref, ThreadsMode,
     UiPrefs, ZOOM_RANGE,
 };
+use rustket_core::policy::{LockedPref, Policy};
 use rustket_core::secrets::SecretBackend;
 use rustket_ui::icon::Icon;
 use rustket_ui::theme::SPACE_6;
@@ -28,6 +30,7 @@ mod hidden_words;
 mod mentions;
 mod notifications;
 mod pickers;
+mod policies;
 mod privacy;
 mod sidebar;
 mod widgets;
@@ -36,6 +39,7 @@ pub use mentions::{
     CheckReport as MentionCheckReport, GroupCheck as MentionGroupCheck, Issue as MentionIssue,
     MentionAccount, Message as MentionsMessage, Suggestion as MentionSuggestion,
 };
+pub(crate) use policies::{dump_command, managed_text, source_label, sources_card};
 pub use privacy::size_label;
 pub use sidebar::{FlagAccount, GroupDraft, Message as SidebarMessage};
 
@@ -49,22 +53,36 @@ pub enum Tab {
     Sidebar,
     Mentions,
     Privacy,
+    /// The enterprise policy report (docs/policy.md section 10); offered
+    /// only when there is something to show ([`Tab::offered`]).
+    Policies,
     /// The "Indicators and notifications" reference.
     Help,
     About,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::General,
         Tab::Appearance,
         Tab::Notifications,
         Tab::Sidebar,
         Tab::Mentions,
         Tab::Privacy,
+        Tab::Policies,
         Tab::Help,
         Tab::About,
     ];
+
+    /// The tabs offered under `policy`: every tab, the Policies one only
+    /// when its page has something to show.
+    pub fn offered(policy: &Policy) -> Vec<Tab> {
+        let policies = crate::policy::page::Page::of_build(policy).has_content();
+        Tab::ALL
+            .into_iter()
+            .filter(|t| *t != Tab::Policies || policies)
+            .collect()
+    }
 
     pub fn i18n_key(self) -> &'static str {
         match self {
@@ -74,6 +92,7 @@ impl Tab {
             Tab::Sidebar => "settings.sidebar",
             Tab::Mentions => "settings.tab_mentions",
             Tab::Privacy => "settings.tab_privacy",
+            Tab::Policies => "policy.tab",
             Tab::Help => "settings.tab_help",
             Tab::About => "settings.about",
         }
@@ -87,6 +106,7 @@ impl Tab {
             Tab::Sidebar => Icon::PanelLeft,
             Tab::Mentions => Icon::AtSign,
             Tab::Privacy => Icon::ShieldCheck,
+            Tab::Policies => Icon::Lock,
             Tab::Help => Icon::CircleHelp,
             Tab::About => Icon::Info,
         }
@@ -242,6 +262,10 @@ pub enum Message {
     ClearOfflineCache,
     /// `UiPrefs::secrets_memory_only` (the app asks before turning it on).
     SetSecretsMemoryOnly(bool),
+    /// `UiPrefs::log_file` (applies at the next start).
+    SetLogFile(bool),
+    /// Open the log folder (created if missing).
+    OpenLogFolder,
     // Sidebar tab (`settings/sidebar.rs`).
     SetGroupByType(bool),
     SetSidebarSort(SidebarSort),
@@ -265,6 +289,8 @@ pub enum Message {
     /// Nothing (the Help tab's refresh tick; its inert samples need a
     /// message but never send it).
     Noop,
+    /// Put the policy report (the `--dump-policy` JSON) on the clipboard.
+    CopyPolicyReport,
     // Updates card (`crate::updater`).
     #[cfg(feature = "self-update")]
     SetCheckUpdates(bool),
@@ -284,6 +310,8 @@ impl From<SidebarMessage> for Message {
 pub struct SettingsCtx<'a> {
     pub config: &'a mut AppConfig,
     pub ui_state: &'a mut UiState,
+    /// Fields it forces are not changed (`Settings::locked_pref`).
+    pub policy: &'a Policy,
 }
 
 pub struct SettingsView<'a> {
@@ -315,6 +343,9 @@ pub struct SettingsView<'a> {
     pub mode: rustket_ui::theme::Mode,
     /// What the Help tab is computed from (built only while it is shown).
     pub help: Option<crate::help::model::HelpEnv>,
+    /// The enterprise policy in force: locked switches, the managed notice
+    /// and the Policies tab.
+    pub policy: &'a Policy,
     #[cfg(feature = "self-update")]
     pub updater: crate::updater::view::SettingsData,
 }
@@ -353,6 +384,15 @@ pub struct Settings {
     pub hidden_word_draft: String,
     /// Why the last phrase was not added.
     pub hidden_word_error: Option<rustket_core::word_filter::AddError>,
+}
+
+impl SettingsView<'_> {
+    /// The "Managed by …" line of a switch whose field the policy forces.
+    pub(crate) fn managed(&self, field: LockedPref) -> Option<String> {
+        self.policy
+            .locks(field)
+            .then(|| policies::managed_text(self.policy))
+    }
 }
 
 impl Default for Settings {
@@ -423,6 +463,19 @@ impl Settings {
         Action::effect(Effect::SaveConfig)
     }
 
+    /// [`Self::pref`] for a field the policy can force: nothing happens
+    /// while it does.
+    fn locked_pref(
+        ctx: &mut SettingsCtx<'_>,
+        field: LockedPref,
+        f: impl FnOnce(&mut UiPrefs),
+    ) -> Action<Message> {
+        if ctx.policy.locks(field) {
+            return Action::none();
+        }
+        Self::pref(ctx, f)
+    }
+
     pub fn update(&mut self, msg: Message, ctx: &mut SettingsCtx<'_>) -> Action<Message> {
         match msg {
             Message::SetTheme(v) => Self::pref(ctx, |p| p.theme = v),
@@ -446,7 +499,11 @@ impl Settings {
             Message::ReloadLocales => Action::effect(Effect::ReloadLocales),
             Message::OpenLocalesFolder => Action::effect(Effect::OpenLocalesFolder),
             Message::SetNotifications(v) => Self::pref(ctx, |p| p.desktop_notifications = v),
-            Message::SetPreview(v) => Self::pref(ctx, |p| p.notification_preview = v),
+            Message::SetPreview(v) => {
+                Self::locked_pref(ctx, LockedPref::NotificationPreview, |p| {
+                    p.notification_preview = v;
+                })
+            }
             Message::SetSound(v) => Self::pref(ctx, |p| p.sound = v),
             Message::SetReminderNotifications(v) => {
                 Self::pref(ctx, |p| p.reminder_notifications = v)
@@ -482,13 +539,18 @@ impl Settings {
             Message::ShowShortcuts => {
                 Action::effect(Effect::Navigate(crate::component::Nav::Shortcuts))
             }
-            Message::SetHardwareAcceleration(v) => Self::pref(ctx, |p| p.hardware_acceleration = v),
+            Message::SetHardwareAcceleration(v) => {
+                Self::locked_pref(ctx, LockedPref::HardwareAcceleration, |p| {
+                    p.hardware_acceleration = v;
+                })
+            }
             Message::SetSystemTitleBar(v) => Self::pref(ctx, |p| p.system_title_bar = v),
             Message::SetAutostart(on) => {
                 let Some(at) = self.autostart_at.clone() else {
                     return Action::none();
                 };
-                if self.autostart_busy {
+                // Forced by `LaunchAtLogin`: the app keeps it at that value.
+                if self.autostart_busy || ctx.policy.launch_at_login().is_some() {
                     return Action::none();
                 }
                 self.autostart_busy = true;
@@ -537,7 +599,19 @@ impl Settings {
             // The result is toasted by `crate::cache` once it is done.
             Message::ClearOfflineCache => Action::effect(Effect::ClearOfflineCache),
             // The app stores the preference once the store follows it.
+            Message::SetSecretsMemoryOnly(_) if ctx.policy.locks(LockedPref::SecretsMemoryOnly) => {
+                Action::none()
+            }
             Message::SetSecretsMemoryOnly(on) => Action::effect(Effect::SetSecretsMemoryOnly(on)),
+            Message::SetLogFile(v) => Self::pref(ctx, |p| p.log_file = v),
+            Message::OpenLogFolder => match crate::logging::default_dir() {
+                Some(dir) => Action::effect(Effect::OpenLogFolder(dir)),
+                None => Action::effect(Effect::Toast(
+                    BannerKind::Error,
+                    t!("settings.log_folder_failed").into_owned(),
+                    String::new(),
+                )),
+            },
             Message::OpenUrl(url) => Action::effect(Effect::OpenUrl(url)),
             Message::OpenNotices => match crate::legal::third_party_notices() {
                 Some(path) => Action::effect(Effect::OpenFile(path)),
@@ -565,6 +639,18 @@ impl Settings {
             Message::SetHiddenWholeWord(v) => Self::pref(ctx, |p| p.hidden_words.whole_word = v),
             Message::Close => Action::effect(Effect::Close),
             Message::Noop => Action::none(),
+            Message::CopyPolicyReport => match rustket_core::policy::dump_json(ctx.policy) {
+                Ok(json) => Action::task(iced::clipboard::write(json)).with(Effect::Toast(
+                    BannerKind::Success,
+                    t!("policy.copied").into_owned(),
+                    String::new(),
+                )),
+                Err(e) => Action::effect(Effect::Toast(
+                    BannerKind::Error,
+                    t!("policy.copy_failed").into_owned(),
+                    e.to_string(),
+                )),
+            },
             Message::SetGroupByType(v) => Self::pref(ctx, |p| p.group_by_type = v),
             Message::SetSidebarSort(s) => Self::pref(ctx, |p| p.sidebar_sort = s),
             Message::SetThreadsMode(m) => Self::pref(ctx, |p| p.sidebar_threads = m),
@@ -573,7 +659,13 @@ impl Settings {
             Message::Sidebar(m) => self.update_sidebar(m, ctx),
             Message::Mentions(m) => self.update_mentions(m),
             #[cfg(feature = "self-update")]
-            Message::SetCheckUpdates(v) => Self::pref(ctx, |p| p.check_updates = v),
+            Message::SetCheckUpdates(v) => {
+                Self::locked_pref(ctx, LockedPref::CheckUpdates, |p| p.check_updates = v)
+            }
+            #[cfg(feature = "self-update")]
+            Message::SetUpdatePrereleases(_) if ctx.policy.locks(LockedPref::UpdatePrereleases) => {
+                Action::none()
+            }
             #[cfg(feature = "self-update")]
             Message::SetUpdatePrereleases(v) => {
                 let a = Self::pref(ctx, |p| p.update_prereleases = v);
@@ -602,12 +694,13 @@ impl Settings {
     /// The page: tab navigation and the current tab's cards. Takes the view
     /// data by value: the body is rebuilt whenever the layout width changes.
     pub fn view<'a>(&'a self, v: SettingsView<'a>) -> Element<'a, Message> {
-        let nav = Tab::ALL
+        let shown = self.shown_tab(v.policy);
+        let nav = Tab::offered(v.policy)
             .into_iter()
             .map(|tab| super::page::NavEntry {
                 icon: tab.icon(),
                 label: t!(tab.i18n_key()).into_owned(),
-                selected: self.tab == tab,
+                selected: shown == tab,
                 on_press: Message::Tab(tab),
             })
             .collect();
@@ -619,8 +712,32 @@ impl Settings {
         )
     }
 
+    /// The tab shown: the selected one, or General while the Policies tab
+    /// is selected but not offered (the policy went away).
+    pub fn shown_tab(&self, policy: &Policy) -> Tab {
+        if self.tab == Tab::Policies && !Tab::offered(policy).contains(&Tab::Policies) {
+            Tab::General
+        } else {
+            self.tab
+        }
+    }
+
     fn tab_body<'a>(&'a self, v: &SettingsView<'a>) -> Element<'a, Message> {
-        let cards = match self.tab {
+        let offered = Tab::offered(v.policy);
+        let mut cards: Vec<Element<'a, Message>> = policies::notice(
+            v.policy,
+            offered.contains(&Tab::Policies) && self.tab != Tab::Policies,
+        )
+        .into_iter()
+        .collect();
+        cards.extend(self.tab_cards(v));
+        container(Column::with_children(cards).spacing(SPACE_6).max_width(720))
+            .center_x(Length::Fill)
+            .into()
+    }
+
+    fn tab_cards<'a>(&'a self, v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
+        match self.shown_tab(v.policy) {
             Tab::General => general::view(self, v),
             Tab::Appearance => appearance::view(v),
             Tab::Notifications => notifications::view(v),
@@ -641,13 +758,19 @@ impl Settings {
                 cards.push(about::support_card());
                 cards
             }
+            Tab::Policies => policies::view(&crate::policy::page::Page::of_build(v.policy)),
             Tab::About => about::view(v),
-        };
-        container(Column::with_children(cards).spacing(SPACE_6).max_width(720))
-            .center_x(Length::Fill)
-            .into()
+        }
     }
 }
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod policies_tests;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod log_file_tests;
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -662,8 +785,62 @@ mod tests {
         let mut ctx = SettingsCtx {
             config: cfg,
             ui_state: &mut ui_state,
+            policy: crate::policy::empty(),
         };
         s.update(msg.into(), &mut ctx)
+    }
+
+    /// A field the policy forces is not changed by its handler, and nothing
+    /// is saved; free fields still are.
+    #[test]
+    fn forced_prefs_are_not_changed() {
+        use rustket_core::policy::{RawValue, Snapshot, SourceId, Trust, resolve};
+        let snap = Snapshot::new(SourceId::Test("t".into()), Trust::Full)
+            .with("NotificationPreview", RawValue::Bool(true))
+            .with("HardwareAcceleration", RawValue::Bool(true))
+            .with("AllowSecretsFile", RawValue::Bool(false))
+            .with("UpdateMode", RawValue::String("prompt".into()));
+        let policy = resolve(&[snap], &crate::policy::context());
+        let mut cfg = AppConfig::default();
+        cfg.ui = policy.apply(&cfg.ui);
+        let before = cfg.ui.clone();
+        let mut s = Settings::with_autostart(None);
+        #[cfg_attr(not(feature = "self-update"), allow(unused_mut))]
+        let mut msgs = vec![
+            Message::SetPreview(false),
+            Message::SetHardwareAcceleration(false),
+            Message::SetSecretsMemoryOnly(false),
+        ];
+        #[cfg(feature = "self-update")]
+        msgs.extend([
+            Message::SetCheckUpdates(false),
+            Message::SetUpdatePrereleases(true),
+            Message::SetUpdatePrereleases(false),
+        ]);
+        for msg in msgs {
+            let mut ui_state = UiState::default();
+            let mut ctx = SettingsCtx {
+                config: &mut cfg,
+                ui_state: &mut ui_state,
+                policy: &policy,
+            };
+            let name = format!("{msg:?}");
+            let locked = !cfg!(feature = "mas") || matches!(msg, Message::SetPreview(_));
+            let a = s.update(msg, &mut ctx);
+            if locked {
+                assert!(a.effects.is_empty(), "{name}");
+                assert_eq!(cfg.ui, before, "{name}");
+            }
+        }
+        let mut ui_state = UiState::default();
+        let mut ctx = SettingsCtx {
+            config: &mut cfg,
+            ui_state: &mut ui_state,
+            policy: &policy,
+        };
+        let a = s.update(Message::SetSound(false), &mut ctx);
+        assert!(!cfg.ui.sound);
+        assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
     }
 
     #[test]
@@ -736,6 +913,8 @@ mod tests {
             }),
             (Message::SetSystemTitleBar(true), |c| c.system_title_bar),
             (Message::SetSystemTitleBar(false), |c| !c.system_title_bar),
+            (Message::SetLogFile(true), |c| c.log_file),
+            (Message::SetLogFile(false), |c| !c.log_file),
             (Message::SetImageCacheMb(1000), |c| c.image_cache_mb == 1000),
             (Message::SetGroupByType(false), |c| !c.group_by_type),
             (Message::SetSidebarSort(SidebarSort::ActivityAsc), |c| {
@@ -824,6 +1003,7 @@ mod tests {
         let mut ctx = SettingsCtx {
             config: &mut cfg,
             ui_state: &mut ui_state,
+            policy: crate::policy::empty(),
         };
         let a = s.update(SidebarMessage::GroupDeleteConfirm.into(), &mut ctx);
         assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));
@@ -844,6 +1024,7 @@ mod tests {
             let mut ctx = SettingsCtx {
                 config: cfg,
                 ui_state: ui,
+                policy: crate::policy::empty(),
             };
             s.update(m.into(), &mut ctx)
         };
@@ -1235,6 +1416,7 @@ mod tests {
         let mut ctx = SettingsCtx {
             config: &mut cfg,
             ui_state: &mut ui_state,
+            policy: crate::policy::empty(),
         };
         let a = s.update(SidebarMessage::ResetConfirm.into(), &mut ctx);
         assert!(matches!(a.effects.as_slice(), [Effect::SaveConfig]));

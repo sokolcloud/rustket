@@ -27,7 +27,7 @@ impl<T> fmt::Display for Choice<T> {
 }
 
 /// A titled card with rows separated by dividers.
-pub(super) fn section<'a>(title: String, rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+pub(super) fn section<'a, M: 'a>(title: String, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
     let mut col = column![].spacing(SPACE_3);
     let n = rows.len();
     for (i, r) in rows.into_iter().enumerate() {
@@ -67,6 +67,22 @@ pub(super) fn switch<'a>(
     value: bool,
     on_toggle: Option<fn(bool) -> Message>,
 ) -> Element<'a, Message> {
+    switch_with(label, help, value, on_toggle, None)
+}
+
+/// [`switch`] for a preference the enterprise policy can force: `managed`
+/// is the "Managed by …" text while it does (docs/policy.md section 9.7),
+/// shown as a visible line under the label; the switch is then disabled
+/// and shows the forced value (`value`, the effective preference).
+pub(super) fn switch_with<'a>(
+    label: String,
+    help: Option<String>,
+    value: bool,
+    on_toggle: Option<fn(bool) -> Message>,
+    managed: Option<String>,
+) -> Element<'a, Message> {
+    let locked = managed.is_some();
+    let on_toggle = if locked { None } else { on_toggle };
     // Disabled: the label is dimmed (the track alone barely shows it).
     let label_style = if on_toggle.is_some() {
         style::text_primary
@@ -77,18 +93,57 @@ pub(super) fn switch<'a>(
     if let Some(h) = help {
         col = col.push(text(h).size(TEXT_CAPTION).style(style::text_secondary));
     }
+    if let Some(m) = managed {
+        col = col.push(managed_line(m));
+    }
     row![
         col.width(Length::Fill),
         focus_ring(
             toggler(value)
                 .size(20)
-                .style(style::toggler)
+                .style(if locked {
+                    toggler_managed
+                } else {
+                    style::toggler
+                })
                 .on_toggle_maybe(on_toggle),
             on_toggle.map(|f| f(!value)),
         )
         .radius(rustket_ui::theme::RADIUS_PILL),
     ]
     .spacing(SPACE_3)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// A forced switch: disabled, but its track keeps the on or off colour
+/// (faded), so the forced value reads at a glance; the shared disabled
+/// style paints both states alike.
+fn toggler_managed(theme: &iced::Theme, status: toggler::Status) -> toggler::Style {
+    let t = rustket_ui::theme::tokens(theme);
+    let on = match status {
+        toggler::Status::Active { is_toggled }
+        | toggler::Status::Hovered { is_toggled }
+        | toggler::Status::Disabled { is_toggled } => is_toggled,
+    };
+    let track = if on { t.primary } else { t.border_strong };
+    toggler::Style {
+        background: iced::Background::Color(track.scale_alpha(0.55)),
+        ..style::toggler(theme, status)
+    }
+}
+
+/// The lock icon and the "Managed by …" text of a forced setting.
+pub(super) fn managed_line<'a>(label: String) -> Element<'a, Message> {
+    row![
+        rustket_ui::icon::sized(rustket_ui::icon::Icon::Lock, TEXT_CAPTION)
+            .style(style::text_secondary),
+        text(label)
+            .size(TEXT_CAPTION)
+            .style(style::text_secondary)
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+    ]
+    .spacing(SPACE_1)
     .align_y(Alignment::Center)
     .into()
 }
@@ -151,4 +206,27 @@ pub(super) fn link<'a>(label: String, url: &'static str) -> Element<'a, Message>
         Some(msg),
     )
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A forced switch shows on and off apart: on keeps the primary colour.
+    #[test]
+    fn managed_switch_tracks_differ_by_value() {
+        let theme = rustket_ui::theme(rustket_ui::theme::Mode::Light);
+        let t = rustket_ui::theme::tokens(&theme);
+        let track =
+            |is_toggled| match toggler_managed(&theme, toggler::Status::Disabled { is_toggled })
+                .background
+            {
+                iced::Background::Color(c) => c,
+                other => panic!("{other:?}"),
+            };
+        let (on, off) = (track(true), track(false));
+        assert_ne!(on, off);
+        assert_eq!((on.r, on.g, on.b), (t.primary.r, t.primary.g, t.primary.b));
+        assert!(on.a < t.primary.a, "faded");
+    }
 }

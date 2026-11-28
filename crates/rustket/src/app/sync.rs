@@ -102,7 +102,7 @@ impl App {
         n: Box<rocketchat::session::DesktopNotification>,
         may_wait: bool,
     ) -> Task<Message> {
-        if !self.terms_accepted() {
+        if !self.accounts_live() {
             return Task::none();
         }
         let Some(s) = self.servers.get(sid) else {

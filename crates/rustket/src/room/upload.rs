@@ -190,6 +190,28 @@ pub fn cancel_server(server: &str) {
     });
 }
 
+/// Registers a running upload of `server` named `name` that never ends on
+/// its own (tests of the modules that cancel or report uploads).
+#[cfg(test)]
+pub(crate) fn register_pending(server: &str, name: &str) -> iced::task::Handle {
+    let (_task, handle) =
+        Task::<Message>::future(futures::future::pending::<Message>()).abortable();
+    let id = NEXT_TRANSFER.fetch_add(1, Ordering::Relaxed);
+    register(
+        server,
+        "R1",
+        None,
+        Transfer {
+            id,
+            name: name.to_owned(),
+            sent: 0,
+            total: 1,
+        },
+        handle.clone(),
+    );
+    handle
+}
+
 /// Removes a finished or cancelled upload; its file name.
 fn finish(id: u64) -> Option<String> {
     running().remove(&id).map(|r| r.transfer.name)

@@ -29,13 +29,28 @@ pub enum InstallKind {
     MacApp {
         bundle: PathBuf,
     },
+    /// Reserved for a Windows Installer package (marker `msi` next to the
+    /// executable): placed by an administrator, never installed by the app.
+    Msi {
+        dir: PathBuf,
+    },
+    /// Reserved for a macOS installer package (marker `pkg` in the bundle):
+    /// placed by an administrator, never installed by the app.
+    MacPkg {
+        bundle: PathBuf,
+    },
     /// Source, dev and distribution builds: notify only.
     Unmanaged,
 }
 
 impl InstallKind {
+    /// Whether the app can install updates of this copy itself (else the
+    /// release page is offered).
     pub fn can_install(&self) -> bool {
-        !matches!(self, Self::Unmanaged)
+        !matches!(
+            self,
+            Self::Unmanaged | Self::Msi { .. } | Self::MacPkg { .. }
+        )
     }
 }
 
@@ -75,6 +90,8 @@ pub enum Marker {
     AppImage,
     Zip,
     Dmg,
+    Msi,
+    Pkg,
 }
 
 pub fn read_marker(text: &str) -> Option<Marker> {
@@ -84,6 +101,8 @@ pub fn read_marker(text: &str) -> Option<Marker> {
         "appimage" => Some(Marker::AppImage),
         "zip" => Some(Marker::Zip),
         "dmg" => Some(Marker::Dmg),
+        "msi" => Some(Marker::Msi),
+        "pkg" => Some(Marker::Pkg),
         _ => None,
     }
 }
@@ -272,9 +291,15 @@ fn windows(host: &dyn Host, exe: &Path) -> Option<InstallKind> {
         }
     }
     let dir = exe.parent()?;
-    (marker(host, &dir.join(MARKER_FILE))? == Marker::Zip).then(|| InstallKind::PortableZip {
-        dir: dir.to_owned(),
-    })
+    match marker(host, &dir.join(MARKER_FILE))? {
+        Marker::Zip => Some(InstallKind::PortableZip {
+            dir: dir.to_owned(),
+        }),
+        Marker::Msi => Some(InstallKind::Msi {
+            dir: dir.to_owned(),
+        }),
+        _ => None,
+    }
 }
 
 fn macos(host: &dyn Host, exe: &Path) -> Option<InstallKind> {
@@ -289,12 +314,20 @@ fn macos(host: &dyn Host, exe: &Path) -> Option<InstallKind> {
     {
         return None;
     }
-    if marker(host, &contents.join("Resources").join(MARKER_FILE))? != Marker::Dmg {
+    let pkg = match marker(host, &contents.join("Resources").join(MARKER_FILE))? {
+        Marker::Dmg => false,
+        Marker::Pkg => true,
+        _ => return None,
+    };
+    let plist = host.read_small(&contents.join("Info.plist"))?;
+    if plist_string(&plist, "CFBundleIdentifier") != Some(BUNDLE_ID) {
         return None;
     }
-    let plist = host.read_small(&contents.join("Info.plist"))?;
-    (plist_string(&plist, "CFBundleIdentifier") == Some(BUNDLE_ID)).then(|| InstallKind::MacApp {
-        bundle: bundle.to_owned(),
+    let bundle = bundle.to_owned();
+    Some(if pkg {
+        InstallKind::MacPkg { bundle }
+    } else {
+        InstallKind::MacApp { bundle }
     })
 }
 
@@ -398,6 +431,8 @@ mod tests {
         assert_eq!(read_marker("AppImage"), Some(Marker::AppImage));
         assert_eq!(read_marker("zip"), Some(Marker::Zip));
         assert_eq!(read_marker("dmg"), Some(Marker::Dmg));
+        assert_eq!(read_marker("MSI\r\n"), Some(Marker::Msi));
+        assert_eq!(read_marker("pkg\n"), Some(Marker::Pkg));
         assert_eq!(read_marker("deb rpm"), None);
         assert_eq!(read_marker(""), None);
     }
@@ -566,6 +601,30 @@ mod tests {
         ));
     }
 
+    /// The reserved MSI kind: its marker next to the executable, below an
+    /// Inno registration as the zip marker is; it never installs.
+    #[test]
+    fn msi() {
+        let h = FakeHost::exe("C:/Program Files/Rustket/rustket.exe")
+            .file("C:/Program Files/Rustket/install-kind", "msi\r\n");
+        let msi = InstallKind::Msi {
+            dir: PathBuf::from("C:/Program Files/Rustket"),
+        };
+        assert_eq!(detect(&h, Platform::Windows), msi);
+        assert!(!msi.can_install());
+        let h = h.inno(InnoScope::AllUsers, r"C:\Program Files\Rustket");
+        assert!(matches!(
+            detect(&h, Platform::Windows),
+            InstallKind::InnoSetup {
+                scope: InnoScope::AllUsers,
+                ..
+            }
+        ));
+        // Not a marker of Linux.
+        let h = FakeHost::exe("/usr/bin/rustket").file(DEB_MARKER, "msi\n");
+        assert_eq!(linux(&h), InstallKind::Unmanaged);
+    }
+
     const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -622,6 +681,38 @@ mod tests {
         let h = FakeHost::exe("/usr/local/Contents/MacOS/rustket")
             .file("/usr/local/Contents/Resources/install-kind", "dmg")
             .file("/usr/local/Contents/Info.plist", PLIST);
+        assert_eq!(detect(&h, Platform::MacOs), InstallKind::Unmanaged);
+    }
+
+    /// The reserved macOS installer package kind: the same bundle checks as
+    /// the dmg, marker `pkg`; it never installs.
+    #[test]
+    fn mac_pkg() {
+        let app = "/Applications/Rustket.app";
+        let host = |plist: &str| {
+            FakeHost::exe(&format!("{app}/Contents/MacOS/rustket"))
+                .file(&format!("{app}/Contents/Resources/install-kind"), "pkg\n")
+                .file(&format!("{app}/Contents/Info.plist"), plist)
+        };
+        let pkg = InstallKind::MacPkg {
+            bundle: PathBuf::from(app),
+        };
+        assert_eq!(detect(&host(PLIST), Platform::MacOs), pkg);
+        assert!(!pkg.can_install());
+        let other = PLIST.replace("io.github.sokolcloud.rustket", "com.example.fork");
+        assert_eq!(
+            detect(&host(&other), Platform::MacOs),
+            InstallKind::Unmanaged
+        );
+        // Only on macOS.
+        assert_eq!(
+            detect(&host(PLIST), Platform::Windows),
+            InstallKind::Unmanaged
+        );
+        // A Windows marker inside a bundle means nothing.
+        let h = FakeHost::exe(&format!("{app}/Contents/MacOS/rustket"))
+            .file(&format!("{app}/Contents/Resources/install-kind"), "msi\n")
+            .file(&format!("{app}/Contents/Info.plist"), PLIST);
         assert_eq!(detect(&h, Platform::MacOs), InstallKind::Unmanaged);
     }
 

@@ -65,10 +65,13 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subs = Vec::new();
-        // No workspace connection before the terms are accepted.
-        let live = self.terms_accepted();
+        // No workspace connection before the terms are accepted or while
+        // the policy blocks the accounts (they are suspended then too).
+        let live = self.accounts_live();
         for s in self.servers.values().filter(|_| live) {
-            if let Some(spec) = s.spec() {
+            // A server the policy suspends gets no connection, also while
+            // its tear-down is under way.
+            if let Some(spec) = s.spec().filter(|_| !self.is_suspended(&s.id)) {
                 subs.push(
                     session::subscription(spec)
                         .map(|(sid, generation, ev)| Message::Server(sid, generation, ev)),
@@ -116,6 +119,13 @@ impl App {
         }
         #[cfg(feature = "self-update")]
         subs.extend(crate::updater::app::subscription(self));
+        // The policy refresh (a read in flight skips a tick).
+        if self.policy_refresh {
+            subs.push(
+                iced::time::every(crate::policy::refresh::POLL_INTERVAL)
+                    .map(|_| Message::PolicyPoll),
+            );
+        }
         // A long-running session expires opened media too, not only startup.
         subs.push(
             iced::time::every(crate::room::timeline::transfer::MEDIA_PURGE_INTERVAL)

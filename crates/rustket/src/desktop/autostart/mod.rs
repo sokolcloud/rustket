@@ -19,6 +19,11 @@ pub const FILE: &str = "rustket.desktop";
 pub const RUN_VALUE: &str = "Rustket";
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+/// Where Task Manager and Settings → Apps → Startup mark a `Run` entry
+/// disabled, leaving the `Run` value in place.
+#[cfg(windows)]
+const APPROVED_KEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
 
 /// Where the launch-at-login entry lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,9 +123,13 @@ impl Autostart {
         match self {
             #[cfg(all(unix, not(target_os = "macos")))]
             Self::Xdg { .. } => self.read().is_some_and(|text| {
-                !text
-                    .lines()
-                    .any(|l| l.trim().eq_ignore_ascii_case("hidden=true"))
+                // GNOME's Startup Applications turns an entry off with
+                // `X-GNOME-Autostart-enabled=false`.
+                !text.lines().any(|l| {
+                    let l = l.trim();
+                    l.eq_ignore_ascii_case("hidden=true")
+                        || l.eq_ignore_ascii_case("x-gnome-autostart-enabled=false")
+                })
             }),
             #[cfg(any(target_os = "macos", test))]
             Self::LaunchAgent { .. } => self.read().is_some_and(|text| {
@@ -129,10 +138,16 @@ impl Autostart {
                 !compact.contains("<key>Disabled</key><true/>")
             }),
             #[cfg(windows)]
-            Self::RunKey => windows_registry::CURRENT_USER
-                .open(RUN_KEY)
-                .and_then(|k| k.get_string(RUN_VALUE))
-                .is_ok_and(|v| !v.trim().is_empty()),
+            Self::RunKey => {
+                windows_registry::CURRENT_USER
+                    .open(RUN_KEY)
+                    .and_then(|k| k.get_string(RUN_VALUE))
+                    .is_ok_and(|v| !v.trim().is_empty())
+                    && !windows_registry::CURRENT_USER
+                        .open(APPROVED_KEY)
+                        .and_then(|k| k.get_value(RUN_VALUE))
+                        .is_ok_and(|v| approved_disabled(&v))
+            }
             #[cfg(target_os = "macos")]
             Self::LoginItem => macos::state().is_on(),
         }
@@ -152,7 +167,19 @@ impl Autostart {
                     .map_err(io::Error::other)?;
                 if enabled {
                     key.set_string(RUN_VALUE, run_value(exe))
-                        .map_err(io::Error::other)
+                        .map_err(io::Error::other)?;
+                    // Clear a "disabled" mark left by Task Manager; a missing
+                    // mark counts as enabled, so the key is never created.
+                    if let Ok(approved) = windows_registry::CURRENT_USER
+                        .options()
+                        .read()
+                        .write()
+                        .open(APPROVED_KEY)
+                        && approved.get_value(RUN_VALUE).is_ok()
+                    {
+                        approved.remove_value(RUN_VALUE).map_err(io::Error::other)?;
+                    }
+                    Ok(())
                 } else if key.get_string(RUN_VALUE).is_ok() {
                     key.remove_value(RUN_VALUE).map_err(io::Error::other)
                 } else {
@@ -248,6 +275,13 @@ pub fn launch_agent(exe: &Path) -> String {
     )
 }
 
+/// Whether a `StartupApproved\Run` value marks the entry disabled: an odd
+/// first byte (Task Manager writes 02 or 06 for enabled, 03 for disabled).
+#[cfg(any(windows, test))]
+fn approved_disabled(b: &[u8]) -> bool {
+    b.first().is_some_and(|x| x & 1 == 1)
+}
+
 /// The `Run` value starting `exe` (quoted: paths contain spaces).
 #[cfg(any(windows, test))]
 pub fn run_value(exe: &Path) -> String {
@@ -315,6 +349,33 @@ mod tests {
         std::fs::create_dir_all(d.path().join("autostart")).unwrap();
         std::fs::write(a.path().unwrap(), "[Desktop Entry]\nHidden=true\n").unwrap();
         assert!(!a.is_enabled());
+    }
+
+    /// GNOME's Startup Applications switch; turning it on again repairs it.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn gnome_disabled_entry_counts_as_disabled() {
+        let d = tempfile::tempdir().unwrap();
+        let a = Autostart::Xdg {
+            config_home: d.path().to_owned(),
+        };
+        std::fs::create_dir_all(d.path().join("autostart")).unwrap();
+        std::fs::write(
+            a.path().unwrap(),
+            "[Desktop Entry]\nExec=/usr/bin/rustket\n X-GNOME-Autostart-enabled=False\n",
+        )
+        .unwrap();
+        assert!(!a.is_enabled());
+        a.set_enabled(true, Path::new("/usr/bin/rustket")).unwrap();
+        assert!(a.is_enabled());
+    }
+
+    #[test]
+    fn startup_approved_flag() {
+        assert!(approved_disabled(&[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!approved_disabled(&[2, 0, 0]));
+        assert!(!approved_disabled(&[6, 0]));
+        assert!(!approved_disabled(&[]));
     }
 
     #[test]

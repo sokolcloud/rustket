@@ -20,6 +20,7 @@ in parallel, so ownership matters.
 | title bar agent | `src/workspace/titlebar.rs` (custom title bar: workspaces, gear, window controls, drag/maximize/resize logic; workspace clicks go out as `rail::Message`), `rustket-ui` `widget/window_chrome.rs`; `UiPrefs::system_title_bar` switches back to the left rail live (`App::sync_decorations`) | `titlebar.yml` |
 | cache agent | `src/cache/` (offline cache glue, offline strip, Settings → Storage row), `rustket-core/src/cache/` (SQLite store, worker) | `cache.yml` |
 | shell (shared) | `src/app.rs`, `src/app/*.rs`, `src/message.rs`, `src/room/mod.rs`, `src/component.rs`, `src/session.rs`, `src/workspace/{mod,sidebar,rail}.rs`, `src/screens/{login,add_server,page}.rs` | `app.yml`, `sidebar.yml`, … |
+| policy agent | `src/policy/` (loading, the Windows and macOS readers, refresh, server standing, the Policies page model), `src/app/policy_state.rs` and `src/app/server_policy.rs` (glue), `src/screens/policy_block.rs`, `src/screens/policy_notice.rs`, `src/screens/settings/policies.rs`, `src/logging.rs`, `rustket-core/src/policy/` (registry, resolution, overlay); see `docs/policy.md` | `policy.yml` |
 
 Rules:
 - Edit only your modules and your locale files. Submodules under your module
@@ -36,6 +37,29 @@ Rules:
 - Tests: unit tests next to the code; app-level flows in `tests/app_flows.rs`
   (drive `App::update`); the headless screenshot example `examples/snapshot.rs`
   renders the real app against the dev server.
+
+## Enterprise policy lifecycle
+
+In the order it happens (docs/policy.md sections 7 and 8):
+
+1. `main` resolves the policy at its top (`crate::policy::load_with_sources`),
+   after the command line and before the software-renderer restart and
+   logging. Resolution has no side effects.
+2. The policy and its source snapshots reach the app in `Flags` (`policy`,
+   `policy_sources`); tests inject a policy the same way. `App::new` applies
+   it to the user's preferences and adds missing managed servers.
+3. At refresh (`Message::PolicyPoll`, then `PolicyRead` through the
+   debounce) a policy that differs replaces the old one in `App::set_policy`,
+   which returns the follow-up task of every side effect.
+4. After every `update`, `App::reconcile_prefs` keeps `config.ui` the
+   effective copy: a write to a free field is adopted into the user's copy,
+   a write to a forced field is undone. A save writes `App::user_view`, so a
+   forced value is never saved.
+5. A server's standing (allowed, managed, suspended and why) is decided in
+   one place, `crate::policy::servers::standing`; everything else asks it.
+6. A session of a server that stays allowed is never restarted by a policy
+   change: the certificate rule applies when its next session starts, the
+   sign-in keys at its next sign-in.
 
 ## Keyboard and focus (`src/focus.rs`)
 
@@ -77,8 +101,93 @@ impl X {
 ```
 
 `screens/settings.rs` is not per server: it gets `SettingsCtx { config,
-ui_state }` in `update` and `SettingsView { config, handler_registered,
-secret_backend, … }` in `view`.
+ui_state, policy }` in `update` and `SettingsView { config,
+handler_registered, secret_backend, … }` in `view`. `config.ui` is the
+effective copy (the user's preferences with the values the enterprise policy
+forces, docs/policy.md section 7); the handler of every field the policy can
+force (`LockedPref`) goes through the lock check (`Settings::locked_pref`, or
+`policy.locks(..)` for handlers with side effects) and changes nothing while
+the field is forced. `SettingsView::policy` is the policy in force: a forced
+switch is built with `widgets::switch_with(.., v.managed(field))`, which
+disables it and adds the visible "Managed by …" line; every tab starts with
+the managed notice while the policy sets a key; the Policies tab
+(`settings/policies.rs`, model in `crate::policy::page`) is offered only when
+the policy has something to report (`Tab::offered`).
+
+Server keys of the policy (docs/policy.md sections 9.1, 9.2): the standing of
+a configured server (allowed, managed, suspended with its reason) is decided
+only by `crate::policy::servers::standing`; the app asks it through
+`App::standing_of` / `is_suspended`, and `may_add_servers` /
+`may_remove_server` for the add and remove actions (`app/server_policy.rs`). A
+suspended server keeps its `ServerState` in `servers` (listed, marked
+`RailEntry::suspended`) but never gets credentials, a session, a login screen
+or an open cache; `server_view` shows `screens/policy_notice.rs` for it.
+`App::fallback_screen` replaces the add-server screen with `Screen::NoServers`
+while the user may not add servers. Every entry that adds a server (Submit,
+offer dialog, `Go::AddServer`) or removes one (status menu, confirmation,
+`remove_server`) checks the policy itself. `ServerState::stored_pins` are the
+config's pins; `pins`/`tls` are what is in effect (none while certificate
+exceptions are forbidden, and for a managed server). They are decided while a
+server has no credentials (its login screen gets the new TLS configuration at
+once, as does the session a token read in flight starts) and when a session is
+about to start (`from_entry` at start-up, `reset` before a sign-in,
+`sync_pins` at Retry after a failed start or an ended session; the refresh
+that resumes a suspended server has already applied the rule in
+`set_pins_allowed`, because a suspended server has no credentials); a session
+that exists or is starting with credentials keeps the pins it started with
+(`ServerState::set_pins_allowed`). A refresh restarts nothing: when it takes
+the pins of signed-in servers out of effect, `App::apply_server_policy` only
+shows one warning toast naming all of them (`policy.pins_later`; not for a
+server whose start failed or whose session ended, where Retry applies the
+rule). A suspension (`App::suspend_server`) closes the offline cache without
+deleting it (without the interrupted-uploads list: the cancelled uploads are
+named at once in a `policy.uploads_suspended` toast), aborts its queued sends
+and drops the server's queued image requests (a download already running may
+finish); the suspended screen offers removal while `may_remove_server` allows
+it.
+
+Blocking state, sign-in keys and `LaunchAtLogin` (docs/policy.md sections 6,
+9.4, 9.6, 9.7; `app/policy_state.rs`): a blocked policy suspends every server
+in `standing` (`Suspension::Blocked`), so start-up, refresh, tear-down and
+restart take the paths above. `App::accounts_live` (terms accepted and not
+blocked) gates what the terms gate covered: title, tray and unread, desktop
+notifications and requests, shortcuts, file drops, the macOS menu, and the
+queued `rocketchat://` links (`handle_queued_links`, run again by
+`set_policy` when the block ends); `navigate_to` opens nothing while blocked.
+Entering a block at runtime (`enter_blocked`) clears dialogs and toast buttons
+that lead behind it, closes "Details" and shows a window hidden to the tray
+again, since the tray falls silent. When a block that was in force at start
+ends, `policy_block_ended` chooses the server to show again by the start rule
+(`initial_active`). `screens/policy_block.rs` replaces the whole window after
+the terms; it uses only the policy (the sources list and the dump hint come
+from `settings/policies.rs`), and its "Check for updates" is offered and runs
+the updater's manual check exactly when the effective update mode is `prompt`
+(`App::update_mode`). `login::SignInRules` (from the policy) is set on every
+login screen when it is created and by `set_policy`; `Login` refuses the
+messages of a method that is off and shows one notice line. `LaunchAtLogin`
+is applied by `apply_launch_at_login`: one attempt at start, one per change of
+the key, and one after a click on the switch that was still running ended
+against the forced value (`recheck_launch_at_login`); applied only once the
+terms are accepted and no block is in force (a start or a change during a
+block is applied when it ends), through `App::autostart` (the system location
+only with real desktop integration); the settings switch is locked while the
+key is set.
+
+Updater under the policy (docs/policy.md 9.3; `self-update` only):
+`updater::mode::effective` is the one place that computes the effective mode
+from `UpdateMode` and the install kind (the key; else `notify` for an Inno
+Setup installation for all users and the reserved kinds `Msi` and `MacPkg`;
+else `prompt`), applied to the app by `updater::app::mode`. It gates every
+entry: the start-up check and the hourly tick (not in `off`), the manual check
+(refused in `off`, where About shows who manages updates instead of "Check
+now"), and download, install and the file fallback (only in `prompt`; the card
+and About offer the release page in `notify`). `updater::app::mode_changed`
+runs at `set_policy` and after the kind is detected (`Updater::withdraw`):
+leaving `prompt` cancels a download; in `notify` an offer, a downloaded file
+or a failed install becomes the report of its release; `off` drops them, a
+check under way and its status; a failure left by an earlier run (known only
+by its version) is dropped outside `prompt`. A running install continues and
+shows its outcome, and the change itself requests nothing.
 
 - `component::Ctx`: `server_id`, `server`, `workspace: &mut Workspace`,
   `session: Option<&SessionHandle>`, `images`, `config`; helpers `rest()`,

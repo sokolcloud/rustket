@@ -89,6 +89,36 @@ updater.kind_unmanaged:
   es: "No instalado desde un paquete de Rustket: solo se avisa de nuevas versiones, descárgalas desde la página de la versión"
   th: "ไม่ได้ติดตั้งจากแพ็กเกจ Rustket: จะแจ้งเฉพาะเมื่อมีเวอร์ชันใหม่ ดาวน์โหลดได้จากหน้ารีลีส"
   zh: "不是通过 Rustket 软件包安装：仅提示新版本，请从发布页面下载"
+updater.kind_msi:
+  en: "Windows Installer package (MSI): your administrator installs updates"
+  ru: "Пакет установщика Windows (MSI): обновления устанавливает администратор"
+  es: "Paquete de Windows Installer (MSI): tu administrador instala las actualizaciones"
+  th: "แพ็กเกจ Windows Installer (MSI): ผู้ดูแลระบบเป็นผู้ติดตั้งอัปเดต"
+  zh: "Windows Installer 软件包（MSI）：由管理员安装更新"
+updater.kind_pkg:
+  en: "macOS installer package: your administrator installs updates"
+  ru: "Пакет установщика macOS: обновления устанавливает администратор"
+  es: "Paquete de instalación de macOS: tu administrador instala las actualizaciones"
+  th: "แพ็กเกจตัวติดตั้ง macOS: ผู้ดูแลระบบเป็นผู้ติดตั้งอัปเดต"
+  zh: "macOS 安装包：由管理员安装更新"
+updater.notify_available:
+  en: "Version %{version} is available. Ask your administrator to install it."
+  ru: "Доступна версия %{version}. Попросите администратора установить её."
+  es: "La versión %{version} está disponible. Pide a tu administrador que la instale."
+  th: "มีเวอร์ชัน %{version} แล้ว โปรดขอให้ผู้ดูแลระบบติดตั้ง"
+  zh: "有新版本 %{version} 可用。请让管理员安装。"
+updater.managed_off:
+  en: "Your organization manages updates of Rustket"
+  ru: "Обновлениями Rustket управляет ваша организация"
+  es: "Tu organización gestiona las actualizaciones de Rustket"
+  th: "องค์กรของคุณเป็นผู้จัดการการอัปเดต Rustket"
+  zh: "Rustket 的更新由你的组织管理"
+updater.managed_off_by:
+  en: "%{name} manages updates of Rustket"
+  ru: "Обновлениями Rustket управляет организация %{name}"
+  es: "%{name} gestiona las actualizaciones de Rustket"
+  th: "%{name} เป็นผู้จัดการการอัปเดต Rustket"
+  zh: "Rustket 的更新由 %{name} 管理"
 updater.check_now:
   en: "Check now"
   ru: "Проверить сейчас"

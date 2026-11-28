@@ -31,9 +31,12 @@ install -Dm644 "$LINUX/rustket.desktop" "$STAGE/usr/share/applications/rustket.d
 install -Dm644 "$LINUX/rustket.metainfo.xml" "$STAGE/usr/share/metainfo/rustket.metainfo.xml"
 install_icons "$STAGE/usr/share"
 install_marker "$STAGE/usr/lib/rustket/install-kind" deb
+# The policy directory (docs/policy.md section 2), empty: administrators add files.
+install -d -m755 "$STAGE/etc/rustket/policies/managed"
 
 DOC="$STAGE/usr/share/doc/rustket"
 install -Dm644 "$ROOT/packaging/deb/copyright" "$DOC/copyright"
+install_policy_docs "$DOC/policy"
 third_party_notices "$DOC/THIRD-PARTY-NOTICES"
 gzip -9n "$DOC/THIRD-PARTY-NOTICES"
 DATE="$(date -R -d "@${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}")"

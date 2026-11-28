@@ -47,6 +47,24 @@ pub fn should_reexec(backend_set: bool, marker_set: bool, hardware_acceleration:
     !hardware_acceleration && !backend_set && !marker_set
 }
 
+/// The restart decision at start-up: never in the Mac App Store flavor (no
+/// sandboxed exec of itself); `ICED_BACKEND` and the restart marker keep
+/// their priority; then the policy's `HardwareAcceleration` when it is set,
+/// else the saved preference (read only when needed).
+pub fn software_restart_wanted(
+    mas: bool,
+    backend_set: bool,
+    marker_set: bool,
+    policy: Option<bool>,
+    saved: impl FnOnce() -> bool,
+) -> bool {
+    if mas || backend_set || marker_set {
+        return false;
+    }
+    let hardware_acceleration = policy.unwrap_or_else(saved);
+    should_reexec(backend_set, marker_set, hardware_acceleration)
+}
+
 /// The saved `hardware_acceleration` preference, read without side effects
 /// (no repair or move-aside of a broken file); any error yields the default.
 pub fn saved_hardware_acceleration(dir: Option<&Path>) -> bool {
@@ -72,6 +90,50 @@ mod tests {
         );
         assert!(!should_reexec(false, true, false), "loop guard");
         assert!(!should_reexec(true, true, true));
+    }
+
+    /// The policy decides when set, else the saved preference; the backend
+    /// variable, the marker and the store flavor still come first.
+    #[test]
+    fn restart_decision_table() {
+        let cases = [
+            // (mas, backend, marker, policy, saved, restart)
+            (false, false, false, None, true, false),
+            (false, false, false, None, false, true),
+            (false, false, false, Some(true), false, false),
+            (false, false, false, Some(true), true, false),
+            (false, false, false, Some(false), true, true),
+            (false, false, false, Some(false), false, true),
+            (false, true, false, Some(false), false, false),
+            (false, true, false, None, false, false),
+            (false, false, true, Some(false), false, false),
+            (false, false, true, None, false, false),
+            (false, true, true, Some(false), false, false),
+            (true, false, false, Some(false), false, false),
+            (true, false, false, None, false, false),
+        ];
+        for (mas, backend, marker, policy, saved, expected) in cases {
+            let got = software_restart_wanted(mas, backend, marker, policy, || saved);
+            assert_eq!(
+                got, expected,
+                "mas={mas} backend={backend} marker={marker} policy={policy:?} saved={saved}"
+            );
+        }
+        // The saved preference is not read when the policy decides.
+        assert!(software_restart_wanted(
+            false,
+            false,
+            false,
+            Some(false),
+            || panic!("read")
+        ));
+        assert!(!software_restart_wanted(
+            false,
+            true,
+            false,
+            None,
+            || panic!("read")
+        ));
     }
 
     #[test]

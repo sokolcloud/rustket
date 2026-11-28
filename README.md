@@ -135,6 +135,15 @@ xattr -dr com.apple.quarantine /Applications/Rustket.app
 
 Third-party licenses are in `Rustket.app/Contents/Resources/THIRD-PARTY-NOTICES.txt`.
 
+### For administrators
+
+Rustket 0.4.0 and later read enterprise policy from Group Policy and other Windows
+management tools, macOS configuration profiles and root-owned files on Linux. The
+[administrator guide](docs/enterprise.md) covers silent installation, the
+templates (`Rustket-<version>-policy-templates.zip` on the releases page) and
+diagnostics, including what has been verified on real systems so far (its section 8);
+[docs/policies.md](docs/policies.md) is the reference of every key.
+
 ### Build from source
 
 Rust 1.90 or newer (rustup). No system `-dev` packages are needed (TLS is rustls,
@@ -325,6 +334,7 @@ ICED_BACKEND=tiny-skia rustket
 | Notification sounds decoded at your volume | `~/.cache/rustket/sounds/`; on macOS the app also keeps copies named `rustket-*` in `~/Library/Sounds` so notifications can play them (unused ones are removed) |
 | Media opened in another app (video, audio, files) | `~/.cache/rustket/media/`, removed after 24 hours |
 | Decrypted E2E attachments opened in another app | `~/.cache/rustket/media/e2e/`, private to the user, removed after 24 hours |
+| Diagnostic log (only with **Settings → Privacy & storage → Keep a diagnostic log file**, off by default) | `~/.local/state/rustket/logs/rustket.log` (`$XDG_STATE_HOME`), private to the user; renamed to `rustket.1.log` (replacing the previous one) at 2 MiB. No passwords, tokens or message text |
 | Auth tokens and E2E keys | the desktop keyring (Secret Service: GNOME Keyring, KWallet, KeePassXC) |
 | Fallback without a keyring | `~/.local/share/rustket/secrets.json`: **not encrypted** (mode 0600 on Linux/macOS); the app warns about it at startup. With **Settings → Privacy & storage → Never store secrets in a file** on, nothing is written: tokens and E2E keys stay in memory until you quit, so you sign in and enter your E2E password after every restart |
 | Start on login | `~/.config/autostart/rustket.desktop` |
@@ -348,8 +358,14 @@ default log level it never contains passwords, tokens or message text; check
 before posting anyway:
 
 ```sh
-RUST_BACKTRACE=1 rustket 2> rustket.log
+RUST_BACKTRACE=1 rustket > rustket.log 2>&1
 ```
+
+The log goes to standard output and a crash backtrace to standard error, so
+the command captures both. On Windows, and for a macOS app started from the
+Finder, the way to get a log is **Settings → Privacy & storage → Keep a
+diagnostic log file**: turn it on, restart Rustket and attach `rustket.log`
+from **Show log folder**.
 
 If more detail is needed, use
 `RUST_LOG=info,rustket=debug,rustket_core=debug`. Debug logs can contain message

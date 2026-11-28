@@ -123,6 +123,14 @@ fn cargo_deb_metadata_in_sync() {
             "usr/share/doc/rustket/THIRD-PARTY-NOTICES",
         ),
         ("lintian-overrides", "usr/share/lintian/overrides/rustket"),
+        (
+            "policy/policy.schema.json",
+            "usr/share/doc/rustket/policy/policy.schema.json",
+        ),
+        (
+            "policy/50-example.json",
+            "usr/share/doc/rustket/policy/50-example.json",
+        ),
     ] {
         assert!(
             assets.iter().any(|a| a.contains(src) && a.ends_with(dest)),
@@ -286,6 +294,428 @@ fn install_kind_markers() {
     assert!(test.contains("= deb ]"));
     assert!(test.contains("= appimage ]"));
     assert!(read(".github/workflows/release.yml").contains(&format!("/{marker}; do")));
+}
+
+/// The Linux policy files of `packaging/policy/` (docs/policy.md section 14).
+const POLICY_DOCS: [&str; 2] = ["policy.schema.json", "50-example.json"];
+
+/// The deb and rpm own the empty policy directory (root:root, 0755) and
+/// install the Linux policy schema and example with the documentation.
+#[test]
+fn linux_packages_own_the_policy_directory() {
+    let dir = rustket_core::policy::MANAGED_DIR;
+    assert_eq!(dir, "/etc/rustket/policies/managed");
+    let common = read("packaging/common.sh");
+    assert!(common.contains("install_policy_docs() {"));
+    for f in POLICY_DOCS {
+        assert!(
+            common.contains(&format!(
+                "install -Dm644 \"$ROOT/packaging/policy/{f}\" \"$1/{f}\"\n"
+            )),
+            "common.sh installs {f}"
+        );
+        assert!(root().join("packaging/policy").join(f).is_file(), "{f}");
+    }
+    let make_dir = format!("install -d -m755 \"$STAGE{dir}\"\n");
+    let deb = read("packaging/deb/build.sh");
+    assert!(deb.contains(&make_dir), "deb/build.sh");
+    assert!(deb.contains("install_policy_docs \"$DOC/policy\"\n"));
+    let rpm = read("packaging/rpm/build.sh");
+    assert!(rpm.contains(&make_dir), "rpm/build.sh");
+    assert!(rpm.contains("install_policy_docs \"$STAGE/usr/share/doc/rustket/policy\"\n"));
+
+    let spec = read("packaging/rpm/rustket.spec");
+    let files = &spec[index_of(&spec, "%files", "rustket.spec")..];
+    for d in ["/etc/rustket", "/etc/rustket/policies", dir] {
+        assert!(
+            files.contains(&format!("%dir %attr(0755,root,root) {d}\n")),
+            "rustket.spec owns {d}"
+        );
+    }
+    assert!(files.contains("%dir /usr/share/doc/rustket/policy\n"));
+    for f in POLICY_DOCS {
+        assert!(files.contains(&format!("%doc /usr/share/doc/rustket/policy/{f}\n")));
+    }
+
+    // The package test: the docs and the directory are there, and nothing
+    // else lies outside /usr.
+    let test = read("packaging/test.sh");
+    assert!(test.contains(&format!("    .{dir}/\n")));
+    for f in POLICY_DOCS {
+        assert!(test.contains(&format!("    ./usr/share/doc/rustket/policy/{f}\n")));
+    }
+    assert!(test.contains("check \"nothing outside /usr except the policy directory\""));
+    assert!(test.contains("check \"policy directory: empty\""));
+    assert!(test.contains("check \"policy directory: root:root 0755\""));
+    assert!(!test.contains("check \"nothing outside /usr\" "));
+
+    let release = read(".github/workflows/release.yml");
+    let linux = job(&release, "linux", Some("windows"));
+    assert!(linux.contains(&format!(" {dir} ")), "the rpm check");
+    for f in POLICY_DOCS {
+        assert!(linux.contains(&format!(" /usr/share/doc/rustket/policy/{f} ")));
+    }
+}
+
+/// The templates ship as one release asset built from the checked-in files,
+/// published, checksummed and required like the packages. The updater never
+/// takes it for a package (`updater::assets` tests).
+#[test]
+fn policy_templates_release_asset() {
+    let script = read("packaging/policy-templates.sh");
+    assert!(
+        script.contains("ZIP=\"$(cd \"$DEST\" && pwd)/Rustket-$VERSION-policy-templates.zip\"\n")
+    );
+    assert!(script.contains("cp -R \"$ROOT/packaging/policy/.\" \"$TMP/\"\n"));
+    assert!(script.contains("cp \"$ROOT/docs/policies.md\" \"$TMP/policies.md\"\n"));
+    // The inventory and compliance scripts are static files.
+    let copy = POLICY_SCRIPTS
+        .iter()
+        .map(|f| format!(" \"$ROOT/packaging/policy-scripts/{f}\""))
+        .collect::<String>();
+    assert!(script.contains(&format!(
+        "mkdir \"$TMP/scripts\"\ncp{copy} \"$TMP/scripts/\"\n"
+    )));
+    assert!(script.contains("chmod 755 \"$TMP/scripts/rustket-policy-check.sh\"\n"));
+    let mut found: Vec<String> = std::fs::read_dir(root().join("packaging/policy-scripts"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    found.sort();
+    assert_eq!(found, POLICY_SCRIPTS, "packaging/policy-scripts/");
+    assert!(
+        script
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .all(|l| !l.contains("cargo") && !l.contains("build_binary")),
+        "no build"
+    );
+    assert!(root().join("docs/policies.md").is_file());
+
+    let release = read(".github/workflows/release.yml");
+    let linux = job(&release, "linux", Some("windows"));
+    assert!(linux.contains("--no-install-recommends rpm desktop-file-utils zip\n"));
+    let collect = index_of(&linux, "- name: Collect\n", "linux job");
+    let built = index_of(&linux, "packaging/policy-templates.sh dist\n", "linux job");
+    let upload = index_of(&linux, "- name: Upload the policy templates\n", "linux job");
+    assert!(collect < built && built < upload);
+    assert!(linux[upload..].contains(
+        "path: dist/*-policy-templates.zip\n          archive: false\n          if-no-files-found: error\n"
+    ));
+
+    let publish = job(&release, "publish", None);
+    let required = index_of(&publish, "for want in ", "publish job");
+    let check = index_of(&publish, "compgen -G", "publish job");
+    assert!(publish[required..check].contains("'*-policy-templates.zip'"));
+    let sums = index_of(&publish, "sha256sum -- * >SHA256SUMS\n", "publish job");
+    assert!(check < sums);
+    assert!(publish.contains("--generate-notes \"${prerelease[@]}\" release/*\n"));
+
+    assert!(!read(".github/workflows/app-store.yml").contains("policy-templates"));
+    assert!(!read("packaging/macos/build.sh").contains("packaging/policy"));
+}
+
+/// The inventory and compliance scripts of the templates archive
+/// (packaging/policy-scripts/, `scripts/` in the archive).
+const POLICY_SCRIPTS: [&str; 2] = ["rustket-policy-check.ps1", "rustket-policy-check.sh"];
+
+/// Whether `tool` runs (`tool arg`).
+#[cfg(unix)]
+fn have(tool: &str, arg: &str) -> bool {
+    std::process::Command::new(tool)
+        .arg(arg)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// The archive packaging/policy-templates.sh builds: every template, the
+/// reference and the scripts, the shell script executable.
+#[cfg(unix)]
+#[test]
+fn policy_templates_archive_contents() {
+    if !have("zip", "-v") || !have("unzip", "-v") {
+        eprintln!("zip or unzip not found; skipped");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let out = std::process::Command::new("bash")
+        .arg(root().join("packaging/policy-templates.sh"))
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let zip = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    assert!(zip.ends_with("-policy-templates.zip"), "{zip}");
+    let list = |args: &[&str]| {
+        let out = std::process::Command::new("unzip")
+            .args(args)
+            .arg(&zip)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let names: Vec<String> = list(&["-Z1"]).lines().map(str::to_owned).collect();
+    let mut want: Vec<String> = [
+        "50-example.json",
+        "en-US/rustket.adml",
+        "policies.md",
+        "policy.schema.json",
+        "ru-RU/rustket.adml",
+        "rustket-intune-macos.plist",
+        "rustket-jamf-schema.json",
+        "rustket.admx",
+        "rustket.mobileconfig",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .chain(POLICY_SCRIPTS.iter().map(|f| format!("scripts/{f}")))
+    .collect();
+    want.sort();
+    assert_eq!(names, want);
+    let long = list(&["-Z"]);
+    assert!(
+        long.lines()
+            .any(|l| l.starts_with("-rwxr-xr-x") && l.ends_with(" scripts/rustket-policy-check.sh")),
+        "{long}"
+    );
+}
+
+/// packaging/policy-scripts/rustket-policy-check.sh against a fake
+/// executable that serves a real `--dump-policy` report. The PowerShell
+/// twin cannot run here (no PowerShell on the Linux runners).
+#[cfg(unix)]
+#[test]
+fn policy_check_shell_script() {
+    use rustket_core::policy::{Context, Os, RawValue, Snapshot, SourceId, Trust};
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let script = root().join("packaging/policy-scripts/rustket-policy-check.sh");
+    for shell in ["sh", "bash"] {
+        let ok = std::process::Command::new(shell)
+            .arg("-n")
+            .arg(&script)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "{shell} -n");
+    }
+    // macOS reads the report with osascript, Linux with python3.
+    if !cfg!(target_os = "macos") && !have("python3", "-V") {
+        eprintln!("python3 not found; skipped");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let snaps = [Snapshot::new(SourceId::Test("a".into()), Trust::Full)
+        .with("RequireHttps", RawValue::Bool(true))
+        .with("OrganizationName", RawValue::String("x\ny".into()))];
+    let ctx = Context {
+        client_version: "0.4.0".into(),
+        os: Os::Linux,
+        mas: false,
+        self_update: false,
+    };
+    let dump = dir.path().join("dump.json");
+    std::fs::write(
+        &dump,
+        rustket_core::policy::dump_json(&rustket_core::policy::resolve(&snaps, &ctx)).unwrap(),
+    )
+    .unwrap();
+    // Asked for the report, the fake leaves a mark.
+    let fake = dir.path().join("rustket");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\ncase \"$1\" in\n--version) echo \"rustket $FAKE_VERSION\" ;;\n\
+         --dump-policy) : >\"$FAKE_MARK\"; cat \"$FAKE_DUMP\" ;;\n*) exit 3 ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mark = dir.path().join("asked");
+    let run = |version: &str, args: &[&str]| {
+        let _ = std::fs::remove_file(&mark);
+        let out = std::process::Command::new("sh")
+            .arg(&script)
+            .args(args)
+            .env("RUSTKET_BIN", &fake)
+            .env("FAKE_VERSION", version)
+            .env("FAKE_DUMP", &dump)
+            .env("FAKE_MARK", &mark)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            mark.exists(),
+        )
+    };
+    let (code, text, asked) = run("0.4.0", &["RequireHttps"]);
+    assert_eq!((code, asked), (Some(0), true), "{text}");
+    assert!(
+        text.contains("Rustket 0.4.0: RequireHttps applied: true from test:a"),
+        "{text}"
+    );
+    // The display form escapes the line break; printed as one line.
+    let (code, text, _) = run("0.4.1", &["OrganizationName"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert_eq!(
+        text,
+        "Rustket 0.4.1: OrganizationName invalid: \"x\\ny\" from test:a\n"
+    );
+    let (_, text, _) = run("0.4.1", &["--jamf", "OrganizationName"]);
+    assert_eq!(
+        text,
+        "<result>Rustket 0.4.1: OrganizationName invalid: \"x\\ny\" from test:a</result>\n"
+    );
+    let (code, text, _) = run("1.0.0", &["SupportUrl"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("SupportUrl not set"), "{text}");
+    let (code, text, asked) = run("0.4.0", &[]);
+    assert_eq!((code, asked), (Some(0), false), "{text}");
+    // Older copies are never asked: they would open their window.
+    let (code, text, asked) = run("0.3.2", &["RequireHttps"]);
+    assert_eq!((code, asked), (Some(1), false), "{text}");
+    assert!(text.contains("older than 0.4.0"), "{text}");
+    let (code, text, _) = run("garbage", &["RequireHttps"]);
+    assert_eq!(code, Some(1), "{text}");
+    // A Jamf extension attribute always succeeds and wraps the summary.
+    let (code, text, _) = run("0.4.0", &["--jamf", "SupportUrl"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(text, "<result>Rustket 0.4.0: SupportUrl not set</result>\n");
+    // Without arguments the defaults at the top of the script apply, as for
+    // tools that pass none.
+    let source = std::fs::read_to_string(&script).unwrap();
+    assert!(source.contains("\nDEFAULT_KEY=\"\"\nJAMF=0\n"));
+    let edited = dir.path().join("edited.sh");
+    std::fs::write(
+        &edited,
+        source.replace(
+            "\nDEFAULT_KEY=\"\"\nJAMF=0\n",
+            "\nDEFAULT_KEY=\"RequireHttps\"\nJAMF=1\n",
+        ),
+    )
+    .unwrap();
+    let out = std::process::Command::new("sh")
+        .arg(&edited)
+        .env("RUSTKET_BIN", &fake)
+        .env("FAKE_VERSION", "0.4.0")
+        .env("FAKE_DUMP", &dump)
+        .env("FAKE_MARK", &mark)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "<result>Rustket 0.4.0: RequireHttps applied: true from test:a</result>\n"
+    );
+    // Arguments replace both defaults.
+    let out = std::process::Command::new("sh")
+        .arg(&edited)
+        .arg("SupportUrl")
+        .env("RUSTKET_BIN", &fake)
+        .env("FAKE_VERSION", "0.4.0")
+        .env("FAKE_DUMP", &dump)
+        .env("FAKE_MARK", &mark)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Rustket 0.4.0: SupportUrl not set\n"
+    );
+    let out = std::process::Command::new("sh")
+        .arg(&script)
+        .env("RUSTKET_BIN", dir.path().join("missing"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("not installed"));
+}
+
+/// The templates name what the readers read: the ADMX writes the Windows
+/// reader's key (a list policy its subkey) and the profile forces values of
+/// the app's own preference domain.
+#[test]
+fn policy_templates_match_the_readers() {
+    use rustket_core::policy::{ValueType, specs};
+    let key = rustket::policy::registry::POLICY_KEY;
+    let admx = read("packaging/policy/rustket.admx");
+    for s in specs() {
+        let start = index_of(
+            &admx,
+            &format!("<policy name=\"{}\" ", s.name),
+            "rustket.admx",
+        );
+        let policy = &admx[start..start + index_of(&admx[start..], "</policy>", s.name)];
+        let tag = &policy[..index_of(policy, ">", s.name)];
+        assert!(
+            tag.contains(&format!(" key=\"{key}\"")),
+            "{}: {tag}",
+            s.name
+        );
+        if s.value_type == ValueType::StringList {
+            assert!(
+                policy.contains(&format!("<list id=\"{0}\" key=\"{key}\\{0}\" ", s.name)),
+                "{}",
+                s.name
+            );
+        }
+    }
+    let keys: Vec<&str> = admx
+        .match_indices(" key=\"")
+        .map(|(i, m)| {
+            let rest = &admx[i + m.len()..];
+            &rest[..rest.find('"').unwrap()]
+        })
+        .collect();
+    assert!(
+        keys.iter()
+            .all(|k| *k == key || k.starts_with(&format!("{key}\\")))
+    );
+
+    let profile = read("packaging/policy/rustket.mobileconfig");
+    let forced = index_of(&profile, "<key>Forced</key>", "rustket.mobileconfig");
+    let domain = profile[..forced]
+        .rfind("<key>")
+        .map(|i| &profile[i + 5..])
+        .and_then(|d| d.split_once("</key>"))
+        .map(|(d, _)| d)
+        .unwrap();
+    assert_eq!(domain, rustket::BUNDLE_ID);
+}
+
+/// CI runs the real policy readers: the Windows jobs opt in to the registry
+/// round trip, the Linux job installs a root-owned policy file first and
+/// opts in to reading it (the macOS reader's test needs no setup).
+#[test]
+fn ci_runs_the_policy_readers() {
+    let ci = read(".github/workflows/ci.yml");
+    assert_eq!(ci.matches("RUSTKET_TEST_POLICY_REGISTRY").count(), 1);
+    assert_eq!(ci.matches("RUSTKET_TEST_POLICY_ETC").count(), 1);
+    let linux = job(&ci, "linux", Some("windows"));
+    let install = index_of(&linux, "- name: Install a test policy file\n", "linux job");
+    let test = index_of(&linux, "- name: Test\n", "linux job");
+    assert!(install < test);
+    let dir = rustket_core::policy::MANAGED_DIR;
+    assert!(linux[install..test].contains(&format!(
+        "sudo install -d -o root -g root -m 755 /etc/rustket /etc/rustket/policies {dir}\n"
+    )));
+    let fixture = "crates/rustket-core/tests/fixtures/policy/ci-managed.json";
+    assert!(root().join(fixture).is_file());
+    assert!(linux[install..test].contains(&format!(
+        "sudo install -o root -g root -m 644 {fixture} {dir}/50-rustket-ci.json\n"
+    )));
+    assert!(linux[test..].starts_with(
+        "- name: Test\n        shell: bash\n        env:\n          RUSTKET_TEST_POLICY_ETC: 1\n        run: |\n"
+    ));
+    let windows = job(&ci, "windows", Some("macos"));
+    let test = index_of(&windows, "- name: Test\n", "windows job");
+    assert!(windows[test..].starts_with(
+        "- name: Test\n        shell: bash\n        env:\n          RUSTKET_TEST_POLICY_REGISTRY: 1\n        run: |\n"
+    ));
 }
 
 /// A silent update started by the app waits for it to quit and starts it

@@ -10,6 +10,10 @@
 //! (source, dev and distribution builds) the app only notifies and links to
 //! the release page.
 //!
+//! The enterprise policy decides one effective mode (`mode`, docs/policy.md
+//! section 9.3): `prompt` checks and installs on a click, `notify` checks and
+//! reports with the release page, `off` makes no request at all.
+//!
 //! Threat model: the checksum file comes from the same release as the
 //! packages, so it catches corrupted, truncated or mismatched downloads but
 //! does not authenticate the release. Whoever can publish releases on the
@@ -32,6 +36,7 @@ pub mod download;
 pub mod error;
 pub mod github;
 pub mod install;
+pub mod mode;
 pub mod relaunch;
 pub mod state;
 pub mod version;
@@ -54,7 +59,8 @@ pub const REPO: &str = match option_env!("RUSTKET_UPDATE_REPO") {
 pub const INNO_APP_ID: &str = "{77810904-1236-4291-B123-CCC8D0A6CCF1}";
 
 /// Name of the marker file written by the packaging scripts (`deb`, `rpm`,
-/// `appimage`, `zip` or `dmg`, one word and a newline).
+/// `appimage`, `zip` or `dmg`, one word and a newline; `msi` and `pkg` are
+/// reserved for managed installers).
 pub const MARKER_FILE: &str = "install-kind";
 
 /// Interval between automatic checks.

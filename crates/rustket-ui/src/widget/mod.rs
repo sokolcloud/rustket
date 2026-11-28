@@ -84,6 +84,6 @@ pub use split::{HANDLE_WIDTH, split};
 pub use timeline::{date_separator, emoji_text, reaction_pill, unread_separator};
 pub use window_chrome::{
     RESIZE_EDGE, TITLE_BAR_HEIGHT, TITLE_BAR_ITEM, WINDOW_CONTROL_WIDTH, WindowControlLabels,
-    resize_cursor, title_bar_button, title_bar_workspace, title_bar_workspace_with,
-    window_controls, window_frame, window_titled,
+    resize_cursor, title_bar_button, title_bar_workspace, title_bar_workspace_marked,
+    title_bar_workspace_with, window_controls, window_frame, window_titled,
 };

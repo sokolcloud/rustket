@@ -32,12 +32,14 @@ install -Dm644 "$LINUX/rustket.desktop" "$STAGE/usr/share/applications/rustket.d
 install -Dm644 "$LINUX/rustket.metainfo.xml" "$STAGE/usr/share/metainfo/rustket.metainfo.xml"
 install_icons "$STAGE/usr/share"
 install_marker "$STAGE/usr/lib/rustket/install-kind" rpm
+install -d -m755 "$STAGE/etc/rustket/policies/managed"
 mkdir -p "$STAGE/usr/share/man/man1"
 gzip -9n <"$LINUX/rustket.1" >"$STAGE/usr/share/man/man1/rustket.1.gz"
 chmod 644 "$STAGE/usr/share/man/man1/rustket.1.gz"
 install -Dm644 "$ROOT/LICENSE" "$STAGE/usr/share/licenses/rustket/LICENSE"
 mkdir -p "$STAGE/usr/share/doc/rustket"
 third_party_notices "$STAGE/usr/share/doc/rustket/THIRD-PARTY-NOTICES"
+install_policy_docs "$STAGE/usr/share/doc/rustket/policy"
 
 rm -f "$RPM"
 rpmbuild -bb --quiet --target "$ARCH" \

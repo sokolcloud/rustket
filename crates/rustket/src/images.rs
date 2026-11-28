@@ -543,6 +543,29 @@ impl Images {
         dropped
     }
 
+    /// Drops the queued and in-flight requests of a server (suspended by the
+    /// policy) and bumps its generation so results still on the way are
+    /// dropped. The memory and disk caches stay.
+    pub fn forget_requests(&mut self, server_id: &ServerId) {
+        *self.generations.entry(server_id.clone()).or_default() += 1;
+        self.in_flight.retain(|_, f| &f.server_id != server_id);
+        self.wanted
+            .borrow_mut()
+            .retain(|r, _| &r.server_id != server_id);
+    }
+
+    /// Drops a request taken by [`Self::take_wanted`] without fetching it
+    /// and without counting a failure.
+    pub fn abandon(&mut self, req: &ImageRequest) {
+        if self
+            .in_flight
+            .get(&req.url)
+            .is_some_and(|f| f.server_id == req.server_id)
+        {
+            self.in_flight.remove(&req.url);
+        }
+    }
+
     /// Forgets everything of a server (logout, removal) and bumps its cache
     /// generation. Returns the disk directory to delete (off the UI thread).
     pub fn purge_server(&mut self, server_id: &ServerId, server: &ServerUrl) -> Option<PathBuf> {
@@ -1222,6 +1245,57 @@ mod tests {
         assert!(!images.finish(&sid, generation, u.clone(), Ok(Fetched::Image(img(1)))));
         assert!(!images.contains(&u));
         assert_eq!(images.memory_bytes(), 0);
+    }
+
+    /// A server suspended by the policy: its queued and in-flight requests
+    /// go, late results are dropped, the caches stay.
+    #[test]
+    fn forget_requests_keeps_the_caches() {
+        let server = ServerUrl::parse("http://localhost:3000").unwrap();
+        let sid = ServerId("srv1".into());
+        let other = ServerId("srv2".into());
+        let dir = tempfile::tempdir().unwrap();
+        let mut images = Images::new(Some(dir.path().to_owned()));
+        let cached = Images::avatar_url(
+            &server,
+            &Avatar::User {
+                username: "a".into(),
+            },
+        );
+        images.insert(cached.clone(), img(1));
+        let sdir = images.server_dir(&sid).unwrap();
+        write_cache_entry(&disk_paths(&sdir, &cached)[1], &png_bytes(1, 1)).unwrap();
+        let req = |s: &ServerId, u: &str| ImageRequest {
+            server_id: s.clone(),
+            url: format!("http://localhost:3000/file-upload/{u}.png"),
+        };
+        images.want(req(&sid, "flying"));
+        assert_eq!(images.take_wanted(|_| true).len(), 1);
+        let generation = images.generation(&sid);
+        images.want(req(&sid, "queued"));
+        images.want(req(&other, "kept"));
+        images.forget_requests(&sid);
+        let left: Vec<_> = images
+            .take_wanted(|_| true)
+            .into_iter()
+            .map(|r| r.url)
+            .collect();
+        assert_eq!(left, vec![req(&other, "kept").url]);
+        assert!(!images.finish(
+            &sid,
+            generation,
+            req(&sid, "flying").url,
+            Ok(Fetched::Image(img(1)))
+        ));
+        assert!(images.contains(&cached));
+        assert!(disk_paths(&sdir, &cached)[1].exists());
+        // A request taken and abandoned frees its slot without a failure.
+        images.want(req(&sid, "again"));
+        let taken = images.take_wanted(|_| true);
+        assert_eq!(taken.len(), 1);
+        images.abandon(&taken[0]);
+        images.want(req(&sid, "again"));
+        assert_eq!(images.take_wanted(|_| true).len(), 1);
     }
 
     /// Review: untrusted image URLs (message content) used to share the

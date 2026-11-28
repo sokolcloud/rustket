@@ -7,6 +7,8 @@ pub mod cert;
 pub mod directory;
 pub mod login;
 pub mod page;
+pub mod policy_block;
+pub mod policy_notice;
 pub mod settings;
 pub mod terms;
 

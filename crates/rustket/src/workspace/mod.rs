@@ -108,8 +108,19 @@ pub struct ServerState {
     pub id: ServerId,
     pub url: ServerUrl,
     pub name: String,
+    /// The certificate pins of the config entry (the user's data).
+    pub stored_pins: Vec<(String, Fingerprint)>,
+    /// The pins in effect: `stored_pins`, or none while the policy forbids
+    /// certificate exceptions (docs/policy.md section 9.2). Decided while
+    /// signed out and when a session is about to start; a session keeps
+    /// the pins it started with ([`Self::set_pins_allowed`]).
     pub pins: Vec<(String, Fingerprint)>,
+    /// Built from `pins`.
     pub tls: TlsContext,
+    /// Whether the policy lets this server use its stored pins: certificate
+    /// exceptions are allowed and the server is not managed
+    /// (`crate::policy::servers::pins_allowed`).
+    pins_allowed: bool,
     /// Set while logged in: the session subscription runs for these.
     pub credentials: Option<Credentials>,
     /// Bumped to force a session restart with the same credentials.
@@ -169,8 +180,13 @@ pub struct ServerState {
 }
 
 impl ServerState {
-    pub fn from_entry(entry: &ServerEntry) -> Result<Self, rocketchat::Error> {
+    /// The state of config entry `entry`, under `policy`'s certificate rule.
+    pub fn from_entry(
+        entry: &ServerEntry,
+        policy: &rustket_core::policy::Policy,
+    ) -> Result<Self, rocketchat::Error> {
         let url = ServerUrl::parse(&entry.url)?;
+        let pins_allowed = crate::policy::servers::pins_allowed(policy, &url);
         let pins: Vec<(String, Fingerprint)> = entry
             .pinned_certificates
             .iter()
@@ -182,7 +198,12 @@ impl ServerState {
                 }
             })
             .collect();
-        let tls = tls_for(&pins)?;
+        let in_effect = if pins_allowed {
+            pins.clone()
+        } else {
+            Vec::new()
+        };
+        let tls = tls_for(&in_effect)?;
         Ok(Self {
             id: entry.id.clone(),
             name: if entry.display_name.is_empty() {
@@ -191,8 +212,10 @@ impl ServerState {
                 entry.display_name.clone()
             },
             url,
-            pins,
+            stored_pins: pins,
+            pins: in_effect,
             tls,
+            pins_allowed,
             credentials: None,
             generation: 0,
             session: None,
@@ -225,6 +248,57 @@ impl ServerState {
             later_state: Default::default(),
             search: Default::default(),
         })
+    }
+
+    /// Records the policy's certificate rule (docs/policy.md section 9.2).
+    /// Without credentials the pins in effect follow it at once, the login
+    /// screen included. A session that exists or is starting with
+    /// credentials keeps the pins it started with: they are part of its
+    /// spec, and the rule applies when the next session is about to start
+    /// ([`Self::reset`], [`Self::sync_pins`] at Retry). Returns whether the
+    /// server stays signed in on pins the rule just took out of effect.
+    pub fn set_pins_allowed(&mut self, allowed: bool) -> bool {
+        let was_allowed = std::mem::replace(&mut self.pins_allowed, allowed);
+        if self.credentials.is_some() {
+            return was_allowed && !allowed && !self.pins.is_empty();
+        }
+        if self.sync_pins()
+            && let Some(l) = self.login.as_mut()
+            && let Err(e) = l.set_tls(self.tls.clone())
+        {
+            tracing::warn!(error = %e, "cannot rebuild the login client");
+        }
+        false
+    }
+
+    /// The pins the certificate rule wants in effect.
+    fn wanted_pins(&self) -> Vec<(String, Fingerprint)> {
+        if self.pins_allowed {
+            self.stored_pins.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Brings the pins in effect (and the TLS context) to the certificate
+    /// rule; returns whether they changed. Only while no session runs.
+    pub fn sync_pins(&mut self) -> bool {
+        let want = self.wanted_pins();
+        if want == self.pins {
+            return false;
+        }
+        // A context that cannot be built changes nothing: the pins and
+        // the context never diverge.
+        match tls_for(&want) {
+            Ok(tls) => self.tls = tls,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot rebuild the TLS context");
+                return false;
+            }
+        }
+        // Sessions build their own context from `pins` (`SessionSpec`).
+        self.pins = want;
+        true
     }
 
     pub fn spec(&self) -> Option<SessionSpec> {
@@ -280,6 +354,8 @@ impl ServerState {
         self.sync_attempt = 0;
         self.sync_error = None;
         self.start_error = None;
+        // The next session starts under the certificate rule in force.
+        self.sync_pins();
     }
 
     /// The workspace and every synced key of the account. Keys added later
@@ -418,5 +494,59 @@ impl ServerState {
         // A view opened next starts at the same revision: the loader must
         // plan for it rather than take the old view's key as current.
         self.inbox.plan_key = None;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn pinned_server() -> ServerState {
+        let entry = ServerEntry {
+            id: ServerId("s-pins".into()),
+            url: "https://chat.example.com".into(),
+            pinned_certificates: vec![rustket_core::config::PinnedCertificate {
+                host: "chat.example.com".into(),
+                sha256: "ab".repeat(32),
+            }],
+            ..Default::default()
+        };
+        ServerState::from_entry(&entry, &Default::default()).unwrap()
+    }
+
+    /// Signed out, the pins in effect follow the rule at once.
+    #[test]
+    fn pins_follow_the_rule_while_signed_out() {
+        let mut s = pinned_server();
+        assert_eq!(s.pins.len(), 1);
+        assert!(!s.set_pins_allowed(false));
+        assert!(s.pins.is_empty());
+        assert_eq!(s.stored_pins.len(), 1, "the user's data");
+        assert!(!s.set_pins_allowed(true));
+        assert_eq!(s.pins.len(), 1);
+    }
+
+    /// Signed in, the session keeps its pins; the rule applies when the
+    /// next session is about to start. Only a rule that takes pins in use
+    /// out of effect is reported, once.
+    #[test]
+    fn signed_in_server_keeps_its_pins_until_the_next_start() {
+        let mut s = pinned_server();
+        s.credentials = Some(Credentials::new("U1", "T"));
+        let generation = s.generation;
+        assert!(s.set_pins_allowed(false), "running on pins out of effect");
+        assert_eq!(s.pins.len(), 1);
+        assert_eq!(s.generation, generation);
+        assert!(!s.set_pins_allowed(false), "nothing changed");
+        assert!(s.sync_pins());
+        assert!(s.pins.is_empty());
+        assert!(
+            !s.set_pins_allowed(true),
+            "pins coming back are not reported"
+        );
+        assert!(s.pins.is_empty(), "they wait for the next start");
+        s.reset();
+        assert_eq!(s.pins.len(), 1, "signed out: the rule in force");
     }
 }

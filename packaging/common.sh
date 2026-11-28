@@ -52,6 +52,13 @@ install_marker() {
     chmod 644 "$1"
 }
 
+# install_policy_docs <dir>: the Linux policy schema and example
+# (packaging/policy/, generated from the key registry), mode 0644.
+install_policy_docs() {
+    install -Dm644 "$ROOT/packaging/policy/policy.schema.json" "$1/policy.schema.json"
+    install -Dm644 "$ROOT/packaging/policy/50-example.json" "$1/50-example.json"
+}
+
 # third_party_notices <file>: copyright notices and license texts of every
 # crate and asset compiled into the binary (packaging/notices.py).
 third_party_notices() {

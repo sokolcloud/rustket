@@ -71,7 +71,7 @@ jobs:
       - name: Install packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends rpm desktop-file-utils
+          sudo apt-get install -y --no-install-recommends rpm desktop-file-utils zip
       - name: Download appimagetool
         run: |
           set -euo pipefail
@@ -108,13 +108,16 @@ jobs:
               /usr/share/metainfo/rustket.metainfo.xml /usr/share/man/man1/rustket.1.gz \
               /usr/share/icons/hicolor/512x512/apps/rustket.png \
               /usr/share/doc/rustket/THIRD-PARTY-NOTICES /usr/share/licenses/rustket/LICENSE \
-              /usr/lib/rustket/install-kind; do
+              /usr/share/doc/rustket/policy/policy.schema.json /usr/share/doc/rustket/policy/50-example.json \
+              /etc/rustket/policies/managed /usr/lib/rustket/install-kind; do
             grep -qx "$f" <<<"$files" || { echo "::error::$f missing from the rpm"; exit 1; }
           done
       - name: Collect
         run: |
           mkdir dist
           cp packaging/out/*.deb packaging/out/*.rpm packaging/out/*.AppImage dist/
+          # The templates for administrators: checked-in files, no build.
+          packaging/policy-templates.sh dist
           ls -l dist
       - name: Upload the deb
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -132,6 +135,12 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           path: dist/*.AppImage
+          archive: false
+          if-no-files-found: error
+      - name: Upload the policy templates
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: dist/*-policy-templates.zip
           archive: false
           if-no-files-found: error
 
@@ -439,7 +448,8 @@ jobs:
           cd release
           missing=""
           for want in '*_amd64.deb' '*.x86_64.rpm' '*-x86_64.AppImage' '*-x64-setup.exe' \
-              '*-arm64-setup.exe' '*-windows-x64.zip' '*-windows-arm64.zip' '*-macos-universal.dmg'; do
+              '*-arm64-setup.exe' '*-windows-x64.zip' '*-windows-arm64.zip' '*-macos-universal.dmg' \
+              '*-policy-templates.zip'; do
             compgen -G "$want" >/dev/null || missing="$missing $want"
           done
           if [ -n "$missing" ]; then

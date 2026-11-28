@@ -74,6 +74,15 @@ impl AddServer {
         self
     }
 
+    /// The address is refused before any request (the enterprise policy):
+    /// a running check is abandoned and `reason` shows inline.
+    pub fn refuse(&mut self, reason: String) {
+        self.busy = false;
+        self.attempt += 1;
+        self.cert_prompt = None;
+        self.error = Some(reason);
+    }
+
     /// `existing`: URLs of configured servers (duplicates are rejected).
     pub fn update(&mut self, msg: Message, existing: &[ServerUrl]) -> (Task<Message>, Out) {
         match msg {
@@ -190,8 +199,10 @@ impl AddServer {
         )
     }
 
-    /// The certificate dialog, when a server presented an untrusted certificate.
-    pub fn overlay(&self) -> Option<Element<'_, Message>> {
+    /// The certificate dialog, when a server presented an untrusted
+    /// certificate. `exceptions`: the policy allows accepting it; without,
+    /// the dialog says so and offers no accept action.
+    pub fn overlay(&self, exceptions: bool) -> Option<Element<'_, Message>> {
         let p = self.cert_prompt.as_ref()?;
         let leaf = p.views.first()?;
         let mut body = column![
@@ -234,26 +245,106 @@ impl AddServer {
                 .padding(SPACE_3)
                 .width(Length::Fill)
                 .style(style::container_code_block),
+            );
+        let mut buttons = vec![
+            secondary_button(
+                t!("add_server.cert_reject"),
+                Some(Message::RejectCertificate),
             )
-            .push(
+            .into(),
+        ];
+        if exceptions {
+            body = body.push(
                 text(t!("add_server.cert_hint"))
                     .size(TEXT_CAPTION)
                     .style(style::text_secondary),
             );
-        Some(dialog(
-            t!("add_server.cert_title"),
-            body,
-            vec![
-                secondary_button(
-                    t!("add_server.cert_reject"),
-                    Some(Message::RejectCertificate),
-                )
-                .into(),
+            buttons.push(
                 primary_button(t!("add_server.cert_trust"), Some(Message::TrustCertificate))
                     .icon(Icon::ShieldCheck)
                     .into(),
-            ],
+            );
+        } else {
+            body = body.push(banner(
+                BannerKind::Error,
+                t!("policy.cert_exceptions_off"),
+                None,
+            ));
+        }
+        Some(dialog(
+            t!("add_server.cert_title"),
+            body,
+            buttons,
             Some(Message::RejectCertificate),
         ))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn prompted() -> AddServer {
+        let chain = vec![CertificateInfo::from_der(b"leaf")];
+        AddServer {
+            cert_prompt: Some(CertPrompt {
+                url: ServerUrl::parse("https://self-signed.example").unwrap(),
+                host: "self-signed.example".into(),
+                views: chain.iter().map(CertView::new).collect(),
+                chain,
+            }),
+            ..AddServer::new(false)
+        }
+    }
+
+    /// Without certificate exceptions the dialog offers no accept action
+    /// and says why (docs/policy.md section 9.2).
+    #[test]
+    fn certificate_dialog_without_exceptions() {
+        rust_i18n::set_locale("en");
+        let a = prompted();
+        let with = crate::tree_probe::texts(a.overlay(true).unwrap());
+        assert!(
+            with.iter().any(|t| t == "Trust this certificate"),
+            "{with:?}"
+        );
+        let without = crate::tree_probe::texts(a.overlay(false).unwrap());
+        assert!(
+            !without.iter().any(|t| t == "Trust this certificate"),
+            "{without:?}"
+        );
+        assert!(
+            without
+                .iter()
+                .any(|t| t == "Your organization does not allow certificate exceptions"),
+            "{without:?}"
+        );
+        assert!(without.iter().any(|t| t == "Cancel"));
+    }
+
+    /// A refusal abandons a running check and shows inline.
+    #[test]
+    fn refuse_abandons_the_check() {
+        let mut a = prompted();
+        let _ = a.check(ServerUrl::parse("https://x.example").unwrap());
+        assert!(a.busy);
+        a.refuse("no".into());
+        assert!(!a.busy);
+        assert!(a.cert_prompt.is_none());
+        assert_eq!(a.error.as_deref(), Some("no"));
+        // The abandoned check's result is ignored.
+        let (_, out) = a.update(
+            Message::Checked(
+                a.attempt - 1,
+                ServerUrl::parse("https://x.example").unwrap(),
+                Err(ProbeError::Other(crate::error::Failure::from(
+                    rocketchat::Error::Url("x".into()),
+                ))),
+            ),
+            &[],
+        );
+        assert!(matches!(out, Out::None));
+        assert_eq!(a.error.as_deref(), Some("no"));
     }
 }

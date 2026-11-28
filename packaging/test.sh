@@ -35,6 +35,9 @@ expected=(
     ./usr/share/lintian/overrides/rustket
     ./usr/share/man/man1/rustket.1.gz
     ./usr/lib/rustket/install-kind
+    ./usr/share/doc/rustket/policy/policy.schema.json
+    ./usr/share/doc/rustket/policy/50-example.json
+    ./etc/rustket/policies/managed/
 )
 for size in $ICON_SIZES; do
     expected+=("./usr/share/icons/hicolor/${size}x${size}/apps/rustket.png")
@@ -48,7 +51,12 @@ OWNERS="$(awk '{ print $2 }' <<<"$CONTENTS")"
 PATHS="$(awk '{ print $6 }' <<<"$CONTENTS")"
 check "everything owned by root:root" "! grep -qv '^root/root\$' <<<\"\$OWNERS\""
 check "binary is executable" "grep -q '^-rwxr-xr-x .* ./usr/bin/rustket\$' <<<\"\$CONTENTS\""
-check "nothing outside /usr" "! grep -qv '^\\./\\(usr\\(/.*\\)\\?\\)\\?\$' <<<\"\$PATHS\""
+# The one exception: the empty policy directory (docs/policy.md section 2).
+check "nothing outside /usr except the policy directory" \
+    "! grep -qv '^\\./\\(usr\\(/.*\\)\\?\\|etc/\\(rustket/\\(policies/\\(managed/\\)\\?\\)\\?\\)\\?\\)\\?\$' <<<\"\$PATHS\""
+check "policy directory: root:root 0755" \
+    "grep -q '^drwxr-xr-x root/root .* \\./etc/rustket/policies/managed/\$' <<<\"\$CONTENTS\""
+check "policy directory: empty" "! grep -q '^\\./etc/rustket/policies/managed/.' <<<\"\$PATHS\""
 
 INFO="$(dpkg-deb --field "$DEB")"
 check "Package: rustket" "grep -qx 'Package: rustket' <<<\"\$INFO\""
@@ -62,6 +70,8 @@ check "no GTK dependency" "! grep -qi '^Depends:.*gtk' <<<\"\$INFO\""
 X="$(mktemp -d)"
 trap 'rm -rf "$X"' EXIT
 dpkg-deb --extract "$DEB" "$X"
+check "deb: policy example as in packaging/policy" "cmp -s '$ROOT/packaging/policy/50-example.json' '$X/usr/share/doc/rustket/policy/50-example.json'"
+check "deb: policy schema as in packaging/policy" "cmp -s '$ROOT/packaging/policy/policy.schema.json' '$X/usr/share/doc/rustket/policy/policy.schema.json'"
 check "deb: install-kind marker" "[ \"\$(cat '$X/usr/lib/rustket/install-kind')\" = deb ]"
 D="$X/usr/share/applications/rustket.desktop"
 check "desktop: Exec=rustket %u" "grep -qx 'Exec=rustket %u' '$D'"

@@ -119,6 +119,8 @@ pub enum Nav {
     HelpSettings,
     /// App preferences on the About tab (macOS menu "About Rustket").
     AboutSettings,
+    /// App preferences on the Policies tab (the policy screens' "Details").
+    PolicySettings,
     /// Account of the active server (`screens/account.rs`).
     Account,
     /// Directory of the active server (`screens/directory.rs`).
@@ -197,6 +199,9 @@ pub enum Effect {
     ReloadLocales,
     /// Open the locales folder in the file manager (created if missing).
     OpenLocalesFolder,
+    /// Open the log folder in the file manager (created if missing,
+    /// `crate::logging::create_dir`).
+    OpenLogFolder(std::path::PathBuf),
     /// The recently used custom status texts changed (most recent first):
     /// store them in `AppConfig::recent_status_texts` and save.
     RecentStatusTexts(Vec<String>),

@@ -1,0 +1,192 @@
+{
+  "format": 1,
+  "client_version": "0.4.0",
+  "blocked": true,
+  "blocking": [
+    {
+      "kind": "source_unreadable",
+      "source": "test:broken",
+      "error": {
+        "code": "cannot_open",
+        "detail": "Access is denied. (os error 5)",
+        "text": "cannot open: Access is denied. (os error 5)"
+      }
+    },
+    {
+      "kind": "source_unreadable",
+      "source": "test:big",
+      "error": {
+        "code": "too_large",
+        "detail": null,
+        "text": "larger than 1 MiB"
+      }
+    },
+    {
+      "kind": "below_minimum_version",
+      "required": "0.5.0",
+      "client": "0.4.0"
+    }
+  ],
+  "sources": [
+    {
+      "id": "windows:HKLM",
+      "trust": "full",
+      "trust_problems": [],
+      "error": null
+    },
+    {
+      "id": "windows:HKCU",
+      "trust": "limited",
+      "trust_problems": [],
+      "error": null
+    },
+    {
+      "id": "test:team",
+      "trust": "limited",
+      "trust_problems": [
+        {
+          "code": "file_wrong_owner",
+          "text": "the file is owned by uid 1000, not 0"
+        },
+        {
+          "code": "directory_writable",
+          "text": "the directory is writable by group or others"
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "test:broken",
+      "trust": "full",
+      "trust_problems": [],
+      "error": {
+        "code": "cannot_open",
+        "detail": "Access is denied. (os error 5)",
+        "text": "cannot open: Access is denied. (os error 5)"
+      }
+    },
+    {
+      "id": "test:big",
+      "trust": "full",
+      "trust_problems": [],
+      "error": {
+        "code": "too_large",
+        "detail": null,
+        "text": "larger than 1 MiB"
+      }
+    }
+  ],
+  "rows": [
+    {
+      "key": "ManagedServers",
+      "source": "test:team",
+      "status": "ignored_limited_trust",
+      "reason": null,
+      "strict_applied": false,
+      "value": "\"https://team.example Team\"",
+      "dropped": [],
+      "dropped_omitted": 0
+    },
+    {
+      "key": "AllowedServers",
+      "source": "windows:HKLM",
+      "status": "applied",
+      "reason": null,
+      "strict_applied": false,
+      "value": "[\"*.corp.com\", 7, \"ftp://x\"]",
+      "dropped": [
+        {
+          "position": 2,
+          "item": "7",
+          "reason": "expected a string, found integer"
+        },
+        {
+          "position": 3,
+          "item": "\"ftp://x\"",
+          "reason": "unsupported scheme \"ftp\" (use http or https)"
+        }
+      ],
+      "dropped_omitted": 0
+    },
+    {
+      "key": "RequireHttps",
+      "source": "windows:HKLM",
+      "status": "applied",
+      "reason": null,
+      "strict_applied": false,
+      "value": "1",
+      "dropped": [],
+      "dropped_omitted": 0
+    },
+    {
+      "key": "RequireHttps",
+      "source": "windows:HKCU",
+      "status": "overridden",
+      "reason": null,
+      "strict_applied": false,
+      "value": "false",
+      "dropped": [],
+      "dropped_omitted": 0
+    },
+    {
+      "key": "UpdateMode",
+      "source": "windows:HKLM",
+      "status": "invalid",
+      "reason": "\"sometimes\" is not one of: prompt, notify, off",
+      "strict_applied": true,
+      "value": "\"sometimes\"",
+      "dropped": [],
+      "dropped_omitted": 0
+    },
+    {
+      "key": "OrganizationName",
+      "source": "windows:HKCU",
+      "status": "invalid",
+      "reason": "longer than 80 characters",
+      "strict_applied": false,
+      "value": "\"Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acme Acm…",
+      "dropped": [],
+      "dropped_omitted": 0
+    },
+    {
+      "key": "SupportUrl",
+      "source": "windows:HKCU",
+      "status": "ignored_limited_trust",
+      "reason": null,
+      "strict_applied": false,
+      "value": "\"https://help.corp.com\"",
+      "dropped": [],
+      "dropped_omitted": 0
+    },
+    {
+      "key": "MinimumVersion",
+      "source": "windows:HKLM",
+      "status": "applied",
+      "reason": null,
+      "strict_applied": false,
+      "value": "\"0.5.0\"",
+      "dropped": [],
+      "dropped_omitted": 0
+    },
+    {
+      "key": "FutureKey",
+      "source": "windows:HKLM",
+      "status": "unknown",
+      "reason": null,
+      "strict_applied": false,
+      "value": "true",
+      "dropped": [],
+      "dropped_omitted": 0
+    },
+    {
+      "key": "Комментарий",
+      "source": "windows:HKLM",
+      "status": "unknown",
+      "reason": null,
+      "strict_applied": false,
+      "value": "\"Привет, \\\"мир\\\"\"",
+      "dropped": [],
+      "dropped_omitted": 0
+    }
+  ]
+}

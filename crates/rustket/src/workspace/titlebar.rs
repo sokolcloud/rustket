@@ -24,7 +24,7 @@ use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, SPACE_2, TEXT_SMALL};
 use rustket_ui::widget::{
     MenuEntry, MenuItem, TITLE_BAR_HEIGHT, TITLE_BAR_ITEM, WindowControlLabels, context_menu,
-    divider, title_bar_button, title_bar_workspace_with, window_controls,
+    divider, title_bar_button, title_bar_workspace_marked, window_controls,
 };
 
 use super::rail::{self, RailEntry};
@@ -190,6 +190,8 @@ pub struct View {
     pub entries: Vec<RailEntry>,
     /// Add-workspace and settings buttons (not before the first server).
     pub workspace_buttons: bool,
+    /// The add-workspace button (the policy may hide it).
+    pub add_button: bool,
     pub settings_active: bool,
     pub title: String,
     pub maximized: bool,
@@ -216,17 +218,18 @@ pub fn view<'a>(v: View) -> Element<'a, Message> {
     let look = rustket_ui::theme::indicator_look();
     let items = v.entries.into_iter().map(|e| {
         let (badge, name) = rail::entry_badge_label(&e, look);
-        title_bar_workspace_with(
+        let glyph = rail::emblem(&e);
+        title_bar_workspace_marked(
             &e.avatar,
             name,
             badge,
             e.selected,
-            e.signed_out,
+            glyph,
             on(rail::Message::Select(e.id)),
         )
     });
     let mut list = Row::with_children(items).align_y(Alignment::Center);
-    if v.workspace_buttons {
+    if v.workspace_buttons && v.add_button {
         list = list.push(
             container(title_bar_button(
                 Icon::Plus,
@@ -517,6 +520,7 @@ mod tests {
             rc: Default::default(),
             selected: n == 0,
             signed_out,
+            suspended: false,
         }
     }
 
@@ -530,6 +534,7 @@ mod tests {
             view(View {
                 entries,
                 workspace_buttons: true,
+                add_button: true,
                 settings_active: false,
                 title: "Rustket".into(),
                 maximized,
@@ -649,7 +654,7 @@ mod tests {
     fn add_server(app: &mut App, name: &str, port: u16, signed_in: bool) -> ServerId {
         let entry = ServerEntry::new(format!("http://localhost:{}", 3900 + port), name);
         let sid = app.config.add_server(entry.clone());
-        let mut state = super::super::ServerState::from_entry(&entry).unwrap();
+        let mut state = super::super::ServerState::from_entry(&entry, &Default::default()).unwrap();
         state.workspace = workspace();
         state.restoring = false;
         if signed_in {
@@ -1068,6 +1073,7 @@ mod tests {
             view(View {
                 entries: entries(rc),
                 workspace_buttons: true,
+                add_button: true,
                 settings_active: false,
                 title: "Rustket".into(),
                 maximized: false,
@@ -1080,8 +1086,14 @@ mod tests {
                 (
                     "rail",
                     rail_size,
-                    render(rail::view(entries(false)).map(Message::Rail), rail_size),
-                    render(rail::view(entries(true)).map(Message::Rail), rail_size),
+                    render(
+                        rail::view(entries(false), true).map(Message::Rail),
+                        rail_size,
+                    ),
+                    render(
+                        rail::view(entries(true), true).map(Message::Rail),
+                        rail_size,
+                    ),
                 ),
                 (
                     "titlebar",
@@ -1132,6 +1144,7 @@ mod tests {
             view(View {
                 entries: entries(),
                 workspace_buttons: true,
+                add_button: true,
                 settings_active: false,
                 title: "Rustket".into(),
                 maximized: false,
@@ -1139,7 +1152,7 @@ mod tests {
                 native_frame: false,
             })
         };
-        let rail = || rail::view(entries());
+        let rail = || rail::view(entries(), true);
         for (look, shown, hidden) in [
             (IndicatorLook::Rustket, "2", "7"),
             (IndicatorLook::RocketChat, "7", "2"),
@@ -1150,6 +1163,30 @@ mod tests {
             ] {
                 assert!(t.iter().any(|s| s == shown), "{look:?}: {t:?}");
                 assert!(!t.iter().any(|s| s == hidden), "{look:?}: {t:?}");
+            }
+        }
+    }
+
+    /// `AllowUserServers = false`: neither the rail nor the title bar offers
+    /// "Add workspace" (its plus glyph; the label is a tooltip).
+    #[test]
+    fn add_buttons_follow_the_policy() {
+        use crate::tree_probe::texts;
+        let label = char::from(Icon::Plus).to_string();
+        for add in [true, false] {
+            let bar = texts(view(View {
+                entries: vec![entry(0, (0, 0), false)],
+                workspace_buttons: true,
+                add_button: add,
+                settings_active: false,
+                title: "Rustket".into(),
+                maximized: false,
+                interactive: true,
+                native_frame: false,
+            }));
+            let rail = texts(rail::view(vec![entry(0, (0, 0), false)], add));
+            for t in [bar, rail] {
+                assert_eq!(t.contains(&label), add, "{add}: {t:?}");
             }
         }
     }

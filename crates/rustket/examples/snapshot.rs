@@ -673,7 +673,7 @@ async fn run(server: ServerUrl, out: PathBuf, fixture: Fixture) {
     // Every settings tab in full, dark and light.
     let tall = Size::new(SIZE.width, 1300.0);
     d.settle(Duration::from_millis(300)).await;
-    for tab in rustket::screens::settings::Tab::ALL {
+    for tab in rustket::screens::settings::Tab::offered(&d.app.policy) {
         d.send(Message::Settings(rustket::screens::settings::Message::Tab(
             tab,
         )));

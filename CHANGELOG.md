@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Enterprise policy: an organization can enforce 15 settings of Rustket
+  through Windows Group Policy or Intune, macOS configuration profiles, and
+  JSON files under `/etc/rustket/policies/managed/` on Linux. They cover
+  the workspaces every user has, whether users may add or remove
+  workspaces, which servers may be used, https only,
+  certificate exceptions, how updates are handled, the password and
+  personal access token sign-in, keeping secrets in a file, notification
+  previews, the renderer, launch at login, the organization's name and
+  support link, and a minimum version. Changes are picked up while Rustket
+  runs. The guide for administrators is
+  [docs/enterprise.md](docs/enterprise.md), the reference of every setting
+  [docs/policies.md](docs/policies.md).
+- Settings → Policies lists the policy settings in force, where each one
+  comes from and whether it applies, with **Copy report**; the tab is there
+  only when there is something to show. A setting the policy enforces is
+  marked "Managed by your organization" (or with the organization's name)
+  and cannot be changed; when the policy goes away, your own choice is
+  back. The login screen says when sign-in methods are turned off.
+- A workspace the policy does not allow is suspended: it stays in the list,
+  marked "Suspended by your organization's policy", keeps its sign-in and
+  its data, and does not connect until the policy allows it again. Uploads
+  to it that are still running are cancelled and named in a warning.
+- When the policy does not let users add or remove workspaces, the add and
+  remove actions are hidden, a link to a server that is not in the list is
+  refused with a notice, and when no workspace is configured a plain screen
+  says that the organization manages the list.
+- When the policy cannot be read or requires a newer version of Rustket, a
+  screen replaces the window and says why, with the organization's name
+  and support link, the policy details and **Copy report**; for a required
+  update it offers **Check for updates** where Rustket may install updates.
+- `rustket --dump-policy [FILE]` writes the policy in effect as JSON to
+  FILE (or to standard output) and exits.
+- The release has `Rustket-<version>-policy-templates.zip` for
+  administrators: the Group Policy templates (ADMX and ADML, English and
+  Russian, also for Intune), a macOS configuration profile, an Intune
+  preference file and a Jamf Pro schema, the JSON schema and an example
+  file for Linux, the reference of every setting, and PowerShell and shell
+  scripts that check the policy of a computer for inventory and compliance
+  tools.
+- The deb and rpm packages own the empty folder
+  `/etc/rustket/policies/managed/` and install the Linux schema and example
+  under `/usr/share/doc/rustket/policy/`.
+- **Keep a diagnostic log file** in Settings → Privacy & storage (off by
+  default): after a restart Rustket also writes its log to a file, which
+  **Show log folder** opens. At 2 MiB the file is renamed and a new one is
+  started; only the previous file is kept. The log holds no passwords,
+  tokens or message text.
+
+### Changed
+
+- A Windows installation for all users reports new versions and no longer
+  offers to install them, unless a policy says otherwise.
+- Launch at login shows as off when you turned the entry off in the
+  system's own startup settings: Task Manager or Settings → Apps → Startup
+  on Windows, Startup Applications on GNOME. Turning it on in Rustket turns
+  it on there again.
+- The log on standard output no longer contains colour codes when it is
+  redirected to a file.
+
 ## [0.3.2] - 2026-11-26
 
 ### Added

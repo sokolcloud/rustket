@@ -72,7 +72,8 @@ fn add(
 ) -> ServerId {
     let entry = ServerEntry::new(format!("http://localhost:{port}"), name);
     let sid = d.app.config.add_server(entry.clone());
-    let mut state = rustket::workspace::ServerState::from_entry(&entry).expect("state");
+    let mut state =
+        rustket::workspace::ServerState::from_entry(&entry, &Default::default()).expect("state");
     state.workspace = workspace(rooms);
     state.restoring = false;
     if signed_in {
@@ -239,7 +240,7 @@ pub async fn settings_tab_shots(out: &Path) -> bool {
         &mut d,
         Message::Rail(rustket::workspace::rail::Message::Settings),
     );
-    for (i, tab) in Tab::ALL.into_iter().enumerate() {
+    for (i, tab) in Tab::offered(&d.app.policy).into_iter().enumerate() {
         upd(&mut d, Message::Settings(Sm::Tab(tab)));
         let name = format!("{}-{}", i + 1, format!("{tab:?}").to_lowercase());
         d.app.config.ui.theme = Theme::Light;

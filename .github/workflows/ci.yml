@@ -37,8 +37,17 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets --features rustket/mas -- -D warnings
       - run: bash -n packaging/release-notes.sh
       - run: bash -n packaging/macos/build.sh
+      # A root-owned policy file for the Linux policy reader's round trip
+      # (rustket-core policy::dir, managed_dir_round_trip). It stays in /etc:
+      # the job relies on a GitHub-hosted runner, discarded after the job.
+      - name: Install a test policy file
+        run: |
+          sudo install -d -o root -g root -m 755 /etc/rustket /etc/rustket/policies /etc/rustket/policies/managed
+          sudo install -o root -g root -m 644 crates/rustket-core/tests/fixtures/policy/ci-managed.json /etc/rustket/policies/managed/50-rustket-ci.json
       - name: Test
         shell: bash
+        env:
+          RUSTKET_TEST_POLICY_ETC: 1
         run: |
           set -o pipefail
           cargo test --locked --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test.log"
@@ -79,6 +88,9 @@ jobs:
       - run: cargo clippy --locked -p rustket --all-targets --features self-update -- -D warnings
       - name: Test
         shell: bash
+        env:
+          # The registry reader's round trip writes and removes HKCU policy values.
+          RUSTKET_TEST_POLICY_REGISTRY: 1
         run: |
           set -o pipefail
           cargo test --locked --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test.log"

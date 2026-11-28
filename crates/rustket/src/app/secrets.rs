@@ -9,6 +9,7 @@ use rocketchat::Credentials;
 use rust_i18n::t;
 use rustket_core::ServerId;
 use rustket_core::e2e::E2E_SECRET_PREFIX;
+use rustket_core::policy::LockedPref;
 use rustket_core::secrets::{
     self, FilePolicy, MemoryStore, SecretBackend, SecretNotice, SecretStore, SwitchableStore,
     secret_key,
@@ -19,7 +20,6 @@ use rustket_ui::widget::BannerKind;
 use super::{App, Modal, Screen, SecretsMode};
 use crate::component::Nav;
 use crate::message::{Go, Message, SecretsReady};
-use crate::screens::add_server::AddServer;
 
 impl App {
     pub(super) fn secret_task(
@@ -57,15 +57,18 @@ impl App {
                 Message::Go(Go::Nav(Nav::SecretStoreSettings)),
             ));
         }
+        // The preference changed while the store opened (a policy refresh):
+        // the store follows it below.
+        let moving = self.secrets_file_policy() != self.secrets_opened_with;
         // Memory by policy is the user's choice: the settings card shows it.
+        // No warning for a file the store is about to leave.
+        let leaving_file = moving && self.secrets_file_policy() != FilePolicy::Allowed;
         if backend == SecretBackend::File {
-            tasks.push(self.toast_with_action(
-                BannerKind::Warning,
-                t!("app.secrets_file_title"),
-                t!("app.keyring_file"),
-                t!("app.keyring_file_action"),
-                Message::Go(Go::Nav(Nav::SecretStoreSettings)),
-            ));
+            if leaving_file {
+                self.secrets_file_warning_deferred = true;
+            } else {
+                tasks.push(self.secrets_file_warning());
+            }
         }
         // A token of a signed-out account (its delete did not reach this
         // store) is not a login. Decided now: the purge below may clear the
@@ -86,6 +89,9 @@ impl App {
             })
             .collect();
         self.boot_tokens = Some(tokens);
+        if moving {
+            tasks.push(self.apply_secrets_file_policy(self.config.ui.secrets_memory_only, false));
+        }
         tasks.push(self.purge_pending_secrets());
         #[cfg(feature = "self-update")]
         tasks.push(crate::updater::app::boot(self));
@@ -93,10 +99,23 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// The warning that secrets are stored in an unencrypted file.
+    fn secrets_file_warning(&mut self) -> Task<Message> {
+        self.toast_with_action(
+            BannerKind::Warning,
+            t!("app.secrets_file_title"),
+            t!("app.keyring_file"),
+            t!("app.keyring_file_action"),
+            Message::Go(Go::Nav(Nav::SecretStoreSettings)),
+        )
+    }
+
     /// Starts the saved accounts (sessions, login screens) and handles the
     /// queued links, once the secret store is open and the terms are
     /// accepted: from [`Self::on_secrets_ready`] or from accepting the
-    /// terms, whichever comes last. The accounts start only once.
+    /// terms, whichever comes last. The accounts start only once. Under a
+    /// blocked policy every server is suspended, so none starts, and the
+    /// links wait for the block to end.
     pub(super) fn start_workspaces(&mut self) -> Task<Message> {
         if !self.terms_accepted() {
             return Task::none();
@@ -105,12 +124,19 @@ impl App {
         if let Some(tokens) = self.boot_tokens.take() {
             tasks.push(self.start_accounts(tokens));
         }
-        if self.booted {
-            let links = std::mem::take(&mut self.queued_links);
-            for l in links {
-                tasks.push(self.handle_link(&l));
-            }
+        tasks.push(self.handle_queued_links());
+        tasks.push(self.apply_launch_at_login());
+        Task::batch(tasks)
+    }
+
+    /// Handles the links that waited for the accounts to start, unless the
+    /// accounts may not run yet ([`Self::accounts_live`]).
+    pub(super) fn handle_queued_links(&mut self) -> Task<Message> {
+        if !self.booted || !self.accounts_live() {
+            return Task::none();
         }
+        let links = std::mem::take(&mut self.queued_links);
+        let tasks: Vec<_> = links.iter().map(|l| self.handle_link(l)).collect();
         Task::batch(tasks)
     }
 
@@ -118,6 +144,13 @@ impl App {
         let mut tasks = Vec::new();
         let sids: Vec<ServerId> = self.servers.keys().cloned().collect();
         for sid in sids {
+            // Suspended by the policy: no session, no login, no token read.
+            if self.is_suspended(&sid) {
+                if let Some(st) = self.servers.get_mut(&sid) {
+                    st.restoring = false;
+                }
+                continue;
+            }
             let uid = self.config.server(&sid).and_then(|e| e.user_id.clone());
             let token = tokens.get(&sid).cloned().flatten();
             match (uid, token) {
@@ -128,16 +161,21 @@ impl App {
                         st.workspace.apply_connection(ConnectionState::Connecting);
                     }
                 }
+                // Not read at start (suspended then): read it now.
+                (Some(uid), None) if !tokens.contains_key(&sid) => {
+                    tasks.push(self.read_server_token(sid, uid));
+                }
                 _ => tasks.push(self.show_login(&sid, None)),
             }
         }
+        // Servers added before the accounts ran (a refresh over the terms
+        // brought managed servers to an empty list) need an active one.
+        if self.active.is_none() {
+            self.active = self.initial_active(self.config.active_server.clone());
+        }
         // A screen opened over the terms (a toast's settings link) stays.
         if matches!(self.screen, Screen::Loading) {
-            self.screen = if self.servers.is_empty() {
-                Screen::AddServer(Box::new(AddServer::new(false)))
-            } else {
-                Screen::Server
-            };
+            self.screen = self.workspace_screen();
         }
         self.booted = true;
         Task::batch(tasks)
@@ -146,7 +184,11 @@ impl App {
 
 impl App {
     /// The memory-only switch of the settings: turning it on asks first.
+    /// Nothing happens while the policy forces the preference.
     pub(super) fn on_secrets_memory_only(&mut self, on: bool) -> Task<Message> {
+        if self.policy.locks(LockedPref::SecretsMemoryOnly) {
+            return Task::none();
+        }
         if !on {
             return self.set_secrets_memory_only(false);
         }
@@ -196,19 +238,29 @@ impl App {
         )
     }
 
-    /// Stores the preference and applies it to the secret store.
+    /// Stores the preference and applies it to the secret store; nothing
+    /// while the policy forces it.
     pub(super) fn set_secrets_memory_only(&mut self, on: bool) -> Task<Message> {
-        if self.secrets_switching {
+        if self.secrets_switching || self.policy.locks(LockedPref::SecretsMemoryOnly) {
             return Task::none();
         }
         self.config.ui.secrets_memory_only = on;
         let save = self.save_config();
+        Task::batch([save, self.apply_secrets_file_policy(on, true)])
+    }
+
+    /// Moves the secret store to the file policy of the memory-only value
+    /// `on` (`Message::SecretsPolicyApplied` reports the outcome).
+    /// `by_user`: the user's switch, not a policy follow-up (section 7: only
+    /// the user's failed switch rolls the preference back).
+    pub(super) fn apply_secrets_file_policy(&mut self, on: bool, by_user: bool) -> Task<Message> {
         let Some(store) = self.secret_switch.clone() else {
-            return save;
+            return Task::none();
         };
         self.secrets_switching = true;
+        self.secrets_switch_by_user = by_user;
         let policy = file_policy(on);
-        let apply = Task::perform(
+        Task::perform(
             async move {
                 let sw = store.clone();
                 tokio::task::spawn_blocking(move || {
@@ -219,8 +271,7 @@ impl App {
                 .unwrap_or_else(|e| (store.backend(), Some(e.to_string())))
             },
             move |(backend, error)| Message::SecretsPolicyApplied(on, backend, error),
-        );
-        Task::batch([save, apply])
+        )
     }
 
     pub(super) fn on_secrets_policy_applied(
@@ -230,23 +281,49 @@ impl App {
         error: Option<String>,
     ) -> Task<Message> {
         self.secrets_switching = false;
+        let by_user = std::mem::take(&mut self.secrets_switch_by_user);
         self.secret_backend = Some(backend);
-        let Some(e) = error else {
-            return Task::none();
-        };
-        let mut tasks =
-            vec![self.toast(BannerKind::Error, t!("settings.secrets_switch_failed"), e)];
-        // Nothing moved: the preference follows the store again.
-        let unchanged = match self.secret_backend {
-            Some(SecretBackend::File) => on,
-            Some(SecretBackend::MemoryByPolicy) => !on,
-            _ => false,
-        };
-        if unchanged {
-            self.config.ui.secrets_memory_only = !on;
-            tasks.push(self.save_config());
+        let locked = self.policy.locks(LockedPref::SecretsMemoryOnly);
+        let mut tasks = Vec::new();
+        let mut rolled_back = false;
+        if let Some(e) = error {
+            tasks.push(self.toast(BannerKind::Error, t!("settings.secrets_switch_failed"), e));
+            // Nothing moved: the preference follows the store again, unless
+            // the policy forces it. A move the policy started never touches
+            // the user's preference: the store keeps its backend until the
+            // next start.
+            let unchanged = match self.secret_backend {
+                Some(SecretBackend::File) => on,
+                Some(SecretBackend::MemoryByPolicy) => !on,
+                _ => false,
+            };
+            if by_user && unchanged && !locked {
+                self.config.ui.secrets_memory_only = !on;
+                tasks.push(self.save_config());
+                rolled_back = true;
+            }
+        }
+        // The effective value changed while the store switched (a policy
+        // replaced or removed meanwhile): follow it. A failed switch to the
+        // forced value is not retried.
+        let want = self.config.ui.secrets_memory_only;
+        if !rolled_back && want != on {
+            tasks.push(self.apply_secrets_file_policy(want, false));
+        } else if std::mem::take(&mut self.secrets_file_warning_deferred)
+            && backend == SecretBackend::File
+        {
+            // The switches settled and the store ended on the file it opened
+            // with: the warning deferred at the opening is due now.
+            tasks.push(self.secrets_file_warning());
         }
         Task::batch(tasks)
+    }
+
+    /// The secret file policy the store opens with: of the effective
+    /// `secrets_memory_only`, so a policy that forbids the file applies
+    /// from the start.
+    pub fn secrets_file_policy(&self) -> FilePolicy {
+        file_policy(self.config.ui.secrets_memory_only)
     }
 }
 

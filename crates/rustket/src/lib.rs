@@ -45,11 +45,13 @@ pub mod keymap;
 pub mod later;
 pub mod legal;
 pub mod locales;
+pub mod logging;
 #[cfg(target_os = "macos")]
 pub mod macos_events;
 pub mod message;
 pub mod omnichannel;
 pub mod os_events;
+pub mod policy;
 pub mod quiet;
 pub mod reads;
 pub mod renderer;

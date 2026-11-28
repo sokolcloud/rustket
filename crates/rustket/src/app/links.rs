@@ -317,6 +317,12 @@ impl App {
             {
                 Task::none()
             }
+            // A suspended server shows why and connects to nothing.
+            Decision::OpenRoom { server_id, .. } | Decision::OpenInvite { server_id, .. }
+                if self.is_suspended(&server_id) =>
+            {
+                self.activate(server_id)
+            }
             Decision::OpenRoom {
                 server_id,
                 rid,
@@ -333,6 +339,10 @@ impl App {
                 ])
             }
             Decision::OfferAddServer { url } => {
+                // Refused without a dialog or a request to the host.
+                if let Some(reason) = self.add_refusal(&url) {
+                    return self.refuse_link(reason);
+                }
                 if self
                     .modals
                     .iter()

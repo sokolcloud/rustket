@@ -86,6 +86,7 @@ impl App {
                 | Nav::MentionGroupSettings
                 | Nav::HelpSettings
                 | Nav::AboutSettings
+                | Nav::PolicySettings
                 | Nav::Workspace
                 | Nav::Account
                 | Nav::Directory
@@ -127,6 +128,25 @@ impl App {
     }
 
     fn navigate_to(&mut self, nav: Nav, sid: Option<ServerId>) -> Task<Message> {
+        // The blocking screen covers everything: no settings, pages or
+        // dialogs open behind it (a toast's link included).
+        if self.policy.is_blocked() {
+            return Task::none();
+        }
+        // A suspended server has no account, rooms or dialogs to open.
+        let per_server = matches!(
+            nav,
+            Nav::Account
+                | Nav::Directory
+                | Nav::Admin
+                | Nav::CreateRoom(_)
+                | Nav::CreateDiscussion { .. }
+                | Nav::QuickSwitcher
+                | Nav::Forward(_)
+        );
+        if per_server && sid.as_ref().is_some_and(|s| self.is_suspended(s)) {
+            return Task::none();
+        }
         match (nav, sid) {
             (
                 nav @ (Nav::Settings
@@ -134,15 +154,12 @@ impl App {
                 | Nav::SecretStoreSettings
                 | Nav::MentionGroupSettings
                 | Nav::HelpSettings
-                | Nav::AboutSettings),
+                | Nav::AboutSettings
+                | Nav::PolicySettings),
                 _,
             ) => {
                 // The real autostart location only with real desktop integration.
-                let at = self
-                    .desktop
-                    .is_enabled()
-                    .then(crate::desktop::autostart::Autostart::system)
-                    .flatten();
+                let at = self.autostart.clone();
                 // Sidebar deep links open the Sidebar tab, so the revealed
                 // card exists when the reveal runs; otherwise the last tab.
                 let tab = match nav {
@@ -151,6 +168,7 @@ impl App {
                     Nav::MentionGroupSettings => settings::Tab::Mentions,
                     Nav::HelpSettings => settings::Tab::Help,
                     Nav::AboutSettings => settings::Tab::About,
+                    Nav::PolicySettings => settings::Tab::Policies,
                     _ => self.settings_tab,
                 };
                 self.settings_tab = tab;
@@ -181,11 +199,7 @@ impl App {
                 Task::batch([load, crate::cache::size_task(self), reveal])
             }
             (Nav::Workspace, _) => {
-                self.screen = if self.servers.is_empty() {
-                    Screen::AddServer(Box::new(crate::screens::add_server::AddServer::new(false)))
-                } else {
-                    Screen::Server
-                };
+                self.screen = self.workspace_screen();
                 Task::none()
             }
             (Nav::Account, Some(sid)) => {
@@ -318,7 +332,7 @@ impl App {
                     None => Task::none(),
                 },
                 Effect::RemoveServer => {
-                    if let Some(sid) = sid {
+                    if let Some(sid) = sid.filter(|sid| self.may_remove_server(sid)) {
                         self.modals.push(Modal::ConfirmRemove(sid.clone()));
                     }
                     Task::none()
@@ -360,6 +374,7 @@ impl App {
                     Task::none()
                 }
                 Effect::OpenLocalesFolder => self.open_locales_folder(),
+                Effect::OpenLogFolder(dir) => self.open_log_folder(dir),
                 Effect::Quiet(crate::quiet::Request::Expiry(e)) => match sid {
                     Some(sid) => self.set_status_expiry(sid, e, false),
                     None => Task::none(),
@@ -434,6 +449,9 @@ impl App {
     /// Logout or server removal the user asked for: first warns (and shows
     /// it again) when it would delete an unsaved generated E2E passphrase.
     pub(super) fn sign_out(&mut self, sid: &ServerId, action: e2e::SignOut) -> Task<Message> {
+        if action == e2e::SignOut::RemoveServer && !self.may_remove_server(sid) {
+            return Task::none();
+        }
         let uid = self.config.server(sid).and_then(|e| e.user_id.clone());
         if let Some(s) = self.servers.get_mut(sid) {
             match e2e::check_sign_out(s, self.secrets.as_ref(), uid.as_deref(), action) {
@@ -466,6 +484,7 @@ impl App {
         let mut ctx = settings::SettingsCtx {
             config: &mut self.config,
             ui_state: &mut self.ui_state,
+            policy: &self.policy,
         };
         let a = s.update(m, &mut ctx);
         self.settings_tab = s.tab;
@@ -614,6 +633,10 @@ impl App {
     fn go_to(&mut self, go: Go) -> Task<Message> {
         match go {
             Go::Nav(nav) => self.navigate(nav),
+            // A suspended server shows why and opens nothing.
+            Go::Room { sid, .. } | Go::Discussion { sid, .. } if self.is_suspended(&sid) => {
+                self.activate(sid)
+            }
             Go::Room { sid, rid, tmid } => {
                 let a = self.activate_for(sid.clone(), false);
                 let open = self.open_room(&sid, &rid);
@@ -631,6 +654,9 @@ impl App {
                 Task::batch([a, open])
             }
             Go::AddServer(url) => {
+                if let Some(reason) = self.add_refusal(&url) {
+                    return self.refuse_link(reason);
+                }
                 self.screen = Screen::AddServer(Box::new(
                     crate::screens::add_server::AddServer::new(!self.servers.is_empty())
                         .with_url(url.as_str()),
@@ -761,10 +787,11 @@ impl App {
     pub(super) fn on_desktop(&mut self, m: desktop::Message) -> Task<Message> {
         let (task, requests) = self.desktop.update(m);
         let mut tasks = vec![task.map(Message::Desktop)];
-        let live = self.terms_accepted();
+        let live = self.accounts_live();
         for r in requests {
             tasks.push(match r {
-                // Nothing reaches the workspaces before the terms are accepted.
+                // Nothing reaches the workspaces before the terms are accepted
+                // or while the policy blocks them.
                 desktop::Request::OpenRoom { .. }
                 | desktop::Request::OpenThread { .. }
                 | desktop::Request::JoinCall { .. }
@@ -905,10 +932,11 @@ impl App {
     }
 
     /// The unread signal over all servers changed: tell the desktop layer.
-    /// Before the terms are accepted the desktop sees no account and no
-    /// unread (an offline cache may have loaded counts).
+    /// Before the terms are accepted, and while the policy blocks the
+    /// accounts, the desktop sees no account and no unread (an offline
+    /// cache may have loaded counts).
     pub(super) fn unread_hook(&mut self) -> Task<Message> {
-        let live = self.terms_accepted();
+        let live = self.accounts_live();
         let totals = if live {
             self.unread_signal()
         } else {
@@ -962,9 +990,12 @@ impl App {
             mention_groups: self.mention_accounts(),
             mode: self.mode(),
             help: self.help_env(),
+            policy: &self.policy,
             #[cfg(feature = "self-update")]
             updater: crate::updater::view::settings_data(
                 &self.updater,
+                crate::updater::app::mode(self),
+                self.policy.organization_name(),
                 self.ui_state.update_last_check,
                 self.ui_state.update_skipped.as_deref(),
             ),

@@ -110,7 +110,7 @@ fn app_with(names: &[&str]) -> (App, Vec<ServerId>) {
     for (i, name) in names.iter().enumerate() {
         let entry = ServerEntry::new(format!("http://localhost:{}", 3000 + i), *name);
         let sid = app.config.add_server(entry.clone());
-        let mut state = ServerState::from_entry(&entry).unwrap();
+        let mut state = ServerState::from_entry(&entry, &Default::default()).unwrap();
         state.workspace = admin_ws();
         state.restoring = false;
         state.credentials = Some(rocketchat::Credentials {

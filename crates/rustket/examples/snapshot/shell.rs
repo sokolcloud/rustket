@@ -55,7 +55,8 @@ pub async fn shell_shots(d: &mut Driver, out: &Path, sid: &ServerId, rid: &str) 
     // A second, signed-out server in the rail.
     let entry = ServerEntry::new("http://localhost:3999", "Signed out workspace");
     let other = d.app.config.add_server(entry.clone());
-    let mut state = rustket::workspace::ServerState::from_entry(&entry).expect("state");
+    let mut state =
+        rustket::workspace::ServerState::from_entry(&entry, &Default::default()).expect("state");
     state.restoring = false;
     d.app.servers.insert(other.clone(), state);
     both(d, out, "shell-rail-signed-out");

@@ -589,6 +589,9 @@ pub struct UiPrefs {
     /// keyring they are kept in memory for the session only
     /// (`crate::secrets::FilePolicy::Never`).
     pub secrets_memory_only: bool,
+    /// Also write the log to a rotating file (read once at start-up, before
+    /// the logger exists).
+    pub log_file: bool,
     /// Escape with nothing else to close marks the open room as read (with
     /// its threads), like Slack.
     pub escape_marks_read: bool,
@@ -674,6 +677,7 @@ impl Default for UiPrefs {
             check_updates: true,
             update_prereleases: false,
             secrets_memory_only: false,
+            log_file: false,
             escape_marks_read: true,
             mark_read_on_open: false,
             confirm_broad_mentions: true,
@@ -821,6 +825,7 @@ const UI_KEYS: &[&str] = &[
     "check_updates",
     "update_prereleases",
     "secrets_memory_only",
+    "log_file",
     "escape_marks_read",
     "mark_read_on_open",
     "confirm_broad_mentions",
@@ -2074,6 +2079,22 @@ mod tests {
         assert!(AppConfig::parse(&text).unwrap().ui.system_title_bar);
         let c = AppConfig::parse("[ui]\nsystem_title_bar = 1").unwrap();
         assert!(!c.ui.system_title_bar, "invalid value falls back");
+    }
+
+    #[test]
+    fn log_file_defaults_off() {
+        assert!(!UiPrefs::default().log_file);
+        assert!(!AppConfig::parse("[ui]\nzoom = 1.0").unwrap().ui.log_file);
+        let c = AppConfig::parse("[ui]\nlog_file = true").unwrap();
+        assert!(c.ui.log_file);
+        let text = toml::to_string(&c).unwrap();
+        assert!(AppConfig::parse(&text).unwrap().ui.log_file);
+        let c = AppConfig::parse("[ui]\nlog_file = \"yes\"\nzoom = 1.5").unwrap();
+        assert!(!c.ui.log_file, "invalid value falls back");
+        assert!(
+            (c.ui.zoom - 1.5).abs() < f32::EPSILON,
+            "other keys are kept"
+        );
     }
 
     #[test]

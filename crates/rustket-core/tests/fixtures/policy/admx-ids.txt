@@ -1,0 +1,69 @@
+# Ids of the ADMX template (packaging/policy/rustket.admx) that published
+# GPOs and Intune configurations refer to: the policy names, the element
+# ids (Intune's OMA-URI data), the category, the supportedOn definitions
+# and the ADML string ids. A line is never removed or renamed.
+#
+# The ids are grouped by template revision, the R<n> of the namespace
+# Rustket.Policies.R<n> (docs/policy.md section 14). A published section is
+# never edited: keys added later go into a new "revision <n+1>" section
+# with all their ids, and the generator's REVISION becomes n+1. Every key
+# of a section was introduced in the same Rustket version.
+revision 1
+policy ManagedServers
+policy AllowUserServers
+policy AllowedServers
+policy RequireHttps
+policy AllowCertificateExceptions
+policy UpdateMode
+policy AllowPasswordLogin
+policy AllowTokenLogin
+policy AllowSecretsFile
+policy NotificationPreview
+policy HardwareAcceleration
+policy LaunchAtLogin
+policy OrganizationName
+policy SupportUrl
+policy MinimumVersion
+element ManagedServers/ManagedServers
+element AllowedServers/AllowedServers
+element UpdateMode/UpdateMode
+element OrganizationName/OrganizationName
+element SupportUrl/SupportUrl
+element MinimumVersion/MinimumVersion
+category Rustket
+supported SUPPORTED_Rustket_0_4_0
+string SUPPORTED_Rustket_0_4_0
+string Rustket
+string ManagedServers
+string ManagedServers_Explain
+string AllowUserServers
+string AllowUserServers_Explain
+string AllowedServers
+string AllowedServers_Explain
+string RequireHttps
+string RequireHttps_Explain
+string AllowCertificateExceptions
+string AllowCertificateExceptions_Explain
+string UpdateMode
+string UpdateMode_Explain
+string UpdateMode_prompt
+string UpdateMode_notify
+string UpdateMode_off
+string AllowPasswordLogin
+string AllowPasswordLogin_Explain
+string AllowTokenLogin
+string AllowTokenLogin_Explain
+string AllowSecretsFile
+string AllowSecretsFile_Explain
+string NotificationPreview
+string NotificationPreview_Explain
+string HardwareAcceleration
+string HardwareAcceleration_Explain
+string LaunchAtLogin
+string LaunchAtLogin_Explain
+string OrganizationName
+string OrganizationName_Explain
+string SupportUrl
+string SupportUrl_Explain
+string MinimumVersion
+string MinimumVersion_Explain

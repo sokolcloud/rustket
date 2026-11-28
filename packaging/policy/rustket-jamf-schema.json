@@ -1,0 +1,99 @@
+{
+  "title": "Rustket",
+  "description": "Enterprise policy of Rustket (preference domain io.github.sokolcloud.rustket). Set only the keys you mean to enforce: a key that is not set changes nothing. Reference: https://github.com/sokolcloud/rustket/blob/main/docs/policies.md",
+  "properties": {
+    "ManagedServers": {
+      "title": "Managed servers",
+      "description": "Servers added to every user's server list; users cannot remove them. One item per server: its URL with the scheme, optionally followed by a space and a display name (https://chat.example.com Example Chat). \"Allowed servers\" never blocks a managed server, but \"Require HTTPS for servers\" still refuses an http:// one. The certificate of a managed server must be trusted by the system: accepted certificate exceptions are not used for it. Not set: no server is added. A server taken off the list stays as an ordinary server. Applies on all systems. A change applies while Rustket runs, within a few minutes.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "AllowUserServers": {
+      "title": "Allow users to add and remove servers",
+      "description": "true or not set: users can add and remove servers. false: the add and remove actions are hidden and rocketchat:// links to servers that are not configured yet are refused; servers already in the list stay usable while they are allowed. When no server is configured and users may not add one, Rustket shows a screen that says so, with the organization name and the support link. Managed servers can never be removed. Applies on all systems. A change applies while Rustket runs, within a few minutes.",
+      "type": "boolean"
+    },
+    "AllowedServers": {
+      "title": "Allowed servers",
+      "description": "Limits the servers Rustket may use. One pattern per item: [scheme://]host[:port][/path-prefix]. The host ignores case; *. at its start means any subdomain (not the domain itself). No scheme: http and https; no port: the default port; no path: any path. Unreadable patterns are skipped. Managed servers always pass this list, but \"Require HTTPS for servers\" still applies. Other servers are suspended (kept, not connected). Not set: every server is allowed. An empty list allows managed servers only. Applies on all systems. A change applies while Rustket runs, within a few minutes.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "RequireHttps": {
+      "title": "Require HTTPS for servers",
+      "description": "true: servers with an http:// address are refused, managed or not, and configured ones are suspended (kept, never connected). false or not set: http:// servers may be used. Applies on all systems. A change applies while Rustket runs, within a few minutes.",
+      "type": "boolean"
+    },
+    "AllowCertificateExceptions": {
+      "title": "Allow accepting untrusted certificates",
+      "description": "true or not set: when a server presents a certificate the system does not trust, the user may accept it and Rustket keeps the exception. false: there is no accept action and stored exceptions are ignored. Once Rustket reads the change (within a few minutes) the accept action disappears; a signed-in server keeps its connection settings until its session next starts (after a sign-in or Retry, at the latest at the next start of Rustket), and Rustket shows one notice about it. Managed servers never use stored exceptions. Applies on all systems.",
+      "type": "boolean"
+    },
+    "UpdateMode": {
+      "title": "Update mode",
+      "description": "How the built-in updater behaves. prompt: check on schedule, install when the user clicks. notify: report new versions with a link to the release page, never download or install. off: no checks and no request to the update feed; the app says that the organization manages updates. Not set: prompt, except notify for a Windows installation for all users and for future MSI and macOS installer packages. Only builds with the built-in updater read it; the Mac App Store version and builds without the updater ignore it. A change applies while Rustket runs, within a few minutes; leaving prompt cancels a download in progress.",
+      "type": "string",
+      "enum": [
+        "prompt",
+        "notify",
+        "off"
+      ],
+      "options": {
+        "enum_titles": [
+          "prompt: check and install when the user agrees",
+          "notify: only report new versions",
+          "off: no update checks"
+        ]
+      }
+    },
+    "AllowPasswordLogin": {
+      "title": "Allow sign-in with a password",
+      "description": "true or not set: the sign-in screen offers the user name and password form. false: the form is hidden, also when the server uses it for LDAP sign-in. This shapes the client only: the server still accepts passwords, and signing in with the browser opens the server's own login page. Applies on all systems. A change applies at the next sign-in; signed-in sessions are not affected.",
+      "type": "boolean"
+    },
+    "AllowTokenLogin": {
+      "title": "Allow sign-in with a personal access token",
+      "description": "true or not set: the sign-in screen offers signing in with a personal access token. false: that option is hidden. This shapes the client only: the server still accepts tokens, and a token link pasted or opened during a browser sign-in still signs in, because Rustket cannot tell a personal access token from the token a browser sign-in returns; to forbid personal access tokens, remove the permission create-personal-access-tokens on the Rocket.Chat server (see the deployment guide). Applies on all systems. A change applies at the next sign-in; signed-in sessions are not affected.",
+      "type": "boolean"
+    },
+    "AllowSecretsFile": {
+      "title": "Allow storing sign-in secrets in a file",
+      "description": "true or not set: when no system keyring is usable, Rustket may keep sign-in secrets in a plain file, and users may choose memory-only storage in Settings. false: secrets are never written to a file; without a keyring they are kept in memory only, and after each start users sign in again and enter their E2E password again. The Mac App Store version ignores it: it never writes such a file. A change applies while Rustket runs, within a few minutes.",
+      "type": "boolean"
+    },
+    "NotificationPreview": {
+      "title": "Show message text in notifications",
+      "description": "true: notifications show the message text. false: notifications do not show the message text. Not set: the user's own setting decides. Applies on all systems. A change applies while Rustket runs, within a few minutes.",
+      "type": "boolean"
+    },
+    "HardwareAcceleration": {
+      "title": "Use hardware acceleration",
+      "description": "true: Rustket draws its window with the graphics processor. false: it uses the software (CPU) renderer, which helps with faulty graphics drivers and remote sessions. Not set: the user's own setting decides. The ICED_BACKEND environment variable still takes priority. The Mac App Store version ignores it. Settings show a change at once; it takes effect at the next start of Rustket.",
+      "type": "boolean"
+    },
+    "LaunchAtLogin": {
+      "title": "Start Rustket when the user signs in",
+      "description": "true: Rustket registers itself to start when the user signs in to the computer. false: it removes that registration. Rustket applies the value when it starts and when this setting changes, once the terms are accepted and no blocking screen is shown, so it cannot act before its first start; a change the user makes outside Rustket (also in Task Manager or GNOME) stays until then. On a Mac, Rustket cannot undo a switch-off under Login Items (\"Allow in the Background\"). Not set: the user decides; removing the policy leaves the registration as it is. On the Mac App Store version, macOS may ask the user to approve the registration in System Settings. Applies on all systems.",
+      "type": "boolean"
+    },
+    "OrganizationName": {
+      "title": "Organization name",
+      "description": "The name shown as \"Managed by ...\" on locked settings, on the blocking screen and for suspended servers. One line of at most 80 characters; a longer value, or one with control, line-break or text-direction characters, is ignored. Not set: Rustket says \"your organization\". Applies on all systems. A change applies while Rustket runs, within a few minutes.",
+      "type": "string"
+    },
+    "SupportUrl": {
+      "title": "Support link",
+      "description": "A help link for users, shown on the blocking screen, for suspended servers and when users may not add a server. It must be an absolute https:// URL; any other value is ignored. Not set: no link is shown. Applies on all systems. A change applies while Rustket runs, within a few minutes.",
+      "type": "string"
+    },
+    "MinimumVersion": {
+      "title": "Minimum Rustket version",
+      "description": "The oldest Rustket version that may connect, as MAJOR.MINOR.PATCH (for example 0.4.0). An older client connects to no server and shows a screen saying that an update is required, with the updater where users may install updates (update mode prompt). The client version is compared in semver order: a pre-release such as 0.6.0-rc.1 is older than 0.6.0; build metadata is ignored. A value that is not three numbers is ignored, so a typo cannot lock out every client. Not set: any version may connect. Versions before 0.4.0 do not know this setting. Applies on all systems. A change applies while Rustket runs, within a few minutes.",
+      "type": "string"
+    }
+  }
+}

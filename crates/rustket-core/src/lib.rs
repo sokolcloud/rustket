@@ -23,6 +23,7 @@ pub mod mention_groups;
 pub mod notify;
 pub mod omnichannel;
 pub mod permissions;
+pub mod policy;
 pub mod poll;
 pub mod presence;
 pub mod quiet;

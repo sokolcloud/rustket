@@ -21,6 +21,9 @@ toml = "1.2.1"
 tracing = "0.1.44"
 url = "2.5.8"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [lints]
 workspace = true
 

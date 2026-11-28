@@ -70,6 +70,26 @@ pub fn title_bar_workspace_with<'a, Message: Clone + 'a>(
     signed_out: bool,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
+    title_bar_workspace_marked(
+        source,
+        name,
+        unread,
+        selected,
+        signed_out.then_some(Icon::LogOut),
+        on_press,
+    )
+}
+
+/// [`title_bar_workspace_with`] with any emblem glyph (`None`: no emblem);
+/// the tooltip `name` carries its meaning.
+pub fn title_bar_workspace_marked<'a, Message: Clone + 'a>(
+    source: &AvatarSource,
+    name: impl Into<String>,
+    unread: WorkspaceBadge,
+    selected: bool,
+    emblem: Option<Icon>,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
     let ringed = container(face(source, FACE, AvatarShape::Rounded))
         .padding(2)
         .style(move |theme: &Theme| {
@@ -87,8 +107,8 @@ pub fn title_bar_workspace_with<'a, Message: Clone + 'a>(
         });
     let badge_el: Element<'a, Message> =
         workspace_badge(unread, WorkspaceAt::TitleBar).unwrap_or_else(|| space().into());
-    let emblem: Element<'a, Message> = if signed_out {
-        container(icon::sized(Icon::LogOut, 8.0))
+    let emblem: Element<'a, Message> = if let Some(glyph) = emblem {
+        container(icon::sized(glyph, 8.0))
             .center(13)
             .style(|theme: &Theme| {
                 let t = tokens(theme);

@@ -32,7 +32,9 @@ pub fn install(
 ) -> Result<Outcome, UpdateError> {
     tracing::info!(?kind, "updater: installing {}", release.version);
     match kind {
-        InstallKind::Unmanaged => Err(UpdateError::Unsupported),
+        InstallKind::Msi { .. } | InstallKind::MacPkg { .. } | InstallKind::Unmanaged => {
+            Err(UpdateError::Unsupported)
+        }
         #[cfg(target_os = "linux")]
         InstallKind::Deb { .. } => linux::install_deb(file, sha, &linux::Tools::system()),
         #[cfg(target_os = "linux")]
@@ -424,5 +426,18 @@ mod tests {
             install(&InstallKind::Unmanaged, Path::new("/x"), [0; 32], &release),
             Err(UpdateError::Unsupported)
         );
+        // The kinds reserved for managed installers never install.
+        for kind in [
+            InstallKind::Msi { dir: "C:/R".into() },
+            InstallKind::MacPkg {
+                bundle: "/Applications/Rustket.app".into(),
+            },
+        ] {
+            assert_eq!(
+                install(&kind, Path::new("/x"), [0; 32], &release),
+                Err(UpdateError::Unsupported),
+                "{kind:?}"
+            );
+        }
     }
 }

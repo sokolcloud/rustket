@@ -68,6 +68,9 @@ impl App {
         if crate::legal::terms_pending(&self.config) {
             return self.terms_view();
         }
+        if self.policy.is_blocked() {
+            return self.blocked_view();
+        }
         let base: Element<'_, Message> = match &self.screen {
             Screen::Loading => loading_placeholder(None),
             Screen::AddServer(a) => {
@@ -77,6 +80,9 @@ impl App {
                 } else {
                     self.with_rail(screen)
                 }
+            }
+            Screen::NoServers => {
+                crate::screens::policy_notice::no_servers(&self.policy).map(Message::PolicyNotice)
             }
             Screen::Server => self.server_view(),
             Screen::Settings(c) => {
@@ -147,6 +153,23 @@ impl App {
         self.chrome(content, false)
     }
 
+    /// The blocking screen of the policy over the whole window (after the
+    /// terms), in the same chrome without workspace buttons. Only the update
+    /// card of the manual check it offers stays in its corner: no call
+    /// popups (every server is suspended).
+    fn blocked_view(&self) -> Element<'_, Message> {
+        let update = crate::screens::policy_block::offers_update(self.update_mode());
+        let page =
+            crate::screens::policy_block::view(&self.policy, self.policy_block_details, update)
+                .map(Message::PolicyBlock);
+        #[cfg(feature = "self-update")]
+        let cards: Vec<_> = crate::updater::view::card(self).into_iter().collect();
+        #[cfg(not(feature = "self-update"))]
+        let cards = Vec::new();
+        let content = toasts_with(page, cards, &self.toasts, Message::CloseToast);
+        self.chrome(content, false)
+    }
+
     /// `page` after the left rail (system title bar) or alone (the
     /// workspaces are in the custom title bar).
     fn with_rail<'a>(&'a self, page: Element<'a, Message>) -> Element<'a, Message> {
@@ -160,7 +183,7 @@ impl App {
     fn title_bar(&self, interactive: bool) -> Element<'_, Message> {
         let workspace_buttons = !self.servers.is_empty()
             && !matches!(self.screen, Screen::Loading)
-            && self.terms_accepted();
+            && self.accounts_live();
         titlebar::view(titlebar::View {
             entries: if workspace_buttons {
                 self.rail_entries()
@@ -168,6 +191,7 @@ impl App {
                 Vec::new()
             },
             workspace_buttons,
+            add_button: self.may_add_servers(),
             settings_active: matches!(self.screen, Screen::Settings(_)),
             title: self.title(),
             maximized: self.titlebar.maximized,
@@ -190,10 +214,10 @@ impl App {
     }
 
     fn rail(&self) -> Element<'_, Message> {
-        rail::view(self.rail_entries()).map(Message::Rail)
+        rail::view(self.rail_entries(), self.may_add_servers()).map(Message::Rail)
     }
 
-    pub(crate) fn rail_entries(&self) -> Vec<rail::RailEntry> {
+    pub fn rail_entries(&self) -> Vec<rail::RailEntry> {
         let adding = !matches!(
             self.screen,
             Screen::Server | Screen::Account(..) | Screen::Directory(..) | Screen::Admin(..)
@@ -215,6 +239,7 @@ impl App {
                 },
                 selected: !adding && self.active.as_ref() == Some(&s.id),
                 signed_out: !s.is_logged_in() && !s.restoring,
+                suspended: self.is_suspended(&s.id),
             })
             .collect()
     }
@@ -223,7 +248,14 @@ impl App {
         let Some(s) = self.active.as_ref().and_then(|id| self.servers.get(id)) else {
             return loading_placeholder(None);
         };
-        let main: Element<'_, Message> = if let Some(l) = &s.login {
+        let main: Element<'_, Message> = if let Some(reason) = self
+            .standing_of(&s.id)
+            .and_then(crate::policy::servers::Standing::suspension)
+        {
+            let remove = self.may_remove_server(&s.id).then(|| s.id.clone());
+            crate::screens::policy_notice::suspended(&s.name, reason, &self.policy, remove)
+                .map(Message::PolicyNotice)
+        } else if let Some(l) = &s.login {
             let sid = s.id.clone();
             l.view().map(move |m| Message::Login(sid.clone(), m))
         } else if s.restoring {
@@ -386,7 +418,7 @@ impl App {
             return (Some(self.modal_view(m)), Some(Message::CloseModal));
         }
         match &self.screen {
-            Screen::AddServer(a) => match a.overlay() {
+            Screen::AddServer(a) => match a.overlay(self.policy.allow_certificate_exceptions()) {
                 Some(o) => (
                     Some(o.map(Message::AddServer)),
                     Some(Message::AddServer(add_server::Message::RejectCertificate)),

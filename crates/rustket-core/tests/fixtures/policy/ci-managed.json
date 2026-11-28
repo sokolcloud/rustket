@@ -1,0 +1,6 @@
+{
+  "OrganizationName": "Rustket CI",
+  "SupportUrl": "https://help.example.com/chat",
+  "NotificationPreview": false,
+  "AllowedServers": ["chat.example.com", "*.example.org"]
+}

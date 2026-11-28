@@ -141,7 +141,7 @@ fn server() -> crate::workspace::ServerState {
         url: "http://localhost:3000".into(),
         ..Default::default()
     };
-    crate::workspace::ServerState::from_entry(&entry).unwrap()
+    crate::workspace::ServerState::from_entry(&entry, &Default::default()).unwrap()
 }
 
 #[test]

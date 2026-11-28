@@ -87,6 +87,22 @@ pub enum Message {
     /// The terms of use screen (`crate::screens::terms`).
     Terms(crate::screens::terms::Message),
     ShowAddServer,
+    /// The suspended-server and no-server screens of the policy
+    /// (`crate::screens::policy_notice`).
+    PolicyNotice(crate::screens::policy_notice::Message),
+    /// The blocking screen of the policy (`crate::screens::policy_block`).
+    PolicyBlock(crate::screens::policy_block::Message),
+    /// The launch-at-login registration the policy forces was brought to
+    /// the forced value (`LaunchAtLogin`): the value, then the state found
+    /// afterwards and whether it was changed, or the error.
+    LaunchAtLoginApplied(
+        bool,
+        Result<(crate::desktop::autostart::State, bool), String>,
+    ),
+    /// The stored token of a server the policy allowed again was read
+    /// (`None`: none stored or unreadable): server, the user id it was read
+    /// for, the credentials.
+    ServerTokenRead(ServerId, String, Option<rocketchat::Credentials>),
     Login(ServerId, login::Message),
     Rail(rail::Message),
     TitleBar(titlebar::Message),
@@ -266,6 +282,11 @@ pub enum Message {
     /// `SwitchableStore::apply_policy` finished: the memory-only preference
     /// it applied, the backend afterwards, what failed.
     SecretsPolicyApplied(bool, SecretBackend, Option<String>),
+    /// The policy refresh timer (`crate::policy::refresh`).
+    PolicyPoll,
+    /// The policy sources as read by the refresh; `None` when the read
+    /// task failed.
+    PolicyRead(Option<Vec<rustket_core::policy::Snapshot>>),
     /// Servers whose stored E2E password has not been confirmed as saved
     /// (for the memory-only confirmation).
     SecretsPendingFound(Vec<ServerId>),
@@ -276,6 +297,8 @@ pub enum Message {
     ThemesFolderNotOpened(String),
     /// The file manager could not open the locales folder (its path).
     LocalesFolderNotOpened(String),
+    /// The log folder could not be opened (its path).
+    LogFolderNotOpened(String),
     /// No viewer opened a file shipped with the app, or the file manager
     /// did not show a downloaded file (its path).
     FileNotOpened(String),

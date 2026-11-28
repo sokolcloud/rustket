@@ -245,3 +245,15 @@ login.saml_browser_continue:
   es: "Continuar desde el navegador"
   th: "ดำเนินการต่อจากเบราว์เซอร์"
   zh: "从浏览器继续"
+login.methods_off:
+  en: "Some sign-in methods are turned off by your organization"
+  ru: "Некоторые способы входа отключены вашей организацией"
+  es: "Tu organización ha desactivado algunos métodos de inicio de sesión"
+  th: "องค์กรของคุณปิดวิธีลงชื่อเข้าใช้บางวิธี"
+  zh: "你的组织已关闭部分登录方式"
+login.methods_off_by:
+  en: "Some sign-in methods are turned off by %{name}"
+  ru: "Некоторые способы входа отключены организацией %{name}"
+  es: "%{name} ha desactivado algunos métodos de inicio de sesión"
+  th: "%{name} ปิดวิธีลงชื่อเข้าใช้บางวิธี"
+  zh: "%{name} 已关闭部分登录方式"

@@ -1,0 +1,22 @@
+{
+  "ManagedServers": [
+    "https://chat.example.com Example Chat"
+  ],
+  "AllowUserServers": false,
+  "AllowedServers": [
+    "https://chat.example.com",
+    "*.example.com"
+  ],
+  "RequireHttps": true,
+  "AllowCertificateExceptions": false,
+  "UpdateMode": "notify",
+  "AllowPasswordLogin": true,
+  "AllowTokenLogin": false,
+  "AllowSecretsFile": false,
+  "NotificationPreview": false,
+  "HardwareAcceleration": true,
+  "LaunchAtLogin": true,
+  "OrganizationName": "Example Corp",
+  "SupportUrl": "https://help.example.com/chat",
+  "MinimumVersion": "0.4.0"
+}

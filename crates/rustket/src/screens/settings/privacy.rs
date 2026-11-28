@@ -1,15 +1,15 @@
 //! Privacy & storage tab: where login tokens and E2E keys are kept (and
 //! whether they may go to a file), what the profile shares, hidden words,
-//! the offline cache and the image cache.
+//! the offline cache, the image cache and the diagnostic log file.
 
-use iced::widget::{container, text};
-use iced::{Element, Length};
+use iced::widget::{container, row, text};
+use iced::{Alignment, Element, Length};
 use rust_i18n::t;
 use rustket_core::secrets::SecretBackend;
-use rustket_ui::theme::TEXT_BODY;
-use rustket_ui::widget::{BannerKind, banner};
+use rustket_ui::theme::{SPACE_3, TEXT_BODY};
+use rustket_ui::widget::{BannerKind, banner, secondary_button};
 
-use super::widgets::{action_row, caption, field, section, segmented, switch};
+use super::widgets::{action_row, caption, field, section, segmented, switch, switch_with};
 use super::{
     IMAGE_CACHE_CHOICES, Message, SECRET_STORE_CARD, STORAGE_CARD, Settings, SettingsView,
 };
@@ -48,6 +48,14 @@ fn secret_store_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
     let status: Element<'a, Message> = match v.secret_backend {
         Some(SecretBackend::Keyring) => line(t!("settings.secret_store_keyring")),
         Some(SecretBackend::File) => banner(BannerKind::Warning, t!("app.keyring_file"), None),
+        // "By policy" is the memory-only preference; when the enterprise
+        // policy forces it, say so instead of "as you chose".
+        Some(SecretBackend::MemoryByPolicy)
+            if v.policy
+                .locks(rustket_core::policy::LockedPref::SecretsMemoryOnly) =>
+        {
+            banner(BannerKind::Info, t!("policy.secret_store_memory"), None)
+        }
         Some(SecretBackend::MemoryByPolicy) => banner(
             BannerKind::Info,
             t!("settings.secret_store_memory_policy"),
@@ -69,11 +77,12 @@ fn secret_store_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
             .into(),
     };
     let ready = v.secret_backend.is_some() && !v.secrets_switching;
-    let toggle = switch(
+    let toggle = switch_with(
         t!("settings.secrets_memory_only").into_owned(),
         Some(t!("settings.secrets_memory_only_help").into_owned()),
         v.config.ui.secrets_memory_only,
         ready.then_some(Message::SetSecretsMemoryOnly as fn(bool) -> Message),
+        v.managed(rustket_core::policy::LockedPref::SecretsMemoryOnly),
     );
     // The Mac App Store flavor never writes the file: nothing to choose.
     let rows = if cfg!(feature = "mas") {
@@ -88,7 +97,7 @@ fn secret_store_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
 
 fn storage_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
     let ui = &v.config.ui;
-    let rows = crate::cache::view::with_storage_row(
+    let mut rows = crate::cache::view::with_storage_row(
         v.offline_cache,
         Message::ClearOfflineCache,
         vec![
@@ -109,9 +118,36 @@ fn storage_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
             ),
         ],
     );
+    rows.push(switch(
+        t!("settings.log_file").into_owned(),
+        Some(t!("settings.log_file_help").into_owned()),
+        ui.log_file,
+        Some(Message::SetLogFile as fn(bool) -> Message),
+    ));
+    rows.push(log_folder_row());
     container(section(t!("settings.storage").into_owned(), rows))
         .id(STORAGE_CARD)
         .into()
+}
+
+/// Where the log is kept, with "Show log folder" (shown whether or not the
+/// file is kept: the button creates the folder).
+fn log_folder_row<'a>() -> Element<'a, Message> {
+    let path = crate::logging::default_dir()
+        .map(|d| d.display().to_string())
+        .unwrap_or_default();
+    row![
+        caption(path)
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            .width(Length::Fill),
+        secondary_button(
+            t!("settings.show_log_folder").into_owned(),
+            Some(Message::OpenLogFolder)
+        ),
+    ]
+    .spacing(SPACE_3)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// "100 MB", "1 GB" … (decimal units, like the cap: [`crate::images::MB`]).

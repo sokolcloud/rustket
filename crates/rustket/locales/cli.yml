@@ -47,6 +47,30 @@ cli.opt_dump_locale:
   es: "Imprimir una plantilla de traducción para un idioma (por defecto en) y salir"
   th: "พิมพ์เทมเพลตการแปลของภาษา (ค่าเริ่มต้น en) แล้วออก"
   zh: "输出某种语言的翻译模板（默认 en）并退出"
+cli.opt_dump_policy:
+  en: "Write the enterprise policy in effect as JSON to FILE (default: standard output) and exit"
+  ru: "Записать действующую корпоративную политику в формате JSON в FILE (по умолчанию — в стандартный вывод) и выйти"
+  es: "Escribir las directivas empresariales vigentes como JSON en FILE (por defecto, la salida estándar) y salir"
+  th: "เขียนนโยบายองค์กรที่มีผลอยู่เป็น JSON ลงใน FILE (ค่าเริ่มต้นคือเอาต์พุตมาตรฐาน) แล้วออก"
+  zh: "将当前生效的企业策略以 JSON 写入 FILE（默认写到标准输出）并退出"
+cli.dump_policy_file_failed:
+  en: "Cannot write the policy to %{path}: %{error}"
+  ru: "Не удалось записать политику в %{path}: %{error}"
+  es: "No se pueden escribir las directivas en %{path}: %{error}"
+  th: "เขียนนโยบายลงใน %{path} ไม่ได้: %{error}"
+  zh: "无法将策略写入 %{path}：%{error}"
+cli.dump_policy_stdout_failed:
+  en: "Cannot write the policy to standard output: %{error}"
+  ru: "Не удалось вывести политику в стандартный вывод: %{error}"
+  es: "No se pueden escribir las directivas en la salida estándar: %{error}"
+  th: "เขียนนโยบายไปยังเอาต์พุตมาตรฐานไม่ได้: %{error}"
+  zh: "无法将策略写到标准输出：%{error}"
+cli.dump_policy_failed:
+  en: "Cannot convert the policy to JSON: %{error}"
+  ru: "Не удалось преобразовать политику в JSON: %{error}"
+  es: "No se pueden convertir las directivas a JSON: %{error}"
+  th: "แปลงนโยบายเป็น JSON ไม่ได้: %{error}"
+  zh: "无法将策略转换为 JSON：%{error}"
 cli.unknown_locale:
   en: "Unknown language %{code}. Bundled languages: %{list}; external ones are files in the languages folder."
   ru: "Неизвестный язык %{code}. Встроенные языки: %{list}; внешние — файлы в папке языков."

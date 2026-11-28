@@ -4,6 +4,9 @@ rustket \- native Rocket.Chat desktop client
 .SH SYNOPSIS
 .B rustket
 [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fILINK\fR...]
+.br
+.B rustket
+\fB\-\-dump\-policy\fR [\fIFILE\fR]
 .SH DESCRIPTION
 .B rustket
 is a Rocket.Chat client that renders everything natively instead of embedding a
@@ -20,6 +23,10 @@ Print a short help and exit.
 .TP
 .BR \-V ", " \-\-version
 Print the version and exit.
+.TP
+.BR \-\-dump\-policy " [\fIFILE\fR]"
+Write the enterprise policy in effect (every source, value and problem found)
+as JSON to \fIFILE\fR, or to standard output, and exit.
 .SH ENVIRONMENT
 .TP
 .B ICED_BACKEND=tiny\-skia
@@ -35,6 +42,12 @@ user names, so review them before sharing.
 .B RUST_BACKTRACE=1
 Print a backtrace when the application crashes; include it in bug reports.
 .SH FILES
+.TP
+.I /etc/rustket/policies/managed/*.json
+Enterprise policy set by the administrator. Files owned by root and not
+writable by group or others, in a directory that is also owned by root and not
+writable by group or others, are fully trusted. Other files are read with limited trust, which ignores
+\fBManagedServers\fR and \fBSupportUrl\fR; see \fB\-\-dump\-policy\fR.
 .TP
 .I ~/.config/rustket/config.toml
 Servers and preferences.

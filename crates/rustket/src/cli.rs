@@ -1,6 +1,6 @@
 //! Command-line flags handled before iced starts (and before the software
-//! renderer re-exec): `--help`/`-h`, `--version`/`-V`, `--dump-theme` and
-//! `--dump-locale [CODE]`.
+//! renderer re-exec): `--help`/`-h`, `--version`/`-V`, `--dump-theme`,
+//! `--dump-locale [CODE]` and `--dump-policy [FILE]`.
 //! Other arguments keep their old meaning: non-flag arguments are links for
 //! the single instance, unknown flags are ignored.
 
@@ -18,6 +18,9 @@ pub enum Action {
     Print(String),
     /// Print to stderr and exit with a failure status.
     Fail(String),
+    /// Write the resolved policy as JSON to the file, or to stdout, and exit
+    /// (`main` does it: the policy is read there).
+    DumpPolicy(Option<std::path::PathBuf>),
 }
 
 /// `rustket 0.3.2`.
@@ -27,7 +30,7 @@ pub fn version_line() -> String {
 
 pub fn help_text() -> String {
     format!(
-        "{version}\n{about}\n\n{usage}\n{links}\n\n{options}\n  -h, --help              {help}\n  -V, --version           {ver}\n      --dump-theme        {dump}\n      --dump-locale [CODE] {dump_locale}\n\n{env}\n  ICED_BACKEND=tiny-skia  {backend}\n  RUST_LOG=<filter>       {log}\n  RUST_BACKTRACE=1        {bt}\n",
+        "{version}\n{about}\n\n{usage}\n{links}\n\n{options}\n  -h, --help              {help}\n  -V, --version           {ver}\n      --dump-theme        {dump}\n      --dump-locale [CODE] {dump_locale}\n      --dump-policy [FILE] {dump_policy}\n\n{env}\n  ICED_BACKEND=tiny-skia  {backend}\n  RUST_LOG=<filter>       {log}\n  RUST_BACKTRACE=1        {bt}\n",
         version = version_line(),
         about = t!("cli.about"),
         usage = t!("cli.usage", bin = BIN),
@@ -37,6 +40,7 @@ pub fn help_text() -> String {
         ver = t!("cli.opt_version"),
         dump = t!("cli.opt_dump_theme"),
         dump_locale = t!("cli.opt_dump_locale"),
+        dump_policy = t!("cli.opt_dump_policy"),
         env = t!("cli.env"),
         backend = t!("cli.env_backend"),
         log = t!("cli.env_log"),
@@ -45,9 +49,11 @@ pub fn help_text() -> String {
 }
 
 /// Decides from the arguments after the program name. The first of
-/// `--help`/`--version`/`--dump-theme`/`--dump-locale` wins; arguments after
-/// `--` are never flags. `--dump-locale` takes the next argument as its code
-/// unless it is a flag or a link (then `en`); an invalid code fails.
+/// `--help`/`--version`/`--dump-theme`/`--dump-locale`/`--dump-policy` wins;
+/// arguments after `--` are never flags. `--dump-locale` takes the next
+/// argument as its code unless it is a flag or a link (then `en`); an
+/// invalid code fails. `--dump-policy` takes the next argument as its output
+/// file unless it is a flag or a link (then stdout).
 pub fn parse<I, S>(args: I) -> Action
 where
     I: IntoIterator<Item = S>,
@@ -78,10 +84,29 @@ where
                     Err(e) => Action::Fail(format!("{e}\n")),
                 };
             }
+            Some("--dump-policy") => {
+                let file = args
+                    .peek()
+                    .filter(|a| {
+                        let text = a.as_ref().to_string_lossy();
+                        !text.is_empty() && !text.starts_with('-') && !looks_like_link(&text)
+                    })
+                    .map(|a| std::path::PathBuf::from(a.as_ref()));
+                return Action::DumpPolicy(file);
+            }
             _ => {}
         }
     }
     Action::Run
+}
+
+/// A `scheme://…` or `rocketchat:` link, which is never an output file. A
+/// path (`/tmp/p.json`, `C:\p.json`) is not a link.
+fn looks_like_link(arg: &str) -> bool {
+    arg.contains("://")
+        || arg
+            .get(..11)
+            .is_some_and(|p| p.eq_ignore_ascii_case("rocketchat:"))
 }
 
 #[cfg(test)]
@@ -146,6 +171,56 @@ mod tests {
             assert!(e.contains(bad), "{e}");
         }
         assert_eq!(parse(["--", "--dump-locale"]), Action::Run);
+    }
+
+    #[test]
+    fn dump_policy_takes_an_optional_file() {
+        use std::path::PathBuf;
+        assert_eq!(parse(["--dump-policy"]), Action::DumpPolicy(None));
+        assert_eq!(
+            parse(["--dump-policy", "policy.json"]),
+            Action::DumpPolicy(Some(PathBuf::from("policy.json")))
+        );
+        assert_eq!(
+            parse(["--dump-policy", "/tmp/p.json"]),
+            Action::DumpPolicy(Some(PathBuf::from("/tmp/p.json")))
+        );
+        assert_eq!(
+            parse(["--dump-policy", r"C:\Users\a\p.json"]),
+            Action::DumpPolicy(Some(PathBuf::from(r"C:\Users\a\p.json")))
+        );
+        for not_a_file in [
+            "--help",
+            "-",
+            "rocketchat://room?host=a",
+            "ROCKETCHAT:room",
+            "https://go.rocket.chat/room?host=a",
+            "",
+        ] {
+            assert_eq!(
+                parse(["--dump-policy", not_a_file]),
+                Action::DumpPolicy(None),
+                "{not_a_file:?}"
+            );
+        }
+        // The first flag wins; `--` ends the flags.
+        assert_eq!(
+            parse(["--dump-policy", "--version"]),
+            Action::DumpPolicy(None)
+        );
+        assert!(matches!(
+            parse(["--version", "--dump-policy"]),
+            Action::Print(_)
+        ));
+        assert_eq!(parse(["--", "--dump-policy"]), Action::Run);
+        assert_eq!(
+            parse(["rocketchat://room?host=a", "--dump-policy", "out.json"]),
+            Action::DumpPolicy(Some(PathBuf::from("out.json")))
+        );
+        let Action::Print(help) = parse(["--help"]) else {
+            panic!("--help prints");
+        };
+        assert!(help.contains("--dump-policy [FILE]"));
     }
 
     #[test]

@@ -34,6 +34,55 @@ use crate::error::{Failure, Res};
 use crate::session::tls_for;
 use rustket_core::config::TokenKind;
 
+/// What the enterprise policy lets the screen offer (docs/policy.md
+/// section 9.4): it shapes the client only, the server still accepts every
+/// method.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignInRules {
+    /// `AllowPasswordLogin`: the form (password or LDAP) and its messages.
+    pub password: bool,
+    /// `AllowTokenLogin`: the personal access token entry and its messages.
+    pub token: bool,
+    /// `OrganizationName`, named in the notice line.
+    pub organization: Option<String>,
+}
+
+impl Default for SignInRules {
+    fn default() -> Self {
+        Self {
+            password: true,
+            token: true,
+            organization: None,
+        }
+    }
+}
+
+impl SignInRules {
+    pub fn of(policy: &rustket_core::policy::Policy) -> Self {
+        Self {
+            password: policy.allow_password_login(),
+            token: policy.allow_token_login(),
+            organization: policy.organization_name().map(str::to_owned),
+        }
+    }
+
+    /// "Some sign-in methods are turned off by …".
+    fn notice(&self) -> String {
+        match &self.organization {
+            Some(name) => t!("login.methods_off_by", name = name).into_owned(),
+            None => t!("login.methods_off").into_owned(),
+        }
+    }
+}
+
+/// Whether `request` sends a password (the form's request).
+fn sends_password(request: &LoginRequest) -> bool {
+    matches!(
+        request,
+        LoginRequest::Password { .. } | LoginRequest::Ldap(_)
+    )
+}
+
 /// How long SAML/CAS logins are polled.
 pub const POLL_LIMIT: Duration = Duration::from_secs(5 * 60);
 
@@ -327,6 +376,8 @@ pub struct Login {
     pub pat_token: String,
     /// Shown in the pending view: whether `rocketchat://` already opens Rustket.
     pub handler_registered: bool,
+    /// The sign-in methods the policy allows ([`Self::set_rules`]).
+    rules: SignInRules,
     last_request: Option<LoginRequest>,
     /// The request of [`Self::complete_unconfirmed`], for its 2FA round.
     link_request: Option<LoginRequest>,
@@ -367,11 +418,62 @@ impl Login {
                 pat_user_id: String::new(),
                 pat_token: String::new(),
                 handler_registered: false,
+                rules: SignInRules::default(),
                 last_request: None,
                 link_request: None,
             },
             task,
         ))
+    }
+
+    /// Uses `tls` from the next request on (the certificate rule of the
+    /// policy changed); requests already running keep theirs.
+    pub fn set_tls(&mut self, tls: TlsContext) -> Result<(), rocketchat::Error> {
+        self.rest = RestClient::new(self.server.clone(), &tls)?;
+        self.tls = tls;
+        Ok(())
+    }
+
+    /// The TLS context of the screen's requests.
+    #[cfg(test)]
+    pub(crate) fn tls(&self) -> &TlsContext {
+        &self.tls
+    }
+
+    /// The sign-in methods the policy allows.
+    pub fn rules(&self) -> &SignInRules {
+        &self.rules
+    }
+
+    /// The policy removes something this screen would show: the token
+    /// entry, or a form the server offers (or may offer: its settings are
+    /// not loaded yet).
+    fn policy_hides_something(&self) -> bool {
+        !self.rules.token
+            || (!self.rules.password && self.meta.as_ref().is_none_or(|m| m.show_form))
+    }
+
+    /// Applies the policy's sign-in rules at once (they are view state): a
+    /// method turned off leaves the screen, a typed password or token is
+    /// dropped, and a code dialog of a password sign-in closes. A request
+    /// already sent finishes.
+    pub fn set_rules(&mut self, rules: SignInRules) {
+        if !rules.password {
+            self.password.clear();
+            if self
+                .two_factor
+                .as_ref()
+                .is_some_and(|tf| !tf.unconfirmed && sends_password(&tf.request))
+            {
+                self.two_factor = None;
+                self.busy = false;
+            }
+        }
+        if !rules.token {
+            self.token_mode = false;
+            self.pat_token.clear();
+        }
+        self.rules = rules;
     }
 
     pub fn pending_login(&self) -> Option<&PendingLogin> {
@@ -522,6 +624,15 @@ impl Login {
                         self.last_request.clone()
                     };
                     let request = request.unwrap_or_else(|| self.form_request());
+                    // The policy turned the form off while the password was
+                    // on its way: no code dialog that could not be sent, and
+                    // no error line (the notice line already says why).
+                    if !link && !self.rules.password && sends_password(&request) {
+                        self.two_factor = None;
+                        self.last_request = None;
+                        self.error = None;
+                        return (Task::none(), Out::None);
+                    }
                     self.two_factor = Some(TwoFactor {
                         request,
                         method: match &ch.method {
@@ -617,7 +728,36 @@ impl Login {
                 return (meta_task(self.rest.clone()), Out::None);
             }
             Message::User(s) => self.user = s,
-            Message::Password(s) => self.password = s,
+            // The policy turned the form off: nothing takes or submits a
+            // password.
+            Message::Password(s) => {
+                if self.rules.password {
+                    self.password = s;
+                }
+            }
+            Message::SubmitUser | Message::Submit if !self.rules.password => return none,
+            Message::SubmitCode
+                if !self.rules.password
+                    && self
+                        .two_factor
+                        .as_ref()
+                        .is_some_and(|tf| sends_password(&tf.request)) =>
+            {
+                return none;
+            }
+            // The token login is off: no entry, no check, no sign-in.
+            Message::ShowToken(true)
+            | Message::PatUserId(_)
+            | Message::PatToken(_)
+            | Message::SubmitPat
+                if !self.rules.token =>
+            {
+                return none;
+            }
+            Message::PatChecked(..) if !self.rules.token => {
+                self.busy = false;
+                return none;
+            }
             Message::SubmitUser if self.password.is_empty() && !self.user.trim().is_empty() => {
                 return (iced::widget::operation::focus(PASSWORD_ID), Out::None);
             }
@@ -860,6 +1000,20 @@ impl Login {
         if let Some(reason) = &self.reason {
             body = body.push(banner(BannerKind::Warning, reason.clone(), None));
         }
+        if self.policy_hides_something() {
+            let line = self.rules.notice();
+            body = body.push(
+                row![
+                    rustket_ui::icon::sized(Icon::Lock, TEXT_CAPTION).style(style::text_secondary),
+                    text(line)
+                        .size(TEXT_CAPTION)
+                        .style(style::text_secondary)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+            );
+        }
         if let Some(p) = &self.pending {
             body = body.push(self.pending_view(p));
         } else if let Some(err) = &self.meta_error {
@@ -874,7 +1028,7 @@ impl Login {
                     .center_x(Length::Fill)
                     .padding(SPACE_4),
             );
-        } else if self.token_mode {
+        } else if self.token_mode && self.rules.token {
             body = body.push(self.token_view());
         } else {
             body = body.push(self.form_view());
@@ -887,7 +1041,9 @@ impl Login {
             return column![].into();
         };
         let mut col = column![].spacing(SPACE_3);
-        if meta.show_form {
+        // The policy hides the form whatever the server's setting says.
+        let show_form = meta.show_form && self.rules.password;
+        if show_form {
             let (user_label, user_ph) = if meta.ldap {
                 (t!("login.ldap_user"), t!("login.ldap_user_placeholder"))
             } else {
@@ -914,27 +1070,30 @@ impl Login {
                 );
         }
         if !meta.services.is_empty() {
-            if meta.show_form {
+            if show_form {
                 col = col.push(or_divider());
             }
             for (i, s) in meta.services.iter().enumerate() {
                 col = col.push(service_button(s, Message::Service(i)));
             }
         }
-        if meta.show_form && meta.services.is_empty() {
+        if show_form && meta.services.is_empty() {
             col = col.push(or_divider());
         }
-        col = col
-            .push(
-                secondary_button(t!("login.browser"), Some(Message::BrowserLogin))
-                    .icon(Icon::Globe)
-                    .width(Length::Fill),
-            )
-            .push(
+        // Always offered: with neither the form nor a service it is the
+        // way in.
+        col = col.push(
+            secondary_button(t!("login.browser"), Some(Message::BrowserLogin))
+                .icon(Icon::Globe)
+                .width(Length::Fill),
+        );
+        if self.rules.token {
+            col = col.push(
                 ghost_button(t!("login.use_token"), Some(Message::ShowToken(true)))
                     .icon(Icon::Key)
                     .width(Length::Fill),
             );
+        }
         // A failed sign-in must not shift the fields (and move the focus).
         above(self.error_banner(), SPACE_3, col).into()
     }
@@ -1406,6 +1565,213 @@ mod tests {
         )))));
         assert!(l.error.is_some());
         assert_kept(&mut tree, &l.view(), text_input_tag(), "error shown");
+    }
+
+    fn rules(password: bool, token: bool, organization: Option<&str>) -> SignInRules {
+        SignInRules {
+            password,
+            token,
+            organization: organization.map(str::to_owned),
+        }
+    }
+
+    fn texts(l: &Login) -> Vec<String> {
+        crate::tree_probe::texts(l.view())
+    }
+
+    fn has(texts: &[String], needle: &str) -> bool {
+        texts.iter().any(|t| t == needle)
+    }
+
+    const NOTICE: &str = "Some sign-in methods are turned off by your organization";
+
+    /// The policy's defaults change nothing: form, browser, token, no notice.
+    #[test]
+    fn default_rules_offer_every_method() {
+        rust_i18n::set_locale("en");
+        let l = login_with(vec![]);
+        let t = texts(&l);
+        for needle in [
+            "Password",
+            "Sign in",
+            "Sign in with browser",
+            "Use a personal access token",
+        ] {
+            assert!(has(&t, needle), "{needle}: {t:?}");
+        }
+        assert!(!has(&t, NOTICE));
+    }
+
+    /// `AllowPasswordLogin = false`: no form (LDAP included) whatever the
+    /// server says, its messages are refused; the browser sign-in stays.
+    #[test]
+    fn password_off_hides_the_form_and_refuses_it() {
+        rust_i18n::set_locale("en");
+        for ldap in [false, true] {
+            let mut l = login_with(vec![]);
+            if let Some(m) = l.meta.as_mut() {
+                m.ldap = ldap;
+            }
+            let _ = l.update(Message::User("alice".into()));
+            let _ = l.update(Message::Password("secret".into()));
+            l.set_rules(rules(false, true, None));
+            assert!(l.password.is_empty(), "a typed password stays");
+            let t = texts(&l);
+            for gone in ["Password", "Sign in", "Username or email", "LDAP username"] {
+                assert!(!has(&t, gone), "{gone}: {t:?}");
+            }
+            assert!(has(&t, "Sign in with browser"), "{t:?}");
+            assert!(has(&t, "Use a personal access token"));
+            assert!(has(&t, NOTICE), "{t:?}");
+            let _ = l.update(Message::Password("secret".into()));
+            assert!(l.password.is_empty(), "the field takes input");
+            for m in [Message::Submit, Message::SubmitUser] {
+                // Filled fields: only the policy's guard stops the sign-in.
+                l.user = "alice".into();
+                l.password = "secret".into();
+                let (task, out) = l.update(m);
+                assert_eq!(task.units(), 0);
+                assert!(matches!(out, Out::None));
+                assert!(!l.busy);
+            }
+        }
+    }
+
+    /// A code challenge for a password sent before the policy turned the
+    /// form off opens no dialog that could not be submitted.
+    #[test]
+    fn password_off_drops_a_late_code_challenge() {
+        rust_i18n::set_locale("en");
+        let mut l = login_with(vec![]);
+        let _ = l.update(Message::User("carol".into()));
+        let _ = l.update(Message::Password("pw".into()));
+        let _ = l.update(Message::Submit);
+        assert!(l.busy);
+        l.set_rules(rules(false, true, None));
+        let (task, out) = l.update(two_factor_challenge());
+        assert_eq!(task.units(), 0);
+        assert!(matches!(out, Out::None));
+        assert!(l.two_factor.is_none() && !l.busy);
+        // The notice line says it once; the error line stays empty.
+        assert_eq!(l.error, None);
+        let t = texts(&l);
+        assert_eq!(t.iter().filter(|t| *t == NOTICE).count(), 1, "{t:?}");
+    }
+
+    /// The notice names only what the policy removed: a password key alone
+    /// on a server whose own setting hides the form shows nothing.
+    #[test]
+    fn notice_only_when_something_is_removed() {
+        rust_i18n::set_locale("en");
+        for (show_form, password, token, notice) in [
+            (true, false, true, true),
+            (false, false, true, false),
+            (false, true, false, true),
+            (false, false, false, true),
+            (true, true, true, false),
+        ] {
+            let mut l = login_with(vec![]);
+            if let Some(m) = l.meta.as_mut() {
+                m.show_form = show_form;
+            }
+            l.set_rules(rules(password, token, None));
+            assert_eq!(
+                has(&texts(&l), NOTICE),
+                notice,
+                "{show_form} {password} {token}"
+            );
+        }
+    }
+
+    /// A server without a single sign-on service and without its own form
+    /// still offers the browser sign-in when the policy hides the form.
+    #[test]
+    fn browser_sign_in_stays_without_form_or_services() {
+        rust_i18n::set_locale("en");
+        for show_form in [true, false] {
+            let mut l = login_with(vec![]);
+            if let Some(m) = l.meta.as_mut() {
+                m.show_form = show_form;
+            }
+            l.set_rules(rules(false, false, None));
+            let t = texts(&l);
+            assert!(has(&t, "Sign in with browser"), "{show_form}: {t:?}");
+            assert!(!has(&t, "Use a personal access token"));
+            let (_task, out) = l.update(Message::BrowserLogin);
+            assert!(matches!(out, Out::OpenUrl(_)));
+        }
+    }
+
+    /// `AllowTokenLogin = false`: no token entry, its messages refused, an
+    /// open token view closes at once.
+    #[test]
+    fn token_off_hides_the_entry_and_refuses_it() {
+        rust_i18n::set_locale("en");
+        let mut l = login_with(vec![]);
+        let _ = l.update(Message::ShowToken(true));
+        let _ = l.update(Message::PatToken("tok".into()));
+        assert!(l.token_mode);
+        l.set_rules(rules(true, false, Some("Acme")));
+        assert!(!l.token_mode && l.pat_token.is_empty());
+        let t = texts(&l);
+        assert!(!has(&t, "Use a personal access token"), "{t:?}");
+        assert!(has(&t, "Password"));
+        assert!(
+            has(&t, "Some sign-in methods are turned off by Acme"),
+            "{t:?}"
+        );
+        let _ = l.update(Message::ShowToken(true));
+        assert!(!l.token_mode);
+        let _ = l.update(Message::PatUserId("U1".into()));
+        let _ = l.update(Message::PatToken("tok".into()));
+        assert!(l.pat_user_id.is_empty() && l.pat_token.is_empty());
+        l.pat_user_id = "U1".into();
+        l.pat_token = "tok".into();
+        let (task, _) = l.update(Message::SubmitPat);
+        assert_eq!(task.units(), 0);
+        assert!(!l.busy);
+        // A check sent before the change does not sign in.
+        let me = User {
+            id: "U1".into(),
+            ..Default::default()
+        };
+        let (_, out) = l.update(Message::PatChecked(Credentials::new("U1", "tok"), Ok(me)));
+        assert!(matches!(out, Out::None));
+    }
+
+    /// The code dialog of a password sign-in closes when the policy turns
+    /// the form off, and a code for it is refused; a SAML sign-in's stays.
+    #[test]
+    fn password_off_closes_the_code_dialog_of_a_password_sign_in() {
+        let mut l = login_with(vec![]);
+        let _ = l.update(Message::User("carol".into()));
+        let _ = l.update(Message::Password("pw".into()));
+        let _ = l.update(Message::Submit);
+        let _ = l.update(two_factor_challenge());
+        assert!(l.two_factor.is_some());
+        l.set_rules(rules(false, true, None));
+        assert!(l.two_factor.is_none());
+
+        let mut l = login_with(vec![]);
+        let _ = l.update(Message::User("carol".into()));
+        let _ = l.update(Message::Password("pw".into()));
+        let _ = l.update(Message::Submit);
+        let _ = l.update(two_factor_challenge());
+        // The dialog survives a direct rules change only through a SAML
+        // request; force the case where it is still open.
+        l.rules = rules(false, true, None);
+        let _ = l.update(Message::Code("123456".into()));
+        let (task, _) = l.update(Message::SubmitCode);
+        assert_eq!(task.units(), 0, "a code for a password sign-in");
+
+        let mut l = login_with(vec![LoginServiceConfig {
+            service: Some("saml".into()),
+            ..Default::default()
+        }]);
+        let _ = l.update(Message::Service(0));
+        let _ = l.update(two_factor_challenge());
+        l.set_rules(rules(false, true, None));
+        assert!(l.two_factor.is_some(), "a SAML sign-in's code dialog");
     }
 
     fn two_factor_challenge() -> Message {

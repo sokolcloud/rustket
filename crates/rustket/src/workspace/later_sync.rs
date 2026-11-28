@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn the_server_push_carries_later_and_reminders() {
         let entry = rustket_core::config::ServerEntry::new("http://localhost:3999", "t");
-        let mut state = super::super::ServerState::from_entry(&entry).unwrap();
+        let mut state = super::super::ServerState::from_entry(&entry, &Default::default()).unwrap();
         state.workspace = ws();
         state
             .later

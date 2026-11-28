@@ -157,6 +157,9 @@ pub fn current_expiry(
 #[derive(Debug, Default)]
 pub struct StatusMenu {
     pub open: bool,
+    /// "Remove workspace" is not offered: the enterprise policy keeps the
+    /// server (managed, or adding and removing is off). Set by the app.
+    pub remove_refused: bool,
     /// Custom status text being edited.
     pub text: String,
     /// Recently used status texts, most recent first (a copy of
@@ -587,6 +590,7 @@ impl StatusMenu {
                 self.open = false;
                 Action::effect(Effect::Logout { everywhere: true })
             }
+            Message::RemoveServer if self.remove_refused => Action::none(),
             Message::RemoveServer => {
                 self.open = false;
                 Action::effect(Effect::RemoveServer)
@@ -917,11 +921,13 @@ impl StatusMenu {
             Some(Message::LogoutEverywhere),
             false,
         );
-        rows.item(
-            labelled(Icon::Trash2, t!("status_menu.remove_server").into_owned()),
-            Some(Message::RemoveServer),
-            true,
-        );
+        if !self.remove_refused {
+            rows.item(
+                labelled(Icon::Trash2, t!("status_menu.remove_server").into_owned()),
+                Some(Message::RemoveServer),
+                true,
+            );
+        }
         let col = column(rows.els).spacing(0).padding(SPACE_1);
         container(
             scrollable(menu_nav(col, rows.acts))
@@ -1375,6 +1381,22 @@ mod tests {
             config: &fx.config,
             connected: true,
             now: std::time::Instant::now(),
+        }
+    }
+
+    /// The open menu offers "Remove workspace" only while the policy lets
+    /// the user remove the server.
+    #[test]
+    fn remove_item_follows_the_policy() {
+        rust_i18n::set_locale("en");
+        let label = t!("status_menu.remove_server").into_owned();
+        for refused in [false, true] {
+            let mut fx = Fx::new();
+            let mut m = StatusMenu::new();
+            m.remove_refused = refused;
+            m.update(Message::Toggle(true), &mut fx.ctx());
+            let texts = crate::tree_probe::texts(m.view(&view_ctx(&fx)));
+            assert_eq!(texts.contains(&label), !refused, "{refused}: {texts:?}");
         }
     }
 

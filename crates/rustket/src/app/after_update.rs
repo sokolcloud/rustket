@@ -37,6 +37,7 @@ impl App {
     /// Applies pending workspace changes to derived views and fetches wanted images.
     pub(super) fn after_update(&mut self) -> Task<Message> {
         let mut tasks = vec![self.sync_room_visibility()];
+        tasks.push(self.server_policy_after_update());
         if images::set_disk_cap_mb(self.config.ui.image_cache_mb) {
             tasks.push(images::trim_task(self.images.disk_dir(), Message::Noop));
         }
@@ -342,6 +343,11 @@ impl App {
                 .is_some_and(|s| s.url.is_credentialed_asset(&r.url))
         });
         for req in wanted {
+            // Suspended by the policy: its host is never contacted.
+            if self.is_suspended(&req.server_id) {
+                self.images.abandon(&req);
+                continue;
+            }
             let generation = self.images.generation(&req.server_id);
             let Some(s) = self.servers.get(&req.server_id) else {
                 self.images.finish(

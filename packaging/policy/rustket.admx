@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated from the Rustket key registry; do not edit. The reference policies.md (in the policy templates archive of each release, and at https://github.com/sokolcloud/rustket/blob/main/docs/policies.md) describes every key and how to regenerate this file. -->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="rustket" namespace="Rustket.Policies.R1" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_Rustket_0_4_0" displayName="$(string.SUPPORTED_Rustket_0_4_0)" />
+    </definitions>
+  </supportedOn>
+  <categories>
+    <category name="Rustket" displayName="$(string.Rustket)" />
+  </categories>
+  <policies>
+    <policy name="ManagedServers" class="Machine" displayName="$(string.ManagedServers)" explainText="$(string.ManagedServers_Explain)" presentation="$(presentation.ManagedServers)" key="Software\Policies\Rustket">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <elements>
+        <list id="ManagedServers" key="Software\Policies\Rustket\ManagedServers" valuePrefix="" />
+      </elements>
+    </policy>
+    <policy name="AllowUserServers" class="Both" displayName="$(string.AllowUserServers)" explainText="$(string.AllowUserServers_Explain)" presentation="$(presentation.AllowUserServers)" key="Software\Policies\Rustket" valueName="AllowUserServers">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+    <policy name="AllowedServers" class="Both" displayName="$(string.AllowedServers)" explainText="$(string.AllowedServers_Explain)" presentation="$(presentation.AllowedServers)" key="Software\Policies\Rustket">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <elements>
+        <list id="AllowedServers" key="Software\Policies\Rustket\AllowedServers" valuePrefix="" />
+      </elements>
+    </policy>
+    <policy name="RequireHttps" class="Both" displayName="$(string.RequireHttps)" explainText="$(string.RequireHttps_Explain)" presentation="$(presentation.RequireHttps)" key="Software\Policies\Rustket" valueName="RequireHttps">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+    <policy name="AllowCertificateExceptions" class="Both" displayName="$(string.AllowCertificateExceptions)" explainText="$(string.AllowCertificateExceptions_Explain)" presentation="$(presentation.AllowCertificateExceptions)" key="Software\Policies\Rustket" valueName="AllowCertificateExceptions">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+    <policy name="UpdateMode" class="Both" displayName="$(string.UpdateMode)" explainText="$(string.UpdateMode_Explain)" presentation="$(presentation.UpdateMode)" key="Software\Policies\Rustket">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <elements>
+        <enum id="UpdateMode" valueName="UpdateMode" required="true">
+          <item displayName="$(string.UpdateMode_prompt)">
+            <value>
+              <string>prompt</string>
+            </value>
+          </item>
+          <item displayName="$(string.UpdateMode_notify)">
+            <value>
+              <string>notify</string>
+            </value>
+          </item>
+          <item displayName="$(string.UpdateMode_off)">
+            <value>
+              <string>off</string>
+            </value>
+          </item>
+        </enum>
+      </elements>
+    </policy>
+    <policy name="AllowPasswordLogin" class="Both" displayName="$(string.AllowPasswordLogin)" explainText="$(string.AllowPasswordLogin_Explain)" presentation="$(presentation.AllowPasswordLogin)" key="Software\Policies\Rustket" valueName="AllowPasswordLogin">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+    <policy name="AllowTokenLogin" class="Both" displayName="$(string.AllowTokenLogin)" explainText="$(string.AllowTokenLogin_Explain)" presentation="$(presentation.AllowTokenLogin)" key="Software\Policies\Rustket" valueName="AllowTokenLogin">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+    <policy name="AllowSecretsFile" class="Both" displayName="$(string.AllowSecretsFile)" explainText="$(string.AllowSecretsFile_Explain)" presentation="$(presentation.AllowSecretsFile)" key="Software\Policies\Rustket" valueName="AllowSecretsFile">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+    <policy name="NotificationPreview" class="Both" displayName="$(string.NotificationPreview)" explainText="$(string.NotificationPreview_Explain)" presentation="$(presentation.NotificationPreview)" key="Software\Policies\Rustket" valueName="NotificationPreview">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+    <policy name="HardwareAcceleration" class="Both" displayName="$(string.HardwareAcceleration)" explainText="$(string.HardwareAcceleration_Explain)" presentation="$(presentation.HardwareAcceleration)" key="Software\Policies\Rustket" valueName="HardwareAcceleration">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+    <policy name="LaunchAtLogin" class="Both" displayName="$(string.LaunchAtLogin)" explainText="$(string.LaunchAtLogin_Explain)" presentation="$(presentation.LaunchAtLogin)" key="Software\Policies\Rustket" valueName="LaunchAtLogin">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+    <policy name="OrganizationName" class="Both" displayName="$(string.OrganizationName)" explainText="$(string.OrganizationName_Explain)" presentation="$(presentation.OrganizationName)" key="Software\Policies\Rustket">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <elements>
+        <text id="OrganizationName" valueName="OrganizationName" required="true" />
+      </elements>
+    </policy>
+    <policy name="SupportUrl" class="Machine" displayName="$(string.SupportUrl)" explainText="$(string.SupportUrl_Explain)" presentation="$(presentation.SupportUrl)" key="Software\Policies\Rustket">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <elements>
+        <text id="SupportUrl" valueName="SupportUrl" required="true" />
+      </elements>
+    </policy>
+    <policy name="MinimumVersion" class="Both" displayName="$(string.MinimumVersion)" explainText="$(string.MinimumVersion_Explain)" presentation="$(presentation.MinimumVersion)" key="Software\Policies\Rustket">
+      <parentCategory ref="Rustket" />
+      <supportedOn ref="SUPPORTED_Rustket_0_4_0" />
+      <elements>
+        <text id="MinimumVersion" valueName="MinimumVersion" required="true" />
+      </elements>
+    </policy>
+  </policies>
+</policyDefinitions>

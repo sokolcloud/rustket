@@ -38,7 +38,10 @@ impl App {
             Shortcut::Settings => {
                 let away = matches!(
                     self.screen,
-                    Screen::Settings(_) | Screen::Loading | Screen::AddServer(_)
+                    Screen::Settings(_)
+                        | Screen::Loading
+                        | Screen::AddServer(_)
+                        | Screen::NoServers
                 );
                 if away || self.overlay_shown() {
                     return Task::none();
@@ -62,12 +65,9 @@ impl App {
     /// and "Settings…" not again on the settings screen. Unlike the
     /// shortcut it works on the add-server screen, so About and Help are
     /// reachable before the first server is added. Nothing while the terms
-    /// screen covers the window: the change would not show.
+    /// screen or the policy's blocking screen covers the window.
     pub(super) fn menu_may_navigate(&self, nav: &Nav) -> bool {
-        if matches!(self.screen, Screen::Loading)
-            || self.overlay_shown()
-            || crate::legal::terms_pending(&self.config)
-        {
+        if matches!(self.screen, Screen::Loading) || self.overlay_shown() || !self.accounts_live() {
             return false;
         }
         !(*nav == Nav::Settings && matches!(self.screen, Screen::Settings(_)))

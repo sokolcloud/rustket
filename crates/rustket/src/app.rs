@@ -9,11 +9,13 @@ mod keys;
 mod later;
 mod links;
 mod mention_groups;
+mod policy_state;
 mod quiet;
 pub(crate) mod reminders;
 mod rooms;
 mod search;
 mod secrets;
+mod server_policy;
 mod session;
 mod star_kept;
 mod subscription;
@@ -34,10 +36,11 @@ use rocketchat::rest::LoginResult;
 use rocketchat::{Credentials, ServerUrl};
 use rust_i18n::t;
 use rustket_core::ServerId;
-use rustket_core::config::{AppConfig, IndicatorScheme, Theme as ThemePref, TokenKind};
+use rustket_core::config::{AppConfig, IndicatorScheme, Theme as ThemePref, TokenKind, UiPrefs};
 use rustket_core::indicators::{RcSignal, rc_workspace_signal};
+use rustket_core::policy::{Policy, Snapshot};
 use rustket_core::room_list;
-use rustket_core::secrets::{MemoryStore, SecretBackend, SecretStore, SwitchableStore};
+use rustket_core::secrets::{FilePolicy, MemoryStore, SecretBackend, SecretStore, SwitchableStore};
 use rustket_ui::Mode;
 use rustket_ui::widget::{BannerKind, Toast};
 
@@ -105,11 +108,24 @@ pub struct Flags {
     /// Starts with this indicator scheme instead of the config's (ephemeral
     /// runs: tests, snapshots).
     pub indicator_scheme: Option<IndicatorScheme>,
+    /// The enterprise policy resolved at start-up (`crate::policy::load`);
+    /// the default is the empty policy.
+    pub policy: Arc<Policy>,
+    /// The snapshots `policy` was resolved from: the refresh compares its
+    /// reads with them (`crate::policy::refresh::Debounce`).
+    pub policy_sources: Vec<Snapshot>,
+    /// Re-reads the policy sources every
+    /// [`crate::policy::refresh::POLL_INTERVAL`] (a real desktop run only;
+    /// off for tests and snapshots).
+    pub policy_refresh: bool,
 }
 
 pub enum Screen {
     Loading,
     AddServer(Box<AddServer>),
+    /// No server is configured and the policy does not let the user add
+    /// one (`AllowUserServers = false`): a plain screen says so.
+    NoServers,
     /// The active server: login or workspace.
     Server,
     Settings(Box<crate::screens::settings::Settings>),
@@ -169,7 +185,31 @@ pub enum Modal {
 }
 
 pub struct App {
+    /// `config.ui` is the effective copy: the user's preferences with the
+    /// fields the policy forces (docs/policy.md section 7).
     pub config: AppConfig,
+    /// The enterprise policy in force ([`Self::set_policy`] replaces it).
+    pub policy: Arc<Policy>,
+    /// The user's own preferences: what is saved.
+    user_prefs: UiPrefs,
+    /// `config.ui` as the last reconcile left it.
+    effective_prefs: UiPrefs,
+    /// The policy refresh: the timer is on, a read is in flight, the
+    /// snapshots last accepted.
+    policy_refresh: bool,
+    policy_reading: bool,
+    policy_debounce: crate::policy::refresh::Debounce,
+    /// "Details" of the blocking screen is open.
+    pub policy_block_details: bool,
+    /// The policy blocked at start and has not ended since: its end picks
+    /// the server to show again by the start rule (docs/policy.md 9.7).
+    policy_blocked_at_start: bool,
+    /// Where launch at login is registered: the system's with real desktop
+    /// integration, else none (tests set a temporary one).
+    pub(crate) autostart: Option<crate::desktop::autostart::Autostart>,
+    /// `LaunchAtLogin` is to be applied once the accounts may run: set at
+    /// start and when a refresh changes the key (`app::policy_state`).
+    launch_at_login_due: bool,
     pub config_dir: Option<PathBuf>,
     pub ui_state: UiState,
     writer: Option<ConfigWriter>,
@@ -180,6 +220,15 @@ pub struct App {
     pub secret_backend: Option<SecretBackend>,
     /// `SwitchableStore::apply_policy` is running.
     pub secrets_switching: bool,
+    /// Whether the user started the running switch (not a policy
+    /// follow-up): only a user's failed switch rolls the preference back.
+    secrets_switch_by_user: bool,
+    /// The store opened on the plain file while moving off it: its warning
+    /// waits for the move's outcome and shows if the store stays there.
+    secrets_file_warning_deferred: bool,
+    /// The file policy the secret store is opened with: `on_secrets_ready`
+    /// moves the store when the preference changed meanwhile.
+    secrets_opened_with: FilePolicy,
     /// The settings tab shown last this session (not saved).
     pub settings_tab: crate::screens::settings::Tab,
     pub servers: BTreeMap<ServerId, ServerState>,
@@ -197,8 +246,8 @@ pub struct App {
     pub focused: bool,
     pub handler_registered: bool,
     listener: Option<ListenerSlot>,
-    /// Links that wait for the accounts to start ([`Self::terms_accepted`],
-    /// `booted`).
+    /// Links that wait for the accounts to start and run
+    /// ([`Self::accounts_live`], `booted`).
     queued_links: Vec<String>,
     /// The tokens read from the secret store while the terms wait for
     /// acceptance (`App::start_workspaces`).
@@ -296,12 +345,20 @@ impl App {
         if flags.ephemeral {
             crate::legal::accept_terms(&mut config);
         }
+        let policy = flags.policy.clone();
+        // Managed servers the config lacks become ordinary entries.
+        let added_servers = !crate::policy::servers::reconcile(&policy, &mut config).is_empty();
+        let user_prefs = config.ui.clone();
+        config.ui = policy.apply(&user_prefs);
+        let effective_prefs = config.ui.clone();
         let mut locales =
             crate::locales::Locales::new(config_dir.as_deref().map(crate::locales::locales_dir));
         locales.reload(&config.ui.language);
-        // Pending terms keep the window on screen: they block everything
-        // else that would tell the user Rustket is waiting.
-        let start_minimized = config.ui.start_minimized && !crate::legal::terms_pending(&config);
+        // Pending terms and a blocked policy keep the window on screen: they
+        // block everything else that would tell the user Rustket is waiting.
+        let start_minimized = config.ui.start_minimized
+            && !crate::legal::terms_pending(&config)
+            && !policy.is_blocked();
         let desktop = if flags.desktop {
             crate::desktop::Desktop::system(&rustket_core::config::UiPrefs {
                 start_minimized,
@@ -317,18 +374,13 @@ impl App {
         let writer = config_dir.clone().and_then(ConfigWriter::spawn);
         let mut servers = BTreeMap::new();
         for entry in &config.servers {
-            match ServerState::from_entry(entry) {
+            match ServerState::from_entry(entry, &policy) {
                 Ok(s) => {
                     servers.insert(entry.id.clone(), s);
                 }
                 Err(e) => tracing::warn!(url = %entry.url, error = %e, "skipping server"),
             }
         }
-        let active = config
-            .active_server
-            .clone()
-            .filter(|id| servers.contains_key(id))
-            .or_else(|| config.sorted_servers().first().map(|s| s.id.clone()));
         let cache_dir = flags
             .cache_dir
             .clone()
@@ -340,8 +392,22 @@ impl App {
         themes.rescan();
         themes.apply(config.ui.theme_name.as_deref());
         crate::themes::apply_indicator_look(config.ui.indicator_scheme);
-        let app = Self {
+        let mut app = Self {
             config,
+            policy,
+            user_prefs,
+            effective_prefs,
+            policy_refresh: flags.policy_refresh,
+            policy_reading: false,
+            policy_debounce: crate::policy::refresh::Debounce::new(flags.policy_sources.clone()),
+            policy_block_details: false,
+            policy_blocked_at_start: flags.policy.is_blocked(),
+            autostart: if flags.desktop {
+                crate::desktop::autostart::Autostart::system()
+            } else {
+                None
+            },
+            launch_at_login_due: true,
             config_dir,
             ui_state,
             writer,
@@ -349,9 +415,12 @@ impl App {
             secret_switch: None,
             secret_backend: None,
             secrets_switching: false,
+            secrets_switch_by_user: false,
+            secrets_file_warning_deferred: false,
+            secrets_opened_with: FilePolicy::Allowed,
             settings_tab: Default::default(),
             servers,
-            active,
+            active: None,
             screen: Screen::Loading,
             toasts: Vec::new(),
             next_toast: 0,
@@ -386,14 +455,14 @@ impl App {
             #[cfg(feature = "self-update")]
             updater: crate::updater::Updater::new(flags.desktop),
         };
-        let wanted: Vec<(ServerId, String)> = app
-            .config
-            .servers
-            .iter()
-            .filter_map(|s| Some((s.id.clone(), s.user_id.clone()?)))
-            .collect();
+        app.active = app.initial_active(app.config.active_server.clone());
+        if added_servers {
+            let _ = app.save_config();
+        }
+        let wanted = app.startup_token_reads();
         let mode = flags.secrets;
-        let policy = secrets::file_policy(app.config.ui.secrets_memory_only);
+        let policy = app.secrets_file_policy();
+        app.secrets_opened_with = policy;
         let open = Task::perform(
             async move { tokio::task::spawn_blocking(move || open_secrets(mode, policy, wanted)).await },
             |r| match r {
@@ -462,8 +531,17 @@ impl App {
         !crate::legal::terms_pending(&self.config)
     }
 
+    /// The accounts may run and show: the terms are accepted and the policy
+    /// is not in a blocking state (docs/policy.md section 9.7). While it is,
+    /// every server is suspended (`crate::policy::servers::standing`) and
+    /// the blocking screen covers the window: nothing of the accounts is
+    /// shown or acted on, as before the terms are accepted.
+    pub(crate) fn accounts_live(&self) -> bool {
+        self.terms_accepted() && !self.policy.is_blocked()
+    }
+
     pub fn title(&self) -> String {
-        if !self.terms_accepted() {
+        if !self.accounts_live() {
             return t!("app.title").into_owned();
         }
         match self.config.ui.indicator_scheme {
@@ -523,8 +601,13 @@ impl App {
     ) -> Task<Message> {
         self.next_toast += 1;
         let id = self.next_toast;
-        let toast = Toast::new(id, kind, title, body)
-            .with_action(label, Message::ToastAction(id, Box::new(action)));
+        let toast = Toast::new(id, kind, title, body);
+        // The blocking screen refuses navigation: no button that does nothing.
+        let toast = if self.policy.is_blocked() && policy_state::leads_behind_the_block(&action) {
+            toast
+        } else {
+            toast.with_action(label, Message::ToastAction(id, Box::new(action)))
+        };
         self.push_toast(toast)
     }
 
@@ -568,9 +651,135 @@ impl App {
     /// Queues the current config + UI state for the single writer thread.
     pub(crate) fn save_config(&self) -> Task<Message> {
         if let Some(w) = &self.writer {
-            w.save(self.config.clone(), self.ui_state.clone());
+            w.save(self.config_to_save(), self.ui_state.clone());
         }
         Task::none()
+    }
+
+    /// The config as saved: its preferences are the user's view, never a
+    /// value the policy forces. Computed from `config.ui` because a save can
+    /// be queued in the middle of an update, before the reconcile.
+    fn config_to_save(&self) -> AppConfig {
+        let mut config = self.config.clone();
+        config.ui = self.user_view();
+        config
+    }
+
+    /// The user's own preferences as they are now (`config.ui` without the
+    /// forced values).
+    pub fn user_view(&self) -> UiPrefs {
+        self.policy.unapply(&self.config.ui, &self.user_prefs)
+    }
+
+    /// Section 7's reconcile after an update: a write to a free field of
+    /// `config.ui` is adopted into the user's copy, a write to a forced
+    /// field is undone. Nothing to do while the policy forces no field: the
+    /// stale copies are then ignored by `user_view` and by `set_policy`
+    /// (the old policy's `unapply`).
+    fn reconcile_prefs(&mut self) {
+        let locks_any = rustket_core::policy::LockedPref::ALL
+            .into_iter()
+            .any(|f| self.policy.locks(f));
+        if !locks_any || self.config.ui == self.effective_prefs {
+            return;
+        }
+        self.user_prefs = self.policy.unapply(&self.config.ui, &self.user_prefs);
+        let effective = self.policy.apply(&self.user_prefs);
+        if effective != self.config.ui {
+            self.config.ui.clone_from(&effective);
+        }
+        self.effective_prefs = effective;
+    }
+
+    /// Replaces the policy (the refresh): the user's own values survive,
+    /// fields the new policy forces take its values, with the side effects
+    /// their handlers have (docs/policy.md section 7): an open memory-only
+    /// confirmation closes, the secret store follows the effective
+    /// `secrets_memory_only` (once it is open, or after a switch still
+    /// running), an offered pre-release is withdrawn, and the updater
+    /// follows its effective mode (`updater::app::mode_changed`).
+    pub fn set_policy(&mut self, new: Arc<Policy>) -> Task<Message> {
+        let was_memory_only = self.config.ui.secrets_memory_only;
+        let was_blocked = self.policy.is_blocked();
+        let launch_changed = self.policy.launch_at_login() != new.launch_at_login();
+        #[cfg(feature = "self-update")]
+        let had_prereleases = self.config.ui.update_prereleases;
+        #[cfg(feature = "self-update")]
+        let old_update_mode = crate::updater::app::mode(self);
+        let (user, effective) =
+            Policy::reconcile(&self.policy, &new, &self.config.ui, &self.user_prefs);
+        self.policy = new;
+        self.user_prefs = user;
+        self.config.ui.clone_from(&effective);
+        self.effective_prefs = effective;
+        let locked = self
+            .policy
+            .locks(rustket_core::policy::LockedPref::SecretsMemoryOnly);
+        if locked {
+            self.modals
+                .retain(|m| !matches!(m, Modal::SecretsMemoryOnly { .. }));
+        }
+        let mut tasks = Vec::new();
+        #[cfg(feature = "self-update")]
+        if had_prereleases && !self.config.ui.update_prereleases {
+            tasks.push(crate::updater::app::update(
+                self,
+                crate::updater::app::Msg::PrereleasesOff,
+            ));
+        }
+        #[cfg(feature = "self-update")]
+        tasks.push(crate::updater::app::mode_changed(self, old_update_mode));
+        let memory_only = self.config.ui.secrets_memory_only;
+        // A switch already running follows the effective value when it ends;
+        // a store not open yet when it opens.
+        if memory_only != was_memory_only && !self.secrets_switching {
+            tasks.push(self.apply_secrets_file_policy(memory_only, false));
+        }
+        if self.policy.is_blocked() && !was_blocked {
+            tasks.push(self.enter_blocked());
+        }
+        tasks.push(self.apply_server_policy());
+        if was_blocked && !self.policy.is_blocked() {
+            self.policy_block_ended();
+        }
+        tasks.push(self.apply_sign_in_policy());
+        // Out of the block: the links that waited (the servers started above).
+        tasks.push(self.handle_queued_links());
+        if launch_changed {
+            self.launch_at_login_due = true;
+        }
+        tasks.push(self.apply_launch_at_login());
+        Task::batch(tasks)
+    }
+
+    /// The refresh timer: reads the sources on a blocking thread, never two
+    /// reads at once.
+    fn on_policy_poll(&mut self) -> Task<Message> {
+        if self.policy_reading {
+            return Task::none();
+        }
+        self.policy_reading = true;
+        Task::perform(
+            async { tokio::task::spawn_blocking(crate::policy::read_sources).await },
+            |r| Message::PolicyRead(r.ok()),
+        )
+    }
+
+    /// A refresh read: debounced, resolved, and put in force when the
+    /// policy differs in anything (values, report, blocking states).
+    fn on_policy_read(&mut self, snapshots: Option<Vec<Snapshot>>) -> Task<Message> {
+        self.policy_reading = false;
+        let Some(snapshots) = snapshots else {
+            tracing::warn!("policy: the refresh read failed");
+            return Task::none();
+        };
+        let used = self.policy_debounce.accept(snapshots);
+        let new = rustket_core::policy::resolve(used, &crate::policy::context());
+        if new == *self.policy {
+            return Task::none();
+        }
+        crate::policy::log_replaced(&self.policy, &new);
+        self.set_policy(Arc::new(new))
     }
 
     /// Blocks until queued config writes are on disk (tests, shutdown).
@@ -600,6 +809,30 @@ impl App {
             if r.is_err() {
                 tracing::warn!("cannot open the themes folder");
                 Message::ThemesFolderNotOpened(path.clone())
+            } else {
+                Message::Noop
+            }
+        })
+    }
+
+    /// Settings → "Show log folder": creates the folder (user-only on Unix)
+    /// and opens it.
+    pub(crate) fn open_log_folder(&mut self, dir: std::path::PathBuf) -> Task<Message> {
+        if let Err(e) = crate::logging::create_dir(&dir) {
+            return self.toast(
+                BannerKind::Error,
+                t!("settings.log_folder_failed"),
+                e.to_string(),
+            );
+        }
+        if !self.open_urls {
+            return Task::none();
+        }
+        let path = dir.display().to_string();
+        Task::perform(crate::room::timeline::transfer::open_path(dir), move |r| {
+            if r.is_err() {
+                tracing::warn!("cannot open the log folder");
+                Message::LogFolderNotOpened(path.clone())
             } else {
                 Message::Noop
             }
@@ -707,6 +940,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.update_inner(message);
+        self.reconcile_prefs();
         let after = self.after_update();
         let confirm = self.show_next_confirmation();
         let unread = self.unread_hook();
@@ -716,8 +950,9 @@ impl App {
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
-        // The app's own keys and drops act on what the terms screen covers.
-        if !self.terms_accepted()
+        // The app's own keys and drops act on what the terms screen and the
+        // blocking screen cover.
+        if !self.accounts_live()
             && matches!(
                 message,
                 Message::Shortcut(_)
@@ -774,6 +1009,8 @@ impl App {
             Message::SecretsPolicyApplied(on, backend, error) => {
                 self.on_secrets_policy_applied(on, backend, error)
             }
+            Message::PolicyPoll => self.on_policy_poll(),
+            Message::PolicyRead(snapshots) => self.on_policy_read(snapshots),
             Message::SecretsPurged(cleared, error) => self.on_secrets_purged(&cleared, error),
             Message::SecretsPendingFound(found) => {
                 if let Some(Modal::SecretsMemoryOnly { pending }) = self.modals.last_mut() {
@@ -795,18 +1032,28 @@ impl App {
                 t!("settings.locales_folder_open_failed"),
                 path,
             ),
+            Message::LogFolderNotOpened(path) => {
+                self.toast(BannerKind::Error, t!("settings.log_folder_failed"), path)
+            }
             Message::RevealFile(path) => self.reveal_file(path),
             Message::OpenNotificationSettings => self.open_notification_settings(),
             Message::FileNotOpened(path) => {
                 self.toast(BannerKind::Error, t!("room_timeline.open_failed"), path)
             }
             Message::Imported(kind, r) => self.on_imported(kind, r),
+            Message::ShowAddServer if !self.may_add_servers() || self.policy.is_blocked() => {
+                Task::none()
+            }
             Message::ShowAddServer if !self.may_leave(Message::ShowAddServer) => Task::none(),
             Message::ShowAddServer => {
                 self.screen = Screen::AddServer(Box::new(AddServer::new(!self.servers.is_empty())));
                 iced::widget::operation::focus(add_server::URL_INPUT_ID)
             }
             Message::AddServer(m) => self.on_add_server(m),
+            Message::PolicyNotice(m) => self.on_policy_notice(m),
+            Message::PolicyBlock(m) => self.on_policy_block(m),
+            Message::LaunchAtLoginApplied(on, r) => self.on_launch_at_login(on, r),
+            Message::ServerTokenRead(sid, uid, creds) => self.on_server_token(sid, uid, creds),
             Message::Login(sid, m) => self.on_login(sid, m),
             Message::Rail(m) if !self.may_leave(Message::Rail(m.clone())) => Task::none(),
             Message::Rail(m) => match m {
@@ -816,8 +1063,9 @@ impl App {
             },
             Message::Sidebar(sid, m) => self.on_sidebar(sid, m),
             Message::Settings(m) => {
+                let forced = self.recheck_launch_at_login(&m);
                 let task = self.on_settings(m);
-                Task::batch([task, self.sync_decorations()])
+                Task::batch([task, self.sync_decorations(), forced])
             }
             Message::TitleBar(m) => self.on_title_bar(m),
             Message::Account(sid, m) => self.on_account(sid, m),
@@ -987,7 +1235,7 @@ impl App {
                 if urls.is_empty() {
                     return raise;
                 }
-                if !self.booted || !self.terms_accepted() {
+                if !self.booted || !self.accounts_live() {
                     self.queued_links.extend(urls);
                     return raise;
                 }
@@ -1004,11 +1252,15 @@ impl App {
                 }
                 Task::none()
             }
+            Message::RetryConnection(sid) if self.is_suspended(&sid) => Task::none(),
             Message::RetryConnection(sid) => {
                 if let Some(s) = self.servers.get_mut(&sid) {
                     match &s.session {
                         Some(h) => h.session().reconnect_now(),
                         None => {
+                            // The new session starts under the certificate
+                            // rule in force (docs/policy.md section 9.2).
+                            s.sync_pins();
                             s.start_error = None;
                             s.generation += 1;
                         }
@@ -1242,7 +1494,7 @@ impl App {
                 crate::screens::admin::Message::Close,
             )),
             Screen::Server => self.escape_on_server(),
-            Screen::Loading | Screen::AddServer(_) => Task::none(),
+            Screen::Loading | Screen::AddServer(_) | Screen::NoServers => Task::none(),
         }
     }
 
@@ -1289,6 +1541,10 @@ impl App {
                 let Some(Modal::OfferAddServer { url }) = self.modals.pop() else {
                     return Task::none();
                 };
+                // The policy may have changed while the dialog was open.
+                if let Some(reason) = self.add_refusal(&url) {
+                    return self.refuse_link(reason);
+                }
                 self.go(crate::message::Go::AddServer(url))
             }
             ModalMessage::OpenRegisterHandler => {
@@ -1312,6 +1568,9 @@ impl App {
             }
             ModalMessage::ConfirmRemove(sid) => {
                 self.modals.pop();
+                if !self.may_remove_server(&sid) {
+                    return Task::none();
+                }
                 self.sign_out(&sid, crate::e2e::SignOut::RemoveServer)
             }
             ModalMessage::ConfirmSecretsMemoryOnly => {
@@ -1439,5 +1698,38 @@ mod tests {
         assert_eq!(app.config.accepted_terms, crate::legal::TERMS_VERSION);
         assert!(!crate::legal::terms_pending(&app.config));
         assert!(app.terms_accepted());
+    }
+
+    /// "Show log folder" creates a missing folder (user-only on Unix) and
+    /// reports a folder that cannot be created with a toast.
+    #[tokio::test]
+    async fn show_log_folder_creates_the_folder() {
+        use crate::app::{App, Flags, SecretsMode};
+        let (mut app, _) = App::new(Flags {
+            ephemeral: true,
+            secrets: SecretsMode::Memory,
+            open_urls: false,
+            ..Flags::default()
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("a").join("logs");
+        let toasts = app.toasts.len();
+        let _ = app.open_log_folder(logs.clone());
+        assert!(logs.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&logs).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        assert_eq!(app.toasts.len(), toasts, "no toast");
+
+        let plain = tmp.path().join("plain");
+        std::fs::write(&plain, "x").unwrap();
+        let _ = app.open_log_folder(plain.join("logs"));
+        assert_eq!(app.toasts.len(), toasts + 1);
+        let toast = app.toasts.last().unwrap();
+        assert_eq!(toast.kind, rustket_ui::widget::BannerKind::Error);
+        assert_eq!(toast.title, rust_i18n::t!("settings.log_folder_failed"));
     }
 }

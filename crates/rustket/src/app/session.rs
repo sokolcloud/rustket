@@ -19,7 +19,7 @@ use super::subscription::query_handler_task;
 use super::{App, CONFIRM_ARM_DELAY, LOGOUT_TIMEOUT, Modal, Screen};
 use crate::deeplink::Decision;
 use crate::message::Message;
-use crate::screens::add_server::{self, AddServer};
+use crate::screens::add_server;
 use crate::screens::login::{self, Login};
 use crate::workspace::{ServerState, rail};
 
@@ -68,6 +68,13 @@ fn purge_secrets(store: &dyn SecretStore, keys: &[String], durable: bool) -> Sec
 
 impl App {
     pub(super) fn show_login(&mut self, sid: &ServerId, reason: Option<String>) -> Task<Message> {
+        // A suspended server contacts nothing, its login neither.
+        if self.is_suspended(sid) {
+            if let Some(s) = self.servers.get_mut(sid) {
+                s.restoring = false;
+            }
+            return Task::none();
+        }
         let handler_registered = self.handler_registered;
         let Some(s) = self.servers.get_mut(sid) else {
             return Task::none();
@@ -76,6 +83,7 @@ impl App {
         match Login::new(sid.clone(), s.url.clone(), s.tls.clone(), None, reason) {
             Ok((mut login, task)) => {
                 login.handler_registered = handler_registered;
+                login.set_rules(login::SignInRules::of(&self.policy));
                 s.login = Some(login);
                 let sid = sid.clone();
                 task.map(move |m| Message::Login(sid.clone(), m))
@@ -193,22 +201,53 @@ impl App {
 
     pub(super) fn on_add_server(&mut self, m: add_server::Message) -> Task<Message> {
         let existing = self.server_urls();
+        let allow_pins = self.policy.allow_certificate_exceptions();
+        // Asked before any request to the typed host, in the form the
+        // server would be stored in (docs/policy.md section 9.1).
+        let refusal = match &m {
+            add_server::Message::Submit | add_server::Message::TrustCertificate => {
+                let typed = match (&m, &self.screen) {
+                    (add_server::Message::TrustCertificate, Screen::AddServer(a)) => {
+                        a.cert_prompt.as_ref().map(|p| p.url.clone())
+                    }
+                    (_, Screen::AddServer(a)) => rocketchat::ServerUrl::parse(&a.url).ok(),
+                    _ => None,
+                };
+                typed.and_then(|u| self.add_refusal(&u))
+            }
+            _ => None,
+        };
         let Screen::AddServer(a) = &mut self.screen else {
             return Task::none();
         };
+        if !allow_pins {
+            // Section 9.2: no exception is accepted or used by the probe.
+            a.pins.clear();
+            if matches!(m, add_server::Message::TrustCertificate) {
+                return Task::none();
+            }
+        }
+        if let Some(reason) = refusal {
+            a.refuse(reason);
+            return Task::none();
+        }
         let (task, out) = a.update(m, &existing);
         let task = task.map(Message::AddServer);
         match out {
             add_server::Out::None => task,
             add_server::Out::Cancel => {
-                self.screen = if self.servers.is_empty() {
-                    Screen::AddServer(Box::new(AddServer::new(false)))
-                } else {
-                    Screen::Server
-                };
+                self.screen = self.workspace_screen();
                 task
             }
             add_server::Out::Added { probe, pins } => {
+                // The policy may have changed while the server was checked.
+                if let Some(reason) = self.add_refusal(&probe.url) {
+                    if let Screen::AddServer(a) = &mut self.screen {
+                        a.refuse(reason);
+                    }
+                    return task;
+                }
+                let pins = if allow_pins { pins } else { Vec::new() };
                 let mut entry = ServerEntry::new(probe.url.as_str(), probe.meta.site_name.clone());
                 entry.pinned_certificates = pins
                     .iter()
@@ -217,7 +256,7 @@ impl App {
                         sha256: rocketchat::tls::fingerprint_hex(fp),
                     })
                     .collect();
-                let mut state = match ServerState::from_entry(&entry) {
+                let mut state = match ServerState::from_entry(&entry, &self.policy) {
                     Ok(s) => s,
                     Err(e) => {
                         let body = crate::error::user_text(&e);
@@ -239,6 +278,7 @@ impl App {
                     }
                 };
                 login.handler_registered = self.handler_registered;
+                login.set_rules(login::SignInRules::of(&self.policy));
                 state.login = Some(login);
                 let sid = self.config.add_server(entry);
                 self.config.active_server = Some(sid.clone());
@@ -265,9 +305,16 @@ impl App {
             return Task::none();
         };
         let (task, out) = l.update(m);
+        let site = l.meta.as_ref().map(|meta| meta.site_name.clone());
         if l.pending.is_none() {
             self.drop_token_confirmations(&sid);
         }
+        // A managed server still named by its host takes the site name of
+        // the server's public settings (docs/policy.md section 9.1).
+        let named = match site {
+            Some(site) => self.adopt_site_name(&sid, &site),
+            None => Task::none(),
+        };
         let sid2 = sid.clone();
         let task = task.map(move |m| Message::Login(sid2.clone(), m));
         let out_task = match out {
@@ -278,7 +325,7 @@ impl App {
             login::Out::DeepLink(link) => self.handle_link(&link),
             login::Out::RegisterHandler => self.open_register_handler(),
         };
-        Task::batch([task, out_task])
+        Task::batch([task, out_task, named])
     }
 
     /// A successful login: persist the token and the server entry, start the session.
@@ -470,7 +517,7 @@ impl App {
 
     /// The account, directory or admin page of a server that was just logged
     /// out gives way to its login screen; its dialogs close.
-    fn leave_pages_of(&mut self, sid: &ServerId) -> Task<Message> {
+    pub(super) fn leave_pages_of(&mut self, sid: &ServerId) -> Task<Message> {
         self.modals.retain(
             |m| !matches!(m, Modal::CreateRoom(id, _) | Modal::QuickSwitcher(id, _) if id == sid),
         );
@@ -566,6 +613,11 @@ impl App {
     }
 
     pub(super) fn remove_server(&mut self, sid: &ServerId) -> Task<Message> {
+        // Managed servers, and every server while adding and removing is
+        // off, stay (docs/policy.md section 9.1).
+        if !self.may_remove_server(sid) {
+            return Task::none();
+        }
         let t = self.logout(sid, false);
         self.servers.remove(sid);
         self.config.remove_server(sid);
@@ -577,7 +629,7 @@ impl App {
             .filter(|id| self.servers.contains_key(id))
             .or_else(|| self.servers.keys().next().cloned());
         if self.servers.is_empty() {
-            self.screen = Screen::AddServer(Box::new(AddServer::new(false)));
+            self.screen = self.fallback_screen();
         }
         Task::batch([t, self.save_config()])
     }

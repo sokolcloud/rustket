@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Example configuration profile for Rustket (forced preferences of io.github.sokolcloud.rustket), generated from the Rustket key registry; https://github.com/sokolcloud/rustket/blob/main/docs/policies.md describes every key. Replace before use: both PayloadUUID values (8C3D6A0E-0000-4000-8000-000000000001, 8C3D6A0E-0000-4000-8000-000000000002), both PayloadIdentifier values (com.example.rustket.policy, com.example.rustket.policy.preferences) and PayloadOrganization; keep only the keys you mean to enforce, with your values. -->
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadContent</key>
+      <dict>
+        <key>io.github.sokolcloud.rustket</key>
+        <dict>
+          <key>Forced</key>
+          <array>
+            <dict>
+              <key>mcx_preference_settings</key>
+              <dict>
+                <key>ManagedServers</key>
+                <array>
+                  <string>https://chat.example.com Example Chat</string>
+                </array>
+                <key>AllowUserServers</key>
+                <false/>
+                <key>AllowedServers</key>
+                <array>
+                  <string>https://chat.example.com</string>
+                  <string>*.example.com</string>
+                </array>
+                <key>RequireHttps</key>
+                <true/>
+                <key>AllowCertificateExceptions</key>
+                <false/>
+                <key>UpdateMode</key>
+                <string>notify</string>
+                <key>AllowPasswordLogin</key>
+                <true/>
+                <key>AllowTokenLogin</key>
+                <false/>
+                <key>AllowSecretsFile</key>
+                <false/>
+                <key>NotificationPreview</key>
+                <false/>
+                <key>HardwareAcceleration</key>
+                <true/>
+                <key>LaunchAtLogin</key>
+                <true/>
+                <key>OrganizationName</key>
+                <string>Example Corp</string>
+                <key>SupportUrl</key>
+                <string>https://help.example.com/chat</string>
+                <key>MinimumVersion</key>
+                <string>0.4.0</string>
+              </dict>
+            </dict>
+          </array>
+        </dict>
+      </dict>
+      <key>PayloadDisplayName</key>
+      <string>Rustket policy</string>
+      <key>PayloadIdentifier</key>
+      <string>com.example.rustket.policy.preferences</string>
+      <key>PayloadType</key>
+      <string>com.apple.ManagedClient.preferences</string>
+      <key>PayloadUUID</key>
+      <string>8C3D6A0E-0000-4000-8000-000000000002</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>Enterprise policy of Rustket, the native Rocket.Chat desktop client.</string>
+  <key>PayloadDisplayName</key>
+  <string>Rustket</string>
+  <key>PayloadIdentifier</key>
+  <string>com.example.rustket.policy</string>
+  <key>PayloadOrganization</key>
+  <string>Example Corp</string>
+  <key>PayloadScope</key>
+  <string>System</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>8C3D6A0E-0000-4000-8000-000000000001</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>

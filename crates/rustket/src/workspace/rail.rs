@@ -37,6 +37,9 @@ pub struct RailEntry {
     /// Logged out (token rejected, signed out by the server, never signed
     /// in): nothing arrives from this server until the user signs in.
     pub signed_out: bool,
+    /// Suspended by the enterprise policy (`crate::policy::servers`):
+    /// never connected; the mark replaces the signed-out one.
+    pub suspended: bool,
 }
 
 /// The badge of a workspace item (rail or title bar): a red counter of the
@@ -92,21 +95,40 @@ pub fn label_rc(name: String, signed_out: bool, rc: RcSignal) -> String {
     }
 }
 
-/// The badge and tooltip of `e` in `look`.
+/// The badge and tooltip of `e` in `look`. A suspended server has no badge
+/// and names its state.
 pub fn entry_badge_label(e: &RailEntry, look: IndicatorLook) -> (WorkspaceBadge, String) {
+    if e.suspended {
+        return (
+            WorkspaceBadge::None,
+            t!("policy.suspended_named", name = e.name.clone()).into_owned(),
+        );
+    }
     match look {
         IndicatorLook::Rustket => (badge(e.signal).into(), label(e.name.clone(), e.signed_out)),
         IndicatorLook::RocketChat => (badge_rc(e.rc), label_rc(e.name.clone(), e.signed_out, e.rc)),
     }
 }
 
-/// A small "signed out" emblem on the bottom-right corner of the face, or
-/// an empty placeholder when `shown` is false.
-fn signed_out_marker(item: Element<'_, Message>, shown: bool) -> Element<'_, Message> {
-    if !shown {
-        return stack![item, iced::widget::space()].clip(false).into();
+/// The emblem of a workspace item: suspended by the policy, signed out, or
+/// none.
+pub fn emblem(e: &RailEntry) -> Option<Icon> {
+    if e.suspended {
+        Some(Icon::Lock)
+    } else if e.signed_out {
+        Some(Icon::LogOut)
+    } else {
+        None
     }
-    let emblem = container(icon::sized(Icon::LogOut, 10.0))
+}
+
+/// A small emblem ("signed out", "suspended") on the bottom-right corner of
+/// the face, or an empty placeholder without one.
+fn signed_out_marker(item: Element<'_, Message>, glyph: Option<Icon>) -> Element<'_, Message> {
+    let Some(glyph) = glyph else {
+        return stack![item, iced::widget::space()].clip(false).into();
+    };
+    let emblem = container(icon::sized(glyph, 10.0))
         .center(16)
         .style(|theme: &Theme| {
             let t = tokens(theme);
@@ -130,10 +152,12 @@ fn signed_out_marker(item: Element<'_, Message>, shown: bool) -> Element<'_, Mes
     .into()
 }
 
-pub fn view<'a>(entries: Vec<RailEntry>) -> Element<'a, Message> {
+/// The rail; `add`: the add-workspace button (the policy may hide it).
+pub fn view<'a>(entries: Vec<RailEntry>, add: bool) -> Element<'a, Message> {
     let look = indicator_look();
     let items = entries.into_iter().map(|e| {
         let (badge, name) = entry_badge_label(&e, look);
+        let glyph = emblem(&e);
         let item = workspace_rail_item_with(
             RailIcon::Avatar(e.avatar),
             name,
@@ -143,10 +167,13 @@ pub fn view<'a>(entries: Vec<RailEntry>) -> Element<'a, Message> {
         );
         // Always wrapped, so the item keeps its widget state when the
         // server signs out or back in.
-        signed_out_marker(item, e.signed_out)
+        signed_out_marker(item, glyph)
     });
-    let list = Column::with_children(items)
-        .push(add_server_button(t!("rail.add_server"), Message::Add))
+    let mut list = Column::with_children(items);
+    if add {
+        list = list.push(add_server_button(t!("rail.add_server"), Message::Add));
+    }
+    let list = list
         .spacing(SPACE_3)
         .align_x(Alignment::Start)
         // Inside the scrollable so the badges drawn above the first item
@@ -270,6 +297,7 @@ mod tests {
             },
             selected: false,
             signed_out: false,
+            suspended: false,
         };
         assert_eq!(
             entry_badge_label(&e, IndicatorLook::Rustket),
@@ -279,5 +307,33 @@ mod tests {
             entry_badge_label(&e, IndicatorLook::RocketChat),
             (WorkspaceBadge::Ghost(7), "Acme — 7 messages".into())
         );
+        assert!(emblem(&e).is_none());
+    }
+
+    /// A suspended server says so in its tooltip in either look, with the
+    /// lock emblem instead of the signed-out one.
+    #[test]
+    fn suspended_entry_is_marked() {
+        rust_i18n::set_locale("en");
+        let e = RailEntry {
+            id: ServerId("s".into()),
+            name: "Acme".into(),
+            avatar: AvatarSource::initials("Acme", "https://acme.example"),
+            signal: WorkspaceSignal::default(),
+            rc: RcSignal::default(),
+            selected: false,
+            signed_out: true,
+            suspended: true,
+        };
+        for look in [IndicatorLook::Rustket, IndicatorLook::RocketChat] {
+            assert_eq!(
+                entry_badge_label(&e, look),
+                (
+                    WorkspaceBadge::None,
+                    "Acme — suspended by your organization's policy".into()
+                )
+            );
+        }
+        assert!(matches!(emblem(&e), Some(Icon::Lock)));
     }
 }

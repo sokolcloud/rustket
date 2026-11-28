@@ -1098,7 +1098,7 @@ mod tests {
             url: "http://localhost:3000".into(),
             ..Default::default()
         };
-        ServerState::from_entry(&entry).unwrap()
+        ServerState::from_entry(&entry, &Default::default()).unwrap()
     }
 
     #[test]

@@ -16,6 +16,7 @@ use rustket_ui::widget::{
 use super::UpdateError;
 use super::app::Msg;
 use super::detect::{InnoScope, InstallKind};
+use super::mode::UpdateMode;
 use super::state::{Phase, Updater};
 use crate::app::App;
 use crate::message::Message;
@@ -74,6 +75,8 @@ pub fn kind_label(kind: Option<&InstallKind>) -> String {
         }) => t!("updater.kind_inno_all").into_owned(),
         Some(InstallKind::PortableZip { .. }) => t!("updater.kind_zip").into_owned(),
         Some(InstallKind::MacApp { .. }) => t!("updater.kind_mac").into_owned(),
+        Some(InstallKind::Msi { .. }) => t!("updater.kind_msi").into_owned(),
+        Some(InstallKind::MacPkg { .. }) => t!("updater.kind_pkg").into_owned(),
         Some(InstallKind::Unmanaged) => t!("updater.kind_unmanaged").into_owned(),
     }
 }
@@ -93,8 +96,8 @@ fn needs_admin(kind: Option<&InstallKind>) -> bool {
     )
 }
 
-fn install_label(u: &Updater) -> String {
-    if u.can_install() {
+fn install_label(u: &Updater, mode: UpdateMode) -> String {
+    if u.can_install(mode) {
         t!("updater.install").into_owned()
     } else {
         t!("updater.download").into_owned()
@@ -157,11 +160,16 @@ fn small_link<'a>(label: String, msg: Msg) -> Element<'a, Message> {
 
 /// The corner card (stacked with call popups above everything), when the
 /// phase has something to show.
+///
+/// The effective mode `notify` reports a release with the release page and
+/// no install action (docs/policy.md 9.3).
 pub fn card(app: &App) -> Option<Element<'_, Message>> {
     let u = &app.updater;
     if !u.card_visible(app.ui_state.update_skipped.as_deref()) {
         return None;
     }
+    let mode = super::app::mode(app);
+    let installs = mode == UpdateMode::Prompt;
     let kind = u.kind.as_ref();
     let current = env!("CARGO_PKG_VERSION");
     let mut body: Vec<Element<'_, Message>> = Vec::new();
@@ -173,22 +181,38 @@ pub fn card(app: &App) -> Option<Element<'_, Message>> {
             body.push(caption(
                 t!("updater.available_body", current = current).into_owned(),
             ));
-            if u.can_install() && needs_admin(kind) {
+            if mode == UpdateMode::Notify {
+                body.push(caption(notify_text(&release.version)));
+            }
+            if u.can_install(mode) && needs_admin(kind) {
                 body.push(caption(t!("updater.admin_hint").into_owned()));
             }
-            links.push(small_link(
-                t!("updater.release_notes").into_owned(),
-                Msg::OpenReleasePage,
-            ));
+            // Outside `prompt` the primary button is the release page
+            // already.
+            if installs {
+                links.push(small_link(
+                    t!("updater.release_notes").into_owned(),
+                    Msg::OpenReleasePage,
+                ));
+            }
             links.push(small_link(t!("updater.skip").into_owned(), Msg::Skip));
             buttons.push(
                 secondary_button(t!("updater.later").into_owned(), Some(m(Msg::Later)))
                     .size(ButtonSize::Small)
                     .into(),
             );
+            // Outside `prompt` the release page, never `Install`.
+            let (label, action) = if installs {
+                (install_label(u, mode), Msg::Install)
+            } else {
+                (
+                    t!("updater.release_page").into_owned(),
+                    Msg::OpenReleasePage,
+                )
+            };
             buttons.push(
-                primary_button(install_label(u), Some(m(Msg::Install)))
-                    .icon(if u.can_install() {
+                primary_button(label, Some(m(action)))
+                    .icon(if u.can_install(mode) {
                         Icon::Download
                     } else {
                         Icon::ExternalLink
@@ -276,7 +300,7 @@ pub fn card(app: &App) -> Option<Element<'_, Message>> {
             ..
         } => {
             body.push(caption(error_text(error)));
-            if let Some(f) = file {
+            if let Some(f) = file.as_ref().filter(|_| installs) {
                 let (label, msg) = file_action(f);
                 links.push(small_link(label, msg));
             }
@@ -355,8 +379,30 @@ pub struct SettingsData {
     pub last_checked: String,
     /// A check, download or install runs ("Check now" is disabled).
     pub busy: bool,
-    /// Label of the install button, when a release can be installed.
+    /// Label of the install button, when a release can be installed (the
+    /// mode `prompt` only).
     pub install: Option<String>,
+    /// The mode `notify` has a release to report: the release page is
+    /// offered instead of an install.
+    pub release_page: bool,
+    /// "Check now" is offered (not in the mode `off`).
+    pub check: bool,
+    /// The mode `off`: the line that says who manages updates.
+    pub managed: Option<String>,
+}
+
+/// The mode `notify`'s report of `version`.
+fn notify_text(version: &semver::Version) -> String {
+    t!("updater.notify_available", version = version.to_string()).into_owned()
+}
+
+/// The mode `off`'s line, with the organization's name when the policy
+/// sets one.
+pub fn managed_text(organization: Option<&str>) -> String {
+    match organization {
+        Some(name) => t!("updater.managed_off_by", name = name).into_owned(),
+        None => t!("updater.managed_off").into_owned(),
+    }
 }
 
 /// Local date and time of a unix timestamp.
@@ -370,9 +416,21 @@ fn local_time(secs: i64) -> String {
         .unwrap_or_default()
 }
 
-pub fn settings_data(u: &Updater, last_check: Option<i64>, skipped: Option<&str>) -> SettingsData {
+/// `mode`: the effective update mode; `organization`: the policy's
+/// `OrganizationName`.
+pub fn settings_data(
+    u: &Updater,
+    mode: UpdateMode,
+    organization: Option<&str>,
+    last_check: Option<i64>,
+    skipped: Option<&str>,
+) -> SettingsData {
     let available = |v: &semver::Version| {
-        let s = t!("updater.status_available", version = v.to_string()).into_owned();
+        let s = if mode == UpdateMode::Notify {
+            notify_text(v)
+        } else {
+            t!("updater.status_available", version = v.to_string()).into_owned()
+        };
         if skipped == Some(v.to_string().as_str()) {
             format!("{s} {}", t!("updater.skipped"))
         } else {
@@ -406,7 +464,13 @@ pub fn settings_data(u: &Updater, last_check: Option<i64>, skipped: Option<&str>
         status,
         last_checked,
         busy: u.busy(),
-        install: u.installable().map(|_| install_label(u)),
+        install: u
+            .installable()
+            .filter(|_| mode == UpdateMode::Prompt)
+            .map(|_| install_label(u, mode)),
+        release_page: mode == UpdateMode::Notify && u.installable().is_some(),
+        check: mode != UpdateMode::Off,
+        managed: (mode == UpdateMode::Off).then(|| managed_text(organization)),
     }
 }
 
@@ -502,6 +566,10 @@ mod tests {
             InstallKind::MacApp {
                 bundle: "/b".into(),
             },
+            InstallKind::Msi { dir: "c".into() },
+            InstallKind::MacPkg {
+                bundle: "/b".into(),
+            },
             InstallKind::Unmanaged,
         ];
         let mut labels: Vec<String> = kinds.iter().map(|k| kind_label(Some(k))).collect();
@@ -513,7 +581,13 @@ mod tests {
         labels.dedup();
         assert_eq!(labels.len(), kinds.len() + 1, "labels differ");
         let admin: Vec<bool> = kinds.iter().map(|k| needs_admin(Some(k))).collect();
-        assert_eq!(admin, [true, true, false, false, true, false, false, false]);
+        // The reserved kinds never install from the app (`assets::select`).
+        assert_eq!(
+            admin,
+            [
+                true, true, false, false, true, false, false, false, false, false
+            ]
+        );
     }
 
     #[test]
@@ -541,22 +615,22 @@ mod tests {
     #[test]
     fn settings_status() {
         let mut u = Updater::new(false);
-        let d = settings_data(&u, None, None);
+        let d = settings_data(&u, UpdateMode::Prompt, None, None, None);
         assert_eq!(d.method, kind_label(None));
         assert!(d.status.is_empty() && !d.busy && d.install.is_none());
         assert_eq!(d.last_checked, t!("updater.never_checked"));
-        let d = settings_data(&u, Some(1_700_000_000), None);
+        let d = settings_data(&u, UpdateMode::Prompt, None, Some(1_700_000_000), None);
         assert!(d.last_checked.contains("2023-11-1"), "{}", d.last_checked);
 
         u.phase = Phase::Available {
             release: release("0.3.0"),
             manual: false,
         };
-        let d = settings_data(&u, None, Some("0.3.0"));
+        let d = settings_data(&u, UpdateMode::Prompt, None, None, Some("0.3.0"));
         assert!(d.status.contains("0.3.0") && d.status.ends_with(&*t!("updater.skipped")));
         assert_eq!(d.install, Some(t!("updater.download").into_owned()));
         u.kind = Some(InstallKind::AppImage { image: "/a".into() });
-        let d = settings_data(&u, None, None);
+        let d = settings_data(&u, UpdateMode::Prompt, None, None, None);
         assert!(!d.status.contains(&*t!("updater.skipped")));
         assert_eq!(d.install, Some(t!("updater.install").into_owned()));
 
@@ -565,7 +639,7 @@ mod tests {
             received: 1_500_000,
             total: 3_000_000,
         };
-        let d = settings_data(&u, None, None);
+        let d = settings_data(&u, UpdateMode::Prompt, None, None, None);
         assert!(d.busy && d.install.is_none());
         assert!(d.status.contains("1.5") && d.status.contains("3.0"));
     }

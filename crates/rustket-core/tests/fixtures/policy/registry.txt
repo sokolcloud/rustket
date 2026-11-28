@@ -1,0 +1,18 @@
+# Shipped policy keys: name | type | class (docs/policy.md section 13).
+# Append-only: a key is never removed or retyped. A replacement gets a new
+# name and the old one stays as an alias.
+ManagedServers | string list | T
+AllowUserServers | bool | R
+AllowedServers | string list | R
+RequireHttps | bool | R
+AllowCertificateExceptions | bool | R
+UpdateMode | enum(prompt, notify, off) | R
+AllowPasswordLogin | bool | R
+AllowTokenLogin | bool | R
+AllowSecretsFile | bool | R
+NotificationPreview | bool | R
+HardwareAcceleration | bool | C
+LaunchAtLogin | bool | C
+OrganizationName | string | C
+SupportUrl | string | T
+MinimumVersion | string | R

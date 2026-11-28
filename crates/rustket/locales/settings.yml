@@ -1151,6 +1151,30 @@ settings.secrets_memory_only_help:
   es: "Cuando el llavero del sistema no esté disponible, guarda los tokens de inicio de sesión y las claves E2E en memoria solo durante esta sesión en lugar de en un archivo sin cifrar. El llavero se sigue usando cuando funciona."
   th: "เมื่อที่เก็บรหัสผ่านของระบบไม่พร้อมใช้งาน ให้เก็บโทเค็นการเข้าสู่ระบบและคีย์ E2E ในหน่วยความจำเฉพาะเซสชันนี้แทนการเก็บในไฟล์ที่ไม่ได้เข้ารหัส ยังคงใช้ที่เก็บรหัสผ่านเมื่อใช้งานได้"
   zh: "系统密钥环不可用时，将登录令牌和 E2EE 密钥仅在本次会话期间保存在内存中，而不是保存在未加密的文件中。密钥环可用时仍会使用它。"
+settings.log_file:
+  en: "Keep a diagnostic log file"
+  ru: "Вести файл журнала для диагностики"
+  es: "Guardar un archivo de registro de diagnóstico"
+  th: "เก็บไฟล์บันทึกสำหรับการวินิจฉัย"
+  zh: "保留诊断日志文件"
+settings.log_file_help:
+  en: "Takes effect after Rustket is restarted. The log holds no passwords, tokens or message text."
+  ru: "Вступает в силу после перезапуска Rustket. В журнал не попадают пароли, токены и текст сообщений."
+  es: "Se aplica después de reiniciar Rustket. El registro no contiene contraseñas, tokens ni el texto de los mensajes."
+  th: "มีผลหลังจากรีสตาร์ท Rustket บันทึกจะไม่มีรหัสผ่าน โทเค็น หรือเนื้อหาข้อความ"
+  zh: "重新启动 Rustket 后生效。日志中不包含密码、令牌或消息文本。"
+settings.show_log_folder:
+  en: "Show log folder"
+  ru: "Показать папку журнала"
+  es: "Mostrar la carpeta de registros"
+  th: "แสดงโฟลเดอร์บันทึก"
+  zh: "显示日志文件夹"
+settings.log_folder_failed:
+  en: "Cannot open the log folder"
+  ru: "Не удалось открыть папку журнала"
+  es: "No se puede abrir la carpeta de registros"
+  th: "ไม่สามารถเปิดโฟลเดอร์บันทึกได้"
+  zh: "无法打开日志文件夹"
 settings.secrets_switch_failed:
   en: "Could not change where secrets are stored"
   ru: "Не удалось изменить место хранения секретов"

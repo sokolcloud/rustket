@@ -14,7 +14,7 @@ use crate::legal;
 pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
     let mut cards = Vec::new();
     #[cfg(feature = "self-update")]
-    cards.push(updates_card(&v.config.ui, &v.updater));
+    cards.push(updates_card(v));
     #[cfg(not(feature = "self-update"))]
     let _ = v;
     let mut secondary = row![].spacing(SPACE_4);
@@ -76,33 +76,45 @@ pub(super) fn support_card<'a>() -> Element<'a, Message> {
 }
 
 /// The "Updates" card: automatic checks, pre-releases, how this copy is
-/// updated, the status and "Check now" (+ "Install").
+/// updated, the status and "Check now" (+ "Install", or the release page in
+/// the update mode `notify`). In the mode `off` a line says who manages
+/// updates and nothing checks.
 #[cfg(feature = "self-update")]
-fn updates_card<'a>(
-    ui: &rustket_core::config::UiPrefs,
-    d: &crate::updater::view::SettingsData,
-) -> Element<'a, Message> {
-    use super::widgets::switch;
+fn updates_card<'a>(v: &SettingsView<'a>) -> Element<'a, Message> {
+    use super::widgets::switch_with;
     use crate::updater::app::Msg;
     use crate::updater::state::CheckOrigin;
     use iced::widget::column;
     use iced::{Alignment, Length};
+    use rustket_core::policy::LockedPref;
     use rustket_ui::theme::{SPACE_1, SPACE_3};
     use rustket_ui::widget::secondary_button;
+    let (ui, d) = (&v.config.ui, &v.updater);
     let mut status = column![].spacing(SPACE_1).width(Length::Fill);
     if !d.status.is_empty() {
         status = status.push(text(d.status.clone()).size(TEXT_BODY));
     }
-    status = status.push(caption(d.last_checked.clone()));
-    let mut actions = row![
-        status,
-        secondary_button(
+    if let Some(managed) = &d.managed {
+        status = status.push(text(managed.clone()).size(TEXT_BODY));
+    } else {
+        status = status.push(caption(d.last_checked.clone()));
+    }
+    let mut actions = row![status].spacing(SPACE_3).align_y(Alignment::Center);
+    if d.check {
+        actions = actions.push(secondary_button(
             t!("updater.check_now"),
             (!d.busy).then_some(Message::Updater(Msg::Check(CheckOrigin::Manual))),
-        )
-    ]
-    .spacing(SPACE_3)
-    .align_y(Alignment::Center);
+        ));
+    }
+    if d.release_page {
+        actions = actions.push(
+            secondary_button(
+                t!("updater.release_page"),
+                Some(Message::Updater(Msg::OpenReleasePage)),
+            )
+            .icon(rustket_ui::icon::Icon::ExternalLink),
+        );
+    }
     if let Some(label) = &d.install {
         actions = actions.push(rustket_ui::widget::primary_button(
             label.clone(),
@@ -112,17 +124,19 @@ fn updates_card<'a>(
     section(
         t!("updater.title").into_owned(),
         vec![
-            switch(
+            switch_with(
                 t!("updater.auto_check").into_owned(),
                 Some(t!("updater.auto_check_help").into_owned()),
                 ui.check_updates,
                 Some(Message::SetCheckUpdates),
+                v.managed(LockedPref::CheckUpdates),
             ),
-            switch(
+            switch_with(
                 t!("updater.prereleases").into_owned(),
                 Some(t!("updater.prereleases_help").into_owned()),
                 ui.update_prereleases,
                 Some(Message::SetUpdatePrereleases),
+                v.managed(LockedPref::UpdatePrereleases),
             ),
             column![
                 text(t!("updater.method")).size(TEXT_BODY),

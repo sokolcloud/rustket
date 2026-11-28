@@ -66,7 +66,7 @@ windows-registry = "0.6"
 block2 = "0.6.2"
 objc2 = "0.6.3"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSImage", "NSResponder", "NSSound", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSLocale", "NSNotification", "NSObject", "NSProcessInfo", "NSSet", "NSString", "NSThread", "NSURL", "objc2-core-services"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSBundle", "NSData", "NSDate", "NSDictionary", "NSEnumerator", "NSError", "NSLocale", "NSNotification", "NSObject", "NSProcessInfo", "NSSet", "NSString", "NSThread", "NSURL", "NSUserDefaults", "NSValue", "objc2-core-services"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEventSource", "CGEventTypes"] }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "bitflags", "block2", "UNNotification", "UNNotificationAction", "UNNotificationAttachment", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
@@ -86,6 +86,7 @@ png = "0.18"
 semver = "1.0.28"
 tempfile = "3"
 tiny-skia = "0.11"
+tokio-tungstenite = "0.30.0"
 
 # Optional path for cargo-deb users (not exercised; the maintained path is
 # packaging/deb/build.sh, which needs only dpkg-deb):
@@ -94,7 +95,8 @@ tiny-skia = "0.11"
 # (cargo-deb maps `target/release/` to the selected profile; --no-strip keeps the
 # symbols the dist profile leaves for crash backtraces). tests/packaging.rs
 # checks that depends/recommends, icons and the copyright header skip stay in
-# sync with packaging/.
+# sync with packaging/. Unlike packaging/deb/build.sh, this path does not create
+# the policy directory /etc/rustket/policies/managed (docs/policy.md section 14).
 [package.metadata.deb]
 name = "rustket"
 maintainer = "Sergey Sokolov <sokol@xi-ix.org>"
@@ -117,6 +119,8 @@ assets = [
     ["../../packaging/linux/rustket.1", "usr/share/man/man1/rustket.1", "644"],
     ["../../packaging/out/THIRD-PARTY-NOTICES", "usr/share/doc/rustket/THIRD-PARTY-NOTICES", "644"],
     ["../../packaging/deb/lintian-overrides", "usr/share/lintian/overrides/rustket", "644"],
+    ["../../packaging/policy/policy.schema.json", "usr/share/doc/rustket/policy/policy.schema.json", "644"],
+    ["../../packaging/policy/50-example.json", "usr/share/doc/rustket/policy/50-example.json", "644"],
     ["assets/icons/rustket-16.png", "usr/share/icons/hicolor/16x16/apps/rustket.png", "644"],
     ["assets/icons/rustket-22.png", "usr/share/icons/hicolor/22x22/apps/rustket.png", "644"],
     ["assets/icons/rustket-24.png", "usr/share/icons/hicolor/24x24/apps/rustket.png", "644"],

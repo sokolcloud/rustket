@@ -10,7 +10,7 @@ use rustket_ui::theme::{SPACE_2, TEXT_BODY, TEXT_SUBTITLE};
 use rustket_ui::widget::{focus_ring, secondary_button};
 
 use super::pickers::theme_picker;
-use super::widgets::{field, section, segmented, switch};
+use super::widgets::{field, section, segmented, switch, switch_with};
 use super::{Message, SettingsView};
 use crate::renderer::Renderer;
 
@@ -127,7 +127,7 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
         .into_iter()
         // The Mac App Store flavor cannot restart itself with the CPU renderer.
         .chain((!cfg!(feature = "mas")).then(|| {
-            switch(
+            switch_with(
                 t!("settings.hardware_acceleration").into_owned(),
                 Some(format!(
                     "{}\n{}",
@@ -139,6 +139,7 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
                 )),
                 ui.hardware_acceleration,
                 Some(Message::SetHardwareAcceleration),
+                v.managed(rustket_core::policy::LockedPref::HardwareAcceleration),
             )
         }))
         .chain([switch(

@@ -5,39 +5,25 @@ use rustket::app::{App, Flags};
 use rustket::renderer;
 use rustket::single_instance::{self, Instance, ListenerSlot};
 
-/// The log filter: the user's `RUST_LOG` (or the recommended default), after
-/// [`QUIET_DEPS`] (more specific directives win, so `RUST_LOG=debug` keeps the
-/// toolkit quiet unless it names those crates) and always followed by
-/// `rocketchat::LOG_FILTER_PINS` so transport crates that log
-/// credentials at TRACE (tungstenite logs the resume token) stay at `info`.
-/// Toolkit crates that are noisy at `info`: `iced_winit` dumps the window
-/// attributes including every byte of the icon, `winit` warns about XSETTINGS
-/// on every start under KDE.
-const QUIET_DEPS: &str = "wgpu=warn,naga=warn,iced_winit=warn,winit=error";
-
-fn log_filter(user: Option<&str>) -> String {
-    match user.map(str::trim).filter(|f| !f.is_empty()) {
-        Some(f) => format!("{QUIET_DEPS},{f},{}", rocketchat::LOG_FILTER_PINS),
-        None => format!("{},{QUIET_DEPS}", rocketchat::RECOMMENDED_LOG_FILTER),
-    }
-}
-
 /// Restarts the process with the CPU renderer when hardware acceleration is
-/// off. Returns only when no restart is needed or it failed (the error).
-/// Never in the Mac App Store flavor: a sandboxed exec of itself is not
-/// supported there (and the switch is hidden).
-fn software_reexec() -> Option<std::io::Error> {
-    if cfg!(feature = "mas") {
-        return None;
-    }
+/// off (by policy, else by preference). Returns only when no restart is
+/// needed or it failed (the error). Never in the Mac App Store flavor: a
+/// sandboxed exec of itself is not supported there (and the switch is
+/// hidden).
+fn software_reexec(policy: &rustket_core::policy::Policy) -> Option<std::io::Error> {
     let backend_set = std::env::var_os(renderer::BACKEND_VAR).is_some();
     let marker_set = std::env::var_os(renderer::REEXEC_MARKER).is_some();
-    if backend_set || marker_set {
-        return None;
-    }
-    let dir = rustket_core::config::AppConfig::default_dir().ok();
-    let hw = renderer::saved_hardware_acceleration(dir.as_deref());
-    if !renderer::should_reexec(backend_set, marker_set, hw) {
+    let restart = renderer::software_restart_wanted(
+        cfg!(feature = "mas"),
+        backend_set,
+        marker_set,
+        policy.hardware_acceleration(),
+        || {
+            let dir = rustket_core::config::AppConfig::default_dir().ok();
+            renderer::saved_hardware_acceleration(dir.as_deref())
+        },
+    );
+    if !restart {
         return None;
     }
     let exe = match std::env::current_exe() {
@@ -106,22 +92,34 @@ fn main() -> iced::Result {
             eprint!("{text}");
             std::process::exit(2);
         }
+        rustket::cli::Action::DumpPolicy(out) => {
+            let policy = rustket::policy::load();
+            if let Err(e) = rustket::policy::dump(&policy, out.as_deref()) {
+                eprintln!("{}", e.localized());
+                std::process::exit(2);
+            }
+            return Ok(());
+        }
         rustket::cli::Action::Run => {}
     }
+    // Before logging and the renderer restart: no side effects, cheap (the
+    // restarted process resolves it again).
+    let (policy_sources, policy) = rustket::policy::load_with_sources();
     // A relaunch after an update waits until the old process has exited.
     #[cfg(feature = "self-update")]
     let waited = rustket::updater::relaunch::wait_for_parent_if_requested();
     // Before anything else: the restarted process redoes all of it.
-    let reexec_error = software_reexec();
+    let reexec_error = software_reexec(&policy);
     let user_filter = std::env::var("RUST_LOG").ok();
-    let filter = log_filter(user_filter.as_deref());
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_new(&filter).unwrap_or_else(|_| {
-                tracing_subscriber::EnvFilter::new(rocketchat::RECOMMENDED_LOG_FILTER)
-            }),
-        )
-        .init();
+    // Read like the renderer preference: no side effects, any error is off.
+    let sink = rustket::logging::start_sink(
+        rustket_core::config::AppConfig::default_dir()
+            .ok()
+            .as_deref(),
+        rustket::logging::default_dir,
+    );
+    rustket::logging::init(user_filter.as_deref(), sink);
+    rustket::policy::log_summary(&policy);
     #[cfg(feature = "self-update")]
     waited.log();
     if let Some(e) = reexec_error {
@@ -189,6 +187,9 @@ fn main() -> iced::Result {
         desktop: true,
         window_decorated: Some(system_title_bar),
         offline_cache: rustket::cache::default_base(),
+        policy,
+        policy_sources,
+        policy_refresh: true,
         ..Flags::default()
     };
     iced::application(move || App::new(flags.clone()), App::update, App::view)
@@ -208,21 +209,4 @@ fn main() -> iced::Result {
         // Closing goes through `Message::CloseRequested` (flushes the config).
         .exit_on_close_request(false)
         .run()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Session re-review #2: the pins always follow the user's filter.
-    #[test]
-    fn log_filter_appends_pins() {
-        let f = log_filter(Some("trace"));
-        assert!(f.starts_with(&format!("{QUIET_DEPS},trace,")));
-        assert!(f.ends_with(rocketchat::LOG_FILTER_PINS));
-        assert!(f.contains("tungstenite=info"));
-        assert!(log_filter(None).starts_with(rocketchat::RECOMMENDED_LOG_FILTER));
-        assert!(log_filter(Some("  ")).starts_with(rocketchat::RECOMMENDED_LOG_FILTER));
-        assert!(log_filter(None).contains("iced_winit=warn"));
-    }
 }

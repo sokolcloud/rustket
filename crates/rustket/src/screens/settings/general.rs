@@ -8,13 +8,28 @@ use rustket_ui::style;
 use rustket_ui::theme::{SPACE_1, TEXT_BODY};
 
 use super::pickers::language_picker;
-use super::widgets::{action_row, caption, section, switch};
+use super::widgets::{action_row, caption, section, switch, switch_with};
 use super::{Message, Settings, SettingsView};
 
 pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
     let ui = &v.config.ui;
-    let autostart: Element<'a, Message> = match s.autostart {
-        Some(on) => switch(
+    // `LaunchAtLogin` locks the switch to the forced value (docs/policy.md
+    // section 9.6); where launch at login is unsupported nothing changes.
+    let forced = v
+        .policy
+        .launch_at_login()
+        .filter(|_| s.autostart_at.is_some());
+    let managed = forced.map(|_| super::policies::managed_text(v.policy));
+    let autostart: Element<'a, Message> = match (s.autostart, forced) {
+        (_, Some(value)) => switch_with(
+            t!("settings.autostart").into_owned(),
+            s.autostart_approval
+                .then(|| t!("settings.autostart_approval").into_owned()),
+            value,
+            None,
+            managed,
+        ),
+        (Some(on), None) => switch(
             t!("settings.autostart").into_owned(),
             s.autostart_approval
                 .then(|| t!("settings.autostart_approval").into_owned()),
@@ -22,7 +37,7 @@ pub(super) fn view<'a>(s: &'a Settings, v: &SettingsView<'a>) -> Vec<Element<'a,
             (!s.autostart_busy && s.autostart_at.is_some()).then_some(Message::SetAutostart),
         ),
         // Still loading, or no config directory at all.
-        None => switch(
+        (None, None) => switch(
             t!("settings.autostart").into_owned(),
             Some(if s.autostart_at.is_none() {
                 t!("settings.autostart_unknown").into_owned()

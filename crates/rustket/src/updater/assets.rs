@@ -92,7 +92,9 @@ fn expected(
             "Rustket-",
             "-macos-universal.dmg".into(),
         ),
-        InstallKind::Unmanaged => return Err(UpdateError::Unsupported),
+        InstallKind::Msi { .. } | InstallKind::MacPkg { .. } | InstallKind::Unmanaged => {
+            return Err(UpdateError::Unsupported);
+        }
     })
 }
 
@@ -263,6 +265,70 @@ mod tests {
                     want.map(str::to_owned),
                     "{kind:?} {arch:?}"
                 );
+            }
+        }
+    }
+
+    /// The kinds reserved for managed installers have no package to pick.
+    #[test]
+    fn reserved_kinds_have_no_package() {
+        let stable = parse_list(LIST, false).unwrap().unwrap();
+        let v = stable.version.to_string();
+        for kind in [
+            InstallKind::Msi {
+                dir: PathBuf::from("C:/Rustket"),
+            },
+            InstallKind::MacPkg {
+                bundle: PathBuf::from("/Applications/Rustket.app"),
+            },
+        ] {
+            for arch in [Arch::X86_64, Arch::Aarch64, Arch::Other] {
+                assert_eq!(
+                    pick(&kind, arch, &v, &stable.assets),
+                    Err(UpdateError::Unsupported),
+                    "{kind:?} {arch:?}"
+                );
+            }
+        }
+    }
+
+    /// The release's policy templates archive
+    /// (`Rustket-<version>-policy-templates.zip`) is never taken for a
+    /// package, by its exact name or by the prefix and suffix fallback.
+    #[test]
+    fn policy_templates_are_never_a_package() {
+        let stable = parse_list(LIST, false).unwrap().unwrap();
+        let v = stable.version.to_string();
+        let asset = |name: String| Asset {
+            name,
+            size: 1,
+            url: String::new(),
+        };
+        let mut all = kinds();
+        all.push(InstallKind::Msi {
+            dir: PathBuf::from("C:/Rustket"),
+        });
+        all.push(InstallKind::MacPkg {
+            bundle: PathBuf::from("/Applications/Rustket.app"),
+        });
+        for version in [v.as_str(), "0.4.0", "1.0.0-rc1"] {
+            let templates = asset(format!("Rustket-{version}-policy-templates.zip"));
+            let mut with = stable.assets.clone();
+            with.push(templates.clone());
+            for kind in &all {
+                for arch in [Arch::X86_64, Arch::Aarch64, Arch::Other] {
+                    // Alone it is nothing to pick.
+                    assert!(
+                        select(kind, arch, version, std::slice::from_ref(&templates)).is_err(),
+                        "{kind:?} {arch:?} {version}"
+                    );
+                    // Among the packages it changes nothing.
+                    assert_eq!(
+                        pick(kind, arch, version, &with),
+                        pick(kind, arch, version, &stable.assets),
+                        "{kind:?} {arch:?} {version}"
+                    );
+                }
             }
         }
     }

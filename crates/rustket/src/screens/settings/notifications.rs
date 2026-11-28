@@ -11,7 +11,9 @@ use rustket_ui::style;
 use rustket_ui::theme::{SPACE_2, SPACE_3, TEXT_BODY, TEXT_CAPTION};
 use rustket_ui::widget::secondary_button;
 
-use super::widgets::{Choice, action_row, caption, field, section, switch};
+use rustket_core::policy::LockedPref;
+
+use super::widgets::{Choice, action_row, caption, field, section, switch, switch_with};
 use super::{Message, SettingsView, Tab};
 
 /// "09:00" for hour 9.
@@ -163,12 +165,13 @@ pub(super) fn view<'a>(v: &SettingsView<'a>) -> Vec<Element<'a, Message>> {
     // Only while the app itself sends notifications.
     general.extend(blocked_row(notify_on && v.notifications_blocked));
     general.extend([
-        switch(
+        switch_with(
             t!("settings.notifications_preview").into_owned(),
             None,
             ui.notification_preview,
             // Reminder notifications show the message too.
             (notify_on || reminders_on).then_some(Message::SetPreview),
+            v.managed(LockedPref::NotificationPreview),
         ),
         sound_switch(ui),
         test_button(ui),

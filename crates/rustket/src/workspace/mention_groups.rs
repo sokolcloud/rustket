@@ -127,7 +127,7 @@ mod tests {
         use rustket_core::flags::{FlagBlob, FlagColor, FlagEdit};
 
         let entry = rustket_core::config::ServerEntry::new("http://localhost:3999", "t");
-        let mut state = super::super::ServerState::from_entry(&entry).unwrap();
+        let mut state = super::super::ServerState::from_entry(&entry, &Default::default()).unwrap();
         state.workspace = ws();
         state
             .flags
